@@ -147,4 +147,7 @@
 - **8361** — Grammars are WebAssembly, not native shared libraries (replaces the literal answer
   to #8; its comments still apply: all included by default, easy installation helper).
 - **8362** — «Nuestro --json es nuestro, y si alguien quiere el de rg podemos darle --json-rg».
+- **8365** — Replaces 8362: «Si podemos usar el json de rg y montar lo nuestro encima, y se puede
+  consumir vía streaming, entonces hagamos eso». `--json` = ripgrep's messages plus our fields.
+- **8366** — The repository goes in the `neitanod` account.
 - **#18 comment** — npm is a usual channel for Rust tools (Biome, oxlint), so it is included.

@@ -31,7 +31,7 @@ contract. That combination is the product.
 | External Processors | any language, over a documented protocol | #7 |
 | Grammars | WebAssembly; all v1 Grammars embedded, extra ones installable with a helper flag (§7) | #8, 8361 |
 | Trail details | §5 | #9–#12 |
-| Output | tree on a TTY, one line per Match in a pipe, our own `--json` plus `--json-rg`; Fragments for long lines | #13–#15, 8362 |
+| Output | tree on a TTY, one line per Match in a pipe, `--json` = ripgrep's messages plus `trail`; Fragments for long lines | #13–#15, 8365 |
 | Agents | Claude Code skill, README section for agents, MCP server | #19 |
 | Distribution | crates.io, GitHub Releases, Homebrew tap, npm | #18 |
 | Repo | public from the first commit, MIT OR Apache-2.0 | #17 |
@@ -254,30 +254,30 @@ docs/deploy.md:42: Deploying Go apps › systemd │ ExecStart=/opt/apps/notes/n
 - ripgrep's `-M/--max-columns` keeps its meaning: with it, searchfor prints ripgrep's
   `[Omitted long line]` messages instead of Fragments.
 
-### 6.4 `--json` and `--json-rg` (#15, follow-up 8362)
+### 6.4 `--json` (#15, follow-ups 8362 and 8365)
 
-`--json` is searchfor's own contract ([ADR 0004](../adr/0004-own-json-contract.md)): JSON
-Lines, one object per Match, nothing else on stdout.
+`--json` emits ripgrep's JSON Lines messages — `begin`, `match`, `context`, `end`, `summary`,
+one per line, so it streams — and adds three fields inside each `match.data`
+([ADR 0004](../adr/0004-json-extends-ripgrep.md)):
 
 ```json
-{"file":"docs/deploy.md","line":42,"col":1,"byte":1730,"format":"markdown",
+{"type":"match","data":{"path":{"text":"docs/deploy.md"},"lines":{"text":"ExecStart=/opt/apps/notes/notes\n"},
+ "line_number":42,"absolute_offset":1730,"submatches":[{"match":{"text":"ExecStart"},"start":0,"end":9}],
+ "format":"markdown",
  "trail":[{"kind":"heading","name":"Deploying Go apps","line":1,"end_line":80,"level":1},
           {"kind":"heading","name":"systemd","line":30,"end_line":55,"level":2}],
- "text":"ExecStart=/opt/apps/notes/notes","submatches":[{"start":0,"end":9}],
- "fragment":null}
+ "fragment":null}}
 ```
 
-- `text` is the whole line, without the line terminator. `fragment` is filled only when the
-  line exceeds `--fragment-width`, and then `submatches` are relative to the Fragment.
-- With `-A/-B/-C`, each Match object gains `"before":[…]` and `"after":[…]` with the context
-  lines; context never becomes an object of its own.
-- With `--expand`, each Match object gains `"section":{"start_line":30,"end_line":55,"text":"…"}`.
-- Files inside a Container use `"file":"docs.zip"` and the Member appears in `trail`.
-- Field names are stable from v0.1; new fields may be added, existing ones are never renamed.
-  The schema lives in `docs/json-schema.json`.
-
-`--json-rg` emits exactly what `rg --json` emits, with no added field, for tools that already
-consume ripgrep's format.
+- Every existing consumer of `rg --json` keeps working: it ignores the added fields.
+- `fragment` is `null` unless the line exceeds `--fragment-width`; then it is
+  `{"text":"…","start":<byte offset of the Fragment in the line>,"omitted_before":N,"omitted_after":M}`.
+- With `--expand`, each `match.data` also carries
+  `"section":{"start_line":30,"end_line":55,"text":"…"}`.
+- A Member of a Container keeps the Container in `path` and appears as a Segment of `trail`.
+- Added field names are stable from v0.1; new ones may appear, existing ones are never renamed.
+  Their schema lives in `docs/json-schema.json`.
+- `--json --no-trail` is byte-identical to `rg --json`.
 
 ## 7. Grammars (#8, follow-up 8361)
 
@@ -318,7 +318,6 @@ parsing speed against a native Grammar. Only files with Matches are parsed (§3)
 | `--in-headings` | match only inside Segment names (headings, keys, function names) |
 | `--format <F>` / `--format <GLOB>=<F>` | force a Format |
 | `--flat` / `--tree` | force an output layout |
-| `--json-rg` | ripgrep's JSON Lines, unchanged |
 | `--no-trail` | ripgrep-identical output |
 | `--fragment-width <N>` | Fragment width when there is no terminal |
 | `--list-formats`, `--export-formats <DIR>` | Format Definitions |
@@ -365,8 +364,9 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
     `--export-formats` refuses the formats directory.
 11. An External Processor that crashes leaves its Matches with an empty Trail and a warning;
     the exit code is still ripgrep's (0 if anything matched).
-12. Every `--json` line validates against `docs/json-schema.json` and carries `trail`;
-    `--json-rg` output is byte-identical to `rg --json` for the implemented flags.
+12. Every `match` message of `--json` carries `trail`, `format` and `fragment` valid against
+    `docs/json-schema.json`; `--json --no-trail` is byte-identical to `rg --json` for the
+    implemented flags.
 13. Performance: on `~/robotin/knowledge` (619 Markdown files on 2026-10-16), `sfor` takes at
     most 1.5× the wall time of `rg` for a pattern matching under 5 % of the files, measured as
     the median of 10 runs with `hyperfine`.
