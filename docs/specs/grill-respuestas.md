@@ -142,8 +142,8 @@
 
 # Follow-up decisions in the Hilo (16/10/2026)
 
-- **8355** — Move the Agencia Project to the «Apps» space. Done by Sebastián from the UI: the
-  API reserves it to him.
+- **8355** — Move the Agencia Project to the «Apps» space. Only Sebastián can do it, from the
+  UI: the API answers 403 to an agent.
 - **8361** — Grammars are WebAssembly, not native shared libraries (replaces the literal answer
   to #8; its comments still apply: all included by default, easy installation helper).
 - **8362** — «Nuestro --json es nuestro, y si alguien quiere el de rg podemos darle --json-rg».
