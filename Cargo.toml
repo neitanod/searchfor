@@ -1,0 +1,48 @@
+[package]
+name = "searchfor"
+version = "0.1.0-dev"
+edition = "2024"
+rust-version = "1.90"
+description = "ripgrep-compatible search that shows where each match lives: headings, functions, key paths"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/neitanod/searchfor"
+readme = "README.md"
+keywords = ["grep", "search", "markdown", "ripgrep", "cli"]
+categories = ["command-line-utilities", "text-processing"]
+
+[[bin]]
+name = "sfor"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.6", features = ["derive", "string", "wrap_help"] }
+dirs = "6"
+encoding_rs = "0.8"
+globset = "0.4"
+grep-cli = "0.1.12"
+grep-matcher = "0.1.9"
+grep-printer = "0.3.1"
+grep-regex = "0.1.14"
+grep-searcher = "0.1.17"
+ignore = "0.4.33"
+memchr = "2"
+memmap2 = "0.9"
+pulldown-cmark = { version = "0.13", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+termcolor = "1.4"
+terminal_size = "0.4"
+thiserror = "2"
+toml = "1.1"
+
+[dev-dependencies]
+assert_cmd = "2"
+insta = { version = "1", features = ["json"] }
+jsonschema = "0.58"
+regex-lite = "0.1"
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
