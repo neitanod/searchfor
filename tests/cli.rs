@@ -547,3 +547,39 @@ fn t24_max_count_zero_and_no_patterns_search_nothing() {
         assert!(!stderr(&o).is_empty(), "{args:?}");
     }
 }
+
+/// Code review r1, Codex #5: the lines of an expanded Section follow -M and the Fragments
+/// like every other line.
+#[test]
+fn t25_expanded_lines_follow_max_columns_and_fragments() {
+    let fx = Fixture::new();
+    let long = format!("{}needle{}", "a".repeat(80), "b".repeat(80));
+    std::fs::write(fx.file("long.md"), format!("# H\n\n{long}\n")).unwrap();
+    for layout in ["--flat", "--tree"] {
+        let o = run(&mut fx.sfor(["--expand", layout, "-M10", "needle", "long.md"]));
+        assert_eq!(code(&o), 0, "{}", stderr(&o));
+        let out = stdout(&o);
+        assert!(!out.contains(&long), "{layout}: {out}");
+        assert!(
+            out.contains("[Omitted long matching line]"),
+            "{layout}: {out}"
+        );
+
+        let o = run(&mut fx.sfor([
+            "--expand",
+            layout,
+            "--fragment-width",
+            "50",
+            "needle",
+            "long.md",
+        ]));
+        let out = stdout(&o);
+        assert!(!out.contains(&long), "{layout}: {out}");
+        let row = out.lines().find(|l| l.contains("needle")).unwrap();
+        assert!(
+            row.contains("…[+") && row.contains("[…+"),
+            "{layout}: {out}"
+        );
+        assert!(row.chars().count() <= 50, "{layout}: {row}");
+    }
+}

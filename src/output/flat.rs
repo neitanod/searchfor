@@ -223,17 +223,12 @@ pub fn render(
                     )?;
                 }
                 w.write_all(b"\n")?;
+                // Each line as any other: whole, as Fragments, or -M's message (spec §6.3).
+                let no_prefix = |_: &mut dyn WriteColor| Ok(());
                 for (n, line) in super::section_lines(src, start, end) {
-                    let raw = text::strip_terminator(line);
-                    let (t, map) = text::lossy_with_map(raw);
-                    let subs: Vec<(usize, usize)> = kept
-                        .get(&n)
-                        .into_iter()
-                        .flatten()
-                        .map(|&(s, e)| (map[s.min(raw.len())], map[e.min(raw.len())]))
-                        .collect();
-                    style::write_highlighted(w, &t, &subs)?;
-                    w.write_all(b"\n")?;
+                    let subs = kept.get(&n);
+                    let s = subs.map_or(&[][..], |v| v.as_slice());
+                    super::write_line(w, &no_prefix, line, s, subs.is_some(), o.width, o)?;
                 }
                 w.write_all(b"\n")?;
             }
