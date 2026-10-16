@@ -55,8 +55,8 @@ The ordered list of **Segments** leading from the root of a file down to a **Mat
 _Avoid_: breadcrumb, path, context, scope
 
 **Segment**:
-One step of a **Trail**: a heading, a function, a key, a section of a binary, or a member of
-a **Container**.
+One step of a **Trail**: a heading, a function, a key, a section of a binary, or a page,
+sheet or table of a document read by an **Extractor**.
 _Avoid_: crumb, node, level
 
 **Section**:
@@ -64,13 +64,10 @@ The span of a file covered by a **Segment**, from where it opens to where it end
 of a table column Segment (`column`) is its whole table.
 _Avoid_: block, region
 
-**Container**:
-A **Format** whose content is a set of other files, such as zip, docx, epub, jar or tar.gz.
-_Avoid_: archive, bundle
-
-**Member**:
-A file inside a **Container**, searched and described as if it were a file on disk.
-_Avoid_: entry, inner file
+**Extractor**:
+A built-in component, enabled with `--docs`, that turns a document ripgrep cannot read (PDF,
+Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB, SQLite) into searchable text plus its structure.
+_Avoid_: converter, preprocessor (ripgrep's `--pre` is the external variant)
 
 ## Relationships
 
@@ -80,8 +77,8 @@ _Avoid_: entry, inner file
 - A **Trail** is made of zero or more **Segments**; an empty Trail means the Match sits at the
   top level of its file
 - Every **Segment** delimits one **Section**
-- A **Container** holds **Members**, and each Member gets its own **Format**; the Member is a
-  **Segment** of the Trail
+- An **Extractor** gives the text it extracts a **Trail** of its own (page, sheet, slide,
+  table, row, column)
 - A **Fragment** shows one or more **Matches** from the same line
 
 ## Example dialogue
@@ -95,10 +92,10 @@ _Avoid_: entry, inner file
 > **Domain expert:** "The **Section** of the last **Segment** in the Trail: the whole bash
 > block, not the whole Install chapter."
 >
-> **Dev:** "If a Markdown file is inside a zip, which **Processor** runs?"
-> **Domain expert:** "The **Container**'s Processor opens the zip, the **Detector** gives
-> the **Member** the Markdown **Format**, and the Markdown Processor builds the rest of the
-> Trail: `docs.zip › guide.md › Install › Linux`."
+> **Dev:** "And a match inside a PDF?"
+> **Domain expert:** "Only with `--docs`: the PDF **Extractor** turns it into text and gives
+> each line a **Trail** like `page 42 › Chapter 3`; without `--docs`, searchfor treats the PDF
+> as ripgrep does."
 
 ## Flagged ambiguities
 
