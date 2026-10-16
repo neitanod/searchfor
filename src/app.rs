@@ -119,10 +119,6 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         return Ok(2);
     }
     let pats = args.patterns()?;
-    if pats.patterns.is_empty() {
-        return Ok(1);
-    }
-    let matcher = search::matcher(args, &pats.patterns)?;
     let (paths, implicit_stdin, implicit_cwd) = if !pats.paths.is_empty() {
         (pats.paths, false, false)
     } else if !pats.stdin_used && grep_cli::is_readable_stdin() {
@@ -130,6 +126,18 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     } else {
         (vec![PathBuf::from(".")], false, true)
     };
+    // Nothing can match: ripgrep 14.1.1 searches nothing and exits 1, in every mode and without
+    // a JSON summary, once its file types and globs are valid (an unknown type is still an
+    // error); the patterns are not compiled. We validate our Formats as well.
+    if pats.patterns.is_empty() || args.max_count == Some(0) {
+        search::walker(args, &paths, &std::env::current_dir()?)?;
+        if !args.formats.is_empty() {
+            let registry = load_registry(&msgs, formats::user_formats_dir().as_deref());
+            Detector::new(&registry, &args.formats)?;
+        }
+        return Ok(1);
+    }
+    let matcher = search::matcher(args, &pats.patterns)?;
     let one_file = paths.len() == 1 && (paths[0] == Path::new("-") || !paths[0].is_dir());
     let with_filename = if args.with_filename {
         true

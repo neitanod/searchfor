@@ -129,6 +129,18 @@ fn passthrough_equals_ripgrep() {
         vec!["-q", "needle", "misc/utf16.md"],
         vec!["-l", "-c", "needle"],
         vec!["-c", "-l", "needle"],
+        // Code review r1, Codex #2 and #12: -m0 and an empty pattern file search nothing and
+        // exit 1, after validating what rg validates.
+        vec!["-m0", "--files-without-match", "needle", "md/guide.md"],
+        vec!["-m0", "needle", "missing.md"],
+        vec!["-m0", "--json", "needle", "md"],
+        vec!["-m0", "-c", "needle", "md"],
+        vec!["-m0", "("],
+        vec!["-m0", "-tunknown", "needle"],
+        vec!["-m0", "-g", "[", "needle"],
+        vec!["-f", &empty, "-tunknown", "md"],
+        vec!["-f", &empty, "-g", "[", "md"],
+        vec!["-f", &empty, "--json", "md"],
     ];
     for c in &cases {
         passthrough(&fx, &mut r, c, n);

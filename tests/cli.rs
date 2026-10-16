@@ -508,3 +508,42 @@ fn t23_max_count_on_stdin_stops_before_eof() {
         assert!(stdout(&o).contains("needle"), "{args:?}: {}", stdout(&o));
     }
 }
+
+/// Code review r1, Codex #2 and #12: -m0 and an empty pattern file exit 1 without printing in
+/// every layout, after validating the file types and globs.
+#[test]
+fn t24_max_count_zero_and_no_patterns_search_nothing() {
+    let fx = Fixture::new();
+    let empty = fx.file("empty-patterns");
+    std::fs::write(&empty, "").unwrap();
+    let empty = empty.to_str().unwrap();
+    for args in [
+        &["-m0", "--flat", "needle", "md"][..],
+        &["-m0", "--tree", "needle", "md"],
+        &["-m0", "--json", "needle", "md"],
+        &["-m0", "--within", "linux", "needle", "md"],
+        &[
+            "-m0",
+            "--files-without-match",
+            "--within",
+            "x",
+            "needle",
+            "md",
+        ],
+        &["-m0", "needle", "missing.md"],
+        &["-f", empty, "--json", "md"],
+    ] {
+        let o = run(&mut fx.sfor(args));
+        assert_eq!((code(&o), stdout(&o).as_str()), (1, ""), "{args:?}");
+    }
+    for args in [
+        &["-m0", "-tunknown", "needle", "md"][..],
+        &["-f", empty, "-tunknown", "md"],
+        &["-f", empty, "-g", "[", "md"],
+        &["-m0", "--format", "nope", "needle", "md"],
+    ] {
+        let o = run(&mut fx.sfor(args));
+        assert_eq!(code(&o), 2, "{args:?}");
+        assert!(!stderr(&o).is_empty(), "{args:?}");
+    }
+}
