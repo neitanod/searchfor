@@ -93,10 +93,15 @@ Decisions 7, 8, 10, 12, 18 belong to M2–M5.
 2. **Detector before search.** The Detector reads the start of the Source. In M1 its result only
    decides which Processor runs; from M4 on, a Format may also change the search policy
    (search object files whole, open Containers).
-3. **Binary policy as ripgrep.** Files named on the command line are searched with
-   `BinaryDetection::convert(b'\0')`, files found by walking with `quit(b'\0')`, and `-a` uses
-   `none()`. When the search reports a binary offset for an explicit file, the printers print
-   ripgrep's message `binary file matches (found "\0" byte around offset N)` for that file.
+3. **Binary policy as ripgrep.** Files named on the command line and stdin are searched with
+   `BinaryDetection::convert(b'\0')` (also every file under `--binary` and `-uuu`), files found
+   by walking with `quit(b'\0')`, and `-a` uses `none()`. `CollectSink` records, in
+   `Sink::binary_data`, how many items it had when the NUL was found (`binary_cut`). Tree and
+   flat print the items before the cut and then ripgrep's message: `binary file matches (found
+   "\0" byte around offset N)` for convert, `WARNING: stopped searching binary file after
+   match (found "\0" byte around offset N)` for quit (only when something was printed before),
+   preceded by `path: ` when file names are shown (grep-printer `standard.rs:823-838`,
+   `1395-1420`). JSON and the summary modes use every item, as ripgrep.
 4. **Our own Sink.** `search::CollectSink` implements `grep_searcher::Sink`. For each matching
    line it records the line, its absolute offset, its line number and its submatches (found with
    `matcher.find_iter` on the line, none for `-v`); for each context line, the line; and per file
@@ -177,7 +182,7 @@ scripts/bench.sh
 | C7 | Printers | C1, C6 | `src/output/{mod,style,tree,flat,json,summary}.rs` | 3 |
 | C8 | Filters | C1 | `src/filter.rs` | 3 |
 | C9 | Pipeline, end-to-end and compat tests, benchmark | C2–C8 | `src/app.rs`, `tests/cli.rs`, `tests/rg_compat.rs`, `scripts/bench.sh` | 4 |
-| C10 | Docs, JSON schema, skill | C9 | `README.md`, `README.es.md`, `docs/json-schema.json`, `skills/searchfor/SKILL.md` | 5 |
+| C10 | Docs, JSON schema, skill, spec and glossary updates | C9 | `README.md`, `README.es.md`, `docs/json-schema.json`, `skills/searchfor/SKILL.md`, `docs/specs/2026-10-16-searchfor-design.md`, `CONTEXT.md`, `tests/cli.rs` (one `#[ignore]`) | 5 |
 
 C1 writes every `mod` declaration, every dependency and an empty stub for every module file, so
 later chunks only fill their own files. A chunk uses another chunk's API only through the
@@ -376,6 +381,8 @@ pub struct FileStats {
     pub matched_lines: u64,
     pub matches: u64,
     pub binary_offset: Option<u64>,
+    /// Items recorded before the binary data was detected (design note 3).
+    pub binary_cut: Option<usize>,
     pub elapsed: Duration,
 }
 
@@ -811,9 +818,18 @@ looser pattern picks up. Then collect the negations ripgrep documents in prose:
 rg --help | grep -o -- '--no-[a-z0-9-]*' | sort -u
 ```
 
-and add every negation that is not already an entry. Dedup by long name. Report both counts in
-the chunk report (a review measured 105 unique entries; the spec's «111» was an over-count,
-and C10 corrects the spec with the number this chunk reports).
+and the negations ripgrep writes without `no-`:
+
+```bash
+rg --help | grep -o 'disabled with --[a-z0-9-]*' | sed 's/disabled with //' | sort -u
+```
+
+(a review counted 12: `--ignore`, `--ignore-dot`, `--ignore-exclude`, `--ignore-files`,
+`--ignore-global`, `--ignore-messages`, `--ignore-parent`, `--ignore-vcs`, `--messages`,
+`--pcre2-unicode`, `--require-git`, `--unicode`). Add every negation that is not already an
+entry, with no value and the status of the flag it negates. Dedup by long name. Report both counts in
+the chunk report (a review measured 104 entries, 30 `--no-` negations and 12 negations without `no-`, 146 names
+in all; the spec's «111» was an over-count, and C10 corrects it with this chunk's numbers).
 
 ```rust
 //! ripgrep's flags, their arity, and whether searchfor implements them yet (spec §8).
@@ -866,7 +882,7 @@ mod tests {
             eprintln!("skipping: reference rg 14.1.1 not found");
             return None;
         }
-        let h = std::process::Command::new("rg").arg("--help").output().ok()?;
+        let h = std::process::Command::new("rg").arg("--help").env_remove("RIPGREP_CONFIG_PATH").output().ok()?;
         Some(String::from_utf8_lossy(&h.stdout).into_owned())
     }
 
@@ -889,6 +905,9 @@ mod tests {
         }
         for neg in regex_lite::Regex::new(r"--no-[a-z0-9-]+").unwrap().find_iter(&help) {
             assert!(by_long(&neg.as_str()[2..]).is_some(), "{} missing", neg.as_str());
+        }
+        for c in regex_lite::Regex::new(r"disabled with --([a-z0-9-]+)").unwrap().captures_iter(&help) {
+            assert!(by_long(&c[1]).is_some(), "--{} missing", &c[1]);
         }
     }
 
@@ -922,7 +941,7 @@ one on the command line wins, as in ripgrep.
 //! Command line: ripgrep-compatible flags plus searchfor's own (spec §8).
 pub mod rg_flags;
 
-use clap::{parser::ValueSource, Arg, ArgAction, ArgMatches, CommandFactory, FromArgMatches, Parser, ValueEnum};
+use clap::{parser::ValueSource, Arg, ArgAction, CommandFactory, FromArgMatches, Parser, ValueEnum};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -934,10 +953,6 @@ pub enum Case { Sensitive, Insensitive, Smart }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryMode { Quit, Binary, Text }
-
-/// One `-g` or `--iglob`, in command-line order.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GlobSpec { pub glob: String, pub case_insensitive: bool }
 
 #[derive(Debug, Parser)]
 #[command(name = "sfor", version, about = "ripgrep-compatible search that shows where each match lives",
@@ -999,7 +1014,8 @@ pub struct Args {
     #[arg(long, overrides_with_all = ["no_binary", "text"])] pub binary: bool,
     #[arg(long, hide = true, overrides_with = "binary")] pub no_binary: bool,
     #[arg(short = 'q', long)] pub quiet: bool,
-    #[arg(long)] pub no_messages: bool,
+    #[arg(long, overrides_with = "messages")] pub no_messages: bool,
+    #[arg(long, hide = true, overrides_with = "no_messages")] pub messages: bool,
 
     // searchfor's own flags (spec §8)
     /// Keep Matches whose Trail contains these Segment names, in order ("A › B", "A > B", "A/B").
@@ -1019,8 +1035,6 @@ pub struct Args {
     #[arg(long)] pub list_formats: bool,
     #[arg(long, value_name = "DIR")] pub export_formats: Option<PathBuf>,
 
-    /// Filled by `parse` from clap's indices: -g and --iglob in command-line order.
-    #[arg(skip)] pub glob_specs: Vec<GlobSpec>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1058,8 +1072,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
             return Err(CliError::NotYet(f.long.to_string()));
         }
     }
-    let mut a = Args::from_arg_matches(&m)?;
-    a.glob_specs = glob_specs(&m);
+    let a = Args::from_arg_matches(&m)?;
     if let Some(s) = &a.sort {
         if s != "path" && s != "none" { return Err(CliError::NotYet(format!("sort={s}"))); }
     }
@@ -1074,17 +1087,6 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
     Ok(a)
 }
 
-fn glob_specs(m: &ArgMatches) -> Vec<GlobSpec> {
-    let mut v: Vec<(usize, GlobSpec)> = Vec::new();
-    for (id, ci) in [("globs", false), ("iglobs", true)] {
-        if let (Some(vals), Some(idx)) = (m.get_many::<String>(id), m.indices_of(id)) {
-            v.extend(idx.zip(vals).map(|(i, g)| (i, GlobSpec { glob: g.clone(), case_insensitive: ci })));
-        }
-    }
-    v.sort_by_key(|(i, _)| *i);
-    v.into_iter().map(|(_, g)| g).collect()
-}
-
 /// Where the patterns come from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Patterns {
@@ -1096,7 +1098,9 @@ pub struct Patterns {
 
 impl Args {
     /// ripgrep's precedence: with -e or -f, the positional is a path. `-f -` reads stdin.
-    /// An empty pattern file is an empty pattern set, which matches nothing (everything with -v).
+    /// An empty pattern file is an empty pattern set: ripgrep 14.1.1 then searches nothing and
+    /// exits 1 in every mode, `-v`, `-c` and `--json` included (no summary either); C9 does the
+    /// same before walking.
     pub fn patterns(&self) -> std::io::Result<Patterns> {
         let mut paths = self.paths.clone();
         let mut patterns = self.regexp.clone();
@@ -1207,15 +1211,6 @@ mod tests {
         assert_eq!(p(&["sfor", "-uuu", "x"]).binary_mode(false), BinaryMode::Binary);
         assert_eq!(p(&["sfor", "-a", "x"]).binary_mode(false), BinaryMode::Text);
         assert_eq!(p(&["sfor", "-a", "--binary", "x"]).binary_mode(false), BinaryMode::Binary);
-    }
-
-    #[test]
-    fn globs_keep_command_line_order() {
-        let a = p(&["sfor", "--iglob", "*.MD", "-g", "!skip.md", "x"]);
-        assert_eq!(a.glob_specs, vec![
-            GlobSpec { glob: "*.MD".into(), case_insensitive: true },
-            GlobSpec { glob: "!skip.md".into(), case_insensitive: false },
-        ]);
     }
 
     #[test]
@@ -2269,7 +2264,8 @@ impl Source {
 Fixtures (generate them with a small script in the chunk and commit the bytes):
 `misc/bom.md` = UTF-8 BOM + `# T\nneedle\n`; `misc/utf16.md` = UTF-16LE with BOM of
 `# T\nneedle\n`; `misc/bin.dat` = `needle first\nmore\0binary needle\n`;
-`misc/invalid.txt` = `caf\xe9 needle\n`; `misc/crlf.txt` = `a\r\nb\n`; `misc/noeol.txt` = `a`
+`misc/invalid.txt` = `caf\xe9 needle\n`; `misc/late-nul.txt` = `needle early\n`, then
+70 000 bytes of `x` lines, then `\0needle late\n` (a NUL after the first 64 KiB); `misc/crlf.txt` = `a\r\nb\n`; `misc/noeol.txt` = `a`
 (no newline); `misc/min.json` = one line of 20 000 characters with `needle` at offsets 1000,
 1050 and 15000 (used by C9).
 
@@ -2295,9 +2291,6 @@ use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContex
 use ignore::{overrides::OverrideBuilder, types::TypesBuilder, WalkBuilder};
 use std::path::{Path, PathBuf};
 
-/// An empty pattern set matches nothing (and everything with -v), as ripgrep does.
-const NEVER: &str = r"\b\B";
-
 pub fn matcher(args: &Args, patterns: &[String]) -> Result<RegexMatcher> {
     let mut b = RegexMatcherBuilder::new();
     match args.case() {
@@ -2309,11 +2302,8 @@ pub fn matcher(args: &Args, patterns: &[String]) -> Result<RegexMatcher> {
         .whole_line(args.line_regexp)
         .fixed_strings(args.fixed_strings && !args.no_fixed_strings)
         .line_terminator(Some(b'\n'));
-    if patterns.is_empty() {
-        Ok(b.fixed_strings(false).build_many(&[NEVER])?)
-    } else {
-        Ok(b.build_many(patterns)?)
-    }
+    // An empty pattern set never reaches here: C9 exits 1 before searching.
+    Ok(b.build_many(patterns)?)
 }
 
 /// `explicit`: the file was named on the command line, or is stdin (design note 3).
@@ -2347,10 +2337,13 @@ pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder>
         .max_depth(args.max_depth)
         .skip_stdout(true);
     if !no_ignore { w.add_custom_ignore_filename(".rgignore"); }
+    // As ripgrep 14.1.1: every -g first, then every --iglob (case-insensitive); the relative
+    // order of the two kinds on the command line does not matter (measured in review r2).
     let mut ob = OverrideBuilder::new(cwd);
-    for g in &args.glob_specs {
-        ob.case_insensitive(g.case_insensitive)?;
-        ob.add(&g.glob)?;
+    for g in &args.globs { ob.add(g)?; }
+    if !args.iglobs.is_empty() {
+        ob.case_insensitive(true)?;
+        for g in &args.iglobs { ob.add(g)?; }
     }
     w.overrides(ob.build()?);
     let mut tb = TypesBuilder::new();
@@ -2364,10 +2357,7 @@ pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder>
 }
 ```
 
-Verify against ripgrep 14.1.1 (`ripgrep/crates/core`, not on disk: compare behaviour instead)
-that a case-insensitive `--iglob` added after `-g` does not change the earlier `-g`: the
-`case_insensitive` doc of `OverrideBuilder` (`overrides.rs:148-153`) says it affects globs added
-after the call. Also verify that `\b\B` never matches with grep-regex (a test below).
+
 
 ### Task 3.3: CollectSink — the model and the stats
 
@@ -2426,6 +2416,11 @@ impl Sink for CollectSink<'_> {
             bytes,
             submatches: subs,
         }));
+        Ok(true)
+    }
+
+    fn binary_data(&mut self, _s: &Searcher, _offset: u64) -> Result<bool, Self::Error> {
+        self.stats.binary_cut.get_or_insert(self.items.len());
         Ok(true)
     }
 
@@ -2545,14 +2540,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_pattern_set_matches_nothing_and_everything_inverted() {
-        let src = Source::from_bytes("a".into(), b"a\nb\n".to_vec(), false);
-        assert!(run(&args(&["sfor", "x"]), &[], &src).is_none());
-        let fm = run(&args(&["sfor", "-v", "x"]), &[], &src).unwrap();
-        assert_eq!(fm.matches().count(), 2);
-    }
-
-    #[test]
     fn inverted_context_lines_carry_submatches() {
         let src = Source::from_bytes("a".into(), b"keep\nneedle\n".to_vec(), false);
         let fm = run(&args(&["sfor", "-v", "-C1", "x"]), &["needle"], &src).unwrap();
@@ -2585,6 +2572,17 @@ mod tests {
         std::fs::write(d.path().join(".gitignore"), "skip.md\n").unwrap();
         for n in ["keep.md", "skip.md", "other.txt"] { std::fs::write(d.path().join(n), "x").unwrap(); }
         assert_eq!(walk_names(&args(&["sfor", "-g", "*.md", "x"]), &[d.path().into()], d.path()), ["keep.md", "skip.md"]);
+    }
+
+    #[test]
+    fn iglobs_go_after_globs_whatever_the_order() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join(".git")).unwrap();
+        std::fs::write(d.path().join(".gitignore"), "skip.md\n").unwrap();
+        for n in ["keep.md", "skip.md"] { std::fs::write(d.path().join(n), "x").unwrap(); }
+        for argv in [&["sfor", "--iglob", "*.MD", "-g", "!skip.md", "x"][..], &["sfor", "-g", "!skip.md", "--iglob", "*.MD", "x"]] {
+            assert_eq!(walk_names(&args(argv), &[d.path().into()], d.path()), ["keep.md", "skip.md"], "{argv:?}");
+        }
     }
 
     #[test]
@@ -2740,9 +2738,8 @@ Spec §6.1. Layout, two spaces of indentation per depth:
   once, under the Trail of the first submatch that has it, in file order: the Section's lines
   from `src` (lines with kept Matches with `:` and highlighted, the rest with `-`). A Match
   whose Sections were all printed already prints nothing more.
-- An explicit binary file (`d.file.stats.binary_offset` is Some and `d.file.explicit`) prints
-  `<path>` and, indented, `binary file matches (found "\0" byte around offset N)` instead of
-  lines, as ripgrep prints for that file.
+- Binary files (design note 3): the items before `binary_cut`, then the binary message at
+  depth 0 under the path.
 - A blank line between files (C9 writes it between buffers).
 
 **Tests first** (snapshots, hand-built `Described` values): two Matches under `# A › ## B`;
@@ -2765,13 +2762,15 @@ output line per distinct Trail of a Match line, as in the tree. Fragments: one o
 Fragment, same prefix; the space left for the text is `o.width.saturating_sub(prefix width)`.
 `--expand`: for every distinct Section (per submatch, as in the tree), a header line
 `path:start-end: Trail`, the Section's lines verbatim (Matches highlighted), then an empty
-line. A Trail longer than
-`o.width / 2` characters keeps its first and last Segments and puts `…` in between. Binary
-message: `path: binary file matches (found "\0" byte around offset N)` (without `path: ` under
-`-I`), as ripgrep prints it.
+line. When the whole line
+(prefix + Trail + ` │ ` + text) is wider than `o.width`, the Trail is shortened first by
+replacing `item` Segments with `…` (spec §5.1), then, if still too wide, by keeping its first
+and last Segments with `…` in between; the text then becomes Fragments as needed. Binary
+files (design note 3): the items before `binary_cut`, then the message with `path: ` in front
+when file names are shown.
 
 **Tests first** (snapshots): plain Match; no Trail; `-I -N`; context with `--`; Fragment; two
-Trails on one line; elided long Trail; `--expand`; binary message; a prefix wider than
+Trails on one line; elided long Trail (items collapse first, then the middle); `--expand`; binary message; a prefix wider than
 `o.width` does not panic.
 
 ### Task 7.5: json.rs — ripgrep's JSON Lines from the model
@@ -2927,7 +2926,8 @@ pub fn run(args: Vec<OsString>) -> i32
    &|p| processors::by_name(p).is_some())`; warnings to stderr unless `--no-messages`.
 3. Actions: `--list-formats`, `--export-formats DIR` (prints written paths; 2 on error),
    `--type-list` (ripgrep's format: `name: glob, glob`, sorted). Each returns.
-4. `args.patterns()`. No pattern and no `-e`/`-f` → usage error, 2. Paths: none and stdin is not
+4. `args.patterns()`. No pattern and no `-e`/`-f` → usage error, 2. An empty pattern set (only
+   empty `-f` files) → no output, exit 1, before walking, in every mode. Paths: none and stdin is not
    a terminal and not used by `-f -` → stdin (`Source::from_bytes("<stdin>")`); none otherwise
    → `.`. A path `-` → stdin. Paths named on the command line are `explicit`.
 5. **Passthrough** (design note 9): `--no-trail`, or a summary flag without structural flags →
@@ -2935,7 +2935,9 @@ pub fn run(args: Vec<OsString>) -> i32
    stdout is a TTY (overridden by `-n`/`-N`; always for JSON unless `-N`), headings when stdout
    is a TTY, file names when more than one path is given or any path is a directory (overridden
    by `-H`/`-I`), colour from `--color` (auto = TTY), `max_columns`, binary policy per file, the
-   searcher's `line_number` set to the printer's setting. Walk, search, print, exit.
+   searcher's `line_number` set to the printer's setting. Walk, search, print, exit. With
+   `--json --no-trail`, the run's `summary` line is written at the end from the accumulated
+   `JSONSink::stats()` of files with Matches, through `json::summary`.
 6. **Trail mode.** Layout: `--json` → Json; `--tree` → Tree; `--flat` → Flat; else Tree on a
    TTY, Flat otherwise. Width: terminal width on a TTY (`terminal_size`), `--fragment-width`
    otherwise and always for Json. Detector built with `args.formats`.
@@ -3027,18 +3029,24 @@ stdout and exit code byte for byte:
 `-A2 -B1 needle`, `-c needle`, `--count-matches needle`, `-l needle`,
 `--files-without-match needle`, `-m1 needle`, `-n needle`, `-N needle`, `-H needle md/guide.md`,
 `-I needle`, `-g '*.md' needle`, `-g 'md/*.md' needle md`, `--iglob '*.MD' needle`,
+`--iglob '*.MD' -g '!guide.md' needle` and the same with the two flags swapped,
 `-t markdown needle`, `--hidden needle`, `-M 40 needle`, `absent` (exit 1),
 `-e needle -e intro`, `-e --pcre2` (searching for that text), `-f <empty file>` (exit 1),
-`-v -f <empty file> md/guide.md` (every line), `binary misc/bin.dat` (explicit binary),
+`-v -f <empty file> md/guide.md`, `-c -v -f <empty file> md/guide.md` and
+`--json -v -f <empty file> md/guide.md` (no output at all, exit 1), `binary misc/bin.dat` (explicit binary),
 `binary misc` (walked binary: nothing, exit 1), `needle -` with stdin from `md/guide.md`,
 `binary` with stdin from `misc/bin.dat` (implicit stdin) and `binary -` (explicit),
-`-uuu binary misc` and `-a binary misc/bin.dat` (binary vs text modes), `--json -c needle`
+`-uuu binary misc` and `-a binary misc/bin.dat` (binary vs text modes), `needle
+misc/late-nul.txt` (explicit, NUL after 64 KiB: early Match then message) and `needle misc`
+(walked: early Match then the WARNING line), compared also in sfor's `--flat` layout for the
+message lines, `--json -c needle`
 and `-c --json needle`, `-l -c needle` and `-c -l needle` (last mode wins).
 
 Ordering: cases that walk a directory get `--sort path` on both sides. Then JSON: for
 `--json needle`, `--json -C1 needle`, `--json -N needle`, `--json '\r' misc/crlf.txt`,
 `--json '$' misc/crlf.txt` (fixture `a\r\nb\n`), `--json '$' misc/noeol.txt` (fixture `a`,
-no newline) and `--json binary` with stdin from `misc/bin.dat`, `sfor --json --no-trail` equals
+no newline), `--json -v needle md/guide.md`, `--json -v -C1 needle md/guide.md` and
+`--json binary` with stdin from `misc/bin.dat`, `sfor --json --no-trail` equals
 `rg --json` byte for byte except the `elapsed` and `elapsed_total` objects (replaced by
 placeholders on both sides); and `sfor --json` (trail mode) equals it too after also removing
 our added keys (`format`, `trail`, `fragment`, `section`, `submatches[].trail`) and the
