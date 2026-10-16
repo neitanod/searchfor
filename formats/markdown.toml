@@ -1,0 +1,12 @@
+# Markdown: headings, fenced code blocks, table columns, frontmatter title, list items.
+name       = "markdown"
+extensions = ["md", "markdown", "mdx", "mkd", "mdown"]
+names      = []
+shebangs   = []
+processor  = "markdown"
+
+[params]
+# Parent list items as Segments (grill #11).
+list_items = true
+# Characters of an item's first line used as its name.
+item_name_chars = 40
