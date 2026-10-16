@@ -153,8 +153,6 @@ imprime los mismos mensajes que `rg --json`, salvo los tiempos.
 
 Diferencias conocidas con ripgrep 14.1.1:
 
-- `--type-list` y `-t/-T` usan los tipos de archivo del crate `ignore` 0.4.33, que conoce 18
-  tipos más que ripgrep 14.1.1 y tiene globs extra en 9 de los existentes.
 - En la salida `--json`, las `stats` de los mensajes `end` y `summary` cuentan los resultados
   que encontró la búsqueda, antes de que `--within` e `--in-headings` los filtren.
 

@@ -405,3 +405,73 @@ fn max_columns_in_the_flat_layout() {
         }
     }
 }
+
+/// rg 14.1.1 run with `args` and `RIPGREP_CONFIG_PATH` unset, as the reference.
+fn reference(args: &[&str]) -> Output {
+    run(Command::new("rg")
+        .args(args)
+        .env_remove("RIPGREP_CONFIG_PATH")
+        .stdin(Stdio::null()))
+}
+
+#[test]
+fn type_list_equals_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let want = reference(&["--type-list"]);
+    let got = run(&mut fx.sfor(["--type-list"]));
+    assert_eq!((code(&got), stdout(&got)), (code(&want), stdout(&want)));
+}
+
+#[test]
+fn type_selection_equals_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    // `*.env` is `sh` in the ignore crate's table and nothing in rg 14.1.1's.
+    for (f, body) in [
+        ("types/run.sh", "needle sh\n"),
+        ("types/.zshrc", "needle zshrc\n"),
+        ("types/prod.env", "needle env\n"),
+        ("types/notes.md", "needle md\n"),
+        ("types/PKGBUILD", "needle pkgbuild\n"),
+    ] {
+        let p = fx.file(f);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    }
+    let mut r = Report(Vec::new());
+    for args in [
+        vec!["-t", "sh", "needle", "types"],
+        vec!["--hidden", "-t", "sh", "needle", "types"],
+        vec!["-T", "md", "needle", "types"],
+        vec!["--hidden", "-T", "md", "needle", "types"],
+        // A type the ignore crate knows and rg 14.1.1 does not: an error in both.
+        vec!["-t", "pkgbuild", "needle", "types"],
+    ] {
+        passthrough(&fx, &mut r, &args, In::Null);
+        // Trail mode walks the same files.
+        let mut a = vec!["--sort", "path"];
+        a.extend_from_slice(&args);
+        let want = rg(&fx, &a, In::Null);
+        a.push("--flat");
+        let got = sfor(&fx, &a, In::Null);
+        let files = |o: &Output| {
+            let mut v: Vec<String> = stdout(o)
+                .lines()
+                .map(|l| l.split(':').next().unwrap().to_string())
+                .collect();
+            v.dedup();
+            v
+        };
+        r.check(
+            format!("files of {args:?}"),
+            (code(&want), files(&want).join("\n")),
+            (code(&got), files(&got).join("\n")),
+        );
+    }
+    r.assert_empty();
+}

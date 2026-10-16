@@ -128,8 +128,7 @@ pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder>
         }
     }
     w.overrides(ob.build()?);
-    let mut tb = TypesBuilder::new();
-    tb.add_defaults();
+    let mut tb = rg_types()?;
     for t in &args.types {
         tb.select(t);
     }
@@ -144,6 +143,24 @@ pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder>
         w.threads(j);
     }
     Ok(w)
+}
+
+/// ripgrep 14.1.1's file types, as `rg --type-list` prints them: `name: glob, glob`.
+pub const RG_TYPES: &str = include_str!("rg_types.txt");
+
+/// A `TypesBuilder` with ripgrep 14.1.1's file types, which differ from the ignore crate's
+/// defaults.
+pub fn rg_types() -> anyhow::Result<TypesBuilder> {
+    let mut tb = TypesBuilder::new();
+    for line in RG_TYPES.lines() {
+        let (name, globs) = line
+            .split_once(": ")
+            .ok_or_else(|| anyhow::anyhow!("bad file type line: {line}"))?;
+        for g in globs.split(", ") {
+            tb.add(name, g)?;
+        }
+    }
+    Ok(tb)
 }
 
 /// Builds the model of one file (design note 4) and its stats.
@@ -301,6 +318,23 @@ mod tests {
 
     fn args(v: &[&str]) -> Args {
         parse(v.iter().map(OsString::from).collect()).unwrap()
+    }
+
+    #[test]
+    fn file_types_are_ripgreps() {
+        let tb = rg_types().unwrap();
+        let defs = tb.definitions();
+        assert_eq!(defs.len(), RG_TYPES.lines().count());
+        assert_eq!(defs.len(), 206);
+        // The ignore crate has `*.env` in `sh` and a `pkgbuild` type; rg 14.1.1 has neither.
+        let sh = defs.iter().find(|d| d.name() == "sh").unwrap();
+        assert!(!sh.globs().iter().any(|g| g == "*.env" || g == ".env"));
+        assert!(defs.iter().all(|d| d.name() != "pkgbuild"));
+        let printed: String = defs
+            .iter()
+            .map(|d| format!("{}: {}\n", d.name(), d.globs().join(", ")))
+            .collect();
+        assert_eq!(printed, RG_TYPES);
     }
     fn fixture(p: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -107,12 +107,9 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         });
     }
     if args.type_list {
-        let mut tb = ignore::types::TypesBuilder::new();
-        tb.add_defaults();
-        let mut out = std::io::stdout().lock();
-        for def in tb.definitions() {
-            writeln!(out, "{}: {}", def.name(), def.globs().join(", "))?;
-        }
+        std::io::stdout()
+            .lock()
+            .write_all(search::RG_TYPES.as_bytes())?;
         return Ok(0);
     }
 

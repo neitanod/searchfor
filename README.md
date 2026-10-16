@@ -144,8 +144,6 @@ prints the same messages as `rg --json`, timings aside.
 
 Known differences with ripgrep 14.1.1:
 
-- `--type-list` and `-t/-T` use the file types of the `ignore` crate 0.4.33, which knows 18
-  more types than ripgrep 14.1.1 and has extra globs in 9 of the existing ones.
 - In `--json` output, the `stats` of the `end` and `summary` messages count the matches found
   by the search, before `--within` and `--in-headings` filter them out.
 
