@@ -544,3 +544,43 @@ fn word_and_line_regexp_override_each_other() {
     }
     r.assert_empty();
 }
+
+/// Code review r1, Codex #7: with --within, `end` and `summary` count what the search found,
+/// before the filter (spec §6.4), even when no Match survives: ripgrep's stats without it.
+#[test]
+fn within_keeps_the_search_stats_in_json() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let stats = |o: &Output, kind: &str| -> Vec<Value> {
+        stdout(o)
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|m| m["type"] == kind)
+            .map(|m| {
+                let mut s = m["data"]["stats"].clone();
+                let s = s.as_object_mut().unwrap();
+                for k in ["elapsed", "bytes_printed"] {
+                    s.remove(k);
+                }
+                Value::Object(s.clone())
+            })
+            .collect()
+    };
+    let want = rg(&fx, &["--json", "needle", "md/guide.md"], In::Null);
+    for within in ["linux", "nowhere"] {
+        let got = sfor(
+            &fx,
+            &["--json", "--within", within, "needle", "md/guide.md"],
+            In::Null,
+        );
+        assert_eq!(stats(&got, "summary"), stats(&want, "summary"), "{within}");
+        if within == "linux" {
+            assert_eq!(stats(&got, "end"), stats(&want, "end"), "{within}");
+        } else {
+            assert_eq!(code(&got), 1);
+            assert_eq!(stdout(&got).lines().count(), 1, "{}", stdout(&got));
+        }
+    }
+}

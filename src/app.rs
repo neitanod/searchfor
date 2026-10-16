@@ -593,6 +593,10 @@ impl Ctx<'_> {
         }
         let Some((src, d)) = found else { return };
         if !kept {
+            // The summary counts the search's Matches, before the filters (spec §6.4).
+            if ro.layout == Layout::Json {
+                *self.stats.lock().expect("stats") += &output::json::file_stats(&d.file.stats, 0);
+            }
             return;
         }
         self.matched.store(true, Relaxed);
