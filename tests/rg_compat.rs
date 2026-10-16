@@ -463,6 +463,10 @@ fn type_selection_equals_ripgrep() {
         vec!["--hidden", "-T", "md", "needle", "types"],
         // A type the ignore crate knows and rg 14.1.1 does not: an error in both.
         vec!["-t", "pkgbuild", "needle", "types"],
+        // Code review r1, Codex #3: selections apply in command-line order.
+        vec!["-T", "md", "-t", "md", "needle", "types"],
+        vec!["-t", "md", "-T", "md", "needle", "types"],
+        vec!["-t", "sh", "-T", "sh", "-t", "md", "needle", "types"],
     ] {
         passthrough(&fx, &mut r, &args, In::Null);
         // Trail mode walks the same files.

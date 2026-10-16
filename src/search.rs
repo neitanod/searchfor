@@ -129,11 +129,13 @@ pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder>
     }
     w.overrides(ob.build()?);
     let mut tb = rg_types()?;
-    for t in &args.types {
-        tb.select(t);
-    }
-    for t in &args.types_not {
-        tb.negate(t);
+    // In command-line order, as ripgrep: the last selection of a type wins.
+    for (select, t) in &args.type_selections {
+        if *select {
+            tb.select(t);
+        } else {
+            tb.negate(t);
+        }
     }
     w.types(tb.build()?);
     if args.sort.as_deref() == Some("path") {
@@ -920,6 +922,24 @@ mod tests {
         assert_eq!(
             walk_names(&args(&["sfor", "-T", "markdown", "x"]), &root, d.path()),
             ["b.rs"]
+        );
+        // The last selection of a type wins, as in rg 14.1.1 (code review r1, Codex #3).
+        assert_eq!(
+            walk_names(
+                &args(&["sfor", "-T", "markdown", "-t", "markdown", "x"]),
+                &root,
+                d.path()
+            ),
+            [".h.md", "a.md"]
+        );
+        // A selection whitelists, even when it is negated later: nothing is left.
+        assert!(
+            walk_names(
+                &args(&["sfor", "-t", "markdown", "-T", "markdown", "x"]),
+                &root,
+                d.path()
+            )
+            .is_empty()
         );
     }
 

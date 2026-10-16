@@ -84,6 +84,10 @@ pub struct Args {
     pub types: Vec<String>,
     #[arg(short = 'T', long = "type-not", action = ArgAction::Append)]
     pub types_not: Vec<String>,
+    /// `-t` (true) and `-T` (false) in command-line order, resolved in `parse`: ripgrep applies
+    /// them in that order, so the last selection of a type wins.
+    #[arg(skip)]
+    pub type_selections: Vec<(bool, String)>,
     #[arg(long)]
     pub type_list: bool,
     #[arg(short = '.', long, overrides_with = "no_hidden")]
@@ -267,6 +271,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
     a.no_ignore_resolved = last_by_index(&m, &[("no_ignore", true), ("ignore", false)], u(0), true);
     a.hidden_resolved = last_by_index(&m, &[("hidden", true), ("no_hidden", false)], u(1), true);
     a.binary_choice = binary_choice(&m);
+    a.type_selections = type_selections(&m);
     if let Some(s) = &a.sort
         && s != "path"
         && s != "none"
@@ -338,6 +343,18 @@ fn binary_choice(m: &clap::ArgMatches) -> BinaryChoice {
         BinaryChoice::Binary,
     );
     last.map(|(_, c)| c).unwrap_or_default()
+}
+
+/// `-t` and `-T` values, each with whether it selects, sorted by their place on the command line.
+fn type_selections(m: &clap::ArgMatches) -> Vec<(bool, String)> {
+    let mut v: Vec<(usize, bool, String)> = Vec::new();
+    for (id, select) in [("types", true), ("types_not", false)] {
+        if let (Some(vals), Some(idx)) = (m.get_many::<String>(id), m.indices_of(id)) {
+            v.extend(idx.zip(vals).map(|(i, t)| (i, select, t.clone())));
+        }
+    }
+    v.sort_by_key(|e| e.0);
+    v.into_iter().map(|(_, s, t)| (s, t)).collect()
 }
 
 /// Where the patterns come from.
