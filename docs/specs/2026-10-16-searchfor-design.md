@@ -337,7 +337,7 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
 
 ## 10. Distribution (#17, #18, #20)
 
-- Public GitHub repository from the first push — **account pending, Hilo message 8359**.
+- Public repository: https://github.com/neitanod/searchfor (account chosen in 8366).
 - `dist` (formerly cargo-dist) builds GitHub Releases for Linux, macOS and Windows on x86-64
   and arm64, and publishes the Homebrew tap and the npm package from the same configuration.
 - The crate `searchfor` is published on crates.io when v0.1 works (#20).
