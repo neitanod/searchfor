@@ -27,6 +27,17 @@ fn cut(s: &str, n: usize) -> String {
     out
 }
 
+/// `content` with every byte of every invalid UTF-8 sequence replaced by `?`: one byte for one
+/// byte, so offsets into the result are offsets into `content`.
+fn replace_invalid(content: &[u8]) -> String {
+    let mut out = String::with_capacity(content.len());
+    for chunk in content.utf8_chunks() {
+        out.push_str(chunk.valid());
+        out.extend(std::iter::repeat_n('?', chunk.invalid().len()));
+    }
+    out
+}
+
 struct OpenHeading {
     seg: usize,
     text: String,
@@ -52,9 +63,8 @@ struct OpenTable {
 
 impl OutlineProcessor for Markdown {
     fn outline(&self, content: &[u8], params: &toml::Table) -> anyhow::Result<Outline> {
-        let Ok(text) = std::str::from_utf8(content) else {
-            return Ok(Outline::default());
-        };
+        let text = &replace_invalid(content);
+        let content = text.as_bytes();
         let list_items = params
             .get("list_items")
             .and_then(|v| v.as_bool())
@@ -347,9 +357,11 @@ mod tests {
     }
 
     fn names(src: &str) -> Vec<Name> {
-        Markdown
-            .names(&input(src.as_bytes()), &toml::Table::new())
-            .unwrap()
+        names_bytes(src.as_bytes())
+    }
+
+    fn names_bytes(src: &[u8]) -> Vec<Name> {
+        Markdown.names(&input(src), &toml::Table::new()).unwrap()
     }
 
     #[test]
@@ -410,18 +422,36 @@ mod tests {
     }
 
     #[test]
-    fn invalid_utf8_gives_no_trails() {
-        let src = b"# A\xff\nbody\n";
+    fn invalid_utf8_bytes_become_question_marks() {
+        // One invalid byte in the middle must not lose the Trails of the whole file: each
+        // invalid byte becomes `?`, so offsets stay put.
+        let src = b"# Before\nneedle-one\n## Bad \xff here\nneedle-two\n# After\nneedle-three\n";
+        let at = |s: &[u8]| src.windows(s.len()).position(|w| w == s).unwrap();
         let t = Markdown
-            .trails(&input(src), &toml::Table::new(), &[0, 6])
+            .trails(
+                &input(src),
+                &toml::Table::new(),
+                &[at(b"needle-one"), at(b"needle-two"), at(b"needle-three")],
+            )
             .unwrap();
-        assert_eq!(t, vec![Vec::new(), Vec::new()]);
-        assert!(
-            Markdown
-                .names(&input(src), &toml::Table::new())
-                .unwrap()
-                .is_empty()
+        let t: Vec<Vec<String>> = t.iter().map(|x| kinds(x)).collect();
+        assert_eq!(
+            t,
+            [
+                vec!["heading:Before".to_string()],
+                vec!["heading:Before".into(), "heading:Bad ? here".into()],
+                vec!["heading:After".to_string()],
+            ]
         );
+        let n = Markdown.names(&input(src), &toml::Table::new()).unwrap();
+        let texts: Vec<&str> = n.iter().map(|x| x.text.as_str()).collect();
+        assert_eq!(texts, ["Before", "Bad ? here", "After"]);
+        // The name keeps the offsets of the original bytes.
+        let bad = &n[1];
+        assert_eq!(bad.source_ranges(0..bad.text.len()), vec![at(b"Bad")..at(b"\nneedle-two")]);
+        // A truncated multi-byte sequence: one `?` per byte.
+        let n = names_bytes(b"# a\xe2\x82b\n");
+        assert_eq!(n[0].text, "a??b");
     }
 
     #[test]
