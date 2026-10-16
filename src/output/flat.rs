@@ -118,9 +118,7 @@ fn write_row(
     let space = usize::from(!head.is_empty());
     // The text keeps up to half the width for itself; the Trail gets what is left.
     let reserve = text_width.min(o.width.div_ceil(2));
-    let room = o
-        .width
-        .saturating_sub(head.width() + space + 3 + reserve);
+    let room = o.width.saturating_sub(head.width() + space + 3 + reserve);
     let trail = (!r.trail.is_empty()).then(|| fit_trail(r.trail, room));
     let used = head.width() + space + trail.as_ref().map_or(0, |t| width(t) + 3);
     let prefix = |w: &mut dyn WriteColor| -> std::io::Result<()> {
@@ -161,7 +159,11 @@ pub fn render(
                 if !trail.is_empty() {
                     let fixed = head.width() + range.len() + 1;
                     w.write_all(b" ")?;
-                    style::write_styled(w, "trail", &fit_trail(trail, o.width.saturating_sub(fixed)))?;
+                    style::write_styled(
+                        w,
+                        "trail",
+                        &fit_trail(trail, o.width.saturating_sub(fixed)),
+                    )?;
                 }
                 w.write_all(b"\n")?;
                 for (n, line) in super::section_lines(src, start, end) {
@@ -395,9 +397,19 @@ mod tests {
         let trail = vec![h(1, "A long first heading", 1, 1), h(2, "Second", 1, 1)];
         let mut d = described(&s, vec![mat(&s, 1)], vec![vec![trail]]);
         d.file.path = "a/path/that/is/long/enough/to/eat/half.md".into();
-        let out = plain(&d, &s, &RenderOptions { width: 80, ..flat() });
+        let out = plain(
+            &d,
+            &s,
+            &RenderOptions {
+                width: 80,
+                ..flat()
+            },
+        );
         let first = out.lines().next().unwrap();
-        assert!(first.starts_with("a/path/that/is/long/enough/to/eat/half.md:1: … │ "), "{first}");
+        assert!(
+            first.starts_with("a/path/that/is/long/enough/to/eat/half.md:1: … │ "),
+            "{first}"
+        );
     }
 
     #[test]

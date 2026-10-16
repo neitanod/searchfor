@@ -448,7 +448,10 @@ mod tests {
         assert_eq!(texts, ["Before", "Bad ? here", "After"]);
         // The name keeps the offsets of the original bytes.
         let bad = &n[1];
-        assert_eq!(bad.source_ranges(0..bad.text.len()), vec![at(b"Bad")..at(b"\nneedle-two")]);
+        assert_eq!(
+            bad.source_ranges(0..bad.text.len()),
+            vec![at(b"Bad")..at(b"\nneedle-two")]
+        );
         // A truncated multi-byte sequence: one `?` per byte.
         let n = names_bytes(b"# a\xe2\x82b\n");
         assert_eq!(n[0].text, "a??b");
