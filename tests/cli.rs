@@ -782,3 +782,23 @@ fn t32_tree_does_not_repeat_a_label_shown_as_a_row() {
     let out = stdout(&o);
     assert_eq!(out.matches("## B needle").count(), 1, "{out}");
 }
+
+/// Code review r1, Fable #7: the frontmatter, closing `---` and its line break included, is
+/// the document's label: Matches on it have no Trail.
+#[test]
+fn t33_the_closing_frontmatter_line_is_the_document_label() {
+    let o = sfor(&["--flat", "$", "md/guide.md"]);
+    let head: Vec<String> = stdout(&o).lines().take(4).map(str::to_string).collect();
+    assert_eq!(
+        head,
+        [
+            "1: ---",
+            "2: title: \"Deploy guide\"",
+            "3: ---",
+            "4: Deploy guide │ "
+        ]
+    );
+    let o = sfor(&["--flat", "x*", "md/guide.md"]);
+    let threes = stdout(&o).lines().filter(|l| l.starts_with("3:")).count();
+    assert_eq!(threes, 1, "{}", stdout(&o));
+}

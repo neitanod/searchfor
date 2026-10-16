@@ -89,11 +89,18 @@ impl OutlineProcessor for Markdown {
         for (ev, r) in Parser::new_ext(text, opts).into_offset_iter() {
             match ev {
                 Event::Start(Tag::MetadataBlock(MetadataBlockKind::YamlStyle)) => {
+                    // The label is the whole block, the line break after the closing `---`
+                    // included, as a heading's (code review r1, Fable #7).
+                    let end = if text[r.end..].starts_with('\n') {
+                        r.end + 1
+                    } else {
+                        r.end
+                    };
                     segs.push(OutlineSegment::new(
                         "document",
                         "",
                         0..text.len(),
-                        r.clone(),
+                        r.start..end,
                     ));
                     meta = Some(segs.len() - 1);
                 }
