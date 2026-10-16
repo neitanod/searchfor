@@ -229,12 +229,24 @@ fn json_equals_ripgrep() {
         (vec!["needle", "misc/utf16.md"], n),
         (vec!["needle"], In::File("misc/bom.md")),
         (vec!["needle"], In::File("misc/utf16.md")),
+        // Code review r1, Codex #8: `bytes_searched` when -m stops a reader search (stdin, a
+        // walked directory) and a search in memory (one explicit file).
+        (vec!["-m1", "needle"], In::File("md/guide.md")),
+        (vec!["-m1", "-C1", "needle"], In::File("md/guide.md")),
+        (vec!["-m2", "-A1", "needle", "md"], n),
+        (vec!["-m1", "-v", "needle", "md"], n),
+        (vec!["-m1", "needle", "md/guide.md"], n),
+        (vec!["-m2", "-A1", "needle", "md/guide.md"], n),
+        (vec!["-m1", "needle"], In::File("misc/utf16.md")),
     ];
     let eleven: Vec<&str> = std::iter::once("needle")
         .chain(std::iter::repeat_n("misc/bin.dat", 11))
         .collect();
+    let mut eleven_m: Vec<&str> = vec!["-m1"];
+    eleven_m.extend(&eleven);
     let mut all = cases;
     all.push((eleven, n));
+    all.push((eleven_m, n));
     for (args, input) in &all {
         let mut a = vec!["--sort", "path", "--json"];
         a.extend_from_slice(args);

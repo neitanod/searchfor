@@ -8,7 +8,7 @@ use crate::output::{
     self, Layout, RenderOptions, json::JsonOptions, json::RunStats, plain::PlainSink, summary,
 };
 use crate::processors::{self, Processor};
-use crate::search::{self, CollectSink};
+use crate::search::{self, CollectSink, MaxCountBytes};
 use crate::source::Source;
 use crate::trail::LineIndex;
 use grep_matcher::Matcher;
@@ -17,7 +17,7 @@ use grep_printer::{
     SummaryKind,
 };
 use grep_regex::RegexMatcher;
-use grep_searcher::{Searcher, Sink};
+use grep_searcher::{Searcher, Sink, SinkContext, SinkFinish, SinkMatch};
 use ignore::{DirEntry, WalkState};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -526,11 +526,25 @@ impl Ctx<'_> {
             }
             Printer::Json(p) => {
                 p.get_mut().clear();
-                let mut sink = p.sink_with_path(&self.matcher, path);
+                let mut sink = MaxCountSink {
+                    inner: p.sink_with_path(&self.matcher, path),
+                    bytes: MaxCountBytes::default(),
+                    byte_count: 0,
+                };
                 let r = self.search_raw(searcher, t, &mut sink);
-                let m = sink.has_match();
+                let m = sink.inner.has_match();
+                // A reader search: stdin, a walked file, or one with a BOM (see Source::had_bom).
+                let reader = !self.in_memory || t.fs.as_deref().is_none_or(starts_with_bom);
+                let searched = sink.bytes.bytes_searched(sink.byte_count, reader);
+                let mut stats = run_stats(sink.inner.stats());
                 if m {
-                    *self.stats.lock().expect("stats") += &run_stats(sink.stats());
+                    stats.bytes_searched = stats.bytes_searched - sink.byte_count + searched;
+                    *self.stats.lock().expect("stats") += &stats;
+                }
+                let byte_count = sink.byte_count;
+                drop(sink);
+                if searched != byte_count {
+                    patch_bytes_searched(p.get_mut(), byte_count, searched);
                 }
                 (r, m, p.get_mut())
             }
@@ -1025,6 +1039,79 @@ fn empty_trails(fm: &FileMatches) -> Vec<Vec<Trail>> {
     fm.matches()
         .map(|m| vec![Vec::new(); m.submatches.len().max(1)])
         .collect()
+}
+
+/// grep-printer 0.3.1's JSON sink with ripgrep 14.1.1's `bytes_searched` at `-m` beside it
+/// (`MaxCountBytes`): everything is forwarded, and the searcher's byte count is kept.
+struct MaxCountSink<S> {
+    inner: S,
+    bytes: MaxCountBytes,
+    byte_count: u64,
+}
+
+impl<S: Sink<Error = std::io::Error>> Sink for MaxCountSink<S> {
+    type Error = std::io::Error;
+
+    fn begin(&mut self, s: &Searcher) -> std::io::Result<bool> {
+        self.bytes = MaxCountBytes::for_searcher(s);
+        self.inner.begin(s)
+    }
+
+    fn matched(&mut self, s: &Searcher, m: &SinkMatch<'_>) -> std::io::Result<bool> {
+        self.bytes.matched(m);
+        self.inner.matched(s, m)
+    }
+
+    fn context(&mut self, s: &Searcher, c: &SinkContext<'_>) -> std::io::Result<bool> {
+        self.bytes.context(c);
+        self.inner.context(s, c)
+    }
+
+    fn context_break(&mut self, s: &Searcher) -> std::io::Result<bool> {
+        self.inner.context_break(s)
+    }
+
+    fn binary_data(&mut self, s: &Searcher, offset: u64) -> std::io::Result<bool> {
+        self.inner.binary_data(s, offset)
+    }
+
+    fn finish(&mut self, s: &Searcher, f: &SinkFinish) -> std::io::Result<()> {
+        self.byte_count = f.byte_count();
+        self.inner.finish(s, f)
+    }
+}
+
+/// The file starts with a byte-order mark that makes grep-searcher read it through a reader
+/// even when memory maps are on (UTF-8, UTF-16LE, UTF-16BE).
+fn starts_with_bom(p: &Path) -> bool {
+    let mut head = [0u8; 3];
+    let n = std::fs::File::open(p)
+        .and_then(|mut f| f.read(&mut head))
+        .unwrap_or(0);
+    let head = &head[..n];
+    head.starts_with(b"\xEF\xBB\xBF")
+        || head.starts_with(b"\xFF\xFE")
+        || head.starts_with(b"\xFE\xFF")
+}
+
+/// Rewrites `bytes_searched` in the file's `end` message, its last line.
+fn patch_bytes_searched(buf: &mut Buffer, from: u64, to: u64) {
+    let out = buf.as_slice();
+    let body = out.strip_suffix(b"\n").unwrap_or(out);
+    let start = body.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    let old = format!("\"bytes_searched\":{from},");
+    let Some(at) = out[start..]
+        .windows(old.len())
+        .position(|w| w == old.as_bytes())
+        .map(|i| start + i)
+    else {
+        return;
+    };
+    let mut patched = out[..at].to_vec();
+    patched.extend_from_slice(format!("\"bytes_searched\":{to},").as_bytes());
+    patched.extend_from_slice(&out[at + old.len()..]);
+    buf.clear();
+    let _ = buf.write_all(&patched);
 }
 
 /// grep-printer's per-file stats as the `RunStats` the summary adds up.
