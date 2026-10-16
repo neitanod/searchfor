@@ -606,3 +606,22 @@ fn t26_frontmatter_title_is_read_as_yaml() {
     let o = run(&mut fx.sfor(["needle", "c.md", "--flat"]));
     assert_eq!(stdout(&o), "4: Hello │ needle\n");
 }
+
+/// Code review r1, Codex #10: the space between the lines of a setext heading can be matched.
+#[test]
+fn t27_in_headings_matches_the_space_of_a_setext_heading() {
+    let fx = Fixture::new();
+    let mut c = fx.sfor(["--in-headings", "--format", "markdown", "--flat", " ", "-"]);
+    c.stdin(Stdio::piped()).stdout(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"foo\nbar\n===\n")
+        .unwrap();
+    let o = child.wait_with_output().unwrap();
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    // The Match is the `\n` that the space stands for, at the end of line 1.
+    assert_eq!(stdout(&o), "1: foo\n");
+}

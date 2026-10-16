@@ -266,9 +266,12 @@ impl OutlineProcessor for Markdown {
                     }
                 }
                 Event::SoftBreak | Event::HardBreak | Event::End(TagEnd::Paragraph) => {
-                    // A soft break inside a (setext) heading becomes one space in its name.
+                    // A soft break inside a (setext) heading becomes one space in its name, a
+                    // piece over the line break it stands for.
                     if let (Some(h), Event::SoftBreak) = (heading.as_mut(), &ev) {
+                        let at = h.text.len();
                         h.text.push(' ');
+                        h.pieces.push((at..h.text.len(), r.clone()));
                     }
                     if let Some(it) = items.last_mut() {
                         it.done = true;
@@ -507,8 +510,15 @@ mod tests {
         let n = names(src);
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].text, "First Second");
-        assert_eq!(n[0].pieces, vec![(0..5, 0..5), (6..12, 6..12)]);
+        // The space that joins the lines is a piece over the `\n` it replaces (code review r1,
+        // Codex #10), so a Match on it has a place in the Source.
+        assert_eq!(
+            n[0].pieces,
+            vec![(0..5, 0..5), (5..6, 5..6), (6..12, 6..12)]
+        );
         assert_eq!(n[0].source_ranges(6..12), vec![6..12]);
+        assert_eq!(n[0].source_ranges(5..6), vec![5..6]);
+        assert_eq!(n[0].source_ranges(4..7), vec![4..5, 5..6, 6..7]);
         assert_eq!(LineIndex::new(src.as_bytes()).line_of(6), 2);
     }
 
