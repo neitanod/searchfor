@@ -967,6 +967,11 @@ pub enum Case { Sensitive, Insensitive, Smart }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryMode { Quit, Binary, Text }
 
+/// What the command line asked for; `Auto` is ripgrep's default (binary for explicit files and
+/// stdin, quit for walked files).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BinaryChoice { #[default] Auto, Binary, Text }
+
 #[derive(Debug, Parser)]
 #[command(name = "sfor", version, about = "ripgrep-compatible search that shows where each match lives",
           disable_help_subcommand = true, args_override_self = true)]
@@ -1021,11 +1026,14 @@ pub struct Args {
     /// Only `path` and `none` in M1; any other value is «not supported yet».
     #[arg(long)] pub sort: Option<String>,
     #[arg(short = 'j', long)] pub threads: Option<usize>,
-    #[arg(short = 'a', long, overrides_with_all = ["no_text", "binary"])] pub text: bool,
-    #[arg(long, hide = true, overrides_with_all = ["text", "binary"])] pub no_text: bool,
+    // The four binary-mode flags override each other (last wins); the third -u competes with
+    // the survivor by position, resolved in `parse` into `binary_choice`.
+    #[arg(short = 'a', long, overrides_with_all = ["no_text", "binary", "no_binary"])] pub text: bool,
+    #[arg(long, hide = true, overrides_with_all = ["text", "binary", "no_binary"])] pub no_text: bool,
     /// ripgrep's --binary: search binary files, stop at the first NUL and say so.
-    #[arg(long, overrides_with_all = ["no_binary", "text"])] pub binary: bool,
-    #[arg(long, hide = true, overrides_with = "binary")] pub no_binary: bool,
+    #[arg(long, overrides_with_all = ["text", "no_text", "no_binary"])] pub binary: bool,
+    #[arg(long, hide = true, overrides_with_all = ["text", "no_text", "binary"])] pub no_binary: bool,
+    #[arg(skip)] pub binary_choice: BinaryChoice,
     #[arg(short = 'q', long)] pub quiet: bool,
     #[arg(long, overrides_with = "messages")] pub no_messages: bool,
     #[arg(long, hide = true, overrides_with = "no_messages")] pub messages: bool,
@@ -1085,7 +1093,8 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
             return Err(CliError::NotYet(f.long.to_string()));
         }
     }
-    let a = Args::from_arg_matches(&m)?;
+    let mut a = Args::from_arg_matches(&m)?;
+    a.binary_choice = binary_choice(&m);
     if let Some(s) = &a.sort {
         if s != "path" && s != "none" { return Err(CliError::NotYet(format!("sort={s}"))); }
     }
@@ -1098,6 +1107,22 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
         return Err(CliError::Usage("--expand prints lines; it cannot be combined with -c, --count-matches, -l, --files-without-match or -q".into()));
     }
     Ok(a)
+}
+
+/// ripgrep's binary-mode flags in command-line order: -a → Text; --binary and the third -u →
+/// Binary; --no-text and --no-binary → Auto. The last one wins (`rg -a -uuu` and
+/// `rg -a --no-binary` both print the binary message, measured in review r3).
+fn binary_choice(m: &clap::ArgMatches) -> BinaryChoice {
+    let mut last: Option<(usize, BinaryChoice)> = None;
+    let mut see = |idx: Option<usize>, c: BinaryChoice| {
+        if let Some(i) = idx { if last.is_none_or(|(j, _)| i > j) { last = Some((i, c)); } }
+    };
+    for (id, c) in [("text", BinaryChoice::Text), ("binary", BinaryChoice::Binary),
+                    ("no_text", BinaryChoice::Auto), ("no_binary", BinaryChoice::Auto)] {
+        if m.get_flag(id) { see(m.index_of(id), c); }
+    }
+    see(m.indices_of("unrestricted").and_then(|mut it| it.nth(2)), BinaryChoice::Binary);
+    last.map(|(_, c)| c).unwrap_or_default()
 }
 
 /// Where the patterns come from.
@@ -1143,14 +1168,14 @@ impl Args {
     pub fn after(&self) -> usize { self.after_context.or(self.context).unwrap_or(0) }
     pub fn hidden(&self) -> bool { (self.hidden && !self.no_hidden) || self.unrestricted >= 2 }
     pub fn no_ignore(&self) -> bool { (self.no_ignore && !self.ignore) || self.unrestricted >= 1 }
-    /// ripgrep's three binary modes: quit at NUL (default for walked files), «binary» (search,
-    /// stop at NUL and print the binary message: --binary, -uuu, and always for explicit files
-    /// and stdin), text (-a). The last of -a / --no-text / --binary / --no-binary wins (clap
-    /// overrides); -uuu only applies when none of them is given.
+    /// ripgrep's three binary modes for one file: quit at NUL, «binary» (search, stop at NUL
+    /// and print the binary message), text.
     pub fn binary_mode(&self, explicit: bool) -> BinaryMode {
-        if self.text { return BinaryMode::Text; }
-        let explicit_flag = self.no_text || self.binary || self.no_binary;
-        if self.binary || (!explicit_flag && self.unrestricted >= 3) || explicit { BinaryMode::Binary } else { BinaryMode::Quit }
+        match self.binary_choice {
+            BinaryChoice::Text => BinaryMode::Text,
+            BinaryChoice::Binary => BinaryMode::Binary,
+            BinaryChoice::Auto => if explicit { BinaryMode::Binary } else { BinaryMode::Quit },
+        }
     }
     pub fn structural(&self) -> bool { self.within.is_some() || self.expand || self.in_headings }
 }
@@ -1224,6 +1249,10 @@ mod tests {
         assert_eq!(p(&["sfor", "-uuu", "x"]).binary_mode(false), BinaryMode::Binary);
         assert_eq!(p(&["sfor", "-a", "x"]).binary_mode(false), BinaryMode::Text);
         assert_eq!(p(&["sfor", "-a", "--binary", "x"]).binary_mode(false), BinaryMode::Binary);
+        assert_eq!(p(&["sfor", "-a", "-uuu", "x"]).binary_mode(false), BinaryMode::Binary);
+        assert_eq!(p(&["sfor", "-uuu", "-a", "x"]).binary_mode(false), BinaryMode::Text);
+        assert_eq!(p(&["sfor", "-a", "--no-binary", "x"]).binary_mode(true), BinaryMode::Binary);
+        assert_eq!(p(&["sfor", "--no-binary", "-a", "x"]).binary_mode(true), BinaryMode::Text);
     }
 
     #[test]
@@ -3073,17 +3102,22 @@ an empty tempdir, `current_dir` at a copy of `tests/fixtures/`. Snapshot stdout 
 15. `-c --within linux needle md` and `-l --within linux needle md` → counts and files after
     filtering.
 16. `sfor binary misc/bin.dat --flat` → ripgrep's binary message.
-17. `--in-headings -m1 needle md`, `--in-headings -C1 '^Linux$' md --flat`,
-    `--in-headings Plan md --json` on a heading containing the word twice (fixture line added
-    in a separate `md/twice.md`: `# Plan of plans`, matched with `-i`) → one match message
-    with two submatches; `--in-headings -v x md` → exit 2.
+17. With a separate fixture `md/twice.md` (`# Plan of plans\n\n## Plan B\n\n## Plan C\n`):
+    `--in-headings -i plan md/twice.md --json` → the line `# Plan of plans` is one match message
+    with two submatches; `--in-headings -m1 -i plan md/twice.md --flat` → only line 1;
+    `--in-headings -m0 -i plan md/twice.md` → nothing, exit 1;
+    `--in-headings -C1 '^Linux$' md/guide.md --flat` → line 9 with lines 8 and 10 as context;
+    `--in-headings '^' md/twice.md --json` → one empty submatch per heading;
+    `--in-headings -v x md` → exit 2.
 18. Read errors, run with `-j1 --sort path`: a missing path given before `md` → stderr error,
     exit 2; the same with `-q` and a Match → no output, exit 0; with `-q` and no Match → exit 2;
     with `--no-messages` → no stderr, same exit codes.
 19. `--files-without-match --within linux needle md misc` → lists the files whose Matches are
     all outside Linux and the files with no Match, exit 0.
-20. Stdin: `printf 'needle\n' | sfor -q needle` exits 0; a variant that keeps the pipe open
-    (`sh -c 'printf "needle\n"; sleep 5' | sfor -q needle`) exits 0 in under 2 seconds.
+20. Stdin: `printf 'needle\n' | sfor -q needle` exits 0. Open pipe: spawn only `sfor -q needle`
+    with `Stdio::piped()` stdin, write `needle\n`, keep the writer open (do not drop it), and
+    assert that this child exits with 0 within 2 seconds (polling `try_wait`); then drop the
+    writer.
 
 ### Task 9.3: ripgrep compatibility — tests/rg_compat.rs (written first)
 
@@ -3107,7 +3141,9 @@ stdout and exit code byte for byte:
 `--json needle misc/bin.dat` (one explicit file), the same with `misc/bin.dat` given 11 times,
 `--json needle misc` (walked), `--json needle` with stdin from `misc/bin.dat`, and the BOM files
 both as explicit files and through stdin, in passthrough and with `-q`,
-`-uuu binary misc` and `-a binary misc/bin.dat` (binary vs text modes), `needle
+`-uuu binary misc` and `-a binary misc/bin.dat` (binary vs text modes), `-a -uuu needle`,
+`-uuu -a needle`, `-a --no-binary needle` and `--no-binary -a needle` with stdin from
+`misc/bin.dat`, `needle
 misc/late-nul.txt` (explicit, NUL after 64 KiB: early Match then message) and `needle misc`
 (walked: early Match then the WARNING line), compared also in sfor's `--flat` layout for the
 message lines, `--json -c needle`
