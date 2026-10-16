@@ -758,3 +758,27 @@ fn t31_in_headings_plain_files_have_no_match() {
     let o = sfor(&["--in-headings", "-c", "needle", "misc/crlf.txt"]);
     assert_eq!((code(&o), stdout(&o).as_str()), (1, ""));
 }
+
+/// Code review r1, Fable #6: a Segment whose label is already on screen as a row (a context
+/// line or a Match) is not printed again.
+#[test]
+fn t32_tree_does_not_repeat_a_label_shown_as_a_row() {
+    let fx = Fixture::new();
+    let o = run(&mut fx.sfor([
+        "--tree",
+        "-C1",
+        "-e",
+        "Linux",
+        "-e",
+        "needle-pkg",
+        "md/guide.md",
+    ]));
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let out = stdout(&o);
+    assert_eq!(out.matches("```bash").count(), 1, "{out}");
+    assert!(out.contains("11-```bash\n"), "{out}");
+    std::fs::write(fx.file("li.md"), "# A\n\n- ## B needle\n  more needle\n").unwrap();
+    let o = run(&mut fx.sfor(["--tree", "needle", "li.md"]));
+    let out = stdout(&o);
+    assert_eq!(out.matches("## B needle").count(), 1, "{out}");
+}

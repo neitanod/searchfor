@@ -1,6 +1,7 @@
 //! Tree output (spec §6.1): each Match under the Segments of its Trail.
 use super::{Piece, RenderOptions, style};
 use crate::model::{Described, Segment};
+use std::collections::VecDeque;
 use termcolor::WriteColor;
 
 /// How a Segment is shown in the tree.
@@ -42,17 +43,24 @@ fn shared(a: &[Segment], b: &[Segment]) -> usize {
     a.iter().zip(b).take_while(|(x, y)| x == y).count()
 }
 
-/// Prints the Segments of `trail` that differ from the Trail printed before. `header` is the
-/// (depth, line) of a Match row printed just before: the Segment at that depth whose label is
-/// on that line is already on screen as the row, so it is not printed again.
+/// (depth, line) of the last rows printed, newest last; at most `SEEN` of them. A Segment's
+/// label is a row printed just before the rows inside it (rows between them lie on its label,
+/// so they do not have it in their Trail), so the last few rows are enough.
+type Seen = VecDeque<(usize, u64)>;
+const SEEN: usize = 64;
+
+/// Prints the Segments of `trail` that differ from the Trail printed before. `seen` holds the
+/// line numbers of the rows on screen under the part of the Trail that stays: a Segment whose
+/// label is on one of those lines is already shown by that row, so it is not printed again
+/// (code review r1, Fable #6).
 fn write_trail(
     w: &mut dyn WriteColor,
     printed: &[Segment],
     trail: &[Segment],
-    header: Option<(usize, u64)>,
+    seen: &Seen,
 ) -> std::io::Result<()> {
     for (depth, s) in trail.iter().enumerate().skip(shared(printed, trail)) {
-        if header == Some((depth, s.line)) {
+        if seen.iter().any(|&(_, line)| line == s.line) {
             continue;
         }
         w.write_all(indent(depth).as_bytes())?;
@@ -121,34 +129,32 @@ pub fn render(
         Default::default()
     };
     let mut printed: &[Segment] = &[];
-    // The (depth, line) of the last row when it was a Match: it may be a Segment's label.
-    let mut header: Option<(usize, u64)> = None;
+    // Rows printed under the Trail on screen, by depth: a row may be the label of a Segment
+    // printed later. Rows deeper than the part of the Trail that stays are out of view.
+    let mut seen = Seen::new();
     for piece in super::pieces(d, src, o) {
         match piece {
             Piece::Row(r) => {
                 let depth = r.trail.len();
+                let shown = shared(printed, r.trail);
                 if r.gap_before {
                     // At the depth of what is printed next: the first new Segment, or the line.
-                    let at = depth.min(shared(printed, r.trail));
+                    let at = depth.min(shown);
                     w.write_all(format!("{}--\n", indent(at)).as_bytes())?;
                 }
-                let shown = shared(printed, r.trail);
-                write_trail(w, printed, r.trail, header.filter(|&(at, _)| at == shown))?;
+                seen.retain(|&(d, _)| d <= shown);
+                write_trail(w, printed, r.trail, &seen)?;
                 printed = r.trail;
                 write_row(w, depth, r.line_number, r.bytes, &r.subs, r.is_match, o)?;
-                // Context lines right after that Match, at its depth, keep it as the header.
-                let keep =
-                    !r.is_match && shown == depth && header.is_some_and(|(at, _)| at == depth);
-                header = if r.is_match {
-                    Some((depth, r.line_number))
-                } else {
-                    header.filter(|_| keep)
-                };
+                if seen.len() == SEEN {
+                    seen.pop_front();
+                }
+                seen.push_back((depth, r.line_number));
             }
             Piece::Section { trail, start, end } => {
-                write_trail(w, printed, trail, None)?;
+                write_trail(w, printed, trail, &Seen::new())?;
                 printed = trail;
-                header = None;
+                seen.clear();
                 for (n, line) in super::section_lines(src, start, end) {
                     let subs = kept.get(&n);
                     let s = subs.map_or(&[][..], |v| v.as_slice());
