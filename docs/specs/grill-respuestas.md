@@ -172,3 +172,9 @@
   PowerPoint and EPUB out (compressed text rg cannot see); binary Formats whose text rg reads in
   binary mode stay (ELF/PE/Mach-O, SQLite, image/audio metadata, WebAssembly, Java .class), as
   decoration of the Match offset; `-z` keeps ripgrep's meaning (gz, xz, bz2 streams).
+- **8393 / 8394 / 8395** — Sebastián does want to find text inside PDF, Word/ODT, Excel/ODS,
+  PowerPoint/ODP, EPUB and SQLite. Decided: built-in extractors (Rust, no external programs)
+  that return text plus structure, enabled by a new flag `--docs`, independent of `-z` (which
+  keeps ripgrep's meaning: single-stream compressed files). Without `--docs` those files are
+  treated as ripgrep does. Also implement ripgrep's `--pre`. Milestone M4. Archive Formats stay
+  out (8390).

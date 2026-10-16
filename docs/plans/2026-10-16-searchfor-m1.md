@@ -135,7 +135,8 @@ Decisions 7, 8, 10, 12, 18 belong to M2–M5.
    file names when more than one file or any directory is searched), so the output is
    ripgrep's own. With structural flags, the summary flags are computed from the filtered model
    by our printers. `--expand` with a summary flag is a usage error.
-10. **Exit codes are ripgrep's:** 0 if at least one Match is printed (after filters), 1 if none,
+10. **Exit codes are ripgrep's:** 0 if at least one file had a kept Match after filters (whether
+    its lines or only ripgrep's binary message were printed), 1 if none,
     2 if an error happened — except that `-q` with a Match returns 0 even after an error. `-q`
     prints nothing and stops at the first kept Match.
 11. **Parallelism.** As ripgrep: `WalkBuilder::build_parallel`, one searcher per thread; each
@@ -1011,7 +1012,9 @@ pub struct Args {
     #[arg(long, hide = true)] pub ignore: bool,
     /// One entry per occurrence, so `parse` can see where the third one is: clap's `Count`
     /// keeps a single index (clap_builder parser.rs:1286–1299). `-uuu` and `-u -u -u` both give
-    /// three entries; verify that clap reports one index per short flag inside a cluster.
+    /// three entries; verify that clap reports one index per short flag inside a cluster, and
+    /// that `sfor --help` shows `-u, --unrestricted` with no value placeholder (set `value_name`
+    /// or a custom `help` as needed; review r4 could not measure it).
     #[arg(short = 'u', long = "unrestricted", action = ArgAction::Append, num_args = 0, default_missing_value = "1",
           value_parser = clap::value_parser!(u8))]
     pub unrestricted_flags: Vec<u8>,
@@ -1108,7 +1111,11 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
         }
     }
     let mut a = Args::from_arg_matches(&m)?;
-    a.unrestricted = a.unrestricted_flags.len().min(3) as u8;
+    if a.unrestricted_flags.len() > 3 {
+        // ripgrep 14.1.1's exact message and exit 2.
+        return Err(CliError::Usage("error parsing flag -u: flag can only be repeated up to 3 times".into()));
+    }
+    a.unrestricted = a.unrestricted_flags.len() as u8;
     a.binary_choice = binary_choice(&m);
     if let Some(s) = &a.sort {
         if s != "path" && s != "none" { return Err(CliError::NotYet(format!("sort={s}"))); }
@@ -1271,7 +1278,7 @@ mod tests {
         assert_eq!(p(&["sfor", "-auuu", "x"]).binary_mode(false), BinaryMode::Binary);
         assert_eq!(p(&["sfor", "-uuua", "x"]).binary_mode(false), BinaryMode::Text);
         assert_eq!(p(&["sfor", "-u", "-a", "-u", "-u", "x"]).binary_mode(false), BinaryMode::Binary);
-        assert_eq!(p(&["sfor", "-uuuu", "-a", "x"]).binary_mode(false), BinaryMode::Text);
+        assert!(matches!(parse(os(&["sfor", "-uuuu", "x"])), Err(CliError::Usage(_))));
         assert_eq!(p(&["sfor", "-uu", "x"]).unrestricted, 2);
     }
 
@@ -1770,7 +1777,8 @@ use crate::trail::{names_of, trail_for, Outline};
 
 /// The public contract. M5's External Processors implement it over the protocol of spec §4.4,
 /// which C10 extends with an `"op"` field: `"trails"` (the request of §4.4) and `"names"`
-/// (no `matches`; the answer is `{"names":[{"text","pieces":[[offset,start,end],…],"trail":[…]}]}`).
+/// (no `matches`; the answer is
+/// `{"names":[{"text","pieces":[[text_start,text_end,src_start,src_end],…],"anchor","trail":[…]}]}`).
 /// An External Processor that answers `names` with an error makes `--in-headings` skip its
 /// files with one warning.
 pub trait Processor: Send + Sync {
@@ -3105,7 +3113,8 @@ pub fn run(args: Vec<OsString>) -> i32
     every worker); with structural flags the decision is made after filtering.
 11. Exit code (design note 10), decided by what the mode prints: for `--files-without-match`,
     0 when at least one file is listed; for `-l`, `-c` and `--count-matches`, 0 when at least one
-    file had a kept Match; otherwise 0 when at least one Match was printed. Errors make it 2
+    file had a kept Match; otherwise 0 when at least one file had a kept Match after filters,
+    whether its lines or only ripgrep's binary message were printed. Errors make it 2
     unless `-q` found a Match.
 
 ### Task 9.2: end-to-end tests — tests/cli.rs (written first, RED until 9.1 is done)
