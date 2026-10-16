@@ -3,7 +3,7 @@ pub mod frontmatter;
 pub mod markdown;
 
 use crate::model::{Input, Name, Trail};
-use crate::trail::{Outline, names_of, trail_for};
+use crate::trail::{Outline, TrailCursor, names_of, trail_for};
 
 /// The public contract. M5's External Processors implement it over the protocol of spec §4.4,
 /// which C10 extends with an `"op"` field: `"trails"` (the request of §4.4) and `"names"`
@@ -21,6 +21,11 @@ pub trait Processor: Send + Sync {
     ) -> anyhow::Result<Vec<Trail>>;
     /// Every searchable Segment name with the Source pieces of its text (`--in-headings`).
     fn names(&self, input: &Input, params: &toml::Table) -> anyhow::Result<Vec<Name>>;
+    /// The file's Outline, for a Processor that builds one: then the Trails can be computed
+    /// while the rows are printed. None: only `trails`.
+    fn outline_of(&self, _input: &Input, _params: &toml::Table) -> Option<anyhow::Result<Outline>> {
+        None
+    }
 }
 
 /// Built-in Processors that can describe a whole file as an Outline.
@@ -36,7 +41,16 @@ impl<T: OutlineProcessor> Processor for T {
         anchors: &[usize],
     ) -> anyhow::Result<Vec<Trail>> {
         let o = self.outline(input.bytes, params)?;
+        // Anchors come in file order: one pass over the Outline.
+        if anchors.is_sorted() {
+            let mut c = TrailCursor::new(&o);
+            return Ok(anchors.iter().map(|&a| c.trail(a)).collect());
+        }
         Ok(anchors.iter().map(|&a| trail_for(&o, a)).collect())
+    }
+
+    fn outline_of(&self, input: &Input, params: &toml::Table) -> Option<anyhow::Result<Outline>> {
+        Some(self.outline(input.bytes, params))
     }
 
     fn names(&self, input: &Input, params: &toml::Table) -> anyhow::Result<Vec<Name>> {

@@ -135,6 +135,80 @@ impl Outline {
     }
 }
 
+/// Trails of byte offsets asked in non-decreasing order, from a stack of the Segments open at
+/// the last offset instead of a scan of the whole Outline per offset. An offset smaller than the
+/// last one starts over.
+pub struct TrailCursor<'o> {
+    outline: &'o Outline,
+    /// Index of the next Segment to open.
+    next: usize,
+    /// The Segments containing the last offset, outermost first (each the parent of the next).
+    stack: Vec<usize>,
+    last: usize,
+}
+
+impl<'o> TrailCursor<'o> {
+    pub fn new(outline: &'o Outline) -> Self {
+        Self {
+            outline,
+            next: 0,
+            stack: Vec::new(),
+            last: 0,
+        }
+    }
+
+    /// The indices into `outline.segments` of the Trail of `byte`, as `trail_for` gives it.
+    pub fn indices(&mut self, byte: usize, out: &mut Vec<usize>) {
+        let segs = &self.outline.segments;
+        if byte < self.last {
+            self.next = 0;
+            self.stack.clear();
+        }
+        self.last = byte;
+        while self.next < segs.len() && segs[self.next].range.start <= byte {
+            let start = segs[self.next].range.start;
+            while self
+                .stack
+                .last()
+                .is_some_and(|&t| segs[t].range.end <= start)
+            {
+                self.stack.pop();
+            }
+            self.stack.push(self.next);
+            self.next += 1;
+        }
+        while self
+            .stack
+            .last()
+            .is_some_and(|&t| segs[t].range.end <= byte)
+        {
+            self.stack.pop();
+        }
+        out.clear();
+        out.extend(
+            self.stack
+                .iter()
+                .copied()
+                .filter(|&i| !segs[i].hidden && !segs[i].label.contains(&byte)),
+        );
+    }
+
+    /// The Trail of `byte`.
+    pub fn trail(&mut self, byte: usize) -> Trail {
+        let mut ix = Vec::new();
+        self.indices(byte, &mut ix);
+        self.segments(&ix)
+    }
+
+    /// The Segments at `indices`.
+    pub fn segments(&self, indices: &[usize]) -> Trail {
+        indices
+            .iter()
+            .map(|&i| self.outline.segments[i].segment.clone())
+            .collect()
+    }
+}
+
 /// The Trail of the Match whose first byte is `byte` (design note 7).
 pub fn trail_for(outline: &Outline, byte: usize) -> Trail {
     let Some(inner) = outline.innermost(byte) else {
@@ -258,6 +332,28 @@ mod tests {
             ),
             ("column", "Price", 1, 3)
         );
+    }
+
+    #[test]
+    fn the_cursor_gives_the_trails_of_trail_for() {
+        let o = outline();
+        let mut c = TrailCursor::new(&o);
+        for byte in (0..=DOC.len()).chain([16, 2, 25, 13]) {
+            assert_eq!(c.trail(byte), trail_for(&o, byte), "byte {byte}");
+        }
+        // Nested and empty Segments, and a hidden one.
+        let mut segs = vec![
+            OutlineSegment::new("item", "i", 0..10, 0..2),
+            OutlineSegment::new("heading", "h", 2..8, 2..4),
+            OutlineSegment::new("code", "e", 5..5, 5..5),
+            OutlineSegment::new("heading", "k", 12..20, 12..13),
+        ];
+        segs[3].hidden = true;
+        let o = Outline::build(segs, &[b'x'; 20]);
+        let mut c = TrailCursor::new(&o);
+        for byte in 0..=20 {
+            assert_eq!(c.trail(byte), trail_for(&o, byte), "byte {byte}");
+        }
     }
 
     #[test]

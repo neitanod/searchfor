@@ -52,6 +52,9 @@ pub(crate) struct FileHead {
     path: Option<Vec<u8>>,
     /// Width of `path` in characters, plus its separator.
     width: usize,
+    /// The last Trail fitted, the room it had and the result: consecutive rows usually share
+    /// them.
+    fitted: std::cell::RefCell<Option<(Vec<Segment>, usize, String)>>,
 }
 
 impl FileHead {
@@ -60,7 +63,25 @@ impl FileHead {
         let width = path
             .as_ref()
             .map_or(0, |p| width(&String::from_utf8_lossy(p)) + 1);
-        FileHead { path, width }
+        FileHead {
+            path,
+            width,
+            fitted: Default::default(),
+        }
+    }
+
+    /// `fit_trail`, reusing the last result for the same Trail and room.
+    fn fit(&self, trail: &[Segment], room: usize) -> String {
+        let mut cache = self.fitted.borrow_mut();
+        if let Some((t, r, s)) = cache.as_ref()
+            && *r == room
+            && t.as_slice() == trail
+        {
+            return s.clone();
+        }
+        let s = fit_trail(trail, room);
+        *cache = Some((trail.to_vec(), room, s.clone()));
+        s
     }
 }
 
@@ -160,7 +181,7 @@ pub(crate) fn write_row(
         // The text keeps up to half the width for itself; the Trail gets what is left.
         let reserve = text_width.min(o.width.div_ceil(2));
         let room = o.width.saturating_sub(head.width() + space + 3 + reserve);
-        Some(fit_trail(r.trail, room))
+        Some(file.fit(r.trail, room))
     };
     let used = head.width() + space + trail.as_ref().map_or(0, |t| width(t) + 3);
     let prefix = |w: &mut dyn WriteColor| -> std::io::Result<()> {

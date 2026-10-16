@@ -28,14 +28,17 @@ fn cut(s: &str, n: usize) -> String {
 }
 
 /// `content` with every byte of every invalid UTF-8 sequence replaced by `?`: one byte for one
-/// byte, so offsets into the result are offsets into `content`.
-fn replace_invalid(content: &[u8]) -> String {
+/// byte, so offsets into the result are offsets into `content`. Valid UTF-8 is not copied.
+fn replace_invalid(content: &[u8]) -> std::borrow::Cow<'_, str> {
+    if let Ok(text) = std::str::from_utf8(content) {
+        return text.into();
+    }
     let mut out = String::with_capacity(content.len());
     for chunk in content.utf8_chunks() {
         out.push_str(chunk.valid());
         out.extend(std::iter::repeat_n('?', chunk.invalid().len()));
     }
-    out
+    out.into()
 }
 
 struct OpenHeading {

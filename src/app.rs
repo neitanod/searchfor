@@ -5,12 +5,16 @@ use crate::filter;
 use crate::formats::{self, Registry, detector::Detector};
 use crate::model::{Described, FileMatches, FileStats, Input, Item, Line, Name, Submatch, Trail};
 use crate::output::{
-    self, Layout, RenderOptions, json::JsonOptions, json::RunStats, plain::PlainSink, summary,
+    self, Layout, RenderOptions,
+    json::JsonOptions,
+    json::RunStats,
+    stream::{StreamFile, StreamSink},
+    summary,
 };
 use crate::processors::{self, Processor};
 use crate::search::{self, CollectSink, MaxCountBytes};
 use crate::source::Source;
-use crate::trail::LineIndex;
+use crate::trail::{LineIndex, Outline};
 use grep_matcher::Matcher;
 use grep_printer::{
     ColorSpecs, JSON, JSONBuilder, Standard, StandardBuilder, Stats, Summary, SummaryBuilder,
@@ -307,6 +311,16 @@ struct TrailState {
     buf: Buffer,
 }
 
+/// What `stream_file` searches: the file or stdin as it is; the Source, in memory as ripgrep
+/// searches explicit files; or the Source of a file a reader search already found a Match in,
+/// searched again as that first search read the file.
+#[derive(Clone, Copy)]
+enum Streamed<'s> {
+    Raw,
+    Source(&'s Source),
+    Again(&'s Source),
+}
+
 /// A reader that keeps a copy of what it reads: stdin, searched before its Source exists.
 struct Tee<R> {
     inner: R,
@@ -558,12 +572,20 @@ impl Ctx<'_> {
     }
 
     fn trail_file(&self, st: &mut TrailState, t: &Target, detector: &Detector, ro: &RenderOptions) {
-        if !self.args.structural()
-            && self.summary.is_none()
-            && !self.args.quiet
-            && matches!(detector.detect_by_path(&t.path), Some(None))
-        {
-            return self.plain_file(st, t, ro);
+        // Without structural flags, rows are printed as the searcher reports them: Plain files,
+        // and files on disk whose Processor builds an Outline (code review r1, Fable #1).
+        if !self.args.structural() && self.summary.is_none() && !self.args.quiet {
+            match detector.detect_by_path(&t.path) {
+                Some(None) => return self.plain_file(st, t, ro),
+                Some(Some(def)) if t.fs.is_some() => {
+                    if let Some(p) = processors::by_name(&def.processor)
+                        && self.outlined_file(st, t, ro, def, p)
+                    {
+                        return;
+                    }
+                }
+                _ => {}
+            }
         }
         let Ok(found) = self.describe(st, t, detector) else {
             return;
@@ -628,67 +650,134 @@ impl Ctx<'_> {
     }
 
     /// A Plain file without structural flags, printed row by row as the searcher reports
-    /// them, without a model of the file (code review r1, Fable #1).
+    /// them, without a model of the file (code review r1, Fable #1). In memory, as ripgrep
+    /// (explicit files, at most 10), through the Source, which says whether a BOM makes the
+    /// search a reader one; else straight from the file or stdin.
     fn plain_file(&self, st: &mut TrailState, t: &Target, ro: &RenderOptions) {
-        let jo = self.json_options(ro);
-        let invert = self.args.invert_match;
-        st.buf.clear();
-        let explicit = t.explicit;
-        let result = match &t.fs {
-            // In memory as ripgrep (explicit files, at most 10): through the Source, which says
-            // whether the BOM makes the search a reader one.
-            Some(p) if self.in_memory => match Source::open(p, explicit) {
-                Err(e) => Err(e),
-                Ok(src) => {
-                    let reader = src.had_bom;
-                    let mut sink = PlainSink::new(
-                        &mut st.buf,
-                        &self.matcher,
-                        invert,
-                        ro,
-                        &jo,
-                        &t.path,
-                        explicit,
-                        reader,
-                    );
-                    st.source
-                        .set_binary_detection(search::binary_detection(self.args, explicit));
-                    let r = if reader {
-                        st.source.search_reader(
-                            &self.matcher,
-                            std::io::Cursor::new(src.bytes()),
-                            &mut sink,
-                        )
-                    } else {
-                        st.source
-                            .search_slice(&self.matcher, src.bytes(), &mut sink)
-                    };
-                    r.and_then(|()| Ok((sink.has_match, sink.close()?)))
-                }
+        match &t.fs {
+            Some(p) if self.in_memory => match Source::open(p, t.explicit) {
+                Ok(src) => self.stream_file(st, t, ro, Streamed::Source(&src), None, None),
+                Err(e) => self.msgs.error(format_args!("{}: {e}", t.path.display())),
             },
-            fs => {
-                let mut sink = PlainSink::new(
-                    &mut st.buf,
-                    &self.matcher,
-                    invert,
-                    ro,
-                    &jo,
-                    &t.path,
-                    explicit,
-                    true,
-                );
-                st.stream
-                    .set_binary_detection(search::binary_detection(self.args, explicit));
-                let r = match fs {
-                    None => {
-                        st.stream
-                            .search_reader(&self.matcher, std::io::stdin().lock(), &mut sink)
-                    }
-                    Some(p) => st.stream.search_path(&self.matcher, p, &mut sink),
-                };
-                r.and_then(|()| Ok((sink.has_match, sink.close()?)))
+            _ => self.stream_file(st, t, ro, Streamed::Raw, None, None),
+        }
+    }
+
+    /// A file whose Processor builds an Outline, printed as `plain_file` with the Trail of each
+    /// row computed as it is printed. A file searched with a reader is searched first, up to its
+    /// first Match, and read only when it has one (spec §3.1); then the search runs again over
+    /// the Source. Returns false, printing nothing, for the files the model's path handles: one
+    /// with binary data (no Trails, step 7) or a BOM (whose reader search reads differently).
+    fn outlined_file(
+        &self,
+        st: &mut TrailState,
+        t: &Target,
+        ro: &RenderOptions,
+        def: &formats::definition::FormatDefinition,
+        p: &dyn Processor,
+    ) -> bool {
+        let Some(path) = &t.fs else { return false };
+        if !self.in_memory {
+            let mut probe = CollectSink::new(&self.matcher, self.args.invert_match, true);
+            st.stream
+                .set_binary_detection(search::binary_detection(self.args, t.explicit));
+            match st.stream.search_path(&self.matcher, path, &mut probe) {
+                Err(e) => {
+                    self.msgs.error(format_args!("{}: {e}", t.path.display()));
+                    return true;
+                }
+                Ok(()) if !probe.items.iter().any(|i| matches!(i, Item::Match(_))) => {
+                    return true;
+                }
+                Ok(()) => {}
+            }
+        }
+        let src = match Source::open(path, t.explicit) {
+            Ok(mut s) => {
+                s.path = t.path.clone();
+                s
+            }
+            Err(e) => {
+                self.msgs.error(format_args!("{}: {e}", t.path.display()));
+                return true;
             }
         };
+        if src.had_bom || memchr::memchr(0, src.bytes()).is_some() {
+            return false;
+        }
+        let input = Input {
+            bytes: src.bytes(),
+            path: &src.path,
+            format: &def.name,
+        };
+        // A failing Processor is a warning and leaves the file without Trails.
+        let outline = match p.outline_of(&input, &def.params) {
+            Some(Ok(o)) => Some(o),
+            Some(Err(e)) => {
+                self.msgs
+                    .warn(format_args!("sfor: {}: {e:#}", src.path.display()));
+                None
+            }
+            None => return false,
+        };
+        let how = if self.in_memory {
+            Streamed::Source(&src)
+        } else {
+            Streamed::Again(&src)
+        };
+        self.stream_file(st, t, ro, how, outline.as_ref(), Some(&def.name));
+        true
+    }
+
+    /// Searches one file with a `StreamSink` writing into the thread's buffer, and prints it.
+    fn stream_file(
+        &self,
+        st: &mut TrailState,
+        t: &Target,
+        ro: &RenderOptions,
+        how: Streamed,
+        outline: Option<&Outline>,
+        format: Option<&str>,
+    ) {
+        let jo = self.json_options(ro);
+        st.buf.clear();
+        let explicit = t.explicit;
+        let (searcher, src, reader) = match how {
+            Streamed::Raw => (&mut st.stream, None, true),
+            Streamed::Source(src) => (&mut st.source, Some(src), src.had_bom),
+            // No BOM: the Source's bytes are the file's, read again as the first search read them.
+            Streamed::Again(src) => (&mut st.stream, Some(src), true),
+        };
+        let file = StreamFile {
+            path: &t.path,
+            explicit,
+            format,
+            src: src.map(Source::bytes),
+            outline,
+            reader,
+        };
+        searcher.set_binary_detection(search::binary_detection(self.args, explicit));
+        let mut sink = StreamSink::new(
+            &mut st.buf,
+            &self.matcher,
+            self.args.invert_match,
+            ro,
+            &jo,
+            file,
+        );
+        let m = &self.matcher;
+        let r = match (how, &t.fs) {
+            (Streamed::Raw, None) => searcher.search_reader(m, std::io::stdin().lock(), &mut sink),
+            (Streamed::Raw, Some(p)) => searcher.search_path(m, p, &mut sink),
+            (Streamed::Source(src), _) if src.had_bom => {
+                searcher.search_reader(m, std::io::Cursor::new(src.bytes()), &mut sink)
+            }
+            (Streamed::Source(src), _) => searcher.search_slice(m, src.bytes(), &mut sink),
+            (Streamed::Again(src), _) => {
+                searcher.search_reader(m, std::io::Cursor::new(src.bytes()), &mut sink)
+            }
+        };
+        let result = r.and_then(|()| Ok((sink.has_match, sink.close()?)));
         match result {
             Err(e) => {
                 self.msgs.error(format_args!("{}: {e}", t.path.display()));

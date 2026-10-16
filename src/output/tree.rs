@@ -116,6 +116,69 @@ pub(crate) fn write_binary_message(w: &mut dyn WriteColor, msg: &str) -> std::io
     w.write_all(format!("{msg}\n").as_bytes())
 }
 
+/// What the tree remembers between rows: the Trail on screen, and the last rows under it.
+#[derive(Default)]
+pub(crate) struct TreeState {
+    printed: Vec<Segment>,
+    /// Rows printed under the Trail on screen: a row may be the label of a Segment printed
+    /// later. Rows deeper than the part of the Trail that stays are out of view.
+    seen: Seen,
+}
+
+impl TreeState {
+    /// One row under its Trail: `--` first after a gap, the Segments not on screen yet, the line.
+    pub(crate) fn row(
+        &mut self,
+        w: &mut dyn WriteColor,
+        r: &super::Row,
+        o: &RenderOptions,
+    ) -> std::io::Result<()> {
+        let depth = r.trail.len();
+        let shown = shared(&self.printed, r.trail);
+        if r.gap_before {
+            // At the depth of what is printed next: the first new Segment, or the line.
+            let at = depth.min(shown);
+            w.write_all(format!("{}--\n", indent(at)).as_bytes())?;
+        }
+        // Every row on screen is at most as deep as the Trail on screen: nothing to drop while
+        // that Trail stays whole.
+        if shown < self.printed.len() {
+            self.seen.retain(|&(d, _)| d <= shown);
+        }
+        if shown != depth || self.printed.len() != depth {
+            write_trail(w, &self.printed, r.trail, &self.seen)?;
+            self.printed = r.trail.to_vec();
+        }
+        write_row(w, depth, r.line_number, r.bytes, &r.subs, r.is_match, o)?;
+        if self.seen.len() == SEEN {
+            self.seen.pop_front();
+        }
+        self.seen.push_back((depth, r.line_number));
+        Ok(())
+    }
+
+    /// With --expand: a Section's Trail and its lines; `kept` has the submatches of its Match
+    /// lines.
+    fn section(
+        &mut self,
+        w: &mut dyn WriteColor,
+        (trail, start, end): (&[Segment], u64, u64),
+        src: &[u8],
+        kept: &std::collections::HashMap<u64, Vec<(usize, usize)>>,
+        o: &RenderOptions,
+    ) -> std::io::Result<()> {
+        write_trail(w, &self.printed, trail, &Seen::new())?;
+        self.printed = trail.to_vec();
+        self.seen.clear();
+        for (n, line) in super::section_lines(src, start, end) {
+            let subs = kept.get(&n);
+            let s = subs.map_or(&[][..], |v| v.as_slice());
+            write_row(w, trail.len(), n, line, s, subs.is_some(), o)?;
+        }
+        Ok(())
+    }
+}
+
 pub fn render(
     d: &Described,
     src: &[u8],
@@ -128,38 +191,12 @@ pub fn render(
     } else {
         Default::default()
     };
-    let mut printed: &[Segment] = &[];
-    // Rows printed under the Trail on screen, by depth: a row may be the label of a Segment
-    // printed later. Rows deeper than the part of the Trail that stays are out of view.
-    let mut seen = Seen::new();
+    let mut state = TreeState::default();
     for piece in super::pieces(d, src, o) {
         match piece {
-            Piece::Row(r) => {
-                let depth = r.trail.len();
-                let shown = shared(printed, r.trail);
-                if r.gap_before {
-                    // At the depth of what is printed next: the first new Segment, or the line.
-                    let at = depth.min(shown);
-                    w.write_all(format!("{}--\n", indent(at)).as_bytes())?;
-                }
-                seen.retain(|&(d, _)| d <= shown);
-                write_trail(w, printed, r.trail, &seen)?;
-                printed = r.trail;
-                write_row(w, depth, r.line_number, r.bytes, &r.subs, r.is_match, o)?;
-                if seen.len() == SEEN {
-                    seen.pop_front();
-                }
-                seen.push_back((depth, r.line_number));
-            }
+            Piece::Row(r) => state.row(w, &r, o)?,
             Piece::Section { trail, start, end } => {
-                write_trail(w, printed, trail, &Seen::new())?;
-                printed = trail;
-                seen.clear();
-                for (n, line) in super::section_lines(src, start, end) {
-                    let subs = kept.get(&n);
-                    let s = subs.map_or(&[][..], |v| v.as_slice());
-                    write_row(w, trail.len(), n, line, s, subs.is_some(), o)?;
-                }
+                state.section(w, (trail, start, end), src, &kept, o)?
             }
         }
     }

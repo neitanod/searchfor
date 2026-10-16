@@ -14,9 +14,15 @@ const SIZE: usize = 50 * 1024 * 1024;
 /// A file of `SIZE` bytes made of short lines, none of which contains `zzz`.
 fn big_file(dir: &Path, name: &str) -> std::path::PathBuf {
     let line = b"line of text here\n";
-    let mut v = Vec::with_capacity(SIZE + line.len());
+    let mut v = Vec::with_capacity(SIZE + 64);
+    let mut n = 0;
     while v.len() < SIZE {
+        // Markdown gets a heading every 1000 lines, so every row has a Trail.
+        if name.ends_with(".md") && n % 1000 == 0 {
+            v.extend_from_slice(format!("# Section {n}\n\n").as_bytes());
+        }
         v.extend_from_slice(line);
+        n += 1;
     }
     let p = dir.join(name);
     std::fs::write(&p, v).unwrap();
@@ -112,6 +118,49 @@ fn inverted_search_on_a_big_plain_file_stays_under_the_ceilings() {
 #[ignore]
 fn every_line_matching_in_a_big_plain_file_stays_under_the_ceilings() {
     ceiling("big.txt", &["--flat", "text"]);
+}
+
+/// A Markdown file pays its Processor (pulldown-cmark's tree of the whole file) once; the rows
+/// add their output and no model: RSS under the Processor's own (measured with `--in-headings`
+/// and a pattern no name has, which parses and prints nothing) plus 3 × the file, and time
+/// within 3 × the Processor's plus `--no-trail`'s.
+fn markdown_ceiling(args: &[&str]) {
+    let fx = Fixture::new();
+    let p = big_file(fx.path(), "big.md");
+    let file = p.file_name().unwrap().to_str().unwrap();
+    let mut trail = args.to_vec();
+    trail.push(file);
+    let Some((t, rss)) = best_of_three(&fx, &trail) else {
+        eprintln!("skipping: /usr/bin/time not found");
+        return;
+    };
+    let (parse, parse_rss) = best_of_three(&fx, &["--in-headings", "zzz", file]).unwrap();
+    let (base, _) = best_of_three(&fx, &["--no-trail", "-v", "zzz", file]).unwrap();
+    eprintln!(
+        "{trail:?}: {t:?}, RSS {} MB; Processor alone: {parse:?}, RSS {} MB; --no-trail: {base:?}",
+        rss / 1_048_576,
+        parse_rss / 1_048_576,
+    );
+    assert!(
+        rss < parse_rss + 3 * SIZE as u64,
+        "RSS {rss} is not below {parse_rss} + 3 × {SIZE}"
+    );
+    assert!(
+        t <= (parse + base) * 3,
+        "{t:?} is more than 3 × ({parse:?} + {base:?})"
+    );
+}
+
+#[test]
+#[ignore]
+fn inverted_search_on_a_big_markdown_file_stays_under_the_ceilings() {
+    markdown_ceiling(&["--flat", "-v", "zzz"]);
+}
+
+#[test]
+#[ignore]
+fn tree_output_of_a_big_markdown_file_stays_under_the_ceilings() {
+    markdown_ceiling(&["--tree", "text"]);
 }
 
 /// Code review r1, Fable #2: a walked binary file without Matches costs what it costs ripgrep,

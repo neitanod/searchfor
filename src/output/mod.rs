@@ -2,7 +2,7 @@
 pub mod flat;
 pub mod fragment;
 pub mod json;
-pub mod plain;
+pub mod stream;
 pub mod style;
 pub mod summary;
 pub mod tree;
