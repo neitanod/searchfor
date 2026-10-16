@@ -1738,7 +1738,7 @@ returns `trail_for(...)` as `Vec<String>` formatted `kind:name`:
 
 Also: with `list_items = false` in params, `needle-item` gives the Trail without `item:step one`;
 a file with invalid UTF-8 gives an empty Outline; the `Linux` heading has `line` 9 and
-`end_line` 17 (count them in the fixture and fix the numbers if the fixture changed).
+`end_line` 18 (count them in the fixture and fix the numbers if the fixture changed).
 
 - [ ] **Step 3:** PASS; clippy clean; commit «Add the Markdown Processor».
 
@@ -2139,7 +2139,7 @@ first and third; `sections` returns None for an empty Trail.
 ## Chunk 9: Pipeline, main, end-to-end tests, benchmark
 
 **Files:** `src/app.rs`, `src/main.rs` (unchanged unless needed), `src/lib.rs` (only `run`),
-`tests/cli.rs`, `tests/rg_compat.rs`, `scripts/bench.sh`.
+`tests/cli.rs`, `tests/rg_compat.rs`, `tests/fixtures/long/**`, `scripts/bench.sh`.
 
 ### Task 9.1: app.rs
 
@@ -2183,7 +2183,7 @@ pointing at an empty tempdir, and `current_dir` at a copy of `tests/fixtures/`. 
 stdout of:
 
 1. `sfor needle-pkg md --tree` → `md/guide.md`, `Deploy guide`, `# Install`, `## Linux`,
-   ```` ```bash ````, `11: apt install needle-pkg` (acceptance criterion 3).
+   ```` ```bash ````, `12: apt install needle-pkg` (acceptance criterion 3).
 2. `sfor needle md --flat` (one line per Match with Trails).
 3. `sfor needle md --json` → every `match` line has `trail`; parse each line as JSON.
 4. `sfor needle md --within "install › linux" --flat` → only the Linux Matches (criterion 9).
