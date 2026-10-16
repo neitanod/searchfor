@@ -442,26 +442,29 @@ pub struct Name {
     pub pieces: Vec<(Range<usize>, Range<usize>)>,
     /// Trail of the named Segment, the Segment itself last.
     pub trail: Trail,
+    /// Where an empty hit lands when no piece contains it (a name with no text, like `###`):
+    /// the end of the heading's markers.
+    pub anchor: usize,
 }
 
 impl Name {
     /// Source ranges covered by the text range `hit`, one per piece it touches. A verbatim
     /// piece maps byte for byte; a decoded piece maps to its whole Source range. An empty hit
-    /// (`^`, `$`) maps to an empty range at the corresponding Source position of the piece that
-    /// contains it (the first piece for position 0, the last one for the end of the text).
+    /// (`^`, `$`) at text position `p` maps to an empty range: inside a verbatim piece at the
+    /// corresponding byte; at the start of a decoded piece to its Source start, at its end to its
+    /// Source end; with no piece (an empty name) at `anchor`.
     pub fn source_ranges(&self, hit: Range<usize>) -> Vec<Range<usize>> {
-        let map = |(t, src): &(Range<usize>, Range<usize>), s: usize, e: usize| {
-            if t.len() == src.len() { src.start + (s - t.start)..src.start + (e - t.start) } else { src.clone() }
-        };
         if hit.is_empty() {
             let p = hit.start;
-            return self.pieces.iter().find(|(t, _)| t.start <= p && p <= t.end)
-                .map(|piece| { let r = map(piece, p, p); if piece.0.len() == piece.1.len() { r } else { r.start..r.start } })
-                .into_iter().collect();
+            let at = self.pieces.iter().find(|(t, _)| t.start <= p && p <= t.end).map(|(t, src)| {
+                if t.len() == src.len() { src.start + (p - t.start) }
+                else if p == t.end && !t.is_empty() { src.end } else { src.start }
+            }).unwrap_or(self.anchor);
+            return vec![at..at];
         }
-        self.pieces.iter().filter_map(|piece| {
-            let (s, e) = (hit.start.max(piece.0.start), hit.end.min(piece.0.end));
-            (s < e).then(|| map(piece, s, e))
+        self.pieces.iter().filter_map(|(t, src)| {
+            let (s, e) = (hit.start.max(t.start), hit.end.min(t.end));
+            (s < e).then(|| if t.len() == src.len() { src.start + (s - t.start)..src.start + (e - t.start) } else { src.clone() })
         }).collect()
     }
 }
@@ -617,6 +620,8 @@ pub struct OutlineSegment {
     /// Pieces of the name's text in the Source, for `--in-headings`, in the format of
     /// `Name::pieces`. None: the Segment is not searchable by name.
     pub name: Option<Vec<(Range<usize>, Range<usize>)>>,
+    /// `Name::anchor` for this Segment (meaningful only when `name` is Some).
+    pub name_anchor: usize,
     pub parent: Option<usize>,
     /// Hidden Segments take part in containment but never appear in a Trail.
     pub hidden: bool,
@@ -626,7 +631,7 @@ impl OutlineSegment {
     pub fn new(kind: &str, name: impl Into<String>, range: Range<usize>, label: Range<usize>) -> Self {
         Self {
             segment: Segment { kind: kind.into(), name: name.into(), line: 0, end_line: 0, level: None, signature: None },
-            range, label, name: None, parent: None, hidden: false,
+            range, label, name: None, name_anchor: 0, parent: None, hidden: false,
         }
     }
 }
@@ -701,6 +706,7 @@ pub fn names_of(outline: &Outline) -> Vec<Name> {
         .map(|(i, s)| Name {
             text: s.segment.name.clone(),
             pieces: s.name.clone().unwrap(),
+            anchor: s.name_anchor,
             trail: outline.chain(i).into_iter().map(|j| &outline.segments[j]).filter(|x| !x.hidden).map(|x| x.segment.clone()).collect(),
         })
         .collect()
@@ -1003,7 +1009,13 @@ pub struct Args {
     #[arg(long, hide = true)] pub no_hidden: bool,
     #[arg(long, overrides_with = "ignore")] pub no_ignore: bool,
     #[arg(long, hide = true)] pub ignore: bool,
-    #[arg(short = 'u', long, action = ArgAction::Count)] pub unrestricted: u8,
+    /// One entry per occurrence, so `parse` can see where the third one is: clap's `Count`
+    /// keeps a single index (clap_builder parser.rs:1286–1299). `-uuu` and `-u -u -u` both give
+    /// three entries; verify that clap reports one index per short flag inside a cluster.
+    #[arg(short = 'u', long, action = ArgAction::Append, num_args = 0, default_missing_value = "1",
+          value_parser = clap::value_parser!(u8))]
+    pub unrestricted_flags: Vec<u8>,
+    #[arg(skip)] pub unrestricted: u8,
     #[arg(short = 'L', long, overrides_with = "no_follow")] pub follow: bool,
     #[arg(long, hide = true)] pub no_follow: bool,
     #[arg(short = 'd', long)] pub max_depth: Option<usize>,
@@ -1096,6 +1108,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
         }
     }
     let mut a = Args::from_arg_matches(&m)?;
+    a.unrestricted = a.unrestricted_flags.len().min(3) as u8;
     a.binary_choice = binary_choice(&m);
     if let Some(s) = &a.sort {
         if s != "path" && s != "none" { return Err(CliError::NotYet(format!("sort={s}"))); }
@@ -1123,7 +1136,7 @@ fn binary_choice(m: &clap::ArgMatches) -> BinaryChoice {
                     ("no_text", BinaryChoice::Auto), ("no_binary", BinaryChoice::Auto)] {
         if m.get_flag(id) { see(m.index_of(id), c); }
     }
-    see(m.indices_of("unrestricted").and_then(|mut it| it.nth(2)), BinaryChoice::Binary);
+    see(m.indices_of("unrestricted_flags").and_then(|mut it| it.nth(2)), BinaryChoice::Binary);
     last.map(|(_, c)| c).unwrap_or_default()
 }
 
@@ -1255,6 +1268,11 @@ mod tests {
         assert_eq!(p(&["sfor", "-uuu", "-a", "x"]).binary_mode(false), BinaryMode::Text);
         assert_eq!(p(&["sfor", "-a", "--no-binary", "x"]).binary_mode(true), BinaryMode::Binary);
         assert_eq!(p(&["sfor", "--no-binary", "-a", "x"]).binary_mode(true), BinaryMode::Text);
+        assert_eq!(p(&["sfor", "-auuu", "x"]).binary_mode(false), BinaryMode::Binary);
+        assert_eq!(p(&["sfor", "-uuua", "x"]).binary_mode(false), BinaryMode::Text);
+        assert_eq!(p(&["sfor", "-u", "-a", "-u", "-u", "x"]).binary_mode(false), BinaryMode::Binary);
+        assert_eq!(p(&["sfor", "-uuuu", "-a", "x"]).binary_mode(false), BinaryMode::Text);
+        assert_eq!(p(&["sfor", "-uu", "x"]).unrestricted, 2);
     }
 
     #[test]
@@ -1517,26 +1535,21 @@ pub fn export_builtin(dir: &Path, user_dir: Option<&Path>) -> anyhow::Result<Vec
     Ok(targets)
 }
 
-/// Absolute path with symlinks resolved over the part that exists, and `.`/`..` folded in the
-/// part that does not (a missing component cannot be a symlink, so folding there is exact).
+/// Absolute path with every existing prefix canonicalized, re-checked after each component:
+/// `..` and `.` are folded lexically, and whenever the result exists again (a `..` that comes
+/// back into an existing directory, a symlink after it) it is canonicalized again. So
+/// `nuevo/../link/formats` with `link → base` resolves to `base/formats`.
 fn resolve(p: &Path) -> std::io::Result<PathBuf> {
     use std::path::Component;
-    let abs = std::path::absolute(p)?;
     let mut out = PathBuf::new();
-    let mut exists = true;
-    for c in abs.components() {
-        if exists {
-            let next = out.join(c.as_os_str());
-            if std::fs::symlink_metadata(&next).is_ok() {
-                out = std::fs::canonicalize(&next)?;
-                continue;
-            }
-            exists = false;
-        }
+    for c in std::path::absolute(p)?.components() {
         match c {
             Component::ParentDir => { out.pop(); }
             Component::CurDir => {}
             other => out.push(other.as_os_str()),
+        }
+        if std::fs::symlink_metadata(&out).is_ok() {
+            out = std::fs::canonicalize(&out)?;
         }
     }
     Ok(out)
@@ -1607,6 +1620,13 @@ mod tests {
         let missing_parent = base.path().join("nuevo/../formats");
         assert!(export_builtin(&missing_parent, Some(&user)).unwrap_err().to_string().contains("refusing"));
         assert!(!user.exists() && !base.path().join("nuevo").exists());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(base.path(), base.path().join("link2")).unwrap();
+            let combined = base.path().join("nuevo/../link2/formats");
+            assert!(export_builtin(&combined, Some(&user)).unwrap_err().to_string().contains("refusing"));
+            assert!(!user.exists() && !base.path().join("nuevo").exists());
+        }
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(base.path(), base.path().join("link")).unwrap();
@@ -1887,6 +1907,11 @@ impl OutlineProcessor for Markdown {
                 Event::End(TagEnd::Heading(_)) => {
                     if let Some(h) = heading.take() {
                         // `text` has no leading or trailing blanks: pulldown-cmark trims headings.
+                        // An empty heading (`###`) has no pieces; its anchor is the end of the
+                        // `#` run (ATX) or the start of the heading (setext).
+                        let r0 = segs[h.seg].range.start;
+                        let hashes = text[r0..].bytes().take_while(|&b| b == b'#').count();
+                        segs[h.seg].name_anchor = r0 + hashes;
                         segs[h.seg].segment.name = h.text;
                         segs[h.seg].name = Some(h.pieces);
                     }
@@ -2055,7 +2080,9 @@ heading named `First Second` with two pieces, text `0..5`/Source `0..5` and text
 the name `A code B` with the `code` piece pointing inside the backticks; `# &lt; B\n` gives the
 name `< B` with pieces text `0..1`/Source `2..6` and text `1..3`/Source `6..8`; `source_ranges`
 of `B` (text `2..3`) is `[7..8]` only (the `B`, not the entity), of `<` is `[2..6]` (the whole
-entity); an empty hit at 0 maps to `[2..2]`, at the end of the text to `[8..8]`. All calls go through
+entity); an empty hit at 0 maps to `[2..2]`, at the end of the text to `[8..8]`. `# &lt;\n`: `$`
+(empty hit at 1) maps to `[6..6]`, the end of the entity. `###\n`: an empty name with no
+pieces; `^$` maps to `[3..3]`. All calls go through
 `Processor::trails`/`names` with an `Input { bytes, path: Path::new("guide.md"), format: "markdown" }`.
 
 - [ ] **Step 3:** RED, then GREEN; clippy clean. Commit «Add the Markdown Processor».
@@ -2267,6 +2294,9 @@ pub struct Source {
     data: Data,
     /// Bytes to skip at the start (a UTF-8 BOM).
     skip: usize,
+    /// The raw file started with a BOM (UTF-8 or UTF-16). grep-searcher then searches with a
+    /// reader even when memory maps are on (searcher/mod.rs:781), so C9 does the same.
+    pub had_bom: bool,
 }
 
 impl Source {
@@ -2292,15 +2322,15 @@ impl Source {
     fn decode(path: PathBuf, explicit: bool, data: Data) -> Self {
         let raw: &[u8] = match &data { Data::Owned(v) => v, Data::Mapped(m) => m };
         if raw.starts_with(b"\xEF\xBB\xBF") {
-            return Self { path, explicit, data, skip: 3 };
+            return Self { path, explicit, data, skip: 3, had_bom: true };
         }
         let utf16 = if raw.starts_with(b"\xFF\xFE") { Some(encoding_rs::UTF_16LE) }
                     else if raw.starts_with(b"\xFE\xFF") { Some(encoding_rs::UTF_16BE) } else { None };
         if let Some(enc) = utf16 {
             let (text, _) = enc.decode_without_bom_handling(&raw[2..]);
-            return Self { path, explicit, data: Data::Owned(text.into_owned().into_bytes()), skip: 0 };
+            return Self { path, explicit, data: Data::Owned(text.into_owned().into_bytes()), skip: 0, had_bom: true };
         }
-        Self { path, explicit, data, skip: 0 }
+        Self { path, explicit, data, skip: 0, had_bom: false }
     }
 
     /// The decoded bytes every stage works on.
@@ -2322,7 +2352,8 @@ Fixtures (generate them with a small script in the chunk and commit the bytes):
 `# T\nneedle\n`; `misc/bin.dat` = `needle first\nmore\0binary needle\n`;
 `misc/invalid.txt` = `caf\xe9 needle\n`; `misc/late-nul.txt` = `needle early\n`, then
 70 000 bytes of `x` lines, then `\0needle late\n` (a NUL after the first 64 KiB); `misc/crlf.txt` = `a\r\nb\n`; `misc/noeol.txt` = `a`
-(no newline); `misc/anchor.txt` = `bar\nfoo needle\nneedle\n`; `misc/min.json` = one line of 20 000 characters with `needle` at offsets 1000,
+(no newline); `misc/bom-bin.dat` = UTF-8 BOM + `needle first\nmore\0binary needle\n`;
+`misc/anchor.txt` = `bar\nfoo needle\nneedle\n`; `misc/min.json` = one line of 20 000 characters with `needle` at offsets 1000,
 1050 and 15000 (used by C9).
 
 - [ ] **Step 1: tests first**: `bom.md` → `bytes()` starts with `# T`; `utf16.md` →
@@ -3042,7 +3073,8 @@ pub fn run(args: Vec<OsString>) -> i32
    otherwise and always for Json. Detector built with `args.formats`.
 7. Per file (parallel walk, design note 11): `Source::open` (errors → stderr unless
    `--no-messages`, remember that an error happened) → `detector.detect(&src.path, src.head())` →
-   `search::search_source(&mut searcher(args, src.explicit, true), &matcher, &src, rg_in_memory(&paths, stdin), false)` (the quiet fast path of step 10 never comes here) → None: nothing (stats not
+   `search::search_source(&mut searcher(args, src.explicit, true), &matcher, &src, rg_in_memory(&paths, stdin) && !src.had_bom, false)` (a BOM sends grep-searcher to the reader
+   even with memory maps on; the quiet fast path of step 10 never comes here) → None: nothing (stats not
    counted) → Some: anchors per Match (`LineMatch::anchors`), `processor.trails(&Input { bytes:
    src.bytes(), path: &src.path, format: &def.name }, &def.params, &all_anchors)` (error →
    warning, empty Trails), regroup into `trails[i][k]` →
@@ -3143,7 +3175,9 @@ stdout and exit code byte for byte:
 `binary misc` (walked binary: nothing, exit 1), `needle -` with stdin from `md/guide.md`,
 `binary` with stdin from `misc/bin.dat` (implicit stdin) and `binary -` (explicit),
 `--json needle misc/bin.dat` (one explicit file), the same with `misc/bin.dat` given 11 times,
-`--json needle misc` (walked), `--json needle` with stdin from `misc/bin.dat`, and the BOM files
+`--json needle misc` (walked), `--json needle` with stdin from `misc/bin.dat`,
+`--json needle misc/bom-bin.dat` (fixture: UTF-8 BOM + `needle first\nmore\0binary needle\n`;
+rg 14.1.1: second Match on line 3, offset 18) in trail mode and passthrough, and the BOM files
 both as explicit files and through stdin, in passthrough and with `-q`,
 `-uuu binary misc` and `-a binary misc/bin.dat` (binary vs text modes), `-a -uuu needle`,
 `-uuu -a needle`, `-a --no-binary needle` and `--no-binary -a needle` with stdin from

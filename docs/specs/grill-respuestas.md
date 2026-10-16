@@ -166,3 +166,9 @@
   interested in digging into compressed packages ripgrep does not already handle. When our
   presentation finds no structure for a Match, at least show it the generic way ripgrep would.»
   Open follow-up (8386/8387): archive Formats out; extraction-based Formats only with -z.
+- **8390** — Answer to 8386/8387: «decorate the output of every Format proposed as long as rg
+  already finds things in them; leave out the ones rg does not open to inspect inside.»
+  Consequences (8391): archive Formats out (zip, tar, 7z, rar, deb, rpm, jar); PDF, Word, Excel,
+  PowerPoint and EPUB out (compressed text rg cannot see); binary Formats whose text rg reads in
+  binary mode stay (ELF/PE/Mach-O, SQLite, image/audio metadata, WebAssembly, Java .class), as
+  decoration of the Match offset; `-z` keeps ripgrep's meaning (gz, xz, bz2 streams).
