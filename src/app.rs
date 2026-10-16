@@ -3,10 +3,10 @@
 use crate::cli::{self, Args, CliError, ColorWhen};
 use crate::filter;
 use crate::formats::{self, Registry, detector::Detector};
-use crate::model::{
-    ContextLine, Described, FileMatches, FileStats, Input, Item, LineMatch, Name, Submatch, Trail,
+use crate::model::{Described, FileMatches, FileStats, Input, Item, Line, Name, Submatch, Trail};
+use crate::output::{
+    self, Layout, RenderOptions, json::JsonOptions, json::RunStats, plain::PlainSink, summary,
 };
-use crate::output::{self, Layout, RenderOptions, json::JsonOptions, json::RunStats, summary};
 use crate::processors::{self, Processor};
 use crate::search::{self, CollectSink};
 use crate::source::Source;
@@ -251,8 +251,12 @@ fn main(args: &Args) -> anyhow::Result<i32> {
                 binary: args.binary_choice,
             };
             ctx.walk(
-                || (search::searcher(args, false, true), ctx.out.buffer()),
-                |(s, b), t| ctx.trail_file(s, b, &t, &detector, &ro),
+                || TrailState {
+                    stream: search::streaming_searcher(args, false, false),
+                    source: search::searcher(args, false, true),
+                    buf: ctx.out.buffer(),
+                },
+                |st, t| ctx.trail_file(st, &t, &detector, &ro),
             )?;
             if layout == Layout::Json && summary_mode.is_none() && !args.quiet {
                 ctx.print_summary();
@@ -286,6 +290,28 @@ struct Target {
     path: PathBuf,
     fs: Option<PathBuf>,
     explicit: bool,
+}
+
+/// What a Trail-mode thread keeps between files: a searcher for files and stdin (BOM sniffing
+/// on, a reader), one for Sources (already decoded), and the output buffer.
+struct TrailState {
+    stream: Searcher,
+    source: Searcher,
+    buf: Buffer,
+}
+
+/// A reader that keeps a copy of what it reads: stdin, searched before its Source exists.
+struct Tee<R> {
+    inner: R,
+    read: Vec<u8>,
+}
+
+impl<R: Read> Read for Tee<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.read.extend_from_slice(&buf[..n]);
+        Ok(n)
+    }
 }
 
 enum Printer {
@@ -510,28 +536,32 @@ impl Ctx<'_> {
         self.print(buf);
     }
 
-    fn trail_file(
-        &self,
-        searcher: &mut Searcher,
-        buf: &mut Buffer,
-        t: &Target,
-        detector: &Detector,
-        ro: &RenderOptions,
-    ) {
-        let Some((src, d)) = self.describe(searcher, t, detector) else {
+    fn trail_file(&self, st: &mut TrailState, t: &Target, detector: &Detector, ro: &RenderOptions) {
+        if !self.args.structural()
+            && self.summary.is_none()
+            && !self.args.quiet
+            && matches!(detector.detect_by_path(&t.path), Some(None))
+        {
+            return self.plain_file(st, t, ro);
+        }
+        let Ok(found) = self.describe(st, t, detector) else {
             return;
         };
-        let d = d.filter(|d| d.file.matches().next().is_some());
+        let kept = found
+            .as_ref()
+            .is_some_and(|(_, d)| d.file.matches().next().is_some());
         if self.args.quiet {
-            if d.is_some() {
+            if kept {
                 self.matched.store(true, Relaxed);
                 self.quit.store(true, Relaxed);
             }
             return;
         }
+        let buf = &mut st.buf;
         buf.clear();
         if let Some(mode) = self.summary {
-            match summary::render(mode, &t.path, d.as_ref(), self.with_filename, buf) {
+            let d = found.as_ref().map(|(_, d)| d).filter(|_| kept);
+            match summary::render(mode, &t.path, d, self.with_filename, buf) {
                 Ok(true) => self.matched.store(true, Relaxed),
                 Ok(false) => {}
                 Err(e) => self.msgs.error(e),
@@ -539,17 +569,16 @@ impl Ctx<'_> {
             self.print(buf);
             return;
         }
-        let Some(d) = d else { return };
+        let Some((src, d)) = found else { return };
+        if !kept {
+            return;
+        }
         self.matched.store(true, Relaxed);
         let written = match ro.layout {
             Layout::Tree => output::tree::render(&d, src.bytes(), ro, buf),
             Layout::Flat => output::flat::render(&d, src.bytes(), ro, buf),
             Layout::Json => {
-                let jo = JsonOptions {
-                    line_numbers: ro.line_numbers,
-                    width: ro.width,
-                    expand: ro.expand,
-                };
+                let jo = self.json_options(ro);
                 let mut v = Vec::new();
                 output::json::render_with_stats(&d, src.bytes(), &jo, &mut v).and_then(
                     |(_, stats)| {
@@ -565,83 +594,213 @@ impl Ctx<'_> {
         self.print(buf);
     }
 
-    /// Steps 7 and 8: the Source, its search (or its names with --in-headings), Trails and
-    /// filters. None: the file is not reported (an error, or Plain with --in-headings);
-    /// `Some((src, None))`: searched, nothing found.
-    fn describe(
-        &self,
-        searcher: &mut Searcher,
-        t: &Target,
-        detector: &Detector,
-    ) -> Option<(Source, Option<Described>)> {
-        let src = match &t.fs {
-            None => {
-                let mut v = Vec::new();
-                if let Err(e) = std::io::stdin().lock().read_to_end(&mut v) {
-                    self.msgs.error(format_args!("<stdin>: {e}"));
-                    return None;
-                }
-                Source::from_bytes(t.path.clone(), v, true)
-            }
-            Some(p) => match Source::open(p, t.explicit) {
-                Ok(mut s) => {
-                    s.path = t.path.clone();
-                    s
-                }
-                Err(e) => {
-                    self.msgs.error(format_args!("{}: {e}", t.path.display()));
-                    return None;
+    fn json_options(&self, ro: &RenderOptions) -> JsonOptions {
+        JsonOptions {
+            line_numbers: ro.line_numbers,
+            width: ro.width,
+            expand: ro.expand,
+        }
+    }
+
+    /// A Plain file without structural flags, printed row by row as the searcher reports
+    /// them, without a model of the file (code review r1, Fable #1).
+    fn plain_file(&self, st: &mut TrailState, t: &Target, ro: &RenderOptions) {
+        let jo = self.json_options(ro);
+        let invert = self.args.invert_match;
+        st.buf.clear();
+        let explicit = t.explicit;
+        let result = match &t.fs {
+            // In memory as ripgrep (explicit files, at most 10): through the Source, which says
+            // whether the BOM makes the search a reader one.
+            Some(p) if self.in_memory => match Source::open(p, explicit) {
+                Err(e) => Err(e),
+                Ok(src) => {
+                    let reader = src.had_bom;
+                    let mut sink = PlainSink::new(
+                        &mut st.buf,
+                        &self.matcher,
+                        invert,
+                        ro,
+                        &jo,
+                        &t.path,
+                        explicit,
+                        reader,
+                    );
+                    st.source
+                        .set_binary_detection(search::binary_detection(self.args, explicit));
+                    let r = if reader {
+                        st.source.search_reader(
+                            &self.matcher,
+                            std::io::Cursor::new(src.bytes()),
+                            &mut sink,
+                        )
+                    } else {
+                        st.source
+                            .search_slice(&self.matcher, src.bytes(), &mut sink)
+                    };
+                    r.and_then(|()| Ok((sink.has_match, sink.close()?)))
                 }
             },
-        };
-        let def = detector.detect(&src.path, src.head());
-        let processor: Option<&dyn Processor> = def.and_then(|d| processors::by_name(&d.processor));
-        let input = Input {
-            bytes: src.bytes(),
-            path: &src.path,
-            format: def.map_or("", |d| d.name.as_str()),
-        };
-        let params = def.map(|d| &d.params);
-        let (file, trails) = if self.args.in_headings {
-            let (Some(p), Some(params)) = (processor, params) else {
-                return None;
-            };
-            let names = match p.names(&input, params) {
-                Ok(n) => n,
-                Err(e) => {
-                    self.msgs
-                        .warn(format_args!("sfor: {}: {e:#}", src.path.display()));
-                    return None;
-                }
-            };
-            match self.heading_matches(&src, &names) {
-                Some(found) => found,
-                None => return Some((src, None)),
+            fs => {
+                let mut sink = PlainSink::new(
+                    &mut st.buf,
+                    &self.matcher,
+                    invert,
+                    ro,
+                    &jo,
+                    &t.path,
+                    explicit,
+                    true,
+                );
+                st.stream
+                    .set_binary_detection(search::binary_detection(self.args, explicit));
+                let r = match fs {
+                    None => {
+                        st.stream
+                            .search_reader(&self.matcher, std::io::stdin().lock(), &mut sink)
+                    }
+                    Some(p) => st.stream.search_path(&self.matcher, p, &mut sink),
+                };
+                r.and_then(|()| Ok((sink.has_match, sink.close()?)))
             }
-        } else {
-            let in_memory = self.in_memory && !src.had_bom;
-            searcher.set_binary_detection(search::binary_detection(self.args, src.explicit));
-            let fm = match search::search_source(searcher, &self.matcher, &src, in_memory, false) {
-                Ok(Some(fm)) => fm,
-                Ok(None) => return Some((src, None)),
+        };
+        match result {
+            Err(e) => {
+                self.msgs.error(format_args!("{}: {e}", t.path.display()));
+                st.buf.clear();
+            }
+            Ok((has_match, stats)) => {
+                if let Some(stats) = stats {
+                    *self.stats.lock().expect("stats") += &stats;
+                }
+                if has_match {
+                    self.matched.store(true, Relaxed);
+                }
+            }
+        }
+        self.print(&st.buf);
+    }
+
+    /// The search first, and the Source only for a file with Matches (spec §3.1). Explicit
+    /// files searched in memory, as ripgrep (`rg_in_memory`), are read first and searched in
+    /// the Source. Every other file, and stdin, is searched with a reader, which stops at the
+    /// binary data of a walked file and at `-m` before the end of stdin; then the Source is read
+    /// (stdin: the bytes the search read, kept by a `Tee`). Err: an error, already reported.
+    fn search_first(
+        &self,
+        st: &mut TrailState,
+        t: &Target,
+    ) -> Result<Option<(Source, FileMatches)>, ()> {
+        let report = |e: &dyn std::fmt::Display| {
+            self.msgs.error(format_args!("{}: {e}", t.path.display()));
+        };
+        let open = |p: &Path| match Source::open(p, t.explicit) {
+            Ok(mut s) => {
+                s.path = t.path.clone();
+                Ok(s)
+            }
+            Err(e) => {
+                report(&e);
+                Err(())
+            }
+        };
+        if let (Some(p), true) = (&t.fs, self.in_memory) {
+            let src = open(p)?;
+            st.source
+                .set_binary_detection(search::binary_detection(self.args, t.explicit));
+            let in_memory = !src.had_bom;
+            return match search::search_source(
+                &mut st.source,
+                &self.matcher,
+                &src,
+                in_memory,
+                false,
+            ) {
+                Ok(fm) => Ok(fm.map(|fm| (src, fm))),
                 Err(e) => {
-                    self.msgs
-                        .error(format_args!("{}: {e:#}", src.path.display()));
-                    return None;
+                    report(&format_args!("{e:#}"));
+                    Err(())
                 }
             };
-            let trails = match (processor, params) {
-                // A binary file's coordinates follow NUL conversion: no Processor (step 7).
-                (Some(p), Some(params)) if fm.stats.binary_offset.is_none() => {
-                    self.trails(p, &input, params, &fm)
-                }
-                _ => empty_trails(&fm),
-            };
-            (fm, trails)
+        }
+        let started = Instant::now();
+        let mut sink = CollectSink::new(&self.matcher, self.args.invert_match, false);
+        st.stream
+            .set_binary_detection(search::binary_detection(self.args, t.explicit));
+        let mut stdin = None;
+        let r = match &t.fs {
+            Some(p) => st.stream.search_path(&self.matcher, p, &mut sink),
+            None => {
+                let tee = stdin.insert(Tee {
+                    inner: std::io::stdin().lock(),
+                    read: Vec::new(),
+                });
+                st.stream.search_reader(&self.matcher, tee, &mut sink)
+            }
+        };
+        if let Err(e) = r {
+            report(&e);
+            return Err(());
+        }
+        if !sink.items.iter().any(|i| matches!(i, Item::Match(_))) {
+            return Ok(None);
+        }
+        let src = match (&t.fs, stdin) {
+            (Some(p), _) => open(p)?,
+            (None, tee) => Source::from_bytes(
+                t.path.clone(),
+                tee.map(|t| t.read).unwrap_or_default(),
+                true,
+            ),
+        };
+        let mut stats = sink.stats;
+        stats.elapsed = started.elapsed();
+        let fm = FileMatches {
+            path: t.path.clone(),
+            explicit: t.explicit,
+            items: sink.items,
+            stats,
+        };
+        Ok(Some((src, fm)))
+    }
+
+    /// Steps 6 to 8 for one file: its search (or with --in-headings its names), the Source of a
+    /// file with Matches, Trails and filters. Err: an error, already reported. Ok(None):
+    /// searched, nothing found. Ok(Some): the search found Matches; the filters may have left
+    /// none.
+    fn describe(
+        &self,
+        st: &mut TrailState,
+        t: &Target,
+        detector: &Detector,
+    ) -> Result<Option<(Source, Described)>, ()> {
+        let found = if self.args.in_headings {
+            self.names_of(t, detector)?
+        } else {
+            self.search_first(st, t)?.map(|(src, fm)| {
+                let def = detector.detect(&src.path, src.head());
+                let trails = match def.and_then(|d| Some((processors::by_name(&d.processor)?, d))) {
+                    // A binary file's coordinates follow NUL conversion: no Processor (step 7).
+                    Some((p, d)) if fm.stats.binary_offset.is_none() => {
+                        let input = Input {
+                            bytes: src.bytes(),
+                            path: &src.path,
+                            format: &d.name,
+                        };
+                        self.trails(p, &input, &d.params, &fm)
+                    }
+                    _ => empty_trails(&fm),
+                };
+                let format = def.map(|d| d.name.clone());
+                (src, fm, trails, format)
+            })
+        };
+        let Some((src, file, trails, format)) = found else {
+            return Ok(None);
         };
         let mut d = Described {
             file,
-            format: def.map(|d| d.name.clone()),
+            format,
             trails,
             sections: Vec::new(),
         };
@@ -657,7 +816,58 @@ impl Ctx<'_> {
         if self.args.expand {
             d.sections = filter::sections(&d);
         }
-        Some((src, Some(d)))
+        Ok(Some((src, d)))
+    }
+
+    /// --in-headings: the Source and its names, and the Matches in them. A Plain file is not
+    /// reported.
+    #[allow(clippy::type_complexity)]
+    fn names_of(
+        &self,
+        t: &Target,
+        detector: &Detector,
+    ) -> Result<Option<(Source, FileMatches, Vec<Vec<Trail>>, Option<String>)>, ()> {
+        let src = match &t.fs {
+            None => {
+                let mut v = Vec::new();
+                if let Err(e) = std::io::stdin().lock().read_to_end(&mut v) {
+                    self.msgs.error(format_args!("<stdin>: {e}"));
+                    return Err(());
+                }
+                Source::from_bytes(t.path.clone(), v, true)
+            }
+            Some(p) => match Source::open(p, t.explicit) {
+                Ok(mut s) => {
+                    s.path = t.path.clone();
+                    s
+                }
+                Err(e) => {
+                    self.msgs.error(format_args!("{}: {e}", t.path.display()));
+                    return Err(());
+                }
+            },
+        };
+        let def = detector.detect(&src.path, src.head());
+        let Some((p, def)) = def.and_then(|d| Some((processors::by_name(&d.processor)?, d))) else {
+            return Err(());
+        };
+        let input = Input {
+            bytes: src.bytes(),
+            path: &src.path,
+            format: &def.name,
+        };
+        let names = match p.names(&input, &def.params) {
+            Ok(n) => n,
+            Err(e) => {
+                self.msgs
+                    .warn(format_args!("sfor: {}: {e:#}", src.path.display()));
+                return Err(());
+            }
+        };
+        Ok(self.heading_matches(&src, &names).map(|(fm, trails)| {
+            let format = Some(def.name.clone());
+            (src, fm, trails, format)
+        }))
     }
 
     /// `trails[i][k]` from the Processor's one Trail per anchor; a failing Processor is a
@@ -758,7 +968,13 @@ impl Ctx<'_> {
         let mut matches = 0;
         for (l, m) in order {
             let r = range(l);
-            let line = bytes[r.clone()].to_vec();
+            let line = Line {
+                line_number: l,
+                absolute_offset: r.start as u64,
+                len: r.len(),
+                owned: None,
+                submatches: Vec::new(),
+            };
             match m {
                 Some(i) => {
                     let (_, subs, ts) = &lines[i];
@@ -771,19 +987,9 @@ impl Ctx<'_> {
                         .collect();
                     matches += submatches.len() as u64;
                     trails.push(ts.clone());
-                    items.push(Item::Match(LineMatch {
-                        line_number: l,
-                        absolute_offset: r.start as u64,
-                        bytes: line,
-                        submatches,
-                    }));
+                    items.push(Item::Match(Line { submatches, ..line }));
                 }
-                None => items.push(Item::Context(ContextLine {
-                    line_number: l,
-                    absolute_offset: r.start as u64,
-                    bytes: line,
-                    submatches: Vec::new(),
-                })),
+                None => items.push(Item::Context(line)),
             }
         }
         let stats = FileStats {

@@ -29,18 +29,51 @@ pub struct Submatch {
     pub end: usize,
 }
 
+/// One line the searcher reported: a Match line or a context line. Its bytes are not copied:
+/// they are `len` bytes of the Source at `absolute_offset`, except when a reader search
+/// converted binary data (a NUL becomes a line terminator, design note 3), where `owned` keeps
+/// the bytes the searcher saw.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LineMatch {
+pub struct Line {
     pub line_number: u64,
     /// Absolute byte offset of the start of the line in the Source.
     pub absolute_offset: u64,
-    /// The line, including its terminator if it had one.
-    pub bytes: Vec<u8>,
-    /// Empty for an inverted search (`-v`).
+    /// Length of the line, including its terminator if it had one.
+    pub len: usize,
+    /// The line's bytes when they differ from the Source's; None otherwise.
+    pub owned: Option<Box<[u8]>>,
+    /// A Match line: empty for an inverted search (`-v`). A context line: non-empty only with
+    /// `-v`, where context lines are the lines that do match; ripgrep's JSON reports their
+    /// submatches.
     pub submatches: Vec<Submatch>,
 }
 
-impl LineMatch {
+pub type LineMatch = Line;
+pub type ContextLine = Line;
+
+impl Line {
+    /// A line that is `bytes`, copied (tests and hand-built models).
+    pub fn owned(line_number: u64, absolute_offset: u64, bytes: &[u8]) -> Self {
+        Self {
+            line_number,
+            absolute_offset,
+            len: bytes.len(),
+            owned: Some(bytes.into()),
+            submatches: Vec::new(),
+        }
+    }
+
+    /// The line, terminator included: `owned`, or its range of `src` (clamped, so a Source
+    /// that changed under us never panics).
+    pub fn bytes<'a>(&'a self, src: &'a [u8]) -> &'a [u8] {
+        if let Some(b) = &self.owned {
+            return b;
+        }
+        let start = (self.absolute_offset as usize).min(src.len());
+        let end = start.saturating_add(self.len).min(src.len());
+        &src[start..end]
+    }
+
     /// One anchor per submatch (absolute byte of its start); the line start when there is none.
     pub fn anchors(&self) -> Vec<usize> {
         let base = self.absolute_offset as usize;
@@ -50,16 +83,6 @@ impl LineMatch {
             self.submatches.iter().map(|s| base + s.start).collect()
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContextLine {
-    pub line_number: u64,
-    pub absolute_offset: u64,
-    pub bytes: Vec<u8>,
-    /// Non-empty only with `-v`, where context lines are the lines that do match; ripgrep's
-    /// JSON reports their submatches.
-    pub submatches: Vec<Submatch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,13 +212,11 @@ mod tests {
     #[test]
     fn anchors_per_submatch_or_line_start() {
         let m = LineMatch {
-            line_number: 3,
-            absolute_offset: 100,
-            bytes: b"a needle b needle\n".to_vec(),
             submatches: vec![
                 Submatch { start: 2, end: 8 },
                 Submatch { start: 11, end: 17 },
             ],
+            ..Line::owned(3, 100, b"a needle b needle\n")
         };
         assert_eq!(m.anchors(), vec![102, 111]);
         let inverted = LineMatch {
@@ -203,6 +224,24 @@ mod tests {
             ..m
         };
         assert_eq!(inverted.anchors(), vec![100]);
+    }
+
+    #[test]
+    fn bytes_come_from_the_source_or_the_copy() {
+        let src = b"one\ntwo\n";
+        let ranged = Line {
+            line_number: 2,
+            absolute_offset: 4,
+            len: 4,
+            owned: None,
+            submatches: Vec::new(),
+        };
+        assert_eq!(ranged.bytes(src), b"two\n");
+        // A Source shorter than the line (it changed under us) is clamped.
+        assert_eq!(ranged.bytes(b"one\nt"), b"t");
+        assert_eq!(ranged.bytes(b"on"), b"");
+        let copied = Line::owned(2, 4, b"t\nwo\n");
+        assert_eq!(copied.bytes(src), b"t\nwo\n");
     }
 
     #[test]

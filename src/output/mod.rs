@@ -2,13 +2,14 @@
 pub mod flat;
 pub mod fragment;
 pub mod json;
+pub mod plain;
 pub mod style;
 pub mod summary;
 pub mod tree;
 
 use crate::cli::BinaryChoice;
-use crate::model::{Described, Item, Segment, Submatch};
-use std::collections::HashMap;
+use crate::model::{Described, Item, Line, Segment, Submatch};
+use std::collections::{HashMap, HashSet, VecDeque};
 use termcolor::WriteColor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +79,15 @@ pub fn write_line(
         return w.write_all(b"\n");
     }
     let raw = crate::text::strip_terminator(bytes);
+    // The common case, without building the offset map: valid UTF-8 that fits (its bytes are
+    // at least as many as its characters, and Fragments start beyond `avail` characters).
+    if raw.len() <= avail
+        && let Ok(text) = std::str::from_utf8(raw)
+    {
+        prefix(w)?;
+        style::write_highlighted(w, text, subs)?;
+        return w.write_all(b"\n");
+    }
     let (text, map) = crate::text::lossy_with_map(raw);
     let subs: Vec<(usize, usize)> = subs
         .iter()
@@ -151,132 +161,215 @@ fn subs_of(subs: &[Submatch]) -> Vec<(usize, usize)> {
     subs.iter().map(|s| (s.start, s.end)).collect()
 }
 
-/// The rows of a file, in file order. A Match line whose submatches have different Trails
-/// gives one row per distinct Trail, each with only its own submatches, except when -M omits
-/// the line: then one row under its first Trail with every submatch (design note 5). A
-/// context line takes the Trail of the row before it in its group, or else of the row after.
-pub(crate) fn rows<'a>(d: &'a Described, o: &RenderOptions) -> Vec<Row<'a>> {
-    let mut out: Vec<(Option<&'a [Segment]>, usize, Row<'a>)> = Vec::new();
-    let mut prev: Option<u64> = None;
-    let (mut block, mut i) = (0, 0);
-    for item in printed_items(d) {
-        let line_number = match item {
-            Item::Match(m) => m.line_number,
-            Item::Context(c) => c.line_number,
-        };
-        let gap = prev.is_some_and(|p| p + 1 != line_number);
-        if gap {
-            block += 1;
-        }
-        prev = Some(line_number);
-        let gap_before = gap && o.context;
-        match item {
-            Item::Context(c) => out.push((
-                None,
-                block,
-                Row {
-                    trail: &[],
-                    line_number,
-                    bytes: &c.bytes,
-                    subs: subs_of(&c.submatches),
-                    is_match: false,
-                    gap_before,
-                },
-            )),
-            Item::Match(m) => {
-                let mut groups: Vec<(&'a [Segment], Subs)> = Vec::new();
-                if m.submatches.is_empty() || omitted(&m.bytes, o) {
-                    groups.push((trail_of(d, i, 0), subs_of(&m.submatches)));
-                } else {
-                    for (k, s) in m.submatches.iter().enumerate() {
-                        let t = trail_of(d, i, k);
-                        match groups.iter_mut().find(|g| g.0 == t) {
-                            Some(g) => g.1.push((s.start, s.end)),
-                            None => groups.push((t, vec![(s.start, s.end)])),
-                        }
-                    }
-                }
-                for (n, (trail, subs)) in groups.into_iter().enumerate() {
-                    out.push((
-                        Some(trail),
-                        block,
-                        Row {
-                            trail,
-                            line_number,
-                            bytes: &m.bytes,
-                            subs,
-                            is_match: true,
-                            gap_before: gap_before && n == 0,
-                        },
-                    ));
-                }
-                i += 1;
+/// The rows of Match `i`: one per distinct Trail of its submatches, each with only its own
+/// submatches, except when -M omits the line: then one row under its first Trail with every
+/// submatch (design note 5).
+fn match_rows<'a>(
+    d: &'a Described,
+    i: usize,
+    m: &'a Line,
+    src: &'a [u8],
+    o: &RenderOptions,
+) -> Vec<Row<'a>> {
+    let bytes = m.bytes(src);
+    let mut groups: Vec<(&'a [Segment], Subs)> = Vec::new();
+    if m.submatches.is_empty() || omitted(bytes, o) {
+        groups.push((trail_of(d, i, 0), subs_of(&m.submatches)));
+    } else {
+        for (k, s) in m.submatches.iter().enumerate() {
+            let t = trail_of(d, i, k);
+            match groups.iter_mut().find(|g| g.0 == t) {
+                Some(g) => g.1.push((s.start, s.end)),
+                None => groups.push((t, vec![(s.start, s.end)])),
             }
         }
     }
-    for j in 1..out.len() {
-        if out[j].0.is_none() && out[j - 1].1 == out[j].1 {
-            out[j].0 = out[j - 1].0;
-        }
-    }
-    for j in (0..out.len().saturating_sub(1)).rev() {
-        if out[j].0.is_none() && out[j + 1].1 == out[j].1 {
-            out[j].0 = out[j + 1].0;
-        }
-    }
-    out.into_iter()
-        .map(|(t, _, mut r)| {
-            r.trail = t.unwrap_or(&[]);
-            r
+    groups
+        .into_iter()
+        .map(|(trail, subs)| Row {
+            trail,
+            line_number: m.line_number,
+            bytes,
+            subs,
+            is_match: true,
+            gap_before: false,
         })
         .collect()
 }
 
-/// With --expand: every distinct Section once, under the Trail of the first submatch that has
-/// it, in file order. A Match without any Section keeps its rows.
-pub(crate) fn pieces<'a>(d: &'a Described, o: &RenderOptions) -> Vec<Piece<'a>> {
-    if !o.expand {
-        return rows(d, o).into_iter().map(Piece::Row).collect();
+/// The rows of a file, in file order, produced as they are printed (only the context lines
+/// that open a group wait for the Match after them). A context line takes the Trail of the row
+/// before it in its group, or else of the row after.
+pub(crate) struct Rows<'a> {
+    d: &'a Described,
+    src: &'a [u8],
+    o: &'a RenderOptions,
+    items: std::slice::Iter<'a, Item>,
+    /// Index of the next Match.
+    i: usize,
+    prev: Option<u64>,
+    /// Trail of the last row of the current group, once it has a Match.
+    last: Option<&'a [Segment]>,
+    /// Context rows that open the current group, before its first Match.
+    pending: Vec<Row<'a>>,
+    ready: VecDeque<Row<'a>>,
+}
+
+pub(crate) fn rows<'a>(d: &'a Described, src: &'a [u8], o: &'a RenderOptions) -> Rows<'a> {
+    Rows {
+        d,
+        src,
+        o,
+        items: printed_items(d).iter(),
+        i: 0,
+        prev: None,
+        last: None,
+        pending: Vec::new(),
+        ready: VecDeque::new(),
     }
-    let mut seen: Vec<(u64, u64)> = Vec::new();
-    let mut out = Vec::new();
-    let all = rows(d, o);
-    let mut i = 0;
-    for item in printed_items(d) {
-        let Item::Match(m) = item else { continue };
-        let secs: Vec<(usize, (u64, u64))> = (0..m.submatches.len().max(1))
-            .filter_map(|k| {
-                let s = d.sections.get(i).and_then(|v| v.get(k)).copied().flatten();
-                s.map(|s| (k, s))
-            })
-            .collect();
-        if secs.is_empty() {
-            let line = m.line_number;
-            out.extend(
-                all.iter()
-                    .filter(|r| r.is_match && r.line_number == line)
-                    .map(|r| {
-                        Piece::Row(Row {
-                            subs: r.subs.clone(),
-                            gap_before: false,
-                            ..*r
-                        })
-                    }),
-            );
+}
+
+impl<'a> Rows<'a> {
+    fn push(&mut self, item: &'a Item) {
+        let line = match item {
+            Item::Match(m) | Item::Context(m) => m,
+        };
+        let gap = self.prev.is_some_and(|p| p + 1 != line.line_number);
+        if gap {
+            // A group without a Match keeps an empty Trail.
+            self.ready.extend(self.pending.drain(..));
+            self.last = None;
         }
-        for (k, (start, end)) in secs {
-            if !seen.contains(&(start, end)) {
-                seen.push((start, end));
-                out.push(Piece::Section {
-                    trail: trail_of(d, i, k),
-                    start,
-                    end,
-                });
+        self.prev = Some(line.line_number);
+        let gap_before = gap && self.o.context;
+        match item {
+            Item::Context(c) => {
+                let row = Row {
+                    trail: self.last.unwrap_or(&[]),
+                    line_number: c.line_number,
+                    bytes: c.bytes(self.src),
+                    subs: subs_of(&c.submatches),
+                    is_match: false,
+                    gap_before,
+                };
+                if self.last.is_some() {
+                    self.ready.push_back(row);
+                } else {
+                    self.pending.push(row);
+                }
+            }
+            Item::Match(m) => {
+                let rows = match_rows(self.d, self.i, m, self.src, self.o);
+                self.i += 1;
+                let first = rows[0].trail;
+                for mut r in self.pending.drain(..) {
+                    r.trail = first;
+                    self.ready.push_back(r);
+                }
+                for (n, mut r) in rows.into_iter().enumerate() {
+                    r.gap_before = gap_before && n == 0;
+                    self.last = Some(r.trail);
+                    self.ready.push_back(r);
+                }
             }
         }
-        i += 1;
     }
-    out
+}
+
+impl<'a> Iterator for Rows<'a> {
+    type Item = Row<'a>;
+
+    fn next(&mut self) -> Option<Row<'a>> {
+        loop {
+            if let Some(r) = self.ready.pop_front() {
+                return Some(r);
+            }
+            match self.items.next() {
+                Some(item) => self.push(item),
+                None if self.pending.is_empty() => return None,
+                None => self.ready.extend(self.pending.drain(..)),
+            }
+        }
+    }
+}
+
+/// What tree and flat print, produced as it is printed: the rows, or with --expand every
+/// distinct Section once, under the Trail of the first submatch that has it, in file order.
+/// With --expand, a Match without any Section keeps its rows.
+pub(crate) enum Pieces<'a> {
+    Rows(Rows<'a>),
+    Expand {
+        d: &'a Described,
+        src: &'a [u8],
+        o: &'a RenderOptions,
+        items: std::slice::Iter<'a, Item>,
+        i: usize,
+        seen: HashSet<(u64, u64)>,
+        ready: VecDeque<Piece<'a>>,
+    },
+}
+
+pub(crate) fn pieces<'a>(d: &'a Described, src: &'a [u8], o: &'a RenderOptions) -> Pieces<'a> {
+    if !o.expand {
+        return Pieces::Rows(rows(d, src, o));
+    }
+    Pieces::Expand {
+        d,
+        src,
+        o,
+        items: printed_items(d).iter(),
+        i: 0,
+        seen: HashSet::new(),
+        ready: VecDeque::new(),
+    }
+}
+
+impl<'a> Iterator for Pieces<'a> {
+    type Item = Piece<'a>;
+
+    fn next(&mut self) -> Option<Piece<'a>> {
+        let Pieces::Expand {
+            d,
+            src,
+            o,
+            items,
+            i,
+            seen,
+            ready,
+        } = self
+        else {
+            let Pieces::Rows(r) = self else {
+                unreachable!()
+            };
+            return r.next().map(Piece::Row);
+        };
+        loop {
+            if let Some(p) = ready.pop_front() {
+                return Some(p);
+            }
+            let item = items.next()?;
+            let Item::Match(m) = item else { continue };
+            let secs: Vec<(usize, (u64, u64))> = (0..m.submatches.len().max(1))
+                .filter_map(|k| {
+                    let s = d.sections.get(*i).and_then(|v| v.get(k)).copied().flatten();
+                    s.map(|s| (k, s))
+                })
+                .collect();
+            if secs.is_empty() {
+                ready.extend(match_rows(d, *i, m, src, o).into_iter().map(Piece::Row));
+            }
+            for (k, (start, end)) in secs {
+                if seen.insert((start, end)) {
+                    ready.push_back(Piece::Section {
+                        trail: trail_of(d, *i, k),
+                        start,
+                        end,
+                    });
+                }
+            }
+            *i += 1;
+        }
+    }
 }
 
 /// The submatches of the printed Match lines, by line number (for --expand).
@@ -293,23 +386,34 @@ pub(crate) fn match_lines(d: &Described) -> HashMap<u64, Vec<(usize, usize)>> {
 }
 
 /// Lines `start..=end` (1-based) of `src`, terminators included, with their numbers.
-pub(crate) fn section_lines(src: &[u8], start: u64, end: u64) -> Vec<(u64, &[u8])> {
+pub(crate) fn section_lines(
+    src: &[u8],
+    start: u64,
+    end: u64,
+) -> impl Iterator<Item = (u64, &[u8])> {
     src.split_inclusive(|&b| b == b'\n')
         .zip(1u64..)
-        .skip_while(|(_, n)| *n < start)
-        .take_while(|(_, n)| *n <= end)
+        .skip_while(move |(_, n)| *n < start)
+        .take_while(move |(_, n)| *n <= end)
         .map(|(l, n)| (n, l))
-        .collect()
 }
 
-/// ripgrep's message for a binary file, when it printed something (design note 3).
-pub(crate) fn binary_message(d: &Described, o: &RenderOptions) -> Option<String> {
-    let offset = d.file.stats.binary_offset?;
-    d.file.matches().next()?;
+/// ripgrep's message for a binary file that had a Match (design note 3): `offset` is where the
+/// binary data was found, `explicit` whether the file was named on the command line.
+pub(crate) fn binary_message(
+    offset: Option<u64>,
+    has_match: bool,
+    explicit: bool,
+    o: &RenderOptions,
+) -> Option<String> {
+    let offset = offset?;
+    if !has_match {
+        return None;
+    }
     let convert = match o.binary {
         BinaryChoice::Text => return None,
         BinaryChoice::Binary => true,
-        BinaryChoice::Auto => d.file.explicit,
+        BinaryChoice::Auto => explicit,
     };
     Some(if convert {
         format!("binary file matches (found \"\\0\" byte around offset {offset})")
@@ -318,6 +422,16 @@ pub(crate) fn binary_message(d: &Described, o: &RenderOptions) -> Option<String>
             "WARNING: stopped searching binary file after match (found \"\\0\" byte around offset {offset})"
         )
     })
+}
+
+/// `binary_message` for a Described file.
+pub(crate) fn binary_message_of(d: &Described, o: &RenderOptions) -> Option<String> {
+    binary_message(
+        d.file.stats.binary_offset,
+        d.file.matches().next().is_some(),
+        d.file.explicit,
+        o,
+    )
 }
 
 /// The path as printed: its bytes on Unix, as ripgrep.
@@ -382,9 +496,22 @@ pub(crate) mod fixture {
         panic!("no line {n}")
     }
 
+    /// Line `n` of `src` as a range of it, without submatches.
+    fn ranged(src: &[u8], n: u64) -> (Line, Vec<u8>) {
+        let (absolute_offset, bytes) = line_of(src, n);
+        let line = Line {
+            line_number: n,
+            absolute_offset,
+            len: bytes.len(),
+            owned: None,
+            submatches: Vec::new(),
+        };
+        (line, bytes)
+    }
+
     /// Line `n` as a Match, with one submatch per occurrence of `needle`.
     pub fn mat(src: &[u8], n: u64) -> Item {
-        let (absolute_offset, bytes) = line_of(src, n);
+        let (line, bytes) = ranged(src, n);
         let submatches = bytes
             .windows(6)
             .enumerate()
@@ -394,33 +521,16 @@ pub(crate) mod fixture {
                 end: i + 6,
             })
             .collect();
-        Item::Match(LineMatch {
-            line_number: n,
-            absolute_offset,
-            bytes,
-            submatches,
-        })
+        Item::Match(Line { submatches, ..line })
     }
 
     /// Line `n` as an inverted Match (`-v`).
     pub fn inverted(src: &[u8], n: u64) -> Item {
-        let (absolute_offset, bytes) = line_of(src, n);
-        Item::Match(LineMatch {
-            line_number: n,
-            absolute_offset,
-            bytes,
-            submatches: Vec::new(),
-        })
+        Item::Match(ranged(src, n).0)
     }
 
     pub fn ctx(src: &[u8], n: u64) -> Item {
-        let (absolute_offset, bytes) = line_of(src, n);
-        Item::Context(ContextLine {
-            line_number: n,
-            absolute_offset,
-            bytes,
-            submatches: Vec::new(),
-        })
+        Item::Context(ranged(src, n).0)
     }
 
     pub fn described(src: &[u8], items: Vec<Item>, trails: Vec<Vec<Trail>>) -> Described {

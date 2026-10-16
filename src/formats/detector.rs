@@ -36,6 +36,21 @@ impl<'r> Detector<'r> {
         })
     }
 
+    /// `detect` before reading the file: Some when the path alone decides (an override, an
+    /// exact name, an extension, or no Format that looks at the content), None when the
+    /// Format may depend on the first bytes (magic bytes or a shebang).
+    pub fn detect_by_path(&self, path: &Path) -> Option<Option<&'r FormatDefinition>> {
+        if let Some(d) = self.detect(path, &[]) {
+            return Some(Some(d));
+        }
+        let by_content = self
+            .registry
+            .all()
+            .iter()
+            .any(|d| !d.magic_bytes().is_empty() || !d.shebangs.is_empty());
+        (!by_content).then_some(None)
+    }
+
     /// `head` is the start of the file; 512 bytes are enough for every signal.
     pub fn detect(&self, path: &Path, head: &[u8]) -> Option<&'r FormatDefinition> {
         let defs = self.registry.all();
@@ -140,6 +155,22 @@ mod tests {
             "bashy"
         );
         assert!(det.detect(Path::new("data.bin"), b"\x00\x01").is_none());
+    }
+
+    #[test]
+    fn the_path_alone_decides_unless_a_format_reads_the_content() {
+        let reg = registry();
+        let det = Detector::new(&reg, &[]).unwrap();
+        let name = |p: &str| det.detect_by_path(Path::new(p)).map(|d| d.map(|d| &d.name));
+        assert_eq!(name("a.md"), Some(Some(&"markdown".to_string())));
+        assert_eq!(name("Makefile"), Some(Some(&"makey".to_string())));
+        // elfy (magic) and bashy (shebang) need the first bytes.
+        assert_eq!(name("data.txt"), None);
+        let (builtin, _) = Registry::load(None, &known);
+        let det = Detector::new(&builtin, &[]).unwrap();
+        assert_eq!(det.detect_by_path(Path::new("data.txt")), Some(None));
+        let det = Detector::new(&builtin, &["markdown".into()]).unwrap();
+        assert!(det.detect_by_path(Path::new("data.txt")).unwrap().is_some());
     }
 
     #[test]

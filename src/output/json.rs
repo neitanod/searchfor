@@ -1,6 +1,6 @@
 //! ripgrep's JSON Lines from the model, with `format`, `trail` and `fragment` (spec §6.4).
 use super::fragment::fragments;
-use crate::model::{Described, Item, Segment, Submatch};
+use crate::model::{Described, FileStats, Item, Line, Segment, Submatch};
 use crate::text;
 use serde_json::{Value, json};
 use std::io::Write;
@@ -59,21 +59,13 @@ pub fn render_with_stats(
     o: &JsonOptions,
     w: &mut dyn Write,
 ) -> std::io::Result<(u64, RunStats)> {
-    let path = path_data(&d.file.path);
-    let mut written = emit(w, "begin", json!({"path": path}))?;
+    let mut f = JsonFile::new(&d.file.path, d.format.as_deref(), o);
+    f.begin(w)?;
     let lines = o.expand.then(|| line_starts(src));
     let mut i = 0;
     for item in &d.file.items {
         match item {
             Item::Match(m) => {
-                let mut data = rg_data(
-                    &path,
-                    &m.bytes,
-                    m.line_number,
-                    m.absolute_offset,
-                    &m.submatches,
-                    o,
-                );
                 let trails: Vec<&[Segment]> = (0..m.submatches.len().max(1))
                     .map(|k| super::trail_of(d, i, k))
                     .collect();
@@ -88,71 +80,148 @@ pub fn render_with_stats(
                     }),
                     _ => Value::Null,
                 };
-                if trails.iter().any(|t| *t != trails[0]) {
-                    let subs = data["submatches"].as_array_mut().expect("submatches");
-                    for (k, sub) in subs.iter_mut().enumerate() {
-                        let sub = sub.as_object_mut().expect("submatch");
-                        sub.insert("trail".into(), json!(trails[k]));
-                        if o.expand && sections[k] != sections[0] {
-                            sub.insert("section".into(), section(sections[k]));
-                        }
-                    }
-                }
-                let obj = data.as_object_mut().expect("data");
-                obj.insert("format".into(), json!(d.format));
-                obj.insert("trail".into(), json!(trails[0]));
-                obj.insert(
-                    "fragment".into(),
-                    fragment(&m.bytes, &m.submatches, o.width),
-                );
-                if o.expand {
-                    obj.insert("section".into(), section(sections[0]));
-                }
-                written += emit(w, "match", data)?;
+                let sections: Vec<Value> = sections.iter().map(|&s| section(s)).collect();
+                f.matched(w, m, m.bytes(src), &trails, &sections)?;
                 i += 1;
             }
-            Item::Context(c) => {
-                let data = rg_data(
-                    &path,
-                    &c.bytes,
-                    c.line_number,
-                    c.absolute_offset,
-                    &c.submatches,
-                    o,
-                );
-                written += emit(w, "context", data)?;
-            }
+            Item::Context(c) => f.context(w, c, c.bytes(src))?,
         }
     }
-    let st = &d.file.stats;
-    let stats = RunStats {
+    let stats = f.end(w, &d.file.stats)?;
+    Ok((f.written, stats))
+}
+
+/// One file's messages, written as they come: `begin` before the first line, `end` last.
+pub struct JsonFile<'a> {
+    path: Value,
+    format: Value,
+    o: &'a JsonOptions,
+    /// Bytes written so far for this file.
+    pub written: u64,
+    begun: bool,
+}
+
+impl<'a> JsonFile<'a> {
+    pub fn new(path: &std::path::Path, format: Option<&str>, o: &'a JsonOptions) -> Self {
+        Self {
+            path: path_data(path),
+            format: json!(format),
+            o,
+            written: 0,
+            begun: false,
+        }
+    }
+
+    /// Writes `begin` the first time.
+    pub fn begin(&mut self, w: &mut dyn Write) -> std::io::Result<()> {
+        if !self.begun {
+            self.begun = true;
+            self.written += emit(w, "begin", json!({"path": self.path}))?;
+        }
+        Ok(())
+    }
+
+    pub fn begun(&self) -> bool {
+        self.begun
+    }
+
+    /// A `match` message: `bytes` is the line, `trails` one per submatch (one for an inverted
+    /// Match) and `sections` the same with --expand (else empty).
+    pub fn matched(
+        &mut self,
+        w: &mut dyn Write,
+        m: &Line,
+        bytes: &[u8],
+        trails: &[&[Segment]],
+        sections: &[Value],
+    ) -> std::io::Result<()> {
+        self.begin(w)?;
+        let mut data = rg_data(
+            &self.path,
+            bytes,
+            m.line_number,
+            m.absolute_offset,
+            &m.submatches,
+            self.o,
+        );
+        if trails.iter().any(|t| *t != trails[0]) {
+            let subs = data["submatches"].as_array_mut().expect("submatches");
+            for (k, sub) in subs.iter_mut().enumerate() {
+                let sub = sub.as_object_mut().expect("submatch");
+                sub.insert("trail".into(), json!(trails[k]));
+                if self.o.expand && sections[k] != sections[0] {
+                    sub.insert("section".into(), sections[k].clone());
+                }
+            }
+        }
+        let obj = data.as_object_mut().expect("data");
+        obj.insert("format".into(), self.format.clone());
+        obj.insert("trail".into(), json!(trails[0]));
+        obj.insert(
+            "fragment".into(),
+            fragment(bytes, &m.submatches, self.o.width),
+        );
+        if self.o.expand {
+            obj.insert(
+                "section".into(),
+                sections.first().cloned().unwrap_or(Value::Null),
+            );
+        }
+        self.written += emit(w, "match", data)?;
+        Ok(())
+    }
+
+    pub fn context(&mut self, w: &mut dyn Write, c: &Line, bytes: &[u8]) -> std::io::Result<()> {
+        self.begin(w)?;
+        let data = rg_data(
+            &self.path,
+            bytes,
+            c.line_number,
+            c.absolute_offset,
+            &c.submatches,
+            self.o,
+        );
+        self.written += emit(w, "context", data)?;
+        Ok(())
+    }
+
+    /// The `end` message with the search's stats; returns them as the summary adds them up.
+    pub fn end(&mut self, w: &mut dyn Write, st: &FileStats) -> std::io::Result<RunStats> {
+        let stats = file_stats(st, self.written);
+        self.written += emit(
+            w,
+            "end",
+            json!({
+                "path": self.path,
+                "binary_offset": st.binary_offset,
+                "stats": {
+                    "elapsed": elapsed(stats.elapsed),
+                    "searches": stats.searches,
+                    "searches_with_match": stats.searches_with_match,
+                    "bytes_searched": stats.bytes_searched,
+                    "bytes_printed": stats.bytes_printed,
+                    "matched_lines": stats.matched_lines,
+                    "matches": stats.matches,
+                },
+            }),
+        )?;
+        Ok(stats)
+    }
+}
+
+/// A searched file with a Match, as the summary counts it: its search's stats (before filters,
+/// spec §6.4) and `bytes_printed`.
+pub fn file_stats(st: &FileStats, bytes_printed: u64) -> RunStats {
+    RunStats {
         elapsed_total: Default::default(),
         elapsed: st.elapsed,
         searches: 1,
-        searches_with_match: u64::from(d.file.matches().next().is_some()),
+        searches_with_match: 1,
         bytes_searched: st.bytes_searched,
-        bytes_printed: written,
+        bytes_printed,
         matched_lines: st.matched_lines,
         matches: st.matches,
-    };
-    let end = emit(
-        w,
-        "end",
-        json!({
-            "path": path,
-            "binary_offset": st.binary_offset,
-            "stats": {
-                "elapsed": elapsed(stats.elapsed),
-                "searches": stats.searches,
-                "searches_with_match": stats.searches_with_match,
-                "bytes_searched": stats.bytes_searched,
-                "bytes_printed": stats.bytes_printed,
-                "matched_lines": stats.matched_lines,
-                "matches": stats.matches,
-            },
-        }),
-    )?;
-    Ok((written + end, stats))
+    }
 }
 
 /// One JSON Lines message; returns the bytes written.

@@ -47,79 +47,121 @@ fn fit_trail(trail: &[Segment], room: usize) -> String {
     cut
 }
 
-/// `path:line:` (or `path-line-` for context), each part present when asked for.
-struct Head {
+/// The file-name part of a row, computed once per file: present with file names on.
+pub(crate) struct FileHead {
     path: Option<Vec<u8>>,
-    line: Option<String>,
+    /// Width of `path` in characters, plus its separator.
+    width: usize,
+}
+
+impl FileHead {
+    pub(crate) fn new(path: &std::path::Path, o: &RenderOptions) -> Self {
+        let path = o.with_filename.then(|| super::path_bytes(path));
+        let width = path
+            .as_ref()
+            .map_or(0, |p| width(&String::from_utf8_lossy(p)) + 1);
+        FileHead { path, width }
+    }
+}
+
+fn digits(mut n: u64) -> usize {
+    let mut d = 1;
+    while n >= 10 {
+        n /= 10;
+        d += 1;
+    }
+    d
+}
+
+/// `path:line:` (or `path-line-` for context), each part present when asked for.
+struct Head<'a> {
+    file: &'a FileHead,
+    line: Option<u64>,
     sep: &'static str,
 }
 
-impl Head {
-    fn new(d: &Described, line_number: Option<u64>, is_match: bool, o: &RenderOptions) -> Self {
+impl<'a> Head<'a> {
+    fn new(
+        file: &'a FileHead,
+        line_number: Option<u64>,
+        is_match: bool,
+        o: &RenderOptions,
+    ) -> Self {
         Head {
-            path: o.with_filename.then(|| super::path_bytes(&d.file.path)),
-            line: line_number
-                .filter(|_| o.line_numbers)
-                .map(|n| n.to_string()),
+            file,
+            line: line_number.filter(|_| o.line_numbers),
             sep: if is_match { ":" } else { "-" },
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.path.is_none() && self.line.is_none()
+        self.file.path.is_none() && self.line.is_none()
     }
 
     fn width(&self) -> usize {
-        self.path
-            .as_ref()
-            .map_or(0, |p| width(&String::from_utf8_lossy(p)) + 1)
-            + self.line.as_ref().map_or(0, |l| l.len() + 1)
+        self.file.width + self.line.map_or(0, |l| digits(l) + 1)
     }
 
     fn write(&self, w: &mut dyn WriteColor) -> std::io::Result<()> {
-        if let Some(p) = &self.path {
+        if let Some(p) = &self.file.path {
             w.set_color(&style::spec("path"))?;
             w.write_all(p)?;
             w.reset()?;
             w.write_all(self.sep.as_bytes())?;
         }
-        if let Some(l) = &self.line {
-            style::write_styled(w, "line", l)?;
+        if let Some(l) = self.line {
+            w.set_color(&style::spec("line"))?;
+            write!(w, "{l}")?;
+            w.reset()?;
             w.write_all(self.sep.as_bytes())?;
         }
         Ok(())
     }
 }
 
-fn write_row(
+/// Width in characters of a line's text as printed (without its terminator).
+fn text_width(bytes: &[u8]) -> usize {
+    let raw = text::strip_terminator(bytes);
+    match std::str::from_utf8(raw) {
+        Ok(t) => width(t),
+        Err(_) => width(&text::lossy_with_map(raw).0),
+    }
+}
+
+/// One row: `--` first when it opens a group after a gap, then `path:line: Trail │ text`.
+pub(crate) fn write_row(
     w: &mut dyn WriteColor,
-    d: &Described,
+    file: &FileHead,
     r: &Row,
     o: &RenderOptions,
 ) -> std::io::Result<()> {
     if r.gap_before {
         w.write_all(b"--\n")?;
     }
-    let head = Head::new(d, Some(r.line_number), r.is_match, o);
+    let head = Head::new(file, Some(r.line_number), r.is_match, o);
     if !r.is_match {
         let prefix = |w: &mut dyn WriteColor| head.write(w);
         let avail = o.width.saturating_sub(head.width());
         return super::write_line(w, &prefix, r.bytes, &r.subs, false, avail, o);
     }
-    let text_width = if super::omitted(r.bytes, o) {
-        width(&super::omission_message(
-            r.subs.len(),
-            true,
-            w.supports_color(),
-        ))
-    } else {
-        width(&text::lossy_with_map(text::strip_terminator(r.bytes)).0)
-    };
     let space = usize::from(!head.is_empty());
-    // The text keeps up to half the width for itself; the Trail gets what is left.
-    let reserve = text_width.min(o.width.div_ceil(2));
-    let room = o.width.saturating_sub(head.width() + space + 3 + reserve);
-    let trail = (!r.trail.is_empty()).then(|| fit_trail(r.trail, room));
+    let trail = if r.trail.is_empty() {
+        None
+    } else {
+        let text_width = if super::omitted(r.bytes, o) {
+            width(&super::omission_message(
+                r.subs.len(),
+                true,
+                w.supports_color(),
+            ))
+        } else {
+            text_width(r.bytes)
+        };
+        // The text keeps up to half the width for itself; the Trail gets what is left.
+        let reserve = text_width.min(o.width.div_ceil(2));
+        let room = o.width.saturating_sub(head.width() + space + 3 + reserve);
+        Some(fit_trail(r.trail, room))
+    };
     let used = head.width() + space + trail.as_ref().map_or(0, |t| width(t) + 3);
     let prefix = |w: &mut dyn WriteColor| -> std::io::Result<()> {
         head.write(w)?;
@@ -136,6 +178,20 @@ fn write_row(
     super::write_line(w, &prefix, r.bytes, &r.subs, true, avail, o)
 }
 
+/// ripgrep's binary message line, after a file's rows.
+pub(crate) fn write_binary_message(
+    w: &mut dyn WriteColor,
+    path: &std::path::Path,
+    msg: &str,
+    o: &RenderOptions,
+) -> std::io::Result<()> {
+    if o.with_filename {
+        super::write_path(w, path)?;
+        w.write_all(b": ")?;
+    }
+    w.write_all(format!("{msg}\n").as_bytes())
+}
+
 pub fn render(
     d: &Described,
     src: &[u8],
@@ -147,11 +203,12 @@ pub fn render(
     } else {
         Default::default()
     };
-    for piece in super::pieces(d, o) {
+    let file = FileHead::new(&d.file.path, o);
+    for piece in super::pieces(d, src, o) {
         match piece {
-            Piece::Row(r) => write_row(w, d, &r, o)?,
+            Piece::Row(r) => write_row(w, &file, &r, o)?,
             Piece::Section { trail, start, end } => {
-                let head = Head::new(d, None, true, o);
+                let head = Head::new(&file, None, true, o);
                 head.write(w)?;
                 let range = format!("{start}-{end}:");
                 style::write_styled(w, "line", &range[..range.len() - 1])?;
@@ -182,12 +239,8 @@ pub fn render(
             }
         }
     }
-    if let Some(msg) = super::binary_message(d, o) {
-        if o.with_filename {
-            super::write_path(w, &d.file.path)?;
-            w.write_all(b": ")?;
-        }
-        w.write_all(format!("{msg}\n").as_bytes())?;
+    if let Some(msg) = super::binary_message_of(d, o) {
+        write_binary_message(w, &d.file.path, &msg, o)?;
     }
     Ok(())
 }

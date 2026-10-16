@@ -1,13 +1,13 @@
 //! Walking and searching with ripgrep's crates (ADR 0001, design notes 3 and 4).
 use crate::cli::{Args, BinaryMode, Case};
-use crate::model::{ContextLine, FileMatches, FileStats, Item, LineMatch, Submatch};
+use crate::model::{FileMatches, FileStats, Item, Line, Submatch};
 use crate::source::Source;
 use anyhow::Result;
 use grep_matcher::Matcher;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{
-    BinaryDetection, MmapChoice, Searcher, SearcherBuilder, Sink, SinkContext, SinkFinish,
-    SinkMatch,
+    BinaryDetection, MmapChoice, Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind,
+    SinkFinish, SinkMatch,
 };
 use ignore::{WalkBuilder, overrides::OverrideBuilder, types::TypesBuilder};
 use std::ops::Range;
@@ -163,12 +163,89 @@ pub fn rg_types() -> anyhow::Result<TypesBuilder> {
     Ok(tb)
 }
 
-/// Builds the model of one file (design note 4) and its stats.
+/// ripgrep 14.1.1's `bytes_searched` when `-m` stops a search. Its printer (grep-printer
+/// 0.2.2) stops the search, and its searcher (grep-searcher 0.1.14) then reports, for a reader
+/// search, only the bytes of the buffers rolled out before the one it stopped in, not the
+/// position it reached; our grep-searcher 0.1.17 adds that position (`consume_remaining` in
+/// glue.rs). `matched`/`context` replay grep-printer 0.2.2's `should_quit` (json.rs:651) to find
+/// where ripgrep stops, and remember the rolled-out bytes of that buffer: the absolute offset of
+/// a Match minus its offset in the buffer. A stop on an after-context line takes the buffer of
+/// the last Match, which is the same one unless that context crosses a buffer boundary (64 KiB).
+/// A search in memory reports its position in both versions, so it is left alone.
+#[derive(Debug, Clone, Default)]
+pub struct MaxCountBytes {
+    limit: Option<u64>,
+    after: u64,
+    count: u64,
+    after_left: u64,
+    rolled: u64,
+    stopped: Option<u64>,
+}
+
+impl MaxCountBytes {
+    pub fn new(limit: Option<u64>, after: usize) -> Self {
+        Self {
+            limit,
+            after: after as u64,
+            ..Self::default()
+        }
+    }
+
+    /// For a sink's `begin`: the searcher's `-m` and `-A`.
+    pub fn for_searcher(s: &Searcher) -> Self {
+        Self::new(s.max_matches(), s.after_context())
+    }
+
+    pub fn matched(&mut self, m: &SinkMatch<'_>) {
+        self.rolled = m
+            .absolute_byte_offset()
+            .saturating_sub(m.bytes_range_in_buffer().start as u64);
+        self.count += 1;
+        if self.limit.is_some_and(|l| self.count > l) {
+            self.after_left = self.after_left.saturating_sub(1);
+        } else {
+            self.after_left = self.after;
+        }
+        self.check();
+    }
+
+    pub fn context(&mut self, c: &SinkContext<'_>) {
+        if *c.kind() == SinkContextKind::After {
+            self.after_left = self.after_left.saturating_sub(1);
+        }
+        self.check();
+    }
+
+    fn check(&mut self) {
+        if self.stopped.is_none()
+            && self.limit.is_some_and(|l| self.count >= l)
+            && self.after_left == 0
+        {
+            self.stopped = Some(self.rolled);
+        }
+    }
+
+    /// What ripgrep reports: `byte_count` (the searcher's), unless a reader search stopped at
+    /// `-m`.
+    pub fn bytes_searched(&self, byte_count: u64, reader: bool) -> u64 {
+        match self.stopped {
+            Some(rolled) if reader => rolled,
+            _ => byte_count,
+        }
+    }
+}
+
+/// Builds the model of one file (design note 4) and its stats. Lines are not copied (they are
+/// ranges of the Source) except after binary data in a reader search, whose NUL conversion makes
+/// them differ from the Source (`reader`).
 pub struct CollectSink<'m> {
     matcher: &'m RegexMatcher,
     invert: bool,
     /// `-q` without structural flags: stop the file at its first Match (design note 10).
     quiet: bool,
+    /// The search reads through a reader (not a slice in memory).
+    reader: bool,
+    max_count: MaxCountBytes,
     pub items: Vec<Item>,
     pub stats: FileStats,
 }
@@ -179,84 +256,112 @@ impl<'m> CollectSink<'m> {
             matcher,
             invert,
             quiet,
+            reader: true,
+            max_count: MaxCountBytes::default(),
             items: Vec::new(),
             stats: FileStats::default(),
         }
     }
 
-    /// grep-printer 0.3.1's JSON sink (`record_matches`, json.rs:645–680, and
-    /// `find_iter_at_in_context`, util.rs:473–520), copied because those helpers are
-    /// `pub(crate)`. Only the single-line branch: our searcher never runs in multi-line mode
-    /// (`-U` is not in M1). The line terminator is trimmed from the end of `range` (a `\r`
-    /// stays: CRLF mode is not in M1) and the matcher runs over the buffer up to there, from
-    /// `range.start`, so `\A` sees what ripgrep's printer sees (`bar\nfoo needle\n` with
-    /// `\Afoo|needle` reports only `needle`). Matches starting at or after `range.end` stop
-    /// the search; offsets are relative to `range.start`.
-    fn submatches(&self, buffer: &[u8], range: Range<usize>) -> Vec<Submatch> {
-        let mut end = range.end;
-        if buffer[..end].ends_with(b"\n") {
-            end -= 1;
+    /// The search runs in memory: lines always equal the Source's bytes.
+    pub fn in_memory(mut self) -> Self {
+        self.reader = false;
+        self
+    }
+
+    fn copy(&self, bytes: &[u8]) -> Option<Box<[u8]>> {
+        (self.reader && self.stats.binary_cut.is_some()).then(|| bytes.into())
+    }
+}
+
+/// grep-printer 0.3.1's JSON sink (`record_matches`, json.rs:645–680, and
+/// `find_iter_at_in_context`, util.rs:473–520), copied because those helpers are
+/// `pub(crate)`. Only the single-line branch: our searcher never runs in multi-line mode
+/// (`-U` is not in M1). The line terminator is trimmed from the end of `range` (a `\r`
+/// stays: CRLF mode is not in M1) and the matcher runs over the buffer up to there, from
+/// `range.start`, so `\A` sees what ripgrep's printer sees (`bar\nfoo needle\n` with
+/// `\Afoo|needle` reports only `needle`). Matches starting at or after `range.end` stop
+/// the search; offsets are relative to `range.start`.
+pub fn submatches(matcher: &RegexMatcher, buffer: &[u8], range: Range<usize>) -> Vec<Submatch> {
+    let mut end = range.end;
+    if buffer[..end].ends_with(b"\n") {
+        end -= 1;
+    }
+    let haystack = &buffer[..end];
+    let mut subs = Vec::new();
+    // RegexMatcher's error type is NoError: the search cannot fail.
+    let _ = matcher.find_iter_at(haystack, range.start, |m| {
+        if m.start() >= range.end {
+            return false;
         }
-        let haystack = &buffer[..end];
-        let mut subs = Vec::new();
-        // RegexMatcher's error type is NoError: the search cannot fail.
-        let _ = self.matcher.find_iter_at(haystack, range.start, |m| {
-            if m.start() >= range.end {
-                return false;
-            }
-            subs.push(Submatch {
-                start: m.start() - range.start,
-                end: m.end() - range.start,
-            });
-            true
+        subs.push(Submatch {
+            start: m.start() - range.start,
+            end: m.end() - range.start,
         });
-        // As grep-printer: an empty match appearing at the end of the bytes is not reported.
-        // (It compares the relative start against the whole buffer's length.)
-        if subs
-            .last()
-            .is_some_and(|s| s.start == s.end && s.start >= buffer.len())
-        {
-            subs.pop();
-        }
-        subs
+        true
+    });
+    // As grep-printer: an empty match appearing at the end of the bytes is not reported.
+    // (It compares the relative start against the whole buffer's length.)
+    if subs
+        .last()
+        .is_some_and(|s| s.start == s.end && s.start >= buffer.len())
+    {
+        subs.pop();
+    }
+    subs
+}
+
+/// The submatches of a reported line as ripgrep's printers record them: none on an inverted
+/// Match; on a context line, only with `-v`, searched in the line's own bytes.
+pub fn match_submatches(matcher: &RegexMatcher, invert: bool, m: &SinkMatch<'_>) -> Vec<Submatch> {
+    // grep-printer records matches on inverted lines too; none are found there.
+    if invert {
+        Vec::new()
+    } else {
+        submatches(matcher, m.buffer(), m.bytes_range_in_buffer())
+    }
+}
+
+pub fn context_submatches(matcher: &RegexMatcher, invert: bool, bytes: &[u8]) -> Vec<Submatch> {
+    // grep-printer's context path searches the line's own bytes (range 0..len).
+    if invert {
+        submatches(matcher, bytes, 0..bytes.len())
+    } else {
+        Vec::new()
     }
 }
 
 impl Sink for CollectSink<'_> {
     type Error = std::io::Error;
 
+    fn begin(&mut self, s: &Searcher) -> Result<bool, Self::Error> {
+        self.max_count = MaxCountBytes::for_searcher(s);
+        Ok(true)
+    }
+
     fn matched(&mut self, _s: &Searcher, m: &SinkMatch<'_>) -> Result<bool, Self::Error> {
-        let bytes = m.bytes().to_vec();
-        // grep-printer records matches on inverted lines too; none are found there.
-        let subs = if self.invert {
-            Vec::new()
-        } else {
-            self.submatches(m.buffer(), m.bytes_range_in_buffer())
-        };
+        self.max_count.matched(m);
+        let subs = match_submatches(self.matcher, self.invert, m);
         self.stats.matched_lines += m.lines().count() as u64;
         self.stats.matches += subs.len() as u64;
-        self.items.push(Item::Match(LineMatch {
+        self.items.push(Item::Match(Line {
             line_number: m.line_number().unwrap_or(0),
             absolute_offset: m.absolute_byte_offset(),
-            bytes,
+            len: m.bytes().len(),
+            owned: self.copy(m.bytes()),
             submatches: subs,
         }));
         Ok(!self.quiet)
     }
 
     fn context(&mut self, _s: &Searcher, c: &SinkContext<'_>) -> Result<bool, Self::Error> {
-        let bytes = c.bytes().to_vec();
-        // grep-printer's context path searches the line's own bytes (range 0..len).
-        let subs = if self.invert {
-            self.submatches(&bytes, 0..bytes.len())
-        } else {
-            Vec::new()
-        };
-        self.items.push(Item::Context(ContextLine {
+        self.max_count.context(c);
+        self.items.push(Item::Context(Line {
             line_number: c.line_number().unwrap_or(0),
             absolute_offset: c.absolute_byte_offset(),
-            bytes,
-            submatches: subs,
+            len: c.bytes().len(),
+            owned: self.copy(c.bytes()),
+            submatches: context_submatches(self.matcher, self.invert, c.bytes()),
         }));
         Ok(true)
     }
@@ -267,7 +372,7 @@ impl Sink for CollectSink<'_> {
     }
 
     fn finish(&mut self, _s: &Searcher, f: &SinkFinish) -> Result<(), Self::Error> {
-        self.stats.bytes_searched = f.byte_count();
+        self.stats.bytes_searched = self.max_count.bytes_searched(f.byte_count(), self.reader);
         self.stats.binary_offset = f.binary_byte_offset();
         Ok(())
     }
@@ -294,6 +399,7 @@ pub fn search_source(
     let started = std::time::Instant::now();
     let mut sink = CollectSink::new(matcher, searcher.invert_match(), quiet);
     if in_memory {
+        sink = sink.in_memory();
         searcher.search_slice(matcher, src.bytes(), &mut sink)?;
     } else {
         searcher.search_reader(matcher, std::io::Cursor::new(src.bytes()), &mut sink)?;

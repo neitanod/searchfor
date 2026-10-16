@@ -26,6 +26,18 @@ fn indent(depth: usize) -> String {
     " ".repeat(2 * (depth + 1))
 }
 
+/// The indentation of `depth`, written without building it.
+fn write_indent(w: &mut dyn WriteColor, depth: usize) -> std::io::Result<()> {
+    const SPACES: &[u8] = b"                                                                ";
+    let mut n = 2 * (depth + 1);
+    while n > 0 {
+        let k = n.min(SPACES.len());
+        w.write_all(&SPACES[..k])?;
+        n -= k;
+    }
+    Ok(())
+}
+
 fn shared(a: &[Segment], b: &[Segment]) -> usize {
     a.iter().zip(b).take_while(|(x, y)| x == y).count()
 }
@@ -51,7 +63,7 @@ fn write_trail(
 }
 
 /// One line at `depth`: indentation, line number with `:` or `-`, text.
-fn write_row(
+pub(crate) fn write_row(
     w: &mut dyn WriteColor,
     depth: usize,
     line_number: u64,
@@ -60,14 +72,15 @@ fn write_row(
     is_match: bool,
     o: &RenderOptions,
 ) -> std::io::Result<()> {
-    let pad = indent(depth);
-    let number = o.line_numbers.then(|| line_number.to_string());
+    let digits = line_number.checked_ilog10().map_or(1, |d| d as usize + 1);
     let sep = if is_match { ":" } else { "-" };
-    let used = pad.len() + number.as_ref().map_or(0, |n| n.len() + 1);
+    let used = 2 * (depth + 1) + if o.line_numbers { digits + 1 } else { 0 };
     let prefix = |w: &mut dyn WriteColor| -> std::io::Result<()> {
-        w.write_all(pad.as_bytes())?;
-        if let Some(n) = &number {
-            style::write_styled(w, "line", n)?;
+        write_indent(w, depth)?;
+        if o.line_numbers {
+            w.set_color(&style::spec("line"))?;
+            write!(w, "{line_number}")?;
+            w.reset()?;
             w.write_all(sep.as_bytes())?;
         }
         Ok(())
@@ -83,14 +96,25 @@ fn write_row(
     )
 }
 
+/// The file's first line: its path.
+pub(crate) fn write_header(w: &mut dyn WriteColor, path: &std::path::Path) -> std::io::Result<()> {
+    super::write_path(w, path)?;
+    w.write_all(b"\n")
+}
+
+/// ripgrep's binary message, after a file's rows.
+pub(crate) fn write_binary_message(w: &mut dyn WriteColor, msg: &str) -> std::io::Result<()> {
+    write_indent(w, 0)?;
+    w.write_all(format!("{msg}\n").as_bytes())
+}
+
 pub fn render(
     d: &Described,
     src: &[u8],
     o: &RenderOptions,
     w: &mut dyn WriteColor,
 ) -> std::io::Result<()> {
-    super::write_path(w, &d.file.path)?;
-    w.write_all(b"\n")?;
+    write_header(w, &d.file.path)?;
     let kept = if o.expand {
         super::match_lines(d)
     } else {
@@ -99,7 +123,7 @@ pub fn render(
     let mut printed: &[Segment] = &[];
     // The (depth, line) of the last row when it was a Match: it may be a Segment's label.
     let mut header: Option<(usize, u64)> = None;
-    for piece in super::pieces(d, o) {
+    for piece in super::pieces(d, src, o) {
         match piece {
             Piece::Row(r) => {
                 let depth = r.trail.len();
@@ -133,8 +157,8 @@ pub fn render(
             }
         }
     }
-    if let Some(msg) = super::binary_message(d, o) {
-        w.write_all(format!("{}{msg}\n", indent(0)).as_bytes())?;
+    if let Some(msg) = super::binary_message_of(d, o) {
+        write_binary_message(w, &msg)?;
     }
     Ok(())
 }

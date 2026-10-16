@@ -38,6 +38,9 @@ pub fn write_highlighted(
     text: &str,
     subs: &[(usize, usize)],
 ) -> std::io::Result<()> {
+    if subs.is_empty() || !w.supports_color() {
+        return w.write_all(text.as_bytes());
+    }
     let floor = |mut b: usize| {
         b = b.min(text.len());
         while !text.is_char_boundary(b) {

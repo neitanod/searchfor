@@ -76,10 +76,8 @@ pub fn retain(d: &mut Described, keep: &[Vec<bool>], before: usize, after: usize
                     Some(Item::Match(m))
                 } else if near(m.line_number) {
                     Some(Item::Context(ContextLine {
-                        line_number: m.line_number,
-                        absolute_offset: m.absolute_offset,
-                        bytes: m.bytes,
                         submatches: vec![],
+                        ..m
                     }))
                 } else {
                     None
@@ -144,23 +142,20 @@ mod tests {
     /// A Match on `line` with one submatch per `(start, end)`.
     fn m(line: u64, subs: &[(usize, usize)]) -> Item {
         Item::Match(LineMatch {
-            line_number: line,
-            absolute_offset: line * 100,
-            bytes: format!("line {line}\n").into_bytes(),
             submatches: subs
                 .iter()
                 .map(|&(start, end)| Submatch { start, end })
                 .collect(),
+            ..LineMatch::owned(line, line * 100, format!("line {line}\n").as_bytes())
         })
     }
 
     fn c(line: u64) -> Item {
-        Item::Context(ContextLine {
-            line_number: line,
-            absolute_offset: line * 100,
-            bytes: format!("line {line}\n").into_bytes(),
-            submatches: vec![],
-        })
+        Item::Context(ContextLine::owned(
+            line,
+            line * 100,
+            format!("line {line}\n").as_bytes(),
+        ))
     }
 
     /// Items with one Trail per submatch (one for a Match without submatches), each named
@@ -251,15 +246,7 @@ mod tests {
         let Item::Context(ctx) = &d.file.items[1] else {
             unreachable!()
         };
-        assert_eq!(
-            ctx,
-            &ContextLine {
-                line_number: 6,
-                absolute_offset: 600,
-                bytes: b"line 6\n".to_vec(),
-                submatches: vec![],
-            }
-        );
+        assert_eq!(ctx, &ContextLine::owned(6, 600, b"line 6\n"));
     }
 
     #[test]
@@ -391,7 +378,8 @@ mod tests {
         let lm = LineMatch {
             line_number: 23,
             absolute_offset: line_start as u64,
-            bytes: line.as_bytes().to_vec(),
+            len: line.len(),
+            owned: None,
             submatches: vec![
                 Submatch { start: 0, end: 5 },
                 Submatch {
