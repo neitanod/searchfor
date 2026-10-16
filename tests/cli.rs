@@ -466,3 +466,45 @@ fn t22_invalid_utf8_keeps_the_trails_of_the_file() {
         "3: Before │ needle-one\n7: Before › Bad ? here │ needle-two\n"
     );
 }
+
+/// Code review r1, Codex #1: on an open pipe, `-m` answers at the limit, before EOF, as rg.
+#[test]
+fn t23_max_count_on_stdin_stops_before_eof() {
+    let fx = Fixture::new();
+    for args in [
+        &["-m1", "needle", "-"][..],
+        &["-m1", "--format", "markdown", "needle", "-"],
+        &["-m1", "--json", "needle", "-"],
+        &["-m1", "--tree", "needle", "-"],
+    ] {
+        let mut c = fx.sfor(args);
+        c.stdin(Stdio::piped()).stdout(Stdio::piped());
+        let mut child = c.spawn().unwrap();
+        let mut writer = child.stdin.take().unwrap();
+        writer.write_all(b"# T\nneedle\n").unwrap();
+        writer.flush().unwrap();
+        let started = Instant::now();
+        let status = loop {
+            if let Some(s) = child.try_wait().unwrap() {
+                break Some(s);
+            }
+            if started.elapsed() > Duration::from_secs(2) {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let elapsed = started.elapsed();
+        if status.is_none() {
+            child.kill().unwrap();
+        }
+        drop(writer);
+        let o = child.wait_with_output().unwrap();
+        assert_eq!(
+            status.and_then(|s| s.code()),
+            Some(0),
+            "{args:?}: still running after {elapsed:?}"
+        );
+        assert!(elapsed < Duration::from_secs(2), "{args:?}");
+        assert!(stdout(&o).contains("needle"), "{args:?}: {}", stdout(&o));
+    }
+}
