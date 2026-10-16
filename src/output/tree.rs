@@ -30,13 +30,19 @@ fn shared(a: &[Segment], b: &[Segment]) -> usize {
     a.iter().zip(b).take_while(|(x, y)| x == y).count()
 }
 
-/// Prints the Segments of `trail` that differ from the Trail printed before.
+/// Prints the Segments of `trail` that differ from the Trail printed before. `header` is the
+/// (depth, line) of a Match row printed just before: the Segment at that depth whose label is
+/// on that line is already on screen as the row, so it is not printed again.
 fn write_trail(
     w: &mut dyn WriteColor,
     printed: &[Segment],
     trail: &[Segment],
+    header: Option<(usize, u64)>,
 ) -> std::io::Result<()> {
     for (depth, s) in trail.iter().enumerate().skip(shared(printed, trail)) {
+        if header == Some((depth, s.line)) {
+            continue;
+        }
         w.write_all(indent(depth).as_bytes())?;
         style::write_styled(w, "trail", &label(s))?;
         w.write_all(b"\n")?;
@@ -91,6 +97,8 @@ pub fn render(
         Default::default()
     };
     let mut printed: &[Segment] = &[];
+    // The (depth, line) of the last row when it was a Match: it may be a Segment's label.
+    let mut header: Option<(usize, u64)> = None;
     for piece in super::pieces(d, o) {
         match piece {
             Piece::Row(r) => {
@@ -100,13 +108,23 @@ pub fn render(
                     let at = depth.min(shared(printed, r.trail));
                     w.write_all(format!("{}--\n", indent(at)).as_bytes())?;
                 }
-                write_trail(w, printed, r.trail)?;
+                let shown = shared(printed, r.trail);
+                write_trail(w, printed, r.trail, header.filter(|&(at, _)| at == shown))?;
                 printed = r.trail;
                 write_row(w, depth, r.line_number, r.bytes, &r.subs, r.is_match, o)?;
+                // Context lines right after that Match, at its depth, keep it as the header.
+                let keep =
+                    !r.is_match && shown == depth && header.is_some_and(|(at, _)| at == depth);
+                header = if r.is_match {
+                    Some((depth, r.line_number))
+                } else {
+                    header.filter(|_| keep)
+                };
             }
             Piece::Section { trail, start, end } => {
-                write_trail(w, printed, trail)?;
+                write_trail(w, printed, trail, None)?;
                 printed = trail;
+                header = None;
                 for (n, line) in super::section_lines(src, start, end) {
                     let subs = kept.get(&n);
                     let s = subs.map_or(&[][..], |v| v.as_slice());
@@ -317,6 +335,39 @@ mod tests {
         d.file.explicit = false;
         let walked = plain(&d, &s, &opts());
         insta::assert_snapshot!("binary", format!("{explicit}{walked}"));
+    }
+
+    #[test]
+    fn match_on_a_heading_line_heads_the_matches_below() {
+        // The Match on `# needle notes` is the label of the heading the next Matches sit under:
+        // it is printed once, at the heading's depth, and the heading is not repeated.
+        let s = src(&[
+            "# needle notes",
+            "one needle",
+            "## Sub",
+            "two needle",
+            "# Other",
+            "three needle",
+        ]);
+        let (a, sub, other) = (
+            h(1, "needle notes", 1, 4),
+            h(2, "Sub", 3, 4),
+            h(1, "Other", 5, 6),
+        );
+        let d = described(
+            &s,
+            vec![mat(&s, 1), mat(&s, 2), mat(&s, 4), mat(&s, 6)],
+            vec![
+                vec![vec![]],
+                vec![vec![a.clone()]],
+                vec![vec![a, sub]],
+                vec![vec![other]],
+            ],
+        );
+        assert_eq!(
+            plain(&d, &s, &opts()),
+            "docs/a.md\n  1:# needle notes\n    2:one needle\n    ## Sub\n      4:two needle\n  # Other\n    6:three needle\n"
+        );
     }
 
     #[test]

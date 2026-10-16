@@ -428,3 +428,41 @@ fn t20_stdin_selection() {
     );
     assert!(elapsed < Duration::from_secs(2));
 }
+
+#[test]
+fn t21_tree_match_on_a_heading_is_not_repeated_as_its_segment() {
+    let fx = Fixture::new();
+    std::fs::write(
+        fx.file("h1.md"),
+        "# needle notes\n\none needle\n\n## Sub\n\ntwo needle\n",
+    )
+    .unwrap();
+    let o = run(&mut fx.sfor(["needle", "h1.md", "--tree"]));
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(
+        stdout(&o),
+        "h1.md\n  1:# needle notes\n    3:one needle\n    ## Sub\n      7:two needle\n"
+    );
+    // With context, the lines between the heading and the next Match do not bring it back.
+    let o = run(&mut fx.sfor(["-C1", "needle", "h1.md", "--tree"]));
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let out = stdout(&o);
+    assert_eq!(out.matches("# needle notes").count(), 1, "{out}");
+    assert!(out.contains("\n    3:one needle\n"), "{out}");
+}
+
+#[test]
+fn t22_invalid_utf8_keeps_the_trails_of_the_file() {
+    let fx = Fixture::new();
+    std::fs::write(
+        fx.file("bad.md"),
+        b"# Before\n\nneedle-one\n\n## Bad \xff here\n\nneedle-two\n",
+    )
+    .unwrap();
+    let o = run(&mut fx.sfor(["needle", "bad.md", "--flat"]));
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(
+        stdout(&o),
+        "3: Before │ needle-one\n7: Before › Bad ? here │ needle-two\n"
+    );
+}
