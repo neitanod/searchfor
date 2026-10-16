@@ -59,7 +59,10 @@ impl FormatDefinition {
                 || m.hex.len() % 2 != 0
                 || !m.hex.chars().all(|c| c.is_ascii_hexdigit())
             {
-                return Err(format!("magic `{}` is not an even-length hex string", m.hex));
+                return Err(format!(
+                    "magic `{}` is not an even-length hex string",
+                    m.hex
+                ));
             }
         }
         Ok(d)
