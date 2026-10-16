@@ -8,11 +8,10 @@ fn width(s: &str) -> usize {
     s.chars().count()
 }
 
-/// The Trail as shown, fitted to the line (spec §5.1): whole when the line fits in
-/// `o.width`; else with each run of `item` Segments as `…`; else first `…` last.
-/// `fixed` is the width of everything else on the line.
-fn fit_trail(trail: &[Segment], fixed: usize, o: &RenderOptions) -> String {
-    let fits = |s: &str| fixed + width(s) <= o.width;
+/// The Trail as shown, fitted in `room` characters (spec §5.1): whole when it fits; else with
+/// each run of `item` Segments as `…`; else first › … › last; else cut with `…` at the end.
+fn fit_trail(trail: &[Segment], room: usize) -> String {
+    let fits = |s: &str| width(s) <= room;
     let full = trail
         .iter()
         .map(|s| s.name.as_str())
@@ -29,11 +28,23 @@ fn fit_trail(trail: &[Segment], fixed: usize, o: &RenderOptions) -> String {
             parts.push("…");
         }
     }
-    let collapsed = parts.join(" › ");
-    if fits(&collapsed) || trail.len() <= 2 {
-        return collapsed;
+    let mut shortest = parts.join(" › ");
+    if fits(&shortest) {
+        return shortest;
     }
-    format!("{} › … › {}", trail[0].name, trail[trail.len() - 1].name)
+    if trail.len() > 2 {
+        let ends = format!("{} › … › {}", trail[0].name, trail[trail.len() - 1].name);
+        if width(&ends) < width(&shortest) {
+            shortest = ends;
+        }
+    }
+    if fits(&shortest) {
+        return shortest;
+    }
+    let mut cut: String = shortest.chars().take(room.saturating_sub(1)).collect();
+    cut.truncate(cut.trim_end().len());
+    cut.push('…');
+    cut
 }
 
 /// `path:line:` (or `path-line-` for context), each part present when asked for.
@@ -105,8 +116,12 @@ fn write_row(
         width(&text::lossy_with_map(text::strip_terminator(r.bytes)).0)
     };
     let space = usize::from(!head.is_empty());
-    let trail =
-        (!r.trail.is_empty()).then(|| fit_trail(r.trail, head.width() + space + 3 + text_width, o));
+    // The text keeps up to half the width for itself; the Trail gets what is left.
+    let reserve = text_width.min(o.width.div_ceil(2));
+    let room = o
+        .width
+        .saturating_sub(head.width() + space + 3 + reserve);
+    let trail = (!r.trail.is_empty()).then(|| fit_trail(r.trail, room));
     let used = head.width() + space + trail.as_ref().map_or(0, |t| width(t) + 3);
     let prefix = |w: &mut dyn WriteColor| -> std::io::Result<()> {
         head.write(w)?;
@@ -146,7 +161,7 @@ pub fn render(
                 if !trail.is_empty() {
                     let fixed = head.width() + range.len() + 1;
                     w.write_all(b" ")?;
-                    style::write_styled(w, "trail", &fit_trail(trail, fixed, o))?;
+                    style::write_styled(w, "trail", &fit_trail(trail, o.width.saturating_sub(fixed)))?;
                 }
                 w.write_all(b"\n")?;
                 for (n, line) in super::section_lines(src, start, end) {
@@ -331,6 +346,58 @@ mod tests {
             .map(|&width| plain(&d, &s, &RenderOptions { width, ..flat() }))
             .collect();
         insta::assert_snapshot!("elided", out);
+    }
+
+    #[test]
+    fn long_trail_leaves_half_the_width_to_a_long_text() {
+        // The text keeps at least half the width: the Trail gives up its items first, then its
+        // middle, and is cut with `…` at the end only when first › … › last still does not fit.
+        let words = "lorem ipsum dolor sit amet ".repeat(6);
+        let line = format!("{words}ExecStart=/usr/bin/needle --flag {words}");
+        let s = src(&[&line]);
+        let width = 120;
+        let cases = [
+            vec![
+                h(1, "Alpha", 1, 1),
+                h(2, "Beta", 1, 1),
+                seg("item", "an item that is quite long here", 1, 1),
+                h(3, "Gamma", 1, 1),
+            ],
+            vec![
+                h(1, "Maustasten notes", 1, 1),
+                h(2, "Middle section", 1, 1),
+                h(3, "Last", 1, 1),
+            ],
+            vec![
+                h(1, "Maustasten · Task 677 (teclados) — memoria", 1, 1),
+                h(2, "Setup", 1, 1),
+                h(3, "Install the systemd service unit", 1, 1),
+            ],
+        ];
+        let mut out = String::new();
+        for trail in cases {
+            let mut d = described(&s, vec![mat(&s, 1)], vec![vec![trail]]);
+            d.file.path = "notes/maustasten/index.md".into();
+            let got = plain(&d, &s, &RenderOptions { width, ..flat() });
+            for l in got.lines() {
+                assert!(l.chars().count() <= width, "{l}");
+                let prefix = l.split(" │ ").next().unwrap().chars().count() + 3;
+                assert!(prefix <= width / 2, "{prefix} > {}: {l}", width / 2);
+            }
+            out.push_str(&got);
+        }
+        insta::assert_snapshot!("long_trail_half_width", out);
+    }
+
+    #[test]
+    fn trail_cut_at_the_end_keeps_at_least_the_ellipsis() {
+        let s = src(&[&"needle ".repeat(40)]);
+        let trail = vec![h(1, "A long first heading", 1, 1), h(2, "Second", 1, 1)];
+        let mut d = described(&s, vec![mat(&s, 1)], vec![vec![trail]]);
+        d.file.path = "a/path/that/is/long/enough/to/eat/half.md".into();
+        let out = plain(&d, &s, &RenderOptions { width: 80, ..flat() });
+        let first = out.lines().next().unwrap();
+        assert!(first.starts_with("a/path/that/is/long/enough/to/eat/half.md:1: … │ "), "{first}");
     }
 
     #[test]

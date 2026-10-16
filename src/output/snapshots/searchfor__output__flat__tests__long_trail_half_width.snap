@@ -1,0 +1,7 @@
+---
+source: src/output/flat.rs
+expression: out
+---
+notes/maustasten/index.md:1: Alpha › Beta › … › Gamma │ …[+160] t ExecStart=/usr/bin/needle --flag lorem ipsum d […+149]
+notes/maustasten/index.md:1: Maustasten notes › … › Last │ …[+162] ExecStart=/usr/bin/needle --flag lorem ipsum  […+150]
+notes/maustasten/index.md:1: Maustasten · Task 677 (tecl… │ …[+162] ExecStart=/usr/bin/needle --flag lorem ipsum […+151]
