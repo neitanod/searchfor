@@ -231,6 +231,7 @@ clap = { version = "4.6", features = ["derive", "string", "wrap_help"] }
 dirs = "6"
 encoding_rs = "0.8"
 globset = "0.4"
+grep-cli = "0.1.12"
 grep-matcher = "0.1.9"
 grep-printer = "0.3.1"
 grep-regex = "0.1.14"
@@ -1010,15 +1011,19 @@ pub struct Args {
     #[arg(long, hide = true)] pub no_hidden: bool,
     #[arg(long, overrides_with = "ignore")] pub no_ignore: bool,
     #[arg(long, hide = true)] pub ignore: bool,
-    /// One entry per occurrence, so `parse` can see where the third one is: clap's `Count`
-    /// keeps a single index (clap_builder parser.rs:1286–1299). `-uuu` and `-u -u -u` both give
-    /// three entries; verify that clap reports one index per short flag inside a cluster, and
-    /// that `sfor --help` shows `-u, --unrestricted` with no value placeholder (set `value_name`
-    /// or a custom `help` as needed; review r4 could not measure it).
-    #[arg(short = 'u', long = "unrestricted", action = ArgAction::Append, num_args = 0, default_missing_value = "1",
+    // One entry per occurrence, so `parse` can see where each one is: clap's `Count` keeps a
+    // single index (clap_builder parser.rs:1286–1299). clap reports one index per short flag
+    // inside a cluster, and shows `-u, --unrestricted` with no placeholder (measured, r5).
+    #[arg(short = 'u', long = "unrestricted", help = "Reduce the level of \"smart\" filtering.",
+          action = ArgAction::Append, num_args = 0, default_missing_value = "1",
           value_parser = clap::value_parser!(u8))]
     pub unrestricted_flags: Vec<u8>,
     #[arg(skip)] pub unrestricted: u8,
+    /// Resolved in `parse` by position, like `binary_choice`: the first -u acts as --no-ignore
+    /// and the second as --hidden at the place where they appear (rg 14.1.1: `-u --ignore`
+    /// keeps ignores, `--ignore -u` drops them, `-uu --no-hidden` hides).
+    #[arg(skip)] pub no_ignore_resolved: bool,
+    #[arg(skip)] pub hidden_resolved: bool,
     #[arg(short = 'L', long, overrides_with = "no_follow")] pub follow: bool,
     #[arg(long, hide = true)] pub no_follow: bool,
     #[arg(short = 'd', long)] pub max_depth: Option<usize>,
@@ -1112,10 +1117,14 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
     }
     let mut a = Args::from_arg_matches(&m)?;
     if a.unrestricted_flags.len() > 3 {
-        // ripgrep 14.1.1's exact message and exit 2.
+        // ripgrep 14.1.1's message and exit 2; ripgrep names the flag as spelled the fourth time
+        // (`--unrestricted` or `-u`), we always say `-u` (accepted deviation).
         return Err(CliError::Usage("error parsing flag -u: flag can only be repeated up to 3 times".into()));
     }
     a.unrestricted = a.unrestricted_flags.len() as u8;
+    let u = |n: usize| m.indices_of("unrestricted_flags").and_then(|mut it| it.nth(n));
+    a.no_ignore_resolved = last_by_index(&m, &[("no_ignore", true), ("ignore", false)], u(0), true);
+    a.hidden_resolved = last_by_index(&m, &[("hidden", true), ("no_hidden", false)], u(1), true);
     a.binary_choice = binary_choice(&m);
     if let Some(s) = &a.sort {
         if s != "path" && s != "none" { return Err(CliError::NotYet(format!("sort={s}"))); }
@@ -1129,6 +1138,20 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
         return Err(CliError::Usage("--expand prints lines; it cannot be combined with -c, --count-matches, -l, --files-without-match or -q".into()));
     }
     Ok(a)
+}
+
+/// The value of the last-placed of several boolean flags (`(id, value)` when present) and an
+/// optional extra occurrence at `extra_index` with value `extra_value`; false when none appears.
+fn last_by_index(m: &clap::ArgMatches, flags: &[(&str, bool)], extra_index: Option<usize>, extra_value: bool) -> bool {
+    let mut last: Option<(usize, bool)> = extra_index.map(|i| (i, extra_value));
+    for &(id, v) in flags {
+        if m.get_flag(id) {
+            if let Some(i) = m.index_of(id) {
+                if last.is_none_or(|(j, _)| i > j) { last = Some((i, v)); }
+            }
+        }
+    }
+    last.is_some_and(|(_, v)| v)
 }
 
 /// ripgrep's binary-mode flags in command-line order: -a → Text; --binary and the third -u →
@@ -1188,8 +1211,8 @@ impl Args {
 
     pub fn before(&self) -> usize { self.before_context.or(self.context).unwrap_or(0) }
     pub fn after(&self) -> usize { self.after_context.or(self.context).unwrap_or(0) }
-    pub fn hidden(&self) -> bool { (self.hidden && !self.no_hidden) || self.unrestricted >= 2 }
-    pub fn no_ignore(&self) -> bool { (self.no_ignore && !self.ignore) || self.unrestricted >= 1 }
+    pub fn hidden(&self) -> bool { self.hidden_resolved }
+    pub fn no_ignore(&self) -> bool { self.no_ignore_resolved }
     /// ripgrep's three binary modes for one file: quit at NUL, «binary» (search, stop at NUL
     /// and print the binary message), text.
     pub fn binary_mode(&self, explicit: bool) -> BinaryMode {
@@ -1280,6 +1303,16 @@ mod tests {
         assert_eq!(p(&["sfor", "-u", "-a", "-u", "-u", "x"]).binary_mode(false), BinaryMode::Binary);
         assert!(matches!(parse(os(&["sfor", "-uuuu", "x"])), Err(CliError::Usage(_))));
         assert_eq!(p(&["sfor", "-uu", "x"]).unrestricted, 2);
+    }
+
+    #[test]
+    fn unrestricted_effects_by_position() {
+        assert!(!p(&["sfor", "-u", "--ignore", "x"]).no_ignore());
+        assert!(p(&["sfor", "--ignore", "-u", "x"]).no_ignore());
+        assert!(!p(&["sfor", "-uu", "--no-hidden", "x"]).hidden());
+        assert!(p(&["sfor", "--no-hidden", "-uu", "x"]).hidden());
+        let a = p(&["sfor", "-u", "--ignore", "-u", "x"]);
+        assert!(!a.no_ignore() && a.hidden());
     }
 
     #[test]
@@ -2978,11 +3011,14 @@ assertion computed independently from the output, not from the function's return
 
 Used only when a structural flag is present (design note 9); without one, C9 runs
 grep-printer's `Summary`. Same output as ripgrep: `path:N` (`N` alone without file names) for
-`-c` (kept lines) and `--count-matches` (kept submatches), `path` for `-l`, and for
+`-c` (kept lines) and `--count-matches` (kept submatches; with `-v`, kept lines, because inverted
+Matches have no submatches and ripgrep counts the selected lines: `rg --count-matches -v needle
+md/guide.md` → 29), `path` for `-l`, and for
 `--files-without-match` every searched file that ends with no kept Match — including files the
 search found nothing in and files whose Matches were all filtered out (C9 passes both kinds).
 
-**Tests first:** each mode with and without file names.
+**Tests first:** each mode with and without file names; `--count-matches -v` with a filter that
+keeps every line equals the line count, and with one that drops some lines counts the rest.
 
 - [ ] Commits: «Add colours and the line renderer», «Add the tree printer», «Add the one-line
   printer», «Add the JSON printer», «Add summary output after filters».
@@ -3065,9 +3101,10 @@ pub fn run(args: Vec<OsString>) -> i32
 3. Actions: `--list-formats`, `--export-formats DIR` (prints written paths; 2 on error),
    `--type-list` (ripgrep's format: `name: glob, glob`, sorted). Each returns.
 4. `args.patterns()`. No pattern and no `-e`/`-f` → usage error, 2. An empty pattern set (only
-   empty `-f` files) → no output, exit 1, before walking, in every mode. Paths: none and stdin is not
-   a terminal and not used by `-f -` → stdin (`Source::from_bytes("<stdin>")`); none otherwise
-   → `.`. A path `-` → stdin. Paths named on the command line are `explicit`.
+   empty `-f` files) → no output, exit 1, before walking, in every mode. Paths: none, stdin not
+   used by `-f -`, and `grep_cli::is_readable_stdin()` true (ripgrep's own test: a file, a pipe
+   or a socket — not a terminal and not `/dev/null`) → stdin (`Source::from_bytes("<stdin>")`);
+   none otherwise → `.`. A path `-` → stdin. Paths named on the command line are `explicit`.
 5. **Passthrough** (design note 9): `--no-trail`, or a summary flag without structural flags →
    grep-printer `Standard`, `Summary` or `JSON` with ripgrep's defaults: line numbers when
    stdout is a TTY (overridden by `-n`/`-N`; always for JSON unless `-N`), headings when stdout
@@ -3159,7 +3196,10 @@ an empty tempdir, `current_dir` at a copy of `tests/fixtures/`. Snapshot stdout 
     with `--no-messages` → no stderr, same exit codes.
 19. `--files-without-match --within linux needle md misc` → lists the files whose Matches are
     all outside Linux and the files with no Match, exit 0.
-20. Stdin: `printf 'needle\n' | sfor -q needle` exits 0. Open pipe: spawn only `sfor -q needle`
+20. Stdin selection, written first: with `Stdio::null()` and no path, `sfor needle` searches the
+    current directory (as `rg needle < /dev/null`); with an empty pipe it searches stdin and
+    exits 1; with stdin redirected from `md/guide.md` (a regular file) it searches that.
+    `printf 'needle\n' | sfor -q needle` exits 0. Open pipe: spawn only `sfor -q needle`
     with `Stdio::piped()` stdin, write `needle\n`, keep the writer open (do not drop it), and
     assert that this child exits with 0 within 2 seconds (polling `try_wait`); then drop the
     writer.
@@ -3188,7 +3228,10 @@ stdout and exit code byte for byte:
 `--json needle misc/bom-bin.dat` (fixture: UTF-8 BOM + `needle first\nmore\0binary needle\n`;
 rg 14.1.1: second Match on line 3, offset 18) in trail mode and passthrough, and the BOM files
 both as explicit files and through stdin, in passthrough and with `-q`,
-`-uuu binary misc` and `-a binary misc/bin.dat` (binary vs text modes), `-a -uuu needle`,
+`-uuu binary misc` and `-a binary misc/bin.dat` (binary vs text modes), `-u --ignore needle`,
+`--ignore -u needle`, `-uu --no-hidden needle`, `-u --ignore -u needle` (with a `.gitignore`d
+and a hidden fixture file under `misc/`: C9 adds `misc/.hidden.md` and a `misc/.gitignore`
+listing `ignored.md`, plus `misc/ignored.md`), `-a -uuu needle`,
 `-uuu -a needle`, `-a --no-binary needle` and `--no-binary -a needle` with stdin from
 `misc/bin.dat`, `needle
 misc/late-nul.txt` (explicit, NUL after 64 KiB: early Match then message) and `needle misc`
@@ -3205,8 +3248,10 @@ no newline), `--json -v needle md/guide.md`, `--json -v -C1 needle md/guide.md` 
 `rg --json` byte for byte except the `elapsed` and `elapsed_total` objects (replaced by
 placeholders on both sides); and `sfor --json` (trail mode) equals it too after also removing
 our added keys (`format`, `trail`, `fragment`, `section`, `submatches[].trail`) and the
-`bytes_printed` values. Finally tree/flat `-M` against rg: `sfor --flat -M 40 needle md/guide.md`
-lines that are omissions equal ripgrep's omission lines for the same Matches.
+`bytes_printed` values. Finally tree/flat `-M` against rg: `sfor --flat -M 20 -C1 needle md/guide.md` (the fixture's
+longest line is 34 bytes, so 20 omits), with `--color never` and `--color always`: the
+omission lines, for matching and context lines, equal ripgrep's for the same lines, and the test
+asserts that at least one omission of each kind occurred.
 
 ### Task 9.4: benchmark — scripts/bench.sh
 
