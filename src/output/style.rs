@@ -65,11 +65,11 @@ pub fn write_highlighted(
         if s >= e {
             continue;
         }
-        w.write_all(text[at..s].as_bytes())?;
+        w.write_all(&text.as_bytes()[at..s])?;
         write_styled(w, "match", &text[s..e])?;
         at = e;
     }
-    w.write_all(text[at..].as_bytes())
+    w.write_all(&text.as_bytes()[at..])
 }
 
 #[cfg(test)]

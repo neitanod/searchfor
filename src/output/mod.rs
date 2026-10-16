@@ -106,6 +106,9 @@ pub fn write_line(
     }
 }
 
+/// Byte ranges of submatches in a line.
+type Subs = Vec<(usize, usize)>;
+
 /// One line for tree or flat: a Match line under one of its Trails, or a context line.
 pub(crate) struct Row<'a> {
     pub trail: &'a [Segment],
@@ -181,7 +184,7 @@ pub(crate) fn rows<'a>(d: &'a Described, o: &RenderOptions) -> Vec<Row<'a>> {
                 },
             )),
             Item::Match(m) => {
-                let mut groups: Vec<(&'a [Segment], Vec<(usize, usize)>)> = Vec::new();
+                let mut groups: Vec<(&'a [Segment], Subs)> = Vec::new();
                 if m.submatches.is_empty() || omitted(&m.bytes, o) {
                     groups.push((trail_of(d, i, 0), subs_of(&m.submatches)));
                 } else {
