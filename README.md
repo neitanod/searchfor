@@ -78,7 +78,9 @@ md/guide.md:16: Deploy guide › Install › Linux › step one │   - nested n
 ```
 
 `--within` keeps the matches whose Trail contains these Segment names in this order. Names
-are separated by `›`, `>` or `/`, and each one is a case-insensitive substring.
+are separated by `›`, `>` or `/`, and each one is a case-insensitive substring. Since `/`
+always separates, a heading with a slash in it, like `TCP/IP`, is named by a part without
+the slash, between `›` or `>`: `--within "network › tcp"`.
 
 ### The whole Section (`--expand`)
 

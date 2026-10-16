@@ -84,7 +84,8 @@ md/guide.md:16: Deploy guide › Install › Linux › step one │   - nested n
 
 `--within` se queda con los resultados cuyo Trail contiene esos nombres de Segmento en ese
 orden. Los nombres se separan con `›`, `>` o `/`, y cada uno es una subcadena que se compara
-sin distinguir mayúsculas.
+sin distinguir mayúsculas. Como `/` siempre separa, un heading con una barra, como `TCP/IP`,
+se nombra con una parte sin la barra, entre `›` o `>`: `--within "network › tcp"`.
 
 ### La Sección entera (`--expand`)
 
