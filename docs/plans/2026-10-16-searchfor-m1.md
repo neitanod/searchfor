@@ -1012,7 +1012,7 @@ pub struct Args {
     /// One entry per occurrence, so `parse` can see where the third one is: clap's `Count`
     /// keeps a single index (clap_builder parser.rs:1286–1299). `-uuu` and `-u -u -u` both give
     /// three entries; verify that clap reports one index per short flag inside a cluster.
-    #[arg(short = 'u', long, action = ArgAction::Append, num_args = 0, default_missing_value = "1",
+    #[arg(short = 'u', long = "unrestricted", action = ArgAction::Append, num_args = 0, default_missing_value = "1",
           value_parser = clap::value_parser!(u8))]
     pub unrestricted_flags: Vec<u8>,
     #[arg(skip)] pub unrestricted: u8,
