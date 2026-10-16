@@ -56,7 +56,14 @@ pub fn searcher(args: &Args, explicit: bool, decoded: bool) -> Searcher {
 /// the caller sets to `rg_in_memory(..)`; then `search_path` runs in memory as ripgrep does,
 /// and `search_reader` on stdin returns as soon as the sink stops, before EOF.
 pub fn streaming_searcher(args: &Args, explicit: bool, mmap: bool) -> Searcher {
+    printing_searcher(args, explicit, mmap, true)
+}
+
+/// `streaming_searcher` for passthrough, where grep-printer prints line numbers exactly when
+/// the searcher counts them: `line_number` is the printer's setting (design note 9).
+pub fn printing_searcher(args: &Args, explicit: bool, mmap: bool, line_number: bool) -> Searcher {
     let mut b = searcher_builder(args, explicit, false);
+    b.line_number(line_number);
     if mmap {
         // SAFETY: read-only maps; a file truncated by another process while it is mapped can
         // crash the process, the risk ripgrep accepts too (see source::MMAP_THRESHOLD).
@@ -65,12 +72,18 @@ pub fn streaming_searcher(args: &Args, explicit: bool, mmap: bool) -> Searcher {
     b.build()
 }
 
-fn searcher_builder(args: &Args, explicit: bool, decoded: bool) -> SearcherBuilder {
-    let binary = match args.binary_mode(explicit) {
+/// ripgrep's binary policy for one file (design note 3). A searcher built for one kind of
+/// file is reused for the other with `Searcher::set_binary_detection`.
+pub fn binary_detection(args: &Args, explicit: bool) -> BinaryDetection {
+    match args.binary_mode(explicit) {
         BinaryMode::Text => BinaryDetection::none(),
         BinaryMode::Binary => BinaryDetection::convert(b'\0'),
         BinaryMode::Quit => BinaryDetection::quit(b'\0'),
-    };
+    }
+}
+
+fn searcher_builder(args: &Args, explicit: bool, decoded: bool) -> SearcherBuilder {
+    let binary = binary_detection(args, explicit);
     let mut b = SearcherBuilder::new();
     b.line_number(true) // Trails need line numbers even when they are not printed.
         .before_context(args.before())
@@ -560,6 +573,25 @@ mod tests {
             items: sink.items,
             stats: sink.stats,
         }
+    }
+
+    #[test]
+    fn printing_searcher_counts_lines_only_when_asked() {
+        // grep-printer prints line numbers exactly when the searcher counts them.
+        let a = args(&["sfor", "x"]);
+        assert!(!printing_searcher(&a, true, false, false).line_number());
+        assert!(printing_searcher(&a, true, false, true).line_number());
+        assert!(streaming_searcher(&a, true, false).line_number());
+    }
+
+    #[test]
+    fn binary_detection_per_file() {
+        let a = args(&["sfor", "x"]);
+        assert_eq!(binary_detection(&a, false).quit_byte(), Some(b'\0'));
+        assert_eq!(binary_detection(&a, true).convert_byte(), Some(b'\0'));
+        let text = args(&["sfor", "-a", "x"]);
+        assert_eq!(binary_detection(&text, true).convert_byte(), None);
+        assert_eq!(binary_detection(&text, false).quit_byte(), None);
     }
 
     #[test]

@@ -278,6 +278,11 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
             "--no-trail cannot be combined with --within, --expand or --in-headings".into(),
         ));
     }
+    if a.in_headings && a.invert_match {
+        return Err(CliError::Usage(
+            "--in-headings selects names; -v has no meaning there".into(),
+        ));
+    }
     let summary = a.count || a.count_matches || a.files_with_matches || a.files_without_match;
     if a.expand && (summary || a.quiet) {
         return Err(CliError::Usage("--expand prints lines; it cannot be combined with -c, --count-matches, -l, --files-without-match or -q".into()));
@@ -757,6 +762,17 @@ mod tests {
         );
         assert!(!help.contains("--pcre2"), "{help}");
         assert!(!help.contains("--no-hidden"), "{help}");
+    }
+
+    #[test]
+    fn in_headings_rejects_invert_match() {
+        let e = parse(os(&["sfor", "--in-headings", "-v", "x"])).unwrap_err();
+        assert!(matches!(e, CliError::Usage(_)));
+        assert_eq!(
+            e.to_string(),
+            "sfor: --in-headings selects names; -v has no meaning there"
+        );
+        assert!(p(&["sfor", "--in-headings", "-v", "--no-invert-match", "x"]).in_headings);
     }
 
     #[test]

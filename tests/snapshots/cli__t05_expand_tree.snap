@@ -1,0 +1,13 @@
+---
+source: tests/cli.rs
+expression: out
+---
+md/guide.md
+  Deploy guide
+    # Install
+      ## Plans
+        column «Price»
+          21-| Plan | Price |
+          22-|------|-------|
+          23:| Pro  | needle-10 |
+          24-| needle-a | needle-b |

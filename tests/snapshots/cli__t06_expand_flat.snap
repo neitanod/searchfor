@@ -1,0 +1,84 @@
+---
+source: tests/cli.rs
+expression: out
+---
+md/guide.md:5-34: Deploy guide › Install
+# Install
+
+Intro paragraph with needle-intro.
+
+## Linux
+
+```bash
+apt install needle-pkg
+```
+
+- step one
+  - nested needle-item
+- step two
+
+## Plans
+
+| Plan | Price |
+|------|-------|
+| Pro  | needle-10 |
+| needle-a | needle-b |
+
+> | Quoted | Cell |
+> |---|---|
+> | q | needle-quoted |
+
+- # Heading in item
+  needle-in-item
+
+needle-after-list
+
+
+md/guide.md:11-13: Deploy guide › Install › Linux › bash
+```bash
+apt install needle-pkg
+```
+
+md/guide.md:15-16: Deploy guide › Install › Linux › step one
+- step one
+  - nested needle-item
+
+md/guide.md:21-24: Deploy guide › Install › Plans › Price
+| Plan | Price |
+|------|-------|
+| Pro  | needle-10 |
+| needle-a | needle-b |
+
+md/guide.md:26-28: Deploy guide › Install › Plans › Cell
+> | Quoted | Cell |
+> |---|---|
+> | q | needle-quoted |
+
+md/guide.md:30-32: Deploy guide › Install › Plans › Heading in item › Heading in item
+- # Heading in item
+  needle-in-item
+
+
+md/guide.md:19-34: Deploy guide › Install › Plans
+## Plans
+
+| Plan | Price |
+|------|-------|
+| Pro  | needle-10 |
+| needle-a | needle-b |
+
+> | Quoted | Cell |
+> |---|---|
+> | q | needle-quoted |
+
+- # Heading in item
+  needle-in-item
+
+needle-after-list
+
+
+md/guide.md:35-38: Deploy guide › Setext Title
+Setext Title
+============
+
+needle-setext body

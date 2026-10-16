@@ -19,7 +19,10 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         copy_dir(&source_dir(), dir.path());
         std::fs::create_dir(dir.path().join(".git")).unwrap();
-        Self { dir, formats: tempfile::tempdir().unwrap() }
+        Self {
+            dir,
+            formats: tempfile::tempdir().unwrap(),
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -42,7 +45,10 @@ impl Fixture {
             .env_remove("RIPGREP_CONFIG_PATH")
             .stdin(Stdio::null());
         let args: Vec<_> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
-        if !args.iter().any(|a| a.to_string_lossy().starts_with("--color")) {
+        if !args
+            .iter()
+            .any(|a| a.to_string_lossy().starts_with("--color"))
+        {
             c.arg("--color").arg("never");
         }
         c.args(args);
@@ -60,7 +66,10 @@ impl Fixture {
             .env_remove("RIPGREP_CONFIG_PATH")
             .stdin(Stdio::null());
         let args: Vec<_> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
-        if !args.iter().any(|a| a.to_string_lossy().starts_with("--color")) {
+        if !args
+            .iter()
+            .any(|a| a.to_string_lossy().starts_with("--color"))
+        {
             c.arg("--color").arg("never");
         }
         c.args(args);

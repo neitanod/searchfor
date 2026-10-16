@@ -1,0 +1,6 @@
+---
+source: tests/cli.rs
+expression: out
+---
+md/guide.md:12: Deploy guide › Install › Linux › bash │ apt install needle-pkg
+md/guide.md:16: Deploy guide › Install › Linux › step one │   - nested needle-item

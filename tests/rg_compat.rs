@@ -43,7 +43,12 @@ impl Report {
     }
 
     fn assert_empty(self) {
-        assert!(self.0.is_empty(), "{} case(s) differ:\n{}", self.0.len(), self.0.join("\n"));
+        assert!(
+            self.0.is_empty(),
+            "{} case(s) differ:\n{}",
+            self.0.len(),
+            self.0.join("\n")
+        );
     }
 }
 
@@ -213,7 +218,9 @@ fn json_equals_ripgrep() {
         (vec!["needle"], In::File("misc/bom.md")),
         (vec!["needle"], In::File("misc/utf16.md")),
     ];
-    let eleven: Vec<&str> = std::iter::once("needle").chain(std::iter::repeat_n("misc/bin.dat", 11)).collect();
+    let eleven: Vec<&str> = std::iter::once("needle")
+        .chain(std::iter::repeat_n("misc/bin.dat", 11))
+        .collect();
     let mut all = cases;
     all.push((eleven, n));
     for (args, input) in &all {
@@ -224,13 +231,21 @@ fn json_equals_ripgrep() {
         let mut nt = vec!["--no-trail"];
         nt.extend_from_slice(&a);
         let got = sfor(&fx, &nt, *input);
-        r.check(format!("--no-trail {a:?}"), want.clone(), (code(&got), json_lines(&got, false)));
+        r.check(
+            format!("--no-trail {a:?}"),
+            want.clone(),
+            (code(&got), json_lines(&got, false)),
+        );
         let got = sfor(&fx, &a, *input);
         let masked = (want.0, {
             let w = rg(&fx, &a, *input);
             json_lines(&w, true)
         });
-        r.check(format!("trail {a:?}"), masked, (code(&got), json_lines(&got, true)));
+        r.check(
+            format!("trail {a:?}"),
+            masked,
+            (code(&got), json_lines(&got, true)),
+        );
     }
     // The last output mode wins: `-c --json` prints JSON, `--json -c` counts.
     for args in [&["-c", "--json", "needle"][..], &["--json", "-c", "needle"]] {
@@ -238,11 +253,25 @@ fn json_equals_ripgrep() {
         a.extend_from_slice(args);
         let want = rg(&fx, &a, n);
         let is_json = stdout(&want).starts_with('{');
-        let want = (code(&want), if is_json { json_lines(&want, false) } else { stdout(&want) });
+        let want = (
+            code(&want),
+            if is_json {
+                json_lines(&want, false)
+            } else {
+                stdout(&want)
+            },
+        );
         let mut nt = vec!["--no-trail"];
         nt.extend_from_slice(&a);
         let got = sfor(&fx, &nt, n);
-        let got = (code(&got), if is_json { json_lines(&got, false) } else { stdout(&got) });
+        let got = (
+            code(&got),
+            if is_json {
+                json_lines(&got, false)
+            } else {
+                stdout(&got)
+            },
+        );
         r.check(format!("{a:?}"), want, got);
     }
     r.assert_empty();
@@ -256,7 +285,11 @@ fn binary_messages_in_the_flat_layout() {
     }
     let fx = Fixture::new();
     let mut r = Report(Vec::new());
-    for args in [&["needle", "misc/late-nul.txt"][..], &["needle", "misc"], &["binary", "misc/bin.dat"]] {
+    for args in [
+        &["needle", "misc/late-nul.txt"][..],
+        &["needle", "misc"],
+        &["binary", "misc/bin.dat"],
+    ] {
         let mut a = vec!["--sort", "path"];
         a.extend_from_slice(args);
         let want = rg(&fx, &a, In::Null);
@@ -264,16 +297,30 @@ fn binary_messages_in_the_flat_layout() {
         f.extend_from_slice(&a);
         let got = sfor(&fx, &f, In::Null);
         let msgs = |o: &Output| -> String {
-            stdout(o).lines().filter(|l| l.contains("binary file")).collect::<Vec<_>>().join("\n")
+            stdout(o)
+                .lines()
+                .filter(|l| l.contains("binary file"))
+                .collect::<Vec<_>>()
+                .join("\n")
         };
-        assert!(!msgs(&want).is_empty(), "{args:?}: rg printed no binary message");
-        r.check(format!("{a:?}"), (code(&want), msgs(&want)), (code(&got), msgs(&got)));
+        assert!(
+            !msgs(&want).is_empty(),
+            "{args:?}: rg printed no binary message"
+        );
+        r.check(
+            format!("{a:?}"),
+            (code(&want), msgs(&want)),
+            (code(&got), msgs(&got)),
+        );
     }
     r.assert_empty();
 }
 
 fn strip_ansi(s: &str) -> String {
-    regex_lite::Regex::new("\x1b\\[[0-9;]*m").unwrap().replace_all(s, "").into_owned()
+    regex_lite::Regex::new("\x1b\\[[0-9;]*m")
+        .unwrap()
+        .replace_all(s, "")
+        .into_owned()
 }
 
 /// (line number, `:` or `-`, message) of each line, `--` separators left out.
@@ -284,7 +331,9 @@ fn by_line(out: &str, sfor: bool) -> Vec<(u64, char, String)> {
         if l == "--" {
             continue;
         }
-        let c = re.captures(&l).unwrap_or_else(|| panic!("unexpected line: {l:?}"));
+        let c = re
+            .captures(&l)
+            .unwrap_or_else(|| panic!("unexpected line: {l:?}"));
         let sep = c[2].chars().next().unwrap();
         let mut msg = c[3].to_string();
         if sfor && sep == ':' {
@@ -308,13 +357,47 @@ fn max_columns_in_the_flat_layout() {
     }
     let fx = Fixture::new();
     for color in ["never", "always"] {
-        let want = rg(&fx, &["--color", color, "-n", "-M", "15", "-C1", "needle", "md/guide.md"], In::Null);
-        let got = sfor(&fx, &["--color", color, "--flat", "-M", "15", "-C1", "needle", "md/guide.md"], In::Null);
+        let want = rg(
+            &fx,
+            &[
+                "--color",
+                color,
+                "-n",
+                "-M",
+                "15",
+                "-C1",
+                "needle",
+                "md/guide.md",
+            ],
+            In::Null,
+        );
+        let got = sfor(
+            &fx,
+            &[
+                "--color",
+                color,
+                "--flat",
+                "-M",
+                "15",
+                "-C1",
+                "needle",
+                "md/guide.md",
+            ],
+            In::Null,
+        );
         assert_eq!((code(&want), code(&got)), (0, 0));
         let (w, g) = (by_line(&stdout(&want), false), by_line(&stdout(&got), true));
         assert_eq!(w, g, "--color {color}");
-        assert!(w.iter().any(|(_, s, m)| *s == ':' && m.starts_with("[Omitted long")), "{w:?}");
-        assert!(w.iter().any(|(_, s, m)| *s == '-' && m == "[Omitted long context line]"), "{w:?}");
+        assert!(
+            w.iter()
+                .any(|(_, s, m)| *s == ':' && m.starts_with("[Omitted long")),
+            "{w:?}"
+        );
+        assert!(
+            w.iter()
+                .any(|(_, s, m)| *s == '-' && m == "[Omitted long context line]"),
+            "{w:?}"
+        );
         let row24: Vec<_> = g.iter().filter(|(n, _, _)| *n == 24).collect();
         assert_eq!(row24.len(), 1, "{g:?}");
         if color == "always" {

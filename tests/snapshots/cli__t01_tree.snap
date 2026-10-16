@@ -1,0 +1,10 @@
+---
+source: tests/cli.rs
+expression: out
+---
+md/guide.md
+  Deploy guide
+    # Install
+      ## Linux
+        ```bash
+          12:apt install needle-pkg

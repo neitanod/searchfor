@@ -16,7 +16,14 @@ fn t01_tree_shows_the_trail_of_a_match() {
     let o = sfor(&["needle-pkg", "md", "--tree"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let out = stdout(&o);
-    for want in ["md/guide.md", "Deploy guide", "# Install", "## Linux", "```bash", "12:apt install needle-pkg"] {
+    for want in [
+        "md/guide.md",
+        "Deploy guide",
+        "# Install",
+        "## Linux",
+        "```bash",
+        "12:apt install needle-pkg",
+    ] {
         assert!(out.contains(want), "missing {want:?} in:\n{out}");
     }
     insta::assert_snapshot!("t01_tree", out);
@@ -27,7 +34,13 @@ fn t02_flat_prints_every_match_with_its_trail() {
     let o = sfor(&["needle", "md", "--flat"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let out = stdout(&o);
-    assert_eq!(out.lines().filter(|l| l.starts_with("md/guide.md:24:")).count(), 2, "{out}");
+    assert_eq!(
+        out.lines()
+            .filter(|l| l.starts_with("md/guide.md:24:"))
+            .count(),
+        2,
+        "{out}"
+    );
     insta::assert_snapshot!("t02_flat", out);
 }
 
@@ -49,7 +62,11 @@ fn t03_json_lines_parse() {
 #[ignore]
 fn t03_json_matches_validate_against_the_schema() {
     let schema: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/json-schema.json")).unwrap(),
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/docs/json-schema.json"
+        ))
+        .unwrap(),
     )
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
@@ -79,7 +96,13 @@ fn t05_expand_prints_the_table_once_under_plans() {
     let out = stdout(&o);
     assert!(out.contains("## Plans"), "{out}");
     for n in 21..=24 {
-        assert_eq!(out.lines().filter(|l| l.trim_start().starts_with(&format!("{n}"))).count(), 1, "line {n}:\n{out}");
+        assert_eq!(
+            out.lines()
+                .filter(|l| l.trim_start().starts_with(&format!("{n}")))
+                .count(),
+            1,
+            "line {n}:\n{out}"
+        );
     }
     insta::assert_snapshot!("t05_expand_tree", out);
 }
@@ -89,7 +112,13 @@ fn t06_expand_prints_a_shared_section_once() {
     let o = sfor(&["needle", "md", "--expand", "--flat"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let out = stdout(&o);
-    assert_eq!(out.lines().filter(|l| l.starts_with("md/guide.md:21-24:")).count(), 1, "{out}");
+    assert_eq!(
+        out.lines()
+            .filter(|l| l.starts_with("md/guide.md:21-24:"))
+            .count(),
+        1,
+        "{out}"
+    );
     insta::assert_snapshot!("t06_expand_flat", out);
 }
 
@@ -106,15 +135,27 @@ fn t07_in_headings_matches_names_only() {
 
 #[test]
 fn t08_long_line_becomes_fragments_with_counts() {
-    let o = sfor(&["needle", "misc/min.json", "--flat", "--fragment-width", "120"]);
+    let o = sfor(&[
+        "needle",
+        "misc/min.json",
+        "--flat",
+        "--fragment-width",
+        "120",
+    ]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let out = stdout(&o);
-    let line_len = std::fs::read_to_string(common::source_dir().join("misc/min.json")).unwrap().trim_end().chars().count();
+    let line_len = std::fs::read_to_string(common::source_dir().join("misc/min.json"))
+        .unwrap()
+        .trim_end()
+        .chars()
+        .count();
     let marker = regex_lite::Regex::new(r"^(?:…\[\+(\d+)\] )?(.*?)(?: \[…\+(\d+)\])?$").unwrap();
     let mut shown = 0;
     for l in out.lines() {
         assert!(l.chars().count() <= 120, "{} chars: {l}", l.chars().count());
-        let text = l.strip_prefix("1: ").unwrap_or_else(|| panic!("prefix: {l}"));
+        let text = l
+            .strip_prefix("1: ")
+            .unwrap_or_else(|| panic!("prefix: {l}"));
         let c = marker.captures(text).unwrap();
         let n = |i| c.get(i).map_or(0, |m| m.as_str().parse::<usize>().unwrap());
         assert_eq!(n(1) + c[2].chars().count() + n(3), line_len, "{l}");
@@ -140,7 +181,10 @@ fn t09_list_formats_shows_an_override() {
 #[test]
 fn t10_export_refuses_the_user_formats_directory() {
     let fx = Fixture::new();
-    let o = run(&mut fx.sfor([std::ffi::OsStr::new("--export-formats"), fx.formats.path().as_os_str()]));
+    let o = run(&mut fx.sfor([
+        std::ffi::OsStr::new("--export-formats"),
+        fx.formats.path().as_os_str(),
+    ]));
     assert_eq!(code(&o), 2);
     assert!(stderr(&o).contains("refusing"), "{}", stderr(&o));
 }
@@ -161,7 +205,11 @@ fn t11_not_yet_flags_fail_loudly() {
     for argv in [&["--pcre2", "x"][..], &["-nP", "x"]] {
         let o = sfor(argv);
         assert_eq!(code(&o), 2, "{argv:?}");
-        assert!(stderr(&o).contains("not supported yet"), "{argv:?}: {}", stderr(&o));
+        assert!(
+            stderr(&o).contains("not supported yet"),
+            "{argv:?}: {}",
+            stderr(&o)
+        );
     }
 }
 
@@ -199,7 +247,10 @@ fn t15_summary_flags_count_after_filters() {
 fn t16_binary_file_prints_ripgreps_message() {
     let o = sfor(&["binary", "misc/bin.dat", "--flat"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    assert_eq!(stdout(&o), "binary file matches (found \"\\0\" byte around offset 17)\n");
+    assert_eq!(
+        stdout(&o),
+        "binary file matches (found \"\\0\" byte around offset 17)\n"
+    );
 }
 
 #[test]
@@ -207,13 +258,26 @@ fn t17_in_headings_with_twice() {
     let fx = Fixture::new();
     let o = run(&mut fx.sfor(["--in-headings", "-i", "plan", "md/twice.md", "--json"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    let msgs: Vec<serde_json::Value> = stdout(&o).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let msgs: Vec<serde_json::Value> = stdout(&o)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
     let matches: Vec<&serde_json::Value> = msgs.iter().filter(|m| m["type"] == "match").collect();
     assert_eq!(matches.len(), 3, "{}", stdout(&o));
     assert_eq!(matches[0]["data"]["lines"]["text"], "# Plan of plans\n");
-    assert_eq!(matches[0]["data"]["submatches"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        matches[0]["data"]["submatches"].as_array().unwrap().len(),
+        2
+    );
 
-    let o = run(&mut fx.sfor(["--in-headings", "-m1", "-i", "plan", "md/twice.md", "--flat"]));
+    let o = run(&mut fx.sfor([
+        "--in-headings",
+        "-m1",
+        "-i",
+        "plan",
+        "md/twice.md",
+        "--flat",
+    ]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(stdout(&o).lines().count(), 1, "{}", stdout(&o));
     assert!(stdout(&o).starts_with("1:"), "{}", stdout(&o));
@@ -224,7 +288,10 @@ fn t17_in_headings_with_twice() {
     let o = run(&mut fx.sfor(["--in-headings", "-C1", "^Linux$", "md/guide.md", "--flat"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let out = stdout(&o);
-    let nums: Vec<&str> = out.lines().map(|l| &l[..l.find(|c: char| !c.is_ascii_digit()).unwrap() + 1]).collect();
+    let nums: Vec<&str> = out
+        .lines()
+        .map(|l| &l[..l.find(|c: char| !c.is_ascii_digit()).unwrap() + 1])
+        .collect();
     assert_eq!(nums, ["8-", "9:", "10-"], "{out}");
 
     let o = run(&mut fx.sfor(["--in-headings", "^", "md/twice.md", "--json"]));
@@ -261,7 +328,11 @@ fn t18_read_errors() {
     let o = run(&mut fx.sfor(["-j1", "--sort", "path", "-q", "absent", "missing.md", "md"]));
     assert_eq!((code(&o), stdout(&o).as_str()), (2, ""));
 
-    for (pat, quiet, want) in [("needle", false, 2), ("needle", true, 0), ("absent", true, 2)] {
+    for (pat, quiet, want) in [
+        ("needle", false, 2),
+        ("needle", true, 0),
+        ("absent", true, 2),
+    ] {
         let mut args = vec!["-j1", "--sort", "path", "--no-messages"];
         if quiet {
             args.push("-q");
@@ -275,7 +346,16 @@ fn t18_read_errors() {
 
 #[test]
 fn t19_files_without_match_after_filters() {
-    let o = sfor(&["--sort", "path", "--files-without-match", "--within", "linux", "needle", "md", "misc"]);
+    let o = sfor(&[
+        "--sort",
+        "path",
+        "--files-without-match",
+        "--within",
+        "linux",
+        "needle",
+        "md",
+        "misc",
+    ]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let out = stdout(&o);
     assert!(!out.contains("md/guide.md"), "{out}");
@@ -303,10 +383,16 @@ fn t20_stdin_selection() {
 
     // A regular file as stdin.
     let mut c = fx.sfor(["needle-pkg", "--flat"]);
-    c.stdin(Stdio::from(std::fs::File::open(fx.file("md/guide.md")).unwrap()));
+    c.stdin(Stdio::from(
+        std::fs::File::open(fx.file("md/guide.md")).unwrap(),
+    ));
     let o = run(&mut c);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    assert!(stdout(&o).contains("apt install needle-pkg"), "{}", stdout(&o));
+    assert!(
+        stdout(&o).contains("apt install needle-pkg"),
+        "{}",
+        stdout(&o)
+    );
 
     // A pipe with a match, closed.
     let mut c = fx.sfor(["-q", "needle"]);
@@ -337,6 +423,10 @@ fn t20_stdin_selection() {
         child.kill().unwrap();
     }
     drop(writer);
-    assert_eq!(status.and_then(|s| s.code()), Some(0), "still running after {elapsed:?}");
+    assert_eq!(
+        status.and_then(|s| s.code()),
+        Some(0),
+        "still running after {elapsed:?}"
+    );
     assert!(elapsed < Duration::from_secs(2));
 }

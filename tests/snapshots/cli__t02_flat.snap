@@ -1,0 +1,14 @@
+---
+source: tests/cli.rs
+expression: out
+---
+md/guide.md:7: Deploy guide › Install │ Intro paragraph with needle-intro.
+md/guide.md:12: Deploy guide › Install › Linux › bash │ apt install needle-pkg
+md/guide.md:16: Deploy guide › Install › Linux › step one │   - nested needle-item
+md/guide.md:23: Deploy guide › Install › Plans › Price │ | Pro  | needle-10 |
+md/guide.md:24: Deploy guide › Install › Plans › Plan │ | needle-a | needle-b |
+md/guide.md:24: Deploy guide › Install › Plans › Price │ | needle-a | needle-b |
+md/guide.md:28: Deploy guide › Install › Plans › Cell │ > | q | needle-quoted |
+md/guide.md:31: Deploy guide › Install › Plans › Heading in item › Heading in item │   needle-in-item
+md/guide.md:33: Deploy guide › Install › Plans │ needle-after-list
+md/guide.md:38: Deploy guide › Setext Title │ needle-setext body
