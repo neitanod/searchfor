@@ -22,13 +22,13 @@ bench() {
   hits=$(rg -l -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR" | wc -l || true)
   echo "== $name: $SFOR_BENCH_DIR, files: $total, matching: $hits"
   awk -v h="$hits" -v t="$total" 'BEGIN { if (h * 20 >= t) { print "pattern matches 5% or more of the files"; exit 1 } }'
-  hyperfine --ignore-failure --warmup 3 --runs 10 --export-json "/tmp/sfor-bench-$name.json" \
+  hyperfine --ignore-failure --warmup 5 --runs 30 --export-json "/tmp/sfor-bench-$name.json" \
     'rg --color never -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"' \
     './target/release/sfor --color never --flat -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'
   jq -r '.results | "trail mode / rg: \(.[1].median / .[0].median)"' "/tmp/sfor-bench-$name.json"
   jq -e '.results[1].median / .results[0].median <= 1.5' "/tmp/sfor-bench-$name.json" >/dev/null
   # Hilo 8386: the search itself must be as fast as ripgrep; --no-trail runs only ripgrep's engine.
-  hyperfine --ignore-failure --warmup 3 --runs 10 --export-json "/tmp/sfor-bench-$name-nt.json" \
+  hyperfine --ignore-failure --warmup 5 --runs 30 --export-json "/tmp/sfor-bench-$name-nt.json" \
     'rg --color never -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"' \
     './target/release/sfor --color never --no-trail -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'
   jq -r '.results | "--no-trail / rg: \(.[1].median / .[0].median)"' "/tmp/sfor-bench-$name-nt.json"
