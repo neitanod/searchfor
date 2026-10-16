@@ -184,7 +184,7 @@ scripts/bench.sh
 | C3 | Source and search | C1, C2 | `src/source.rs`, `src/search.rs`, `tests/fixtures/misc/**` | 3 |
 | C7 | Printers | C1, C6 | `src/output/{mod,style,tree,flat,json,summary}.rs` | 3 |
 | C8 | Filters | C1 | `src/filter.rs` | 3 |
-| C9 | Pipeline, end-to-end and compat tests, benchmark | C2–C8 | `src/app.rs`, `tests/cli.rs`, `tests/rg_compat.rs`, `scripts/bench.sh`, `tests/fixtures/md/twice.md`, `tests/fixtures/misc/{.hidden.md,.gitignore,ignored.md}`, the `-v`/`--in-headings` check in `src/cli/mod.rs` | 4 |
+| C9 | Pipeline, end-to-end and compat tests, benchmark | C2–C8 | `src/app.rs`, `tests/cli.rs`, `tests/rg_compat.rs`, `scripts/bench.sh`, `tests/common/mod.rs` (shared fixture-copy and launcher helpers), `tests/fixtures/md/twice.md`, `tests/fixtures/misc/{.hidden.md,.gitignore,ignored.md}`, the `-v`/`--in-headings` check in `src/cli/mod.rs` | 4 |
 | C10 | Docs, JSON schema, skill, spec and glossary updates | C9 | `README.md`, `README.es.md`, `docs/json-schema.json`, `skills/searchfor/SKILL.md`, `docs/specs/2026-10-16-searchfor-design.md`, `CONTEXT.md`, `tests/cli.rs` (one `#[ignore]`) | 5 |
 
 C1 writes every `mod` declaration, every dependency and an empty stub for every module file, so
@@ -2003,12 +2003,19 @@ impl OutlineProcessor for Markdown {
                 },
                 Event::Text(ref t) | Event::Code(ref t) => {
                     if let Some(h) = heading.as_mut() {
-                        // The piece points at the text's own bytes inside the event's range (inline
-                        // code ranges include the backticks). When the text is not found verbatim
-                        // (entities, escapes), the whole range is used.
-                        let src = match text[r.clone()].find(&**t) {
-                            Some(off) => r.start + off..r.start + off + t.len(),
-                            None => r.clone(),
+                        // Text: the event's range is verbatim when the Source slice equals the
+                        // text, and decoded otherwise (an entity like `&amp;` gives `&` over
+                        // 2..7); either way the piece covers the whole range, and the lengths tell
+                        // `source_ranges` which case it is. Code: the range includes the
+                        // backticks, so the piece points at the code's bytes inside them (found in
+                        // the slice), or the whole range when they are not found verbatim.
+                        let src = if !matches!(ev, Event::Code(_)) {
+                            r.clone()
+                        } else {
+                            match text[r.clone()].find(&**t) {
+                                Some(off) => r.start + off..r.start + off + t.len(),
+                                None => r.clone(),
+                            }
                         };
                         let at = h.text.len();
                         h.text.push_str(t);
@@ -2123,7 +2130,8 @@ name `< B` with pieces text `0..1`/Source `2..6` and text `1..3`/Source `6..8`; 
 of `B` (text `2..3`) is `[7..8]` only (the `B`, not the entity), of `<` is `[2..6]` (the whole
 entity); an empty hit at 0 maps to `[2..2]`, at the end of the text to `[8..8]`. `# &lt;\n`: `$`
 (empty hit at 1) maps to `[6..6]`, the end of the entity. `###\n`: an empty name with no
-pieces; `^$` maps to `[3..3]`. All calls go through
+pieces; `^$` maps to `[3..3]`. `# &amp;\n` gives the name `&` with one decoded piece, text
+`0..1`/Source `2..7` (a plain `find` would wrongly pick `2..3`). All calls go through
 `Processor::trails`/`names` with an `Input { bytes, path: Path::new("guide.md"), format: "markdown" }`.
 
 - [ ] **Step 3:** RED, then GREEN; clippy clean. Commit «Add the Markdown Processor».
@@ -2896,7 +2904,10 @@ Spec §6.1. Layout, two spaces of indentation per depth:
   `kind name`. A Segment with `signature` (code, M2) prints the signature instead.
 - **Per-submatch Trails** (design note 5): a Match line whose submatches have different Trails
   is printed once per distinct Trail, in submatch order, each time highlighting only the
-  submatches of that Trail. Equal consecutive Trails are one group.
+  submatches of that Trail. Equal consecutive Trails are one group. **Exception, `-M`:** when
+  the line is omitted (it exceeds `max_columns`), it is printed once, under its first Trail,
+  with the omission message counting **all** its submatches, as ripgrep counts them
+  (`[Omitted long line with 2 matches]` for a two-column row).
 - Only the Segments that differ from the previously printed Trail are printed (shared prefix
   once). An empty Trail prints the line at depth 0.
 - Context lines use `-` after the line number, Matches `:`, both without a space, as ripgrep.
@@ -2929,7 +2940,8 @@ pub fn render(d: &Described, src: &[u8], o: &RenderOptions, w: &mut dyn WriteCol
 Spec §6.2: `path:line: Trail │ text`, Trail joined with ` › ` in cyan, `│` dimmed. No Trail →
 `path:line: text`. `-I` drops `path:`; `-N` drops `line:`. Context lines: `path-line-text`,
 as ripgrep. `--` between non-adjacent groups when context is on. Per-submatch Trails: one
-output line per distinct Trail of a Match line, as in the tree. Fragments: one output line per
+output line per distinct Trail of a Match line, as in the tree, with the same `-M` exception
+(one omission line under the first Trail, counting all submatches). Fragments: one output line per
 Fragment, same prefix; the space left for the text is `o.width.saturating_sub(prefix width)`.
 `--expand`: for every distinct Section (per submatch, as in the tree), a header line
 `path:start-end: Trail`, the Section's lines verbatim (Matches highlighted), then an empty
@@ -3219,7 +3231,8 @@ removed. Both `rg` and `sfor` are launched with `std::process::Command` and
 same for both). Running them with a piped stdin would make every case without a path compare
 two empty searches.
 
-**The fixture copy** (shared by 9.2 and 9.3): copy `tests/fixtures/` into a tempdir including
+**The fixture copy** (shared by 9.2 and 9.3 through `tests/common/mod.rs`, with the launcher
+helpers): copy `tests/fixtures/` into a tempdir including
 dotfiles, and create an empty `.git` directory at the copy's root, so that `.gitignore` files
 apply to rg and to sfor alike (rg and the `ignore` crate honour `.gitignore` only inside a git
 repository, `ignore-0.4.33/src/dir.rs:560`). For each case, run `rg` and `sfor --no-trail` with the same arguments over
@@ -3266,11 +3279,13 @@ no newline), `--json -v needle md/guide.md`, `--json -v -C1 needle md/guide.md` 
 placeholders on both sides); and `sfor --json` (trail mode) equals it too after also removing
 our added keys (`format`, `trail`, `fragment`, `section`, `submatches[].trail`) and the
 `bytes_printed` values. Finally tree/flat `-M` against rg: `sfor --flat -M 15 -C1 needle md/guide.md` against
-`rg -M 15 -C1 needle md/guide.md`, with `--color never` and `--color always` (measured with rg
-14.1.1: 9 omitted matching lines and 2 omitted context lines, lines 22 and 30). For each
-output line, compare the message after sfor's prefix (`line:` or `line-`, the Trail and `│`,
-with colour escapes of the prefix removed in the `always` case) with ripgrep's line after its
-`line:`/`line-` prefix; the test asserts at least one omission of each kind.
+`rg -n -M 15 -C1 needle md/guide.md` (`-n` so that rg prints line numbers in a pipe), with
+`--color never` and `--color always` (measured with rg 14.1.1: 9 omitted matching lines and 2
+omitted context lines, 22 and 30). Pair the lines **by line number** (sfor's flat output always
+has it) and compare, for each line number, sfor's message after its prefix (`line:`/`line-`, the
+Trail and `│`, colour escapes of the prefix removed) with ripgrep's after its `line:`/`line-`.
+Line 24 (two columns) appears once in both, with `[Omitted long line with 2 matches]` under
+`--color always`. The test asserts at least one omission of each kind.
 
 ### Task 9.4: benchmark — scripts/bench.sh
 
