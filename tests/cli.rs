@@ -625,3 +625,20 @@ fn t27_in_headings_matches_the_space_of_a_setext_heading() {
     // The Match is the `\n` that the space stands for, at the end of line 1.
     assert_eq!(stdout(&o), "1: foo\n");
 }
+
+/// Code review r1, Codex #11: a huge context with --in-headings is clamped to the file.
+#[test]
+fn t28_in_headings_with_a_huge_context() {
+    let fx = Fixture::new();
+    let all = std::fs::read_to_string(fx.file("md/twice.md")).unwrap();
+    for flag in [
+        "-A18446744073709551615",
+        "-B18446744073709551615",
+        "-C18446744073709551615",
+    ] {
+        let o = run(&mut fx.sfor(["--in-headings", flag, "--flat", "-N", "^", "md/twice.md"]));
+        assert_eq!(code(&o), 0, "{flag}: {}", stderr(&o));
+        let out = stdout(&o);
+        assert_eq!(out.lines().count(), all.lines().count(), "{flag}: {out}");
+    }
+}

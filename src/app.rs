@@ -19,7 +19,6 @@ use grep_printer::{
 use grep_regex::RegexMatcher;
 use grep_searcher::{Searcher, Sink, SinkContext, SinkFinish, SinkMatch};
 use ignore::{DirEntry, WalkState};
-use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -978,18 +977,27 @@ impl Ctx<'_> {
             let s = li.line_start(l).unwrap_or(bytes.len());
             s..li.line_start(l + 1).unwrap_or(bytes.len())
         };
-        // Line number → index into `lines` for Matches, None for context.
-        let mut order: BTreeMap<u64, Option<usize>> = BTreeMap::new();
+        // The lines to print: every Match line with its context, clamped to the file (saturating:
+        // `-A` may be huge, code review r1 Codex #11). Groups that touch are merged, so each
+        // line is visited once. Line number → index into `lines` for Matches, None for context.
         let (before, after) = (self.args.before() as u64, self.args.after() as u64);
-        for (i, (l, _, _)) in lines.iter().enumerate() {
-            order.insert(*l, Some(i));
-        }
+        let mut spans: Vec<(u64, u64)> = Vec::new();
         for (l, _, _) in &lines {
-            for c in l.saturating_sub(before).max(1)..=(l + after).min(last_line) {
-                order.entry(c).or_insert(None);
+            let (s, e) = (
+                l.saturating_sub(before).max(1),
+                l.saturating_add(after).min(last_line).max(*l),
+            );
+            match spans.last_mut() {
+                Some(last) if s <= last.1.saturating_add(1) => last.1 = last.1.max(e),
+                _ => spans.push((s, e)),
             }
         }
-        let mut items = Vec::with_capacity(order.len());
+        let mut next = lines.iter().enumerate().peekable();
+        let order = spans.into_iter().flat_map(|(s, e)| s..=e).map(|l| {
+            let m = next.next_if(|(_, (ml, _, _))| *ml == l).map(|(i, _)| i);
+            (l, m)
+        });
+        let mut items = Vec::new();
         let mut trails = Vec::with_capacity(lines.len());
         let mut matches = 0;
         for (l, m) in order {
