@@ -847,9 +847,13 @@ impl Ctx<'_> {
         Ok(Some((src, d)))
     }
 
-    /// --in-headings: the Source and its names, and the Matches in them. A Plain file is not
-    /// reported.
+    /// --in-headings: the Source and its names, and the Matches in them. A Plain file has no
+    /// names: searched, nothing found (code review r1, Fable #5), and not read when its path
+    /// says so.
     fn names_of(&self, t: &Target, detector: &Detector) -> Result<Option<(Source, Described)>, ()> {
+        if matches!(detector.detect_by_path(&t.path), Some(None)) {
+            return Ok(None);
+        }
         let src = match &t.fs {
             None => {
                 let mut v = Vec::new();
@@ -872,7 +876,7 @@ impl Ctx<'_> {
         };
         let def = detector.detect(&src.path, src.head());
         let Some((p, def)) = def.and_then(|d| Some((processors::by_name(&d.processor)?, d))) else {
-            return Err(());
+            return Ok(None);
         };
         let input = Input {
             bytes: src.bytes(),
@@ -941,11 +945,7 @@ impl Ctx<'_> {
 
     /// Step 8: Matches of the pattern in Segment names, as Match lines of the Source, with
     /// `-m` and `-A`/`-B`/`-C` applied as the searcher would. None when nothing matched.
-    fn heading_matches(
-        &self,
-        src: &Source,
-        names: &[Name],
-    ) -> Option<HeadingFound> {
+    fn heading_matches(&self, src: &Source, names: &[Name]) -> Option<HeadingFound> {
         let bytes = src.bytes();
         let mut hits: Vec<(usize, usize, Trail, Section)> = Vec::new();
         for n in names {

@@ -740,3 +740,21 @@ fn t30_in_headings_trails_and_sections() {
     assert_eq!(m["data"]["section"]["start_line"], 9);
     assert_eq!(m["data"]["section"]["end_line"], 18);
 }
+
+/// Code review r1, Fable #5: with --in-headings, a Plain file has no names, so no Match.
+#[test]
+fn t31_in_headings_plain_files_have_no_match() {
+    let o = sfor(&[
+        "--sort",
+        "path",
+        "--in-headings",
+        "--files-without-match",
+        "x",
+        "misc/crlf.txt",
+        "md/twice.md",
+    ]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(stdout(&o), "misc/crlf.txt\nmd/twice.md\n");
+    let o = sfor(&["--in-headings", "-c", "needle", "misc/crlf.txt"]);
+    assert_eq!((code(&o), stdout(&o).as_str()), (1, ""));
+}
