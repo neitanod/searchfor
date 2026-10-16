@@ -1,4 +1,5 @@
 //! Processors turn Match anchors into Trails (design note 6).
+pub mod frontmatter;
 pub mod markdown;
 
 use crate::model::{Input, Name, Trail};

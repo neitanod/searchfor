@@ -583,3 +583,26 @@ fn t25_expanded_lines_follow_max_columns_and_fragments() {
         assert!(row.chars().count() <= 50, "{layout}: {row}");
     }
 }
+
+/// Code review r1, Codex #9: the frontmatter title is YAML, and --in-headings searches it.
+#[test]
+fn t26_frontmatter_title_is_read_as_yaml() {
+    let fx = Fixture::new();
+    std::fs::write(
+        fx.file("fm.md"),
+        "---\ntitle: |\n  Hello\n  World\n---\n\n# A\n\nneedle\n",
+    )
+    .unwrap();
+    let o = run(&mut fx.sfor(["--in-headings", "World", "fm.md", "--flat"]));
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(stdout(&o), "4:   World\n");
+    let o = run(&mut fx.sfor(["needle", "fm.md", "--flat"]));
+    assert_eq!(stdout(&o), "9: Hello World › A │ needle\n");
+    std::fs::write(
+        fx.file("c.md"),
+        "---\ntitle: Hello # comment\n---\nneedle\n",
+    )
+    .unwrap();
+    let o = run(&mut fx.sfor(["needle", "c.md", "--flat"]));
+    assert_eq!(stdout(&o), "4: Hello │ needle\n");
+}

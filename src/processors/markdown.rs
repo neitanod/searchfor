@@ -98,20 +98,13 @@ impl OutlineProcessor for Markdown {
                     meta = Some(segs.len() - 1);
                 }
                 Event::End(TagEnd::MetadataBlock(_)) => meta = None,
-                Event::Text(t) if meta.is_some() => {
-                    // Find `title:` in the metadata text and point the name range at its value.
-                    let base = r.start;
-                    let mut off = 0;
-                    for line in t.split_inclusive('\n') {
-                        if let Some(rest) = line.strip_prefix("title:") {
-                            let value = rest.trim_end_matches('\n').trim();
-                            let unq = value.trim_matches(|c| c == '"' || c == '\'');
-                            let vstart = base + off + "title:".len() + rest.find(unq).unwrap_or(0);
-                            let i = meta.unwrap();
-                            segs[i].segment.name = unq.to_string();
-                            segs[i].name = Some(vec![(0..unq.len(), vstart..vstart + unq.len())]);
-                        }
-                        off += line.len();
+                Event::Text(_) if meta.is_some() => {
+                    // The YAML `title`, its pieces pointing at the value's bytes.
+                    if let (Some(i), Some((name, pieces))) =
+                        (meta, super::frontmatter::title(&text[r.clone()], r.start))
+                    {
+                        segs[i].segment.name = name;
+                        segs[i].name = Some(pieces);
                     }
                 }
                 Event::Start(Tag::BlockQuote(_)) => containers.push(r.clone()),
@@ -549,6 +542,24 @@ mod tests {
         let n = names("# &amp;\n");
         assert_eq!(n[0].text, "&");
         assert_eq!(n[0].pieces, vec![(0..1, 2..7)]);
+    }
+
+    #[test]
+    fn frontmatter_title_is_read_as_yaml() {
+        let n = names("---\ntitle: Hello # comment\n---\n# A\n");
+        assert_eq!(n[0].text, "Hello");
+        let src = "---\ntitle: |\n  Hello\n  World\n---\n# A\n";
+        let n = names(src);
+        assert_eq!(n[0].text, "Hello World");
+        let at = n[0].text.find("World").unwrap();
+        let hit: Vec<&str> = n[0]
+            .source_ranges(at..at + 5)
+            .into_iter()
+            .map(|r| &src[r])
+            .collect();
+        assert_eq!(hit, ["World"]);
+        let n = names("---\ntitle: 'It''s'\n---\n");
+        assert_eq!(n[0].text, "It's");
     }
 
     #[test]
