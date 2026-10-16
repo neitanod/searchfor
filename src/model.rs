@@ -145,6 +145,8 @@ impl Name {
     /// (`^`, `$`) at text position `p` maps to an empty range: inside a verbatim piece at the
     /// corresponding byte; at the start of a decoded piece to its Source start, at its end to its
     /// Source end; with no piece (an empty name) at `anchor`.
+    // The single-element vectors below hold one (possibly empty) range, not a range of indices.
+    #[allow(clippy::single_range_in_vec_init)]
     pub fn source_ranges(&self, hit: Range<usize>) -> Vec<Range<usize>> {
         if hit.is_empty() {
             let p = hit.start;
