@@ -1,0 +1,9 @@
+---
+source: src/output/flat.rs
+expression: "plain(&d, &s, &o)"
+---
+docs/a.md:2: A │ l2 needle
+docs/a.md-3-l3
+--
+docs/a.md-5-l5
+docs/a.md:6: A │ l6 needle

@@ -1,0 +1,6 @@
+---
+source: src/output/flat.rs
+expression: "plain(&d, &s, &o)"
+---
+A › B │ one needle
+two

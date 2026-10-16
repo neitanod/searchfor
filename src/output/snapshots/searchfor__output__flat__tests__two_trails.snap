@@ -1,0 +1,6 @@
+---
+source: src/output/flat.rs
+expression: "plain(&d, &s, &flat())"
+---
+docs/a.md:4: A › Name │ | needle x | y needle |
+docs/a.md:4: A › Note │ | needle x | y needle |
