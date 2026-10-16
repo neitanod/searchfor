@@ -2863,8 +2863,9 @@ pub fn write_line(w: &mut dyn WriteColor, prefix: &dyn Fn(&mut dyn WriteColor) -
                   o: &RenderOptions) -> std::io::Result<()>;
 ```
 
-1. `-M`: copy the exact rule of `grep-printer-0.3.1/src/standard.rs` around line 1329 (which
-   length is compared, terminator included or not, and which of `[Omitted long matching line]`,
+1. `-M`: copy the exact rule of `grep-printer-0.3.1/src/standard.rs` around line 1329 (the
+   length compared includes the line terminator: `standard.rs:1054` and `1562`,
+   `line.len() > max_columns` on the whole line; and which of `[Omitted long matching line]`,
    `[Omitted long line with N matches]`, `[Omitted long context line]` is printed, depending on
    colour and on whether submatches were computed). C9 compares tree/flat output against
    `rg -M` for matching and context lines, with colour off and on.
@@ -3156,8 +3157,13 @@ pub fn run(args: Vec<OsString>) -> i32
 
 ### Task 9.2: end-to-end tests — tests/cli.rs (written first, RED until 9.1 is done)
 
-`assert_cmd::Command::cargo_bin("sfor")`, always `--color never`, `SFOR_FORMATS_DIR` pointing at
-an empty tempdir, `current_dir` at a copy of `tests/fixtures/`. Snapshot stdout of:
+Launch `sfor` with `std::process::Command::new(assert_cmd::cargo::cargo_bin("sfor"))`, not
+with `assert_cmd::Command` (its `spawn` always connects stdin to a pipe, assert_cmd-2.2.2
+cmd.rs:511, and an empty pipe is readable stdin, so a case without a path would search an
+empty stdin). Every case sets `.stdin(Stdio::null())` unless it feeds stdin on purpose (then
+`Stdio::from(File)` or a pipe written and closed). Always `--color never`, `SFOR_FORMATS_DIR`
+pointing at an empty tempdir, and `current_dir` at a copy of `tests/fixtures/` (see «The
+fixture copy» below). Snapshot stdout of:
 
 1. `sfor needle-pkg md --tree` → `md/guide.md`, `Deploy guide`, `# Install`, `## Linux`,
    ```` ```bash ````, `12:apt install needle-pkg` (acceptance criterion 3).
@@ -3195,7 +3201,8 @@ an empty tempdir, `current_dir` at a copy of `tests/fixtures/`. Snapshot stdout 
     exit 2; the same with `-q` and a Match → no output, exit 0; with `-q` and no Match → exit 2;
     with `--no-messages` → no stderr, same exit codes.
 19. `--files-without-match --within linux needle md misc` → lists the files whose Matches are
-    all outside Linux and the files with no Match, exit 0.
+    all outside Linux and the files with no Match, exit 0 (`misc/ignored.md` is not listed: the
+    fixture copy has `.git`, so it is ignored; `misc/.hidden.md` is not listed: hidden).
 20. Stdin selection, written first: with `Stdio::null()` and no path, `sfor needle` searches the
     current directory (as `rg needle < /dev/null`); with an empty pipe it searches stdin and
     exits 1; with stdin redirected from `md/guide.md` (a regular file) it searches that.
@@ -3207,7 +3214,15 @@ an empty tempdir, `current_dir` at a copy of `tests/fixtures/`. Snapshot stdout 
 ### Task 9.3: ripgrep compatibility — tests/rg_compat.rs (written first)
 
 Skipped with a note unless `rg --version` is 14.1.1. `rg` runs with `RIPGREP_CONFIG_PATH`
-removed. For each case, run `rg` and `sfor --no-trail` with the same arguments over
+removed. Both `rg` and `sfor` are launched with `std::process::Command` and
+`.stdin(Stdio::null())`, except the stdin cases, which pass `Stdio::from(File::open(…))` (the
+same for both). Running them with a piped stdin would make every case without a path compare
+two empty searches.
+
+**The fixture copy** (shared by 9.2 and 9.3): copy `tests/fixtures/` into a tempdir including
+dotfiles, and create an empty `.git` directory at the copy's root, so that `.gitignore` files
+apply to rg and to sfor alike (rg and the `ignore` crate honour `.gitignore` only inside a git
+repository, `ignore-0.4.33/src/dir.rs:560`). For each case, run `rg` and `sfor --no-trail` with the same arguments over
 `tests/fixtures/`, both with `--color never`, both through a pipe (not a TTY), and compare
 stdout and exit code byte for byte:
 
@@ -3229,9 +3244,11 @@ stdout and exit code byte for byte:
 rg 14.1.1: second Match on line 3, offset 18) in trail mode and passthrough, and the BOM files
 both as explicit files and through stdin, in passthrough and with `-q`,
 `-uuu binary misc` and `-a binary misc/bin.dat` (binary vs text modes), `-u --ignore needle`,
-`--ignore -u needle`, `-uu --no-hidden needle`, `-u --ignore -u needle` (with a `.gitignore`d
-and a hidden fixture file under `misc/`: C9 adds `misc/.hidden.md` and a `misc/.gitignore`
-listing `ignored.md`, plus `misc/ignored.md`), `-a -uuu needle`,
+`--ignore -u needle`, `-uu --no-hidden needle`, `-u --ignore -u needle` (C9 adds
+`misc/.hidden.md` = `needle hidden\n`, `misc/ignored.md` = `needle ignored\n` and
+`misc/.gitignore` = `ignored.md\n`; `misc/ignored.md` is committed with
+`git add -f -- tests/fixtures/misc/ignored.md`, because the repository's own git honours that
+`.gitignore`; the fixture copy's empty `.git` makes the ignore cases meaningful), `-a -uuu needle`,
 `-uuu -a needle`, `-a --no-binary needle` and `--no-binary -a needle` with stdin from
 `misc/bin.dat`, `needle
 misc/late-nul.txt` (explicit, NUL after 64 KiB: early Match then message) and `needle misc`
@@ -3248,10 +3265,12 @@ no newline), `--json -v needle md/guide.md`, `--json -v -C1 needle md/guide.md` 
 `rg --json` byte for byte except the `elapsed` and `elapsed_total` objects (replaced by
 placeholders on both sides); and `sfor --json` (trail mode) equals it too after also removing
 our added keys (`format`, `trail`, `fragment`, `section`, `submatches[].trail`) and the
-`bytes_printed` values. Finally tree/flat `-M` against rg: `sfor --flat -M 20 -C1 needle md/guide.md` (the fixture's
-longest line is 34 bytes, so 20 omits), with `--color never` and `--color always`: the
-omission lines, for matching and context lines, equal ripgrep's for the same lines, and the test
-asserts that at least one omission of each kind occurred.
+`bytes_printed` values. Finally tree/flat `-M` against rg: `sfor --flat -M 15 -C1 needle md/guide.md` against
+`rg -M 15 -C1 needle md/guide.md`, with `--color never` and `--color always` (measured with rg
+14.1.1: 9 omitted matching lines and 2 omitted context lines, lines 22 and 30). For each
+output line, compare the message after sfor's prefix (`line:` or `line-`, the Trail and `│`,
+with colour escapes of the prefix removed in the `always` case) with ripgrep's line after its
+`line:`/`line-` prefix; the test asserts at least one omission of each kind.
 
 ### Task 9.4: benchmark — scripts/bench.sh
 
