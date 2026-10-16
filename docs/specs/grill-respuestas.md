@@ -151,3 +151,11 @@
   consumir vía streaming, entonces hagamos eso». `--json` = ripgrep's messages plus our fields.
 - **8366** — The repository goes in the `neitanod` account.
 - **#18 comment** — npm is a usual channel for Rust tools (Biome, oxlint), so it is included.
+- **8375** — After the first working version: `/cpd`, code review rounds, `/cpd` again; then
+  keep going without stopping until every ripgrep flag and every Format discussed is
+  supported. Afterwards, make sure it works on Windows and macOS. The whole development is in
+  English (code, UI, comments, docs); docs also in Spanish, English being the primary language.
+- **8377 / Questionnaire 49** — Sebastián asked for more Formats; 35 options were proposed.
+- **8380** — Add the Formats called the most valuable (PDF with chapter, SQLite with table/row/
+  column, subtitles with timestamp) before the Windows/macOS step.
+- **8381** — Console output must be coloured.
