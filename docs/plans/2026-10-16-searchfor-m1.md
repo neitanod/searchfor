@@ -88,8 +88,10 @@ Decisions 7, 8, 10, 12, 18 belong to M2–M5.
    for regular files, read into memory for stdin and (in M4) Members. A UTF-8 BOM is removed and
    UTF-16 (LE/BE, detected by BOM) is transcoded to UTF-8 with `encoding_rs`, exactly as
    ripgrep's decoder does, so the bytes we search are the bytes the Processor parses and the
-   printer shows; the searcher runs with `bom_sniffing(false)` on `search_slice`. Offsets in our
-   output are offsets in those decoded bytes, which is also what `rg --json` reports.
+   printer shows; a searcher over a Source runs with `bom_sniffing(false)`, in memory or with a
+   reader exactly when ripgrep would (C3, `rg_in_memory`). Offsets in our output are offsets in
+   those decoded bytes, which is also what `rg --json` reports. Passthrough and the quiet fast
+   path search raw files and stdin, with BOM sniffing on.
 2. **Detector before search.** The Detector reads the start of the Source. In M1 its result only
    decides which Processor runs; from M4 on, a Format may also change the search policy
    (search object files whole, open Containers).
@@ -181,7 +183,7 @@ scripts/bench.sh
 | C3 | Source and search | C1, C2 | `src/source.rs`, `src/search.rs`, `tests/fixtures/misc/**` | 3 |
 | C7 | Printers | C1, C6 | `src/output/{mod,style,tree,flat,json,summary}.rs` | 3 |
 | C8 | Filters | C1 | `src/filter.rs` | 3 |
-| C9 | Pipeline, end-to-end and compat tests, benchmark | C2–C8 | `src/app.rs`, `tests/cli.rs`, `tests/rg_compat.rs`, `scripts/bench.sh` | 4 |
+| C9 | Pipeline, end-to-end and compat tests, benchmark | C2–C8 | `src/app.rs`, `tests/cli.rs`, `tests/rg_compat.rs`, `scripts/bench.sh`, `tests/fixtures/md/twice.md`, the `-v`/`--in-headings` check in `src/cli/mod.rs` | 4 |
 | C10 | Docs, JSON schema, skill, spec and glossary updates | C9 | `README.md`, `README.es.md`, `docs/json-schema.json`, `skills/searchfor/SKILL.md`, `docs/specs/2026-10-16-searchfor-design.md`, `CONTEXT.md`, `tests/cli.rs` (one `#[ignore]`) | 5 |
 
 C1 writes every `mod` declaration, every dependency and an empty stub for every module file, so
@@ -3006,7 +3008,8 @@ becomes `Item::Context(ContextLine { line_number, absolute_offset, bytes, submat
 
 ## Chunk 9: Pipeline, end-to-end and compatibility tests, benchmark
 
-**Files:** `src/app.rs`, `tests/cli.rs`, `tests/rg_compat.rs`, `scripts/bench.sh`, the one
+**Files:** `src/app.rs`, `tests/cli.rs`, `tests/rg_compat.rs`, `scripts/bench.sh`,
+`tests/fixtures/md/twice.md` (new; C5's directory, created after C5 merged), the one
 `-v`/`--in-headings` check in `src/cli/mod.rs`, and `src/lib.rs`/`src/main.rs` only if `run`
 needs a fix.
 
@@ -3040,8 +3043,9 @@ pub fn run(args: Vec<OsString>) -> i32
 7. Per file (parallel walk, design note 11): `Source::open` (errors → stderr unless
    `--no-messages`, remember that an error happened) → `detector.detect(&src.path, src.head())` →
    `search::search_source` with `searcher(args, src.explicit)` → None: nothing (stats not
-   counted) → Some: anchors per Match (`LineMatch::anchors`), `processor.trails(src.bytes(),
-   params, &all_anchors)` (error → warning, empty Trails), regroup into `trails[i][k]` →
+   counted) → Some: anchors per Match (`LineMatch::anchors`), `processor.trails(&Input { bytes:
+   src.bytes(), path: &src.path, format: &def.name }, &def.params, &all_anchors)` (error →
+   warning, empty Trails), regroup into `trails[i][k]` →
    `keep[i][k] = within(...)` when `--within` → `filter::retain` → `filter::sections` with
    `--expand` → if no Match is left, nothing → render the layout's printer into a
    `termcolor::Buffer` (or JSON into a `Vec<u8>`) and send it with the file's stats.
@@ -3103,8 +3107,8 @@ an empty tempdir, `current_dir` at a copy of `tests/fixtures/`. Snapshot stdout 
     filtering.
 16. `sfor binary misc/bin.dat --flat` → ripgrep's binary message.
 17. With a separate fixture `md/twice.md` (`# Plan of plans\n\n## Plan B\n\n## Plan C\n`):
-    `--in-headings -i plan md/twice.md --json` → the line `# Plan of plans` is one match message
-    with two submatches; `--in-headings -m1 -i plan md/twice.md --flat` → only line 1;
+    `--in-headings -i plan md/twice.md --json` (only `twice.md`, since `guide.md` also has
+    `Plans`) → the line `# Plan of plans` is one match message with two submatches; `--in-headings -m1 -i plan md/twice.md --flat` → only line 1;
     `--in-headings -m0 -i plan md/twice.md` → nothing, exit 1;
     `--in-headings -C1 '^Linux$' md/guide.md --flat` → line 9 with lines 8 and 10 as context;
     `--in-headings '^' md/twice.md --json` → one empty submatch per heading;
