@@ -1,0 +1,6 @@
+---
+source: src/output/flat.rs
+expression: out
+---
+docs/a.md:2: A │ …[+981] xxxxxxxxxxxxxxxxxxxneedlexxxxxxxxxxxxxxxxxxxx […+1974]
+docs/a.md:2: A │ …[+2481] xxxxxxxxxxxxxxxxxxxneedlexxxxxxxxxxxxxxxxxxxx […+474]

@@ -1,0 +1,14 @@
+---
+source: src/output/tree.rs
+expression: "plain(&d, &s, &o)"
+---
+docs/a.md
+  # A
+    2-l2
+    3:l3 needle
+    4-l4
+    --
+    ## B
+      7-l7
+      8:l8 needle
+      9-l9

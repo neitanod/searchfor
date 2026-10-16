@@ -1,0 +1,8 @@
+---
+source: src/output/tree.rs
+expression: out
+---
+docs/a.md
+  # A
+    2:…[+985] xxxxxxxxxxxxxxxneedlexxxxxxxxxxxxxxx […+1979]
+    2:…[+2485] xxxxxxxxxxxxxxxneedlexxxxxxxxxxxxxxx […+479]
