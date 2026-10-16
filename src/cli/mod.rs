@@ -64,9 +64,10 @@ pub struct Args {
     pub case_sensitive: bool,
     #[arg(short = 'S', long, overrides_with_all = ["ignore_case", "case_sensitive"])]
     pub smart_case: bool,
-    #[arg(short = 'w', long)]
+    // -w and -x override each other, the last one wins (rg 14.1.1, code review r1 Codex #4).
+    #[arg(short = 'w', long, overrides_with = "line_regexp")]
     pub word_regexp: bool,
-    #[arg(short = 'x', long)]
+    #[arg(short = 'x', long, overrides_with = "word_regexp")]
     pub line_regexp: bool,
     #[arg(short = 'F', long, overrides_with = "no_fixed_strings")]
     pub fixed_strings: bool,
@@ -608,6 +609,14 @@ mod tests {
         assert!(!e.fixed_strings && !e.follow && !e.json);
         assert!(p(&["sfor", "--ignore", "--no-ignore", "x"]).no_ignore());
         assert!(!p(&["sfor", "--no-ignore", "--ignore", "x"]).no_ignore());
+    }
+
+    #[test]
+    fn word_and_line_regexp_override_each_other() {
+        let a = p(&["sfor", "-x", "-w", "x"]);
+        assert!(a.word_regexp && !a.line_regexp);
+        let b = p(&["sfor", "-w", "-x", "x"]);
+        assert!(b.line_regexp && !b.word_regexp);
     }
 
     #[test]

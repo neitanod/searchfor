@@ -491,3 +491,44 @@ fn type_selection_equals_ripgrep() {
     }
     r.assert_empty();
 }
+
+/// Code review r1, Codex #4: -w and -x override each other, the last one wins.
+#[test]
+fn word_and_line_regexp_override_each_other() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::write(fx.file("wx.txt"), "needle needle\nneedle\nneedles\n").unwrap();
+    let mut r = Report(Vec::new());
+    for args in [
+        &["-x", "-w", "needle", "wx.txt"][..],
+        &["-w", "-x", "needle", "wx.txt"],
+        &["-x", "-w", "-x", "needle", "wx.txt"],
+    ] {
+        passthrough(&fx, &mut r, args, In::Null);
+        let want = rg(&fx, args, In::Null);
+        let mut a = vec!["--flat", "-N"];
+        a.extend_from_slice(args);
+        let got = sfor(&fx, &a, In::Null);
+        let text = |o: &Output, sfor: bool| -> String {
+            stdout(o)
+                .lines()
+                .map(|l| {
+                    if sfor {
+                        l.strip_prefix(' ').unwrap_or(l)
+                    } else {
+                        l
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        r.check(
+            format!("flat {args:?}"),
+            (code(&want), text(&want, false)),
+            (code(&got), text(&got, true)),
+        );
+    }
+    r.assert_empty();
+}
