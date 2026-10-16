@@ -3042,7 +3042,7 @@ pub fn run(args: Vec<OsString>) -> i32
    otherwise and always for Json. Detector built with `args.formats`.
 7. Per file (parallel walk, design note 11): `Source::open` (errors → stderr unless
    `--no-messages`, remember that an error happened) → `detector.detect(&src.path, src.head())` →
-   `search::search_source(&mut searcher(args, src.explicit, true), &matcher, &src, rg_in_memory(&paths, stdin), quiet_fast)` → None: nothing (stats not
+   `search::search_source(&mut searcher(args, src.explicit, true), &matcher, &src, rg_in_memory(&paths, stdin), false)` (the quiet fast path of step 10 never comes here) → None: nothing (stats not
    counted) → Some: anchors per Match (`LineMatch::anchors`), `processor.trails(&Input { bytes:
    src.bytes(), path: &src.path, format: &def.name }, &def.params, &all_anchors)` (error →
    warning, empty Trails), regroup into `trails[i][k]` →
