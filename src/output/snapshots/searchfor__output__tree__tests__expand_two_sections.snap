@@ -1,0 +1,13 @@
+---
+source: src/output/tree.rs
+expression: "plain(&d, &s, &o)"
+---
+docs/a.md
+  # A
+    1-# A
+    2-alpha
+    3-## B
+    4:needle and needle
+    ## B
+      3-## B
+      4:needle and needle
