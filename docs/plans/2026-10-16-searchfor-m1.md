@@ -184,7 +184,7 @@ scripts/bench.sh
 | C3 | Source and search | C1, C2 | `src/source.rs`, `src/search.rs`, `tests/fixtures/misc/**` | 3 |
 | C7 | Printers | C1, C6 | `src/output/{mod,style,tree,flat,json,summary}.rs` | 3 |
 | C8 | Filters | C1 | `src/filter.rs` | 3 |
-| C9 | Pipeline, end-to-end and compat tests, benchmark | C2–C8 | `src/app.rs`, `tests/cli.rs`, `tests/rg_compat.rs`, `scripts/bench.sh`, `tests/fixtures/md/twice.md`, the `-v`/`--in-headings` check in `src/cli/mod.rs` | 4 |
+| C9 | Pipeline, end-to-end and compat tests, benchmark | C2–C8 | `src/app.rs`, `tests/cli.rs`, `tests/rg_compat.rs`, `scripts/bench.sh`, `tests/fixtures/md/twice.md`, `tests/fixtures/misc/{.hidden.md,.gitignore,ignored.md}`, the `-v`/`--in-headings` check in `src/cli/mod.rs` | 4 |
 | C10 | Docs, JSON schema, skill, spec and glossary updates | C9 | `README.md`, `README.es.md`, `docs/json-schema.json`, `skills/searchfor/SKILL.md`, `docs/specs/2026-10-16-searchfor-design.md`, `CONTEXT.md`, `tests/cli.rs` (one `#[ignore]`) | 5 |
 
 C1 writes every `mod` declaration, every dependency and an empty stub for every module file, so
