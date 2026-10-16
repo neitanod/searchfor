@@ -99,6 +99,18 @@ pub fn retain(d: &mut Described, keep: &[Vec<bool>], before: usize, after: usize
     d.file.stats.binary_cut = new_cut;
 }
 
+/// -m after a filter: keeps the first `max` Match lines; the ones after them are dropped, or
+/// become context lines within `before`/`after` lines of a kept one (as `retain`).
+pub fn limit(d: &mut Described, max: u64, before: usize, after: usize) {
+    let keep: Vec<Vec<bool>> = d
+        .file
+        .matches()
+        .enumerate()
+        .map(|(i, m)| vec![(i as u64) < max; m.submatches.len().max(1)])
+        .collect();
+    retain(d, &keep, before, after);
+}
+
 /// --expand: per submatch, the Section of the last Segment of its Trail, or None for an
 /// empty Trail. Aligned with `d.trails`.
 pub fn sections(d: &Described) -> Vec<Vec<Option<(u64, u64)>>> {
@@ -327,6 +339,19 @@ mod tests {
         let before = d.file.items[1].clone();
         retain(&mut d, &[vec![true]], 0, 1);
         assert_eq!(d.file.items[1], before);
+    }
+
+    #[test]
+    fn limit_keeps_the_first_lines() {
+        let mut d = described(vec![
+            m(1, &[(0, 1)]),
+            m(2, &[(0, 1), (2, 3)]),
+            m(3, &[]),
+            m(9, &[]),
+        ]);
+        limit(&mut d, 2, 0, 1);
+        assert_eq!(shape(&d), vec!["m1", "m2", "c3"]);
+        assert_eq!(trail_names(&d), vec![vec!["L1#0"], vec!["L2#0", "L2#1"]]);
     }
 
     #[test]

@@ -89,7 +89,8 @@ fn searcher_builder(args: &Args, explicit: bool, decoded: bool) -> SearcherBuild
         .before_context(args.before())
         .after_context(args.after())
         .invert_match(args.invert_match)
-        .max_matches(args.max_count)
+        // With --within, -m counts the lines the filter keeps: C9 cuts after it.
+        .max_matches(args.max_count.filter(|_| args.within.is_none()))
         .binary_detection(binary)
         .bom_sniffing(!decoded);
     b

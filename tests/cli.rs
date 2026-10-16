@@ -642,3 +642,62 @@ fn t28_in_headings_with_a_huge_context() {
         assert_eq!(out.lines().count(), all.lines().count(), "{flag}: {out}");
     }
 }
+
+/// Code review r1, Fable #3: with --within, -m counts the lines the filter keeps.
+#[test]
+fn t29_max_count_counts_the_lines_within_keeps() {
+    let fx = Fixture::new();
+    let numbers = |args: &[&str]| -> Vec<String> {
+        let o = run(&mut fx.sfor(args));
+        assert_eq!(code(&o), 0, "{args:?}: {}", stderr(&o));
+        let mut v: Vec<String> = stdout(&o)
+            .lines()
+            .map(|l| l.split(':').next().unwrap().to_string())
+            .collect();
+        v.dedup();
+        v
+    };
+    assert_eq!(
+        numbers(&[
+            "--flat",
+            "-m2",
+            "--within",
+            "plans",
+            "needle",
+            "md/guide.md"
+        ]),
+        ["23", "24"]
+    );
+    assert_eq!(
+        numbers(&["-c", "-m2", "--within", "plans", "needle", "md/guide.md"]),
+        ["2"]
+    );
+    // --in-headings keeps the first -m names that --within keeps: `# Plan of plans` has no
+    // Segment above it, so the first kept name is `## Plan B`.
+    assert_eq!(
+        numbers(&[
+            "--flat",
+            "-m1",
+            "--in-headings",
+            "--within",
+            "plans",
+            "-i",
+            "plan",
+            "md/twice.md"
+        ]),
+        ["3"]
+    );
+    assert_eq!(
+        numbers(&[
+            "--flat",
+            "-m2",
+            "--in-headings",
+            "--within",
+            "plans",
+            "-i",
+            "plan",
+            "md/twice.md"
+        ]),
+        ["3", "5"]
+    );
+}

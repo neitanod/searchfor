@@ -837,6 +837,10 @@ impl Ctx<'_> {
                 .map(|ts| ts.iter().map(|t| filter::within(t, &wanted)).collect())
                 .collect();
             filter::retain(&mut d, &keep, self.args.before(), self.args.after());
+            // -m counts the lines the filter kept (code review r1, Fable #3).
+            if let Some(m) = self.args.max_count {
+                filter::limit(&mut d, m, self.args.before(), self.args.after());
+            }
         }
         if self.args.expand {
             d.sections = filter::sections(&d);
@@ -962,7 +966,8 @@ impl Ctx<'_> {
                 _ => lines.push((l, vec![(s, e)], vec![t])),
             }
         }
-        if let Some(m) = self.args.max_count {
+        // With --within, -m applies after the filter (`describe`).
+        if let Some(m) = self.args.max_count.filter(|_| self.args.within.is_none()) {
             lines.truncate(usize::try_from(m).unwrap_or(usize::MAX));
         }
         if lines.is_empty() {
