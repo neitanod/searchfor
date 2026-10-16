@@ -433,20 +433,33 @@ pub struct Input<'a> {
 pub struct Name {
     /// The name as shown: text pieces joined, a soft line break becoming one space.
     pub text: String,
-    /// Where each piece of `text` comes from: `(offset in text, byte range in the Source)`.
-    /// A setext heading spanning two lines has one piece per line.
-    pub pieces: Vec<(usize, Range<usize>)>,
+    /// Where each piece of `text` comes from: `(range in text, range in the Source)`. The two
+    /// ranges have the same length when the text is verbatim, and differ when the Processor
+    /// decoded it (an entity like `&lt;` is 1 byte of text over 4 of Source). A setext heading
+    /// spanning two lines has one piece per line.
+    pub pieces: Vec<(Range<usize>, Range<usize>)>,
     /// Trail of the named Segment, the Segment itself last.
     pub trail: Trail,
 }
 
 impl Name {
-    /// Source ranges covered by the text range `hit` (byte offsets in `text`), one per piece it
-    /// touches. Used to turn an `--in-headings` hit into submatches on the right lines.
+    /// Source ranges covered by the text range `hit`, one per piece it touches. A verbatim
+    /// piece maps byte for byte; a decoded piece maps to its whole Source range. An empty hit
+    /// (`^`, `$`) maps to an empty range at the corresponding Source position of the piece that
+    /// contains it (the first piece for position 0, the last one for the end of the text).
     pub fn source_ranges(&self, hit: Range<usize>) -> Vec<Range<usize>> {
-        self.pieces.iter().filter_map(|(at, src)| {
-            let (s, e) = (hit.start.max(*at), hit.end.min(at + src.len()));
-            (s < e).then(|| src.start + (s - at)..src.start + (e - at))
+        let map = |(t, src): &(Range<usize>, Range<usize>), s: usize, e: usize| {
+            if t.len() == src.len() { src.start + (s - t.start)..src.start + (e - t.start) } else { src.clone() }
+        };
+        if hit.is_empty() {
+            let p = hit.start;
+            return self.pieces.iter().find(|(t, _)| t.start <= p && p <= t.end)
+                .map(|piece| { let r = map(piece, p, p); if piece.0.len() == piece.1.len() { r } else { r.start..r.start } })
+                .into_iter().collect();
+        }
+        self.pieces.iter().filter_map(|piece| {
+            let (s, e) = (hit.start.max(piece.0.start), hit.end.min(piece.0.end));
+            (s < e).then(|| map(piece, s, e))
         }).collect()
     }
 }
@@ -601,7 +614,7 @@ pub struct OutlineSegment {
     pub label: Range<usize>,
     /// Pieces of the name's text in the Source, for `--in-headings`, in the format of
     /// `Name::pieces`. None: the Segment is not searchable by name.
-    pub name: Option<Vec<(usize, Range<usize>)>>,
+    pub name: Option<Vec<(Range<usize>, Range<usize>)>>,
     pub parent: Option<usize>,
     /// Hidden Segments take part in containment but never appear in a Trail.
     pub hidden: bool,
@@ -708,7 +721,7 @@ mod tests {
 
     fn heading(name: &str, range: Range<usize>, label: Range<usize>) -> OutlineSegment {
         let mut s = OutlineSegment::new("heading", name, range, label.clone());
-        s.name = Some(vec![(0, label.end - 2..label.end - 1)]); // the one-letter name before "\n"
+        s.name = Some(vec![(0..1, label.end - 2..label.end - 1)]); // the one-letter name before "\n"
         s
     }
 
@@ -1473,22 +1486,27 @@ pub fn export_builtin(dir: &Path, user_dir: Option<&Path>) -> anyhow::Result<Vec
     Ok(targets)
 }
 
-/// Absolute path with symlinks resolved as far as the path exists, and `.`/`..` folded in the
-/// part that does not exist yet.
+/// Absolute path with symlinks resolved over the part that exists, and `.`/`..` folded in the
+/// part that does not (a missing component cannot be a symlink, so folding there is exact).
 fn resolve(p: &Path) -> std::io::Result<PathBuf> {
+    use std::path::Component;
     let abs = std::path::absolute(p)?;
-    let mut existing = abs.clone();
-    let mut rest: Vec<std::ffi::OsString> = Vec::new();
-    while std::fs::symlink_metadata(&existing).is_err() {
-        match (existing.file_name(), existing.parent()) {
-            (Some(name), Some(parent)) => { rest.push(name.to_os_string()); existing = parent.to_path_buf(); }
-            _ => break,
+    let mut out = PathBuf::new();
+    let mut exists = true;
+    for c in abs.components() {
+        if exists {
+            let next = out.join(c.as_os_str());
+            if std::fs::symlink_metadata(&next).is_ok() {
+                out = std::fs::canonicalize(&next)?;
+                continue;
+            }
+            exists = false;
         }
-    }
-    // `file_name()` is None for a trailing `..`; handle it lexically.
-    let mut out = std::fs::canonicalize(&existing).unwrap_or(existing);
-    for c in rest.into_iter().rev() {
-        if c == ".." { out.pop(); } else if c != "." { out.push(c); }
+        match c {
+            Component::ParentDir => { out.pop(); }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
     }
     Ok(out)
 }
@@ -1555,6 +1573,9 @@ mod tests {
         let sneaky = base.path().join("aux/../formats");
         assert!(export_builtin(&sneaky, Some(&user)).unwrap_err().to_string().contains("refusing"));
         assert!(!user.exists());
+        let missing_parent = base.path().join("nuevo/../formats");
+        assert!(export_builtin(&missing_parent, Some(&user)).unwrap_err().to_string().contains("refusing"));
+        assert!(!user.exists() && !base.path().join("nuevo").exists());
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(base.path(), base.path().join("link")).unwrap();
@@ -1781,7 +1802,7 @@ fn cut(s: &str, n: usize) -> String {
     out
 }
 
-struct OpenHeading { seg: usize, text: String, pieces: Vec<(usize, Range<usize>)> }
+struct OpenHeading { seg: usize, text: String, pieces: Vec<(Range<usize>, Range<usize>)> }
 struct OpenItem { seg: usize, text: String, done: bool }
 struct OpenTable { seg: usize, header: Vec<String>, in_head: bool, col: usize, cell_text: String, cells: Vec<(usize, Range<usize>)> }
 
@@ -1819,7 +1840,7 @@ impl OutlineProcessor for Markdown {
                             let vstart = base + off + "title:".len() + rest.find(unq).unwrap_or(0);
                             let i = meta.unwrap();
                             segs[i].segment.name = unq.to_string();
-                            segs[i].name = Some(vec![(0, vstart..vstart + unq.len())]);
+                            segs[i].name = Some(vec![(0..unq.len(), vstart..vstart + unq.len())]);
                         }
                         off += line.len();
                     }
@@ -1892,8 +1913,9 @@ impl OutlineProcessor for Markdown {
                             Some(off) => r.start + off..r.start + off + t.len(),
                             None => r.clone(),
                         };
-                        h.pieces.push((h.text.len(), src));
+                        let at = h.text.len();
                         h.text.push_str(t);
+                        h.pieces.push((at..h.text.len(), src));
                     }
                     if let Some(tb) = table.as_mut() { tb.cell_text.push_str(t); }
                     if let Some(it) = items.last_mut() { if !it.done { it.text.push_str(t); } }
@@ -1997,9 +2019,12 @@ Also: with `list_items = false`, `needle-item` loses `item:step one` and `needle
 `names()` returns exactly `Deploy guide`, `Install`, `Linux`, `Plans`, `Heading in item`,
 `Setext Title`, and for each, the concatenated `src[piece]` equals the name (for
 `Deploy guide`, without quotes). A separate inline document `First\nSecond\n======\n` gives one
-heading named `First Second` with two pieces, `0..5` and `6..12`, and
-`source_ranges(6..12)` is the range of `Second` on line 2; `# A \`code\` B` gives the name
-`A code B` with the `code` piece pointing inside the backticks. All calls go through
+heading named `First Second` with two pieces, text `0..5`/Source `0..5` and text
+`6..12`/Source `6..12`, and `source_ranges(6..12)` is `[6..12]` on line 2; `# A \`code\` B` gives
+the name `A code B` with the `code` piece pointing inside the backticks; `# &lt; B\n` gives the
+name `< B` with pieces text `0..1`/Source `2..6` and text `1..3`/Source `6..8`; `source_ranges`
+of `B` (text `2..3`) is `[7..8]` only (the `B`, not the entity), of `<` is `[2..6]` (the whole
+entity); an empty hit at 0 maps to `[2..2]`, at the end of the text to `[8..8]`. All calls go through
 `Processor::trails`/`names` with an `Input { bytes, path: Path::new("guide.md"), format: "markdown" }`.
 
 - [ ] **Step 3:** RED, then GREEN; clippy clean. Commit «Add the Markdown Processor».
@@ -2266,7 +2291,7 @@ Fixtures (generate them with a small script in the chunk and commit the bytes):
 `# T\nneedle\n`; `misc/bin.dat` = `needle first\nmore\0binary needle\n`;
 `misc/invalid.txt` = `caf\xe9 needle\n`; `misc/late-nul.txt` = `needle early\n`, then
 70 000 bytes of `x` lines, then `\0needle late\n` (a NUL after the first 64 KiB); `misc/crlf.txt` = `a\r\nb\n`; `misc/noeol.txt` = `a`
-(no newline); `misc/min.json` = one line of 20 000 characters with `needle` at offsets 1000,
+(no newline); `misc/anchor.txt` = `bar\nfoo needle\nneedle\n`; `misc/min.json` = one line of 20 000 characters with `needle` at offsets 1000,
 1050 and 15000 (used by C9).
 
 - [ ] **Step 1: tests first**: `bom.md` → `bytes()` starts with `# T`; `utf16.md` →
@@ -2301,13 +2326,27 @@ pub fn matcher(args: &Args, patterns: &[String]) -> Result<RegexMatcher> {
     b.word(args.word_regexp)
         .whole_line(args.line_regexp)
         .fixed_strings(args.fixed_strings && !args.no_fixed_strings)
+        .multi_line(true) // as ripgrep: ^ and $ match at line boundaries inside a buffer
         .line_terminator(Some(b'\n'));
     // An empty pattern set never reaches here: C9 exits 1 before searching.
     Ok(b.build_many(patterns)?)
 }
 
+/// ripgrep 14.1.1's memory-map choice, which is also its in-memory vs reader choice: the
+/// search runs in memory only when every path given is an existing regular file (no
+/// directory, no stdin) and there are at most 10 of them (`--mmap`/`--no-mmap` are not in
+/// M1). The chunk verifies this rule by behaviour: C9 compares `--json` on `misc/bin.dat` as one
+/// explicit file (rg: second Match on line 2, offset 13), walked inside `misc`, as 11 explicit
+/// files, and through stdin (line 3, offset 18); adjust the rule to what rg does and say so.
+pub fn rg_in_memory(paths: &[PathBuf], stdin: bool) -> bool {
+    !stdin && !paths.is_empty() && paths.len() <= 10 && paths.iter().all(|p| p.is_file())
+}
+
 /// `explicit`: the file was named on the command line, or is stdin (design note 3).
-pub fn searcher(args: &Args, explicit: bool) -> Searcher {
+/// `decoded`: the input is a Source (BOM already handled: sniffing off). Passthrough and the
+/// quiet fast path search raw files and stdin, so they pass `decoded = false` and keep
+/// grep-searcher's BOM sniffing, as ripgrep.
+pub fn searcher(args: &Args, explicit: bool, decoded: bool) -> Searcher {
     let binary = match args.binary_mode(explicit) {
         crate::cli::BinaryMode::Text => BinaryDetection::none(),
         crate::cli::BinaryMode::Binary => BinaryDetection::convert(b'\0'),
@@ -2320,7 +2359,7 @@ pub fn searcher(args: &Args, explicit: bool) -> Searcher {
         .invert_match(args.invert_match)
         .max_matches(args.max_count)
         .binary_detection(binary)
-        .bom_sniffing(false) // Source already decoded the BOM.
+        .bom_sniffing(!decoded)
         .build()
 }
 
@@ -2376,17 +2415,16 @@ impl<'m> CollectSink<'m> {
         Self { matcher, invert, quiet, items: Vec::new(), stats: FileStats::default() }
     }
 
-    /// Exactly grep-printer 0.3.1's JSON sink (`record_matches`, json.rs:645–680, with
-    /// `find_iter_at_in_context`, util.rs:473–520): search the line with its `\n` removed (a
-    /// `\r` stays; CRLF mode is not in M1), then drop a final empty match that sits at the end
-    /// of the line's bytes. Those helpers are `pub(crate)`, so the logic is copied, not called.
-    fn submatches(&self, line: &[u8]) -> Vec<Submatch> {
-        let searched = line.strip_suffix(b"\n").unwrap_or(line);
-        let mut v = Vec::new();
-        let _ = self.matcher.find_iter(searched, |m| { v.push(Submatch { start: m.start(), end: m.end() }); true });
-        if v.last().is_some_and(|m| m.start == m.end && m.start >= line.len()) { v.pop(); }
-        v
-    }
+    /// Exactly grep-printer 0.3.1's JSON sink (`record_matches`, json.rs:645–680, called at
+    /// json.rs:729 with the Match's buffer and range, and `find_iter_at_in_context`,
+    /// util.rs:473–520), copied because those helpers are `pub(crate)`: take `buffer` up to the
+    /// end of `range` minus its `\n` (a `\r` stays; CRLF mode is not in M1), run
+    /// `matcher.find_iter_at(that, range.start, …)` stopping at the first match that starts at
+    /// or after `range.end`, make offsets relative to `range.start`, and drop a final empty
+    /// match at the end of the line's bytes. Searching inside the buffer keeps `\A` and
+    /// look-behind seeing what ripgrep's printer sees (`bar\nfoo needle\n` with
+    /// `\Afoo|needle` reports only `needle`).
+    fn submatches(&self, buffer: &[u8], range: std::ops::Range<usize>) -> Vec<Submatch>;
 }
 
 impl Sink for CollectSink<'_> {
@@ -2395,7 +2433,7 @@ impl Sink for CollectSink<'_> {
     fn matched(&mut self, _s: &Searcher, m: &SinkMatch<'_>) -> Result<bool, Self::Error> {
         let bytes = m.bytes().to_vec();
         // grep-printer records matches on inverted lines too (none are found there).
-        let subs = if self.invert { Vec::new() } else { self.submatches(&bytes) };
+        let subs = if self.invert { Vec::new() } else { self.submatches(m.buffer(), m.bytes_range_in_buffer()) };
         self.stats.matched_lines += 1;
         self.stats.matches += subs.len() as u64;
         self.items.push(Item::Match(LineMatch {
@@ -2409,7 +2447,8 @@ impl Sink for CollectSink<'_> {
 
     fn context(&mut self, _s: &Searcher, c: &SinkContext<'_>) -> Result<bool, Self::Error> {
         let bytes = c.bytes().to_vec();
-        let subs = if self.invert { self.submatches(&bytes) } else { Vec::new() };
+        // grep-printer's context path searches the line's own bytes (range 0..len).
+        let subs = if self.invert { self.submatches(&bytes, 0..bytes.len()) } else { Vec::new() };
         self.items.push(Item::Context(ContextLine {
             line_number: c.line_number().unwrap_or(0),
             absolute_offset: c.absolute_byte_offset(),
@@ -2434,15 +2473,20 @@ impl Sink for CollectSink<'_> {
 /// Searches a Source. Returns None when nothing matched (stats are discarded: ripgrep's
 /// summary counts only files with Matches, verified with rg 14.1.1).
 ///
-/// The search goes through `search_reader` over the Source's bytes, not `search_slice`: with
-/// `BinaryDetection::convert`, only the reader path converts NUL bytes into line terminators
-/// (grep-searcher-0.1.17/src/searcher/mod.rs:83), which is what ripgrep does for explicit files
-/// and stdin, and what fixes its line numbers and offsets. When the result has a binary offset,
-/// the coordinates no longer match the Source, so C9 treats such a file as Plain (no Processor).
-pub fn search_source(searcher: &mut Searcher, matcher: &RegexMatcher, src: &Source, quiet: bool) -> Result<Option<FileMatches>> {
+/// The search path decides how `BinaryDetection::convert` behaves: the reader path converts NUL
+/// bytes into line terminators, the in-memory path does not
+/// (grep-searcher-0.1.17/src/searcher/mod.rs:83), and line numbers and offsets differ
+/// accordingly. ripgrep 14.1.1 searches memory-mapped (in memory) only in the cases of
+/// `in_memory`, and with a reader otherwise; we do the same on the Source's bytes, so our
+/// coordinates are ripgrep's. When the result has a binary offset, C9 skips the Processor.
+pub fn search_source(searcher: &mut Searcher, matcher: &RegexMatcher, src: &Source, in_memory: bool, quiet: bool) -> Result<Option<FileMatches>> {
     let started = std::time::Instant::now();
     let mut sink = CollectSink::new(matcher, searcher.invert_match(), quiet);
-    searcher.search_reader(matcher, std::io::Cursor::new(src.bytes()), &mut sink)?;
+    if in_memory {
+        searcher.search_slice(matcher, src.bytes(), &mut sink)?;
+    } else {
+        searcher.search_reader(matcher, std::io::Cursor::new(src.bytes()), &mut sink)?;
+    }
     if !sink.items.iter().any(|i| matches!(i, Item::Match(_))) { return Ok(None); }
     sink.stats.elapsed = started.elapsed();
     Ok(Some(FileMatches { path: src.path.clone(), explicit: src.explicit, items: sink.items, stats: sink.stats }))
@@ -2455,8 +2499,10 @@ a public getter, pass `args.invert_match` in instead.
 
 **Streaming for `-q` and for passthrough.** `search_source` needs the whole Source because
 Trails need it. Two paths never build one: passthrough (C9 step 5) and `-q` without structural
-flags (C9 step 10), which search files with `searcher.search_path` and stdin with
-`searcher.search_reader(matcher, std::io::stdin().lock(), …)` directly, so `sfor -q needle`
+flags (C9 step 10). They use `searcher(args, explicit, false)` (BOM sniffing on), configured
+with `memory_map(MmapChoice::auto())` when `rg_in_memory` says so (an `unsafe` call, with the
+same truncation caveat as `MMAP_THRESHOLD`), and search files with `searcher.search_path` and
+stdin with `searcher.search_reader(matcher, std::io::stdin().lock(), …)`, so `sfor -q needle`
 returns as soon as a Match is read, before stdin reaches EOF, as ripgrep does.
 
 - [ ] **Step 1: tests first** (`src/search.rs`):
@@ -2473,7 +2519,7 @@ mod tests {
 
     fn run(a: &Args, pats: &[&str], src: &Source) -> Option<FileMatches> {
         let pats: Vec<String> = pats.iter().map(|s| s.to_string()).collect();
-        search_source(&mut searcher(a, src.explicit), &matcher(a, &pats).unwrap(), src, false).unwrap()
+        search_source(&mut searcher(a, src.explicit, true), &matcher(a, &pats).unwrap(), src, false, false).unwrap()
     }
 
     #[test]
@@ -2521,6 +2567,27 @@ mod tests {
     }
 
     #[test]
+    fn submatches_see_the_buffer_like_ripgrep() {
+        let src = Source::from_bytes("a".into(), b"bar\nfoo needle\n".to_vec(), false);
+        let fm = run(&args(&["sfor", "x"]), &["\\Afoo|needle"], &src).unwrap();
+        let Item::Match(m) = &fm.items[0] else { panic!() };
+        assert_eq!(m.submatches, vec![Submatch { start: 4, end: 10 }]);
+        let anchored = Source::from_bytes("a".into(), b"x\nneedle\n".to_vec(), false);
+        let fm = run(&args(&["sfor", "x"]), &["^needle"], &anchored).unwrap();
+        let Item::Match(m) = &fm.items[0] else { panic!() };
+        assert_eq!(m.submatches, vec![Submatch { start: 0, end: 6 }]);
+    }
+
+    #[test]
+    fn explicit_file_in_memory_keeps_the_nul() {
+        // rg 14.1.1 on one explicit file (memory-mapped): second match on line 2, offset 13.
+        let src = Source::from_bytes("bin.dat".into(), b"needle first\nmore\0binary needle\n".to_vec(), true);
+        let a = args(&["sfor", "x"]);
+        let fm = search_source(&mut searcher(&a, true, true), &matcher(&a, &["needle".into()]).unwrap(), &src, true, false).unwrap().unwrap();
+        assert_eq!(fm.matches().map(|m| (m.line_number, m.absolute_offset)).last(), Some((2, 13)));
+    }
+
+    #[test]
     fn binary_stdin_coordinates_follow_nul_conversion() {
         // rg 14.1.1: `printf 'needle first\nmore\0binary needle\n' | rg --json needle` reports
         // the second match on line 3, absolute offset 18.
@@ -2535,7 +2602,7 @@ mod tests {
     fn quiet_stops_at_the_first_match() {
         let src = Source::from_bytes("a".into(), b"needle\nneedle\n".to_vec(), false);
         let a = args(&["sfor", "x"]);
-        let fm = search_source(&mut searcher(&a, false), &matcher(&a, &["needle".into()]).unwrap(), &src, true).unwrap().unwrap();
+        let fm = search_source(&mut searcher(&a, false, true), &matcher(&a, &["needle".into()]).unwrap(), &src, false, true).unwrap().unwrap();
         assert_eq!(fm.matches().count(), 1);
     }
 
@@ -2956,7 +3023,8 @@ pub fn run(args: Vec<OsString>) -> i32
    nothing (for `--files-without-match`).
 8. **`--in-headings`** replaces step 7's search: for every walked file whose Format has a
    Processor (Plain files are skipped), `processor.names(&input, params)`; run the matcher's
-   `find_iter` on each `Name.text`; map each hit through `Name::source_ranges` into byte ranges
+   `find_iter` on each `Name.text` (empty hits included, as `^` produces); map each hit through
+`Name::source_ranges` into byte ranges
    of the Source, which may lie on several lines (a setext heading); group the ranges by line,
    in file order, into one `LineMatch` per line with one submatch per range, each submatch's
    Trail being its Name's `trail` minus its last Segment. Then `-m N` keeps the first N lines,
@@ -3036,6 +3104,9 @@ stdout and exit code byte for byte:
 `--json -v -f <empty file> md/guide.md` (no output at all, exit 1), `binary misc/bin.dat` (explicit binary),
 `binary misc` (walked binary: nothing, exit 1), `needle -` with stdin from `md/guide.md`,
 `binary` with stdin from `misc/bin.dat` (implicit stdin) and `binary -` (explicit),
+`--json needle misc/bin.dat` (one explicit file), the same with `misc/bin.dat` given 11 times,
+`--json needle misc` (walked), `--json needle` with stdin from `misc/bin.dat`, and the BOM files
+both as explicit files and through stdin, in passthrough and with `-q`,
 `-uuu binary misc` and `-a binary misc/bin.dat` (binary vs text modes), `needle
 misc/late-nul.txt` (explicit, NUL after 64 KiB: early Match then message) and `needle misc`
 (walked: early Match then the WARNING line), compared also in sfor's `--flat` layout for the
@@ -3046,7 +3117,8 @@ Ordering: cases that walk a directory get `--sort path` on both sides. Then JSON
 `--json needle`, `--json -C1 needle`, `--json -N needle`, `--json '\r' misc/crlf.txt`,
 `--json '$' misc/crlf.txt` (fixture `a\r\nb\n`), `--json '$' misc/noeol.txt` (fixture `a`,
 no newline), `--json -v needle md/guide.md`, `--json -v -C1 needle md/guide.md` and
-`--json binary` with stdin from `misc/bin.dat`, `sfor --json --no-trail` equals
+`--json binary` with stdin from `misc/bin.dat`, `--json '\Afoo|needle' misc/anchor.txt`
+(fixture `bar\nfoo needle\n`) and `--json '^needle' misc/anchor.txt`, `sfor --json --no-trail` equals
 `rg --json` byte for byte except the `elapsed` and `elapsed_total` objects (replaced by
 placeholders on both sides); and `sfor --json` (trail mode) equals it too after also removing
 our added keys (`format`, `trail`, `fragment`, `section`, `submatches[].trail`) and the
