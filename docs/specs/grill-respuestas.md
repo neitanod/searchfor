@@ -159,3 +159,10 @@
 - **8380** — Add the Formats called the most valuable (PDF with chapter, SQLite with table/row/
   column, subtitles with timestamp) before the Windows/macOS step.
 - **8381** — Console output must be coloured.
+- **8385 / Questionnaire 49 answers** — Every recommended Format plus HAR, Java .class,
+  .deb/.rpm and 7z/rar. They go to a new milestone M6 after M5, except the most valuable ones
+  (PDF, SQLite, subtitles), which stay in the existing milestones. Comments: «the search part
+  must be as fast as ripgrep; the added functionality should only be in the presentation. Not
+  interested in digging into compressed packages ripgrep does not already handle. When our
+  presentation finds no structure for a Match, at least show it the generic way ripgrep would.»
+  Open follow-up (8386/8387): archive Formats out; extraction-based Formats only with -z.

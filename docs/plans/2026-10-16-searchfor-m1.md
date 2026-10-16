@@ -219,7 +219,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
-clap = { version = "4.6", features = ["derive", "wrap_help"] }
+clap = { version = "4.6", features = ["derive", "string", "wrap_help"] }
 dirs = "6"
 encoding_rs = "0.8"
 globset = "0.4"
@@ -407,18 +407,41 @@ pub struct Described {
     pub format: Option<String>,
     /// `trails[i][k]`: Trail of submatch `k` of the `i`-th `Item::Match` (design note 5).
     pub trails: Vec<Vec<Trail>>,
-    /// With `--expand`, per `Item::Match`: the Section to print, 1-based inclusive lines.
-    pub sections: Vec<Option<(u64, u64)>>,
+    /// With `--expand`, `sections[i][k]`: the Section of submatch `k` of Match `i`
+    /// (1-based inclusive lines), aligned with `trails`.
+    pub sections: Vec<Vec<Option<(u64, u64)>>>,
+}
+
+/// What a Processor receives about one file (design note 6). External Processors (M5) need
+/// the path and the Format name; built-in ones mostly use the bytes.
+#[derive(Debug, Clone, Copy)]
+pub struct Input<'a> {
+    pub bytes: &'a [u8],
+    pub path: &'a std::path::Path,
+    pub format: &'a str,
 }
 
 /// A Segment name, for `--in-headings` (design note 6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Name {
+    /// The name as shown: text pieces joined, a soft line break becoming one space.
     pub text: String,
-    /// Byte range of the name's text in the Source.
-    pub range: Range<usize>,
+    /// Where each piece of `text` comes from: `(offset in text, byte range in the Source)`.
+    /// A setext heading spanning two lines has one piece per line.
+    pub pieces: Vec<(usize, Range<usize>)>,
     /// Trail of the named Segment, the Segment itself last.
     pub trail: Trail,
+}
+
+impl Name {
+    /// Source ranges covered by the text range `hit` (byte offsets in `text`), one per piece it
+    /// touches. Used to turn an `--in-headings` hit into submatches on the right lines.
+    pub fn source_ranges(&self, hit: Range<usize>) -> Vec<Range<usize>> {
+        self.pieces.iter().filter_map(|(at, src)| {
+            let (s, e) = (hit.start.max(*at), hit.end.min(at + src.len()));
+            (s < e).then(|| src.start + (s - at)..src.start + (e - at))
+        }).collect()
+    }
 }
 ```
 
@@ -487,10 +510,11 @@ pub fn lossy_with_map(bytes: &[u8]) -> (String, Vec<usize>) {
     (out, map)
 }
 
-/// The line without its terminator (`\n` or `\r\n`).
+/// The line without its `\n` terminator. A `\r` before it stays: ripgrep's default line
+/// terminator is `\n` alone (CRLF mode, `--crlf`, is not in M1), and it keeps the `\r` in
+/// both its output and its submatch search.
 pub fn strip_terminator(bytes: &[u8]) -> &[u8] {
-    let b = bytes.strip_suffix(b"\n").unwrap_or(bytes);
-    b.strip_suffix(b"\r").unwrap_or(b)
+    bytes.strip_suffix(b"\n").unwrap_or(bytes)
 }
 ```
 
@@ -517,7 +541,7 @@ mod tests {
 
     #[test]
     fn terminators() {
-        assert_eq!(strip_terminator(b"a\r\n"), b"a");
+        assert_eq!(strip_terminator(b"a\r\n"), b"a\r");
         assert_eq!(strip_terminator(b"a\n"), b"a");
         assert_eq!(strip_terminator(b"a"), b"a");
     }
@@ -568,8 +592,9 @@ pub struct OutlineSegment {
     pub range: Range<usize>,
     /// Bytes that name the Segment (a heading line, an item's first line). May be empty.
     pub label: Range<usize>,
-    /// Bytes of the name's text, for `--in-headings`. None: the Segment is not searchable by name.
-    pub name: Option<Range<usize>>,
+    /// Pieces of the name's text in the Source, for `--in-headings`, in the format of
+    /// `Name::pieces`. None: the Segment is not searchable by name.
+    pub name: Option<Vec<(usize, Range<usize>)>>,
     pub parent: Option<usize>,
     /// Hidden Segments take part in containment but never appear in a Trail.
     pub hidden: bool,
@@ -653,7 +678,7 @@ pub fn names_of(outline: &Outline) -> Vec<Name> {
         .filter(|(_, s)| !s.hidden && s.name.is_some())
         .map(|(i, s)| Name {
             text: s.segment.name.clone(),
-            range: s.name.clone().unwrap(),
+            pieces: s.name.clone().unwrap(),
             trail: outline.chain(i).into_iter().map(|j| &outline.segments[j]).filter(|x| !x.hidden).map(|x| x.segment.clone()).collect(),
         })
         .collect()
@@ -676,7 +701,7 @@ mod tests {
 
     fn heading(name: &str, range: Range<usize>, label: Range<usize>) -> OutlineSegment {
         let mut s = OutlineSegment::new("heading", name, range, label.clone());
-        s.name = Some(label.end - 2..label.end - 1); // the one-letter name before "\n"
+        s.name = Some(vec![(0, label.end - 2..label.end - 1)]); // the one-letter name before "\n"
         s
     }
 
@@ -744,7 +769,8 @@ mod tests {
     fn names_carry_their_own_trail() {
         let n = names_of(&outline());
         let b = n.iter().find(|x| x.text == "B").unwrap();
-        assert_eq!(&DOC[b.range.clone()], "B");
+        assert_eq!(&DOC[b.pieces[0].1.clone()], "B");
+        assert_eq!(b.source_ranges(0..1), vec![13..14]);
         assert_eq!(names(&b.trail), ["A", "B"]);
     }
 
@@ -822,7 +848,7 @@ pub fn render_markdown() -> String { /* as below */ }
 `count-matches`, `files-with-matches`/`-l`, `files-without-match`, `max-count`/`-m`,
 `line-number`/`-n`, `no-line-number`/`-N`, `with-filename`/`-H`, `no-filename`/`-I`, `color`,
 `max-columns`/`-M`, `json`, `sort` (values `path` and `none`), `threads`/`-j`, `text`/`-a`,
-`quiet`/`-q`, `no-messages`, `help`/`-h`, `version`/`-V`, and the negations of these that
+`binary`, `quiet`/`-q`, `no-messages`, `help`/`-h`, `version`/`-V`, and the negations of these that
 ripgrep documents (for example `--no-hidden`, `--no-follow`, `--no-text`, `--no-json`,
 `--ignore`). A name in this list that the extraction does not produce is reported, and the
 list follows ripgrep's spelling.
@@ -906,6 +932,9 @@ pub enum ColorWhen { Never, Auto, Always, Ansi }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Case { Sensitive, Insensitive, Smart }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryMode { Quit, Binary, Text }
+
 /// One `-g` or `--iglob`, in command-line order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlobSpec { pub glob: String, pub case_insensitive: bool }
@@ -946,10 +975,12 @@ pub struct Args {
     #[arg(short = 'A', long)] pub after_context: Option<usize>,
     #[arg(short = 'B', long)] pub before_context: Option<usize>,
     #[arg(short = 'C', long)] pub context: Option<usize>,
-    #[arg(short = 'c', long)] pub count: bool,
-    #[arg(long)] pub count_matches: bool,
-    #[arg(short = 'l', long)] pub files_with_matches: bool,
-    #[arg(long)] pub files_without_match: bool,
+    // The output modes override each other: the last one on the command line wins, as in
+    // ripgrep (`--json -c` counts, `-c --json` prints JSON, `-l -c` counts, `-c -l` lists).
+    #[arg(short = 'c', long, overrides_with_all = ["count_matches", "files_with_matches", "files_without_match", "json"])] pub count: bool,
+    #[arg(long, overrides_with_all = ["count", "files_with_matches", "files_without_match", "json"])] pub count_matches: bool,
+    #[arg(short = 'l', long, overrides_with_all = ["count", "count_matches", "files_without_match", "json"])] pub files_with_matches: bool,
+    #[arg(long, overrides_with_all = ["count", "count_matches", "files_with_matches", "json"])] pub files_without_match: bool,
     #[arg(short = 'm', long)] pub max_count: Option<u64>,
     #[arg(short = 'n', long, overrides_with = "no_line_number")] pub line_number: bool,
     #[arg(short = 'N', long, overrides_with = "line_number")] pub no_line_number: bool,
@@ -957,13 +988,16 @@ pub struct Args {
     #[arg(short = 'I', long, overrides_with = "with_filename")] pub no_filename: bool,
     #[arg(long, value_enum, default_value = "auto")] pub color: ColorWhen,
     #[arg(short = 'M', long)] pub max_columns: Option<u64>,
-    #[arg(long, overrides_with = "no_json")] pub json: bool,
+    #[arg(long, overrides_with_all = ["no_json", "count", "count_matches", "files_with_matches", "files_without_match"])] pub json: bool,
     #[arg(long, hide = true)] pub no_json: bool,
     /// Only `path` and `none` in M1; any other value is «not supported yet».
     #[arg(long)] pub sort: Option<String>,
     #[arg(short = 'j', long)] pub threads: Option<usize>,
-    #[arg(short = 'a', long, overrides_with = "no_text")] pub text: bool,
-    #[arg(long, hide = true)] pub no_text: bool,
+    #[arg(short = 'a', long, overrides_with_all = ["no_text", "binary"])] pub text: bool,
+    #[arg(long, hide = true, overrides_with_all = ["text", "binary"])] pub no_text: bool,
+    /// ripgrep's --binary: search binary files, stop at the first NUL and say so.
+    #[arg(long, overrides_with_all = ["no_binary", "text"])] pub binary: bool,
+    #[arg(long, hide = true, overrides_with = "binary")] pub no_binary: bool,
     #[arg(short = 'q', long)] pub quiet: bool,
     #[arg(long)] pub no_messages: bool,
 
@@ -1092,7 +1126,15 @@ impl Args {
     pub fn after(&self) -> usize { self.after_context.or(self.context).unwrap_or(0) }
     pub fn hidden(&self) -> bool { (self.hidden && !self.no_hidden) || self.unrestricted >= 2 }
     pub fn no_ignore(&self) -> bool { (self.no_ignore && !self.ignore) || self.unrestricted >= 1 }
-    pub fn text(&self) -> bool { (self.text && !self.no_text) || self.unrestricted >= 3 }
+    /// ripgrep's three binary modes: quit at NUL (default for walked files), «binary» (search,
+    /// stop at NUL and print the binary message: --binary, -uuu, and always for explicit files
+    /// and stdin), text (-a). The last of -a / --no-text / --binary / --no-binary wins (clap
+    /// overrides); -uuu only applies when none of them is given.
+    pub fn binary_mode(&self, explicit: bool) -> BinaryMode {
+        if self.text { return BinaryMode::Text; }
+        let explicit_flag = self.no_text || self.binary || self.no_binary;
+        if self.binary || (!explicit_flag && self.unrestricted >= 3) || explicit { BinaryMode::Binary } else { BinaryMode::Quit }
+    }
     pub fn structural(&self) -> bool { self.within.is_some() || self.expand || self.in_headings }
 }
 ```
@@ -1146,6 +1188,25 @@ mod tests {
         assert!(!a.line_number && a.no_line_number);
         let b = p(&["sfor", "--hidden", "--no-hidden", "x"]);
         assert!(!b.hidden());
+    }
+
+    #[test]
+    fn last_output_mode_wins() {
+        let a = p(&["sfor", "--json", "-c", "x"]);
+        assert!(a.count && !a.json);
+        let b = p(&["sfor", "-c", "--json", "x"]);
+        assert!(b.json && !b.count);
+        let c = p(&["sfor", "-c", "-l", "x"]);
+        assert!(c.files_with_matches && !c.count);
+    }
+
+    #[test]
+    fn binary_modes() {
+        assert_eq!(p(&["sfor", "x"]).binary_mode(false), BinaryMode::Quit);
+        assert_eq!(p(&["sfor", "x"]).binary_mode(true), BinaryMode::Binary);
+        assert_eq!(p(&["sfor", "-uuu", "x"]).binary_mode(false), BinaryMode::Binary);
+        assert_eq!(p(&["sfor", "-a", "x"]).binary_mode(false), BinaryMode::Text);
+        assert_eq!(p(&["sfor", "-a", "--binary", "x"]).binary_mode(false), BinaryMode::Binary);
     }
 
     #[test]
@@ -1397,17 +1458,15 @@ impl Registry {
 /// symlink sitting at the target path.
 pub fn export_builtin(dir: &Path, user_dir: Option<&Path>) -> anyhow::Result<Vec<PathBuf>> {
     if let Some(u) = user_dir {
-        // Canonical paths when both exist; absolute lexical paths otherwise, so a user dir
-        // that does not exist yet is still recognised.
-        let same = match (std::fs::canonicalize(dir), std::fs::canonicalize(u)) {
-            (Ok(a), Ok(b)) => a == b,
-            _ => std::path::absolute(dir)? == std::path::absolute(u)?,
-        };
+        // Paths that may not exist yet are compared after resolving their longest existing
+        // ancestor (symlinks included) and folding `.` and `..` in the rest.
+        let same = resolve(dir)? == resolve(u)?;
         if same {
             anyhow::bail!("refusing to export into the user formats directory {}: the files would override the built-ins", u.display());
         }
     }
     let targets: Vec<PathBuf> = builtin::BUILTIN.iter().map(|(file, _)| dir.join(file)).collect();
+    // (the checks above run before anything is created)
     if let Some(t) = targets.iter().find(|t| t.symlink_metadata().is_ok()) {
         anyhow::bail!("refusing to overwrite {}", t.display());
     }
@@ -1417,6 +1476,26 @@ pub fn export_builtin(dir: &Path, user_dir: Option<&Path>) -> anyhow::Result<Vec
         std::fs::OpenOptions::new().write(true).create_new(true).open(t)?.write_all(src.as_bytes())?;
     }
     Ok(targets)
+}
+
+/// Absolute path with symlinks resolved as far as the path exists, and `.`/`..` folded in the
+/// part that does not exist yet.
+fn resolve(p: &Path) -> std::io::Result<PathBuf> {
+    let abs = std::path::absolute(p)?;
+    let mut existing = abs.clone();
+    let mut rest: Vec<std::ffi::OsString> = Vec::new();
+    while std::fs::symlink_metadata(&existing).is_err() {
+        match (existing.file_name(), existing.parent()) {
+            (Some(name), Some(parent)) => { rest.push(name.to_os_string()); existing = parent.to_path_buf(); }
+            _ => break,
+        }
+    }
+    // `file_name()` is None for a trailing `..`; handle it lexically.
+    let mut out = std::fs::canonicalize(&existing).unwrap_or(existing);
+    for c in rest.into_iter().rev() {
+        if c == ".." { out.pop(); } else if c != "." { out.push(c); }
+    }
+    Ok(out)
 }
 ```
 
@@ -1471,6 +1550,23 @@ mod tests {
         let missing = base.path().join("formats");
         assert!(export_builtin(&missing, Some(&missing)).unwrap_err().to_string().contains("refusing"));
         assert!(!missing.exists());
+    }
+
+    #[test]
+    fn refusing_through_dotdot_and_symlinked_ancestors() {
+        let base = tempfile::tempdir().unwrap();
+        std::fs::create_dir(base.path().join("aux")).unwrap();
+        let user = base.path().join("formats");
+        let sneaky = base.path().join("aux/../formats");
+        assert!(export_builtin(&sneaky, Some(&user)).unwrap_err().to_string().contains("refusing"));
+        assert!(!user.exists());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(base.path(), base.path().join("link")).unwrap();
+            let via_link = base.path().join("link/formats");
+            assert!(export_builtin(&via_link, Some(&user)).unwrap_err().to_string().contains("refusing"));
+            assert!(!user.exists());
+        }
     }
 }
 ```
@@ -1602,15 +1698,19 @@ rule.
 //! Processors turn Match anchors into Trails (design note 6).
 pub mod markdown;
 
-use crate::model::{Name, Trail};
+use crate::model::{Input, Name, Trail};
 use crate::trail::{names_of, trail_for, Outline};
 
-/// The public contract. M5's External Processors implement it over the protocol of spec §4.4.
+/// The public contract. M5's External Processors implement it over the protocol of spec §4.4,
+/// which C10 extends with an `"op"` field: `"trails"` (the request of §4.4) and `"names"`
+/// (no `matches`; the answer is `{"names":[{"text","pieces":[[offset,start,end],…],"trail":[…]}]}`).
+/// An External Processor that answers `names` with an error makes `--in-headings` skip its
+/// files with one warning.
 pub trait Processor: Send + Sync {
-    /// One Trail per anchor (absolute byte offset in `src`), in the same order.
-    fn trails(&self, src: &[u8], params: &toml::Table, anchors: &[usize]) -> anyhow::Result<Vec<Trail>>;
-    /// Every searchable Segment name with the byte range of its text (`--in-headings`).
-    fn names(&self, src: &[u8], params: &toml::Table) -> anyhow::Result<Vec<Name>>;
+    /// One Trail per anchor (absolute byte offset in `input.bytes`), in the same order.
+    fn trails(&self, input: &Input, params: &toml::Table, anchors: &[usize]) -> anyhow::Result<Vec<Trail>>;
+    /// Every searchable Segment name with the Source pieces of its text (`--in-headings`).
+    fn names(&self, input: &Input, params: &toml::Table) -> anyhow::Result<Vec<Name>>;
 }
 
 /// Built-in Processors that can describe a whole file as an Outline.
@@ -1619,12 +1719,12 @@ pub trait OutlineProcessor: Send + Sync {
 }
 
 impl<T: OutlineProcessor> Processor for T {
-    fn trails(&self, src: &[u8], params: &toml::Table, anchors: &[usize]) -> anyhow::Result<Vec<Trail>> {
-        let o = self.outline(src, params)?;
+    fn trails(&self, input: &Input, params: &toml::Table, anchors: &[usize]) -> anyhow::Result<Vec<Trail>> {
+        let o = self.outline(input.bytes, params)?;
         Ok(anchors.iter().map(|&a| trail_for(&o, a)).collect())
     }
-    fn names(&self, src: &[u8], params: &toml::Table) -> anyhow::Result<Vec<Name>> {
-        Ok(names_of(&self.outline(src, params)?))
+    fn names(&self, input: &Input, params: &toml::Table) -> anyhow::Result<Vec<Name>> {
+        Ok(names_of(&self.outline(input.bytes, params)?))
     }
 }
 
@@ -1686,7 +1786,7 @@ fn cut(s: &str, n: usize) -> String {
     out
 }
 
-struct OpenHeading { seg: usize, text: String, name: Option<Range<usize>> }
+struct OpenHeading { seg: usize, text: String, pieces: Vec<(usize, Range<usize>)> }
 struct OpenItem { seg: usize, text: String, done: bool }
 struct OpenTable { seg: usize, header: Vec<String>, in_head: bool, col: usize, cell_text: String, cells: Vec<(usize, Range<usize>)> }
 
@@ -1724,7 +1824,7 @@ impl OutlineProcessor for Markdown {
                             let vstart = base + off + "title:".len() + rest.find(unq).unwrap_or(0);
                             let i = meta.unwrap();
                             segs[i].segment.name = unq.to_string();
-                            segs[i].name = Some(vstart..vstart + unq.len());
+                            segs[i].name = Some(vec![(0, vstart..vstart + unq.len())]);
                         }
                         off += line.len();
                     }
@@ -1735,12 +1835,13 @@ impl OutlineProcessor for Markdown {
                     s.segment.level = Some(level as u8);
                     segs.push(s);
                     headings.push((segs.len() - 1, level as u8));
-                    heading = Some(OpenHeading { seg: segs.len() - 1, text: String::new(), name: None });
+                    heading = Some(OpenHeading { seg: segs.len() - 1, text: String::new(), pieces: Vec::new() });
                 }
                 Event::End(TagEnd::Heading(_)) => {
                     if let Some(h) = heading.take() {
-                        segs[h.seg].segment.name = h.text.trim().to_string();
-                        segs[h.seg].name = h.name;
+                        // `text` has no leading or trailing blanks: pulldown-cmark trims headings.
+                        segs[h.seg].segment.name = h.text;
+                        segs[h.seg].name = Some(h.pieces);
                     }
                     // A heading is a whole line: it ends an item's first line too.
                     if let Some(it) = items.last_mut() { it.done = true; }
@@ -1787,15 +1888,24 @@ impl OutlineProcessor for Markdown {
                 Event::End(TagEnd::Item) if list_items => if let Some(it) = items.pop() {
                     segs[it.seg].segment.name = cut(&it.text, item_chars);
                 },
-                Event::Text(t) | Event::Code(t) => {
+                Event::Text(ref t) | Event::Code(ref t) => {
                     if let Some(h) = heading.as_mut() {
-                        h.text.push_str(&t);
-                        h.name = Some(match h.name.take() { Some(n) => n.start..r.end, None => r.clone() });
+                        // The piece points at the text's own bytes inside the event's range (inline
+                        // code ranges include the backticks). When the text is not found verbatim
+                        // (entities, escapes), the whole range is used.
+                        let src = match text[r.clone()].find(&**t) {
+                            Some(off) => r.start + off..r.start + off + t.len(),
+                            None => r.clone(),
+                        };
+                        h.pieces.push((h.text.len(), src));
+                        h.text.push_str(t);
                     }
-                    if let Some(tb) = table.as_mut() { tb.cell_text.push_str(&t); }
-                    if let Some(it) = items.last_mut() { if !it.done { it.text.push_str(&t); } }
+                    if let Some(tb) = table.as_mut() { tb.cell_text.push_str(t); }
+                    if let Some(it) = items.last_mut() { if !it.done { it.text.push_str(t); } }
                 }
                 Event::SoftBreak | Event::HardBreak | Event::End(TagEnd::Paragraph) => {
+                    // A soft break inside a (setext) heading becomes one space in its name.
+                    if let (Some(h), Event::SoftBreak) = (heading.as_mut(), &ev) { h.text.push(' '); }
                     if let Some(it) = items.last_mut() { it.done = true; }
                 }
                 _ => {}
@@ -1869,7 +1979,7 @@ covers nested lists, and that `TableCell` ranges sit between the pipes (a review
 
 - [ ] **Step 2: tests first** (`markdown.rs`). Helper `trail(text_of_match, nth_occurrence)`
   finds the byte of the given text in the fixture (`include_str!("../../tests/fixtures/md/guide.md")`),
-  calls `Markdown.trails(src, &params, &[byte])` and returns `kind:name` strings. With
+  calls `Markdown.trails(&input, &params, &[byte])` and returns `kind:name` strings. With
   `D = document:Deploy guide`, `I = heading:Install`:
 
 | Match text | Expected Trail |
@@ -1890,7 +2000,12 @@ Also: with `list_items = false`, `needle-item` loses `item:step one` and `needle
 `item:Heading in item`; invalid UTF-8 gives no Trails; `heading:Linux` has `line` 9 and
 `end_line` 18; the `column:Price` Segment of `needle-10` has `line` 21 and `end_line` 24;
 `names()` returns exactly `Deploy guide`, `Install`, `Linux`, `Plans`, `Heading in item`,
-`Setext Title`, and for each, `src[range]` equals the name (for `Deploy guide`, without quotes).
+`Setext Title`, and for each, the concatenated `src[piece]` equals the name (for
+`Deploy guide`, without quotes). A separate inline document `First\nSecond\n======\n` gives one
+heading named `First Second` with two pieces, `0..5` and `6..12`, and
+`source_ranges(6..12)` is the range of `Second` on line 2; `# A \`code\` B` gives the name
+`A code B` with the `code` piece pointing inside the backticks. All calls go through
+`Processor::trails`/`names` with an `Input { bytes, path: Path::new("guide.md"), format: "markdown" }`.
 
 - [ ] **Step 3:** RED, then GREEN; clippy clean. Commit «Add the Markdown Processor».
 
@@ -2154,7 +2269,9 @@ impl Source {
 Fixtures (generate them with a small script in the chunk and commit the bytes):
 `misc/bom.md` = UTF-8 BOM + `# T\nneedle\n`; `misc/utf16.md` = UTF-16LE with BOM of
 `# T\nneedle\n`; `misc/bin.dat` = `needle first\nmore\0binary needle\n`;
-`misc/invalid.txt` = `caf\xe9 needle\n`.
+`misc/invalid.txt` = `caf\xe9 needle\n`; `misc/crlf.txt` = `a\r\nb\n`; `misc/noeol.txt` = `a`
+(no newline); `misc/min.json` = one line of 20 000 characters with `needle` at offsets 1000,
+1050 and 15000 (used by C9).
 
 - [ ] **Step 1: tests first**: `bom.md` → `bytes()` starts with `# T`; `utf16.md` →
   `bytes() == b"# T\nneedle\n"`; a 9 MiB tempfile is mapped and `bytes().len()` is its size;
@@ -2168,6 +2285,7 @@ Fixtures (generate them with a small script in the chunk and commit the bytes):
 ```rust
 //! Walking and searching with ripgrep's crates (ADR 0001, design notes 3 and 4).
 use crate::cli::{Args, Case};
+// (BinaryMode is referenced by path in `searcher`.)
 use crate::model::{ContextLine, FileMatches, FileStats, Item, LineMatch, Submatch};
 use crate::source::Source;
 use anyhow::Result;
@@ -2198,11 +2316,13 @@ pub fn matcher(args: &Args, patterns: &[String]) -> Result<RegexMatcher> {
     }
 }
 
-/// `explicit`: the file was named on the command line (design note 3).
+/// `explicit`: the file was named on the command line, or is stdin (design note 3).
 pub fn searcher(args: &Args, explicit: bool) -> Searcher {
-    let binary = if args.text() { BinaryDetection::none() }
-                 else if explicit { BinaryDetection::convert(b'\0') }
-                 else { BinaryDetection::quit(b'\0') };
+    let binary = match args.binary_mode(explicit) {
+        crate::cli::BinaryMode::Text => BinaryDetection::none(),
+        crate::cli::BinaryMode::Binary => BinaryDetection::convert(b'\0'),
+        crate::cli::BinaryMode::Quit => BinaryDetection::quit(b'\0'),
+    };
     SearcherBuilder::new()
         .line_number(true) // Trails need line numbers even when they are not printed.
         .before_context(args.before())
@@ -2255,18 +2375,26 @@ after the call. Also verify that `\b\B` never matches with grep-regex (a test be
 pub struct CollectSink<'m> {
     matcher: &'m RegexMatcher,
     invert: bool,
+    /// `-q` without structural flags: stop the file at its first Match (design note 10).
+    quiet: bool,
     pub items: Vec<Item>,
     pub stats: FileStats,
 }
 
 impl<'m> CollectSink<'m> {
-    pub fn new(matcher: &'m RegexMatcher, invert: bool) -> Self {
-        Self { matcher, invert, items: Vec::new(), stats: FileStats::default() }
+    pub fn new(matcher: &'m RegexMatcher, invert: bool, quiet: bool) -> Self {
+        Self { matcher, invert, quiet, items: Vec::new(), stats: FileStats::default() }
     }
 
+    /// Exactly grep-printer 0.3.1's JSON sink (`record_matches`, json.rs:645–680, with
+    /// `find_iter_at_in_context`, util.rs:473–520): search the line with its `\n` removed (a
+    /// `\r` stays; CRLF mode is not in M1), then drop a final empty match that sits at the end
+    /// of the line's bytes. Those helpers are `pub(crate)`, so the logic is copied, not called.
     fn submatches(&self, line: &[u8]) -> Vec<Submatch> {
+        let searched = line.strip_suffix(b"\n").unwrap_or(line);
         let mut v = Vec::new();
-        let _ = self.matcher.find_iter(line, |m| { v.push(Submatch { start: m.start(), end: m.end() }); true });
+        let _ = self.matcher.find_iter(searched, |m| { v.push(Submatch { start: m.start(), end: m.end() }); true });
+        if v.last().is_some_and(|m| m.start == m.end && m.start >= line.len()) { v.pop(); }
         v
     }
 }
@@ -2276,21 +2404,22 @@ impl Sink for CollectSink<'_> {
 
     fn matched(&mut self, _s: &Searcher, m: &SinkMatch<'_>) -> Result<bool, Self::Error> {
         let bytes = m.bytes().to_vec();
-        let subs = if self.invert { Vec::new() } else { self.submatches(crate::text::strip_terminator(&bytes)) };
+        // grep-printer records matches on inverted lines too (none are found there).
+        let subs = if self.invert { Vec::new() } else { self.submatches(&bytes) };
         self.stats.matched_lines += 1;
-        self.stats.matches += subs.len().max(1) as u64;
+        self.stats.matches += subs.len() as u64;
         self.items.push(Item::Match(LineMatch {
             line_number: m.line_number().unwrap_or(0),
             absolute_offset: m.absolute_byte_offset(),
             bytes,
             submatches: subs,
         }));
-        Ok(true)
+        Ok(!self.quiet)
     }
 
     fn context(&mut self, _s: &Searcher, c: &SinkContext<'_>) -> Result<bool, Self::Error> {
         let bytes = c.bytes().to_vec();
-        let subs = if self.invert { self.submatches(crate::text::strip_terminator(&bytes)) } else { Vec::new() };
+        let subs = if self.invert { self.submatches(&bytes) } else { Vec::new() };
         self.items.push(Item::Context(ContextLine {
             line_number: c.line_number().unwrap_or(0),
             absolute_offset: c.absolute_byte_offset(),
@@ -2309,21 +2438,31 @@ impl Sink for CollectSink<'_> {
 
 /// Searches a Source. Returns None when nothing matched (stats are discarded: ripgrep's
 /// summary counts only files with Matches, verified with rg 14.1.1).
-pub fn search_source(searcher: &mut Searcher, matcher: &RegexMatcher, src: &Source) -> Result<Option<FileMatches>> {
+///
+/// The search goes through `search_reader` over the Source's bytes, not `search_slice`: with
+/// `BinaryDetection::convert`, only the reader path converts NUL bytes into line terminators
+/// (grep-searcher-0.1.17/src/searcher/mod.rs:83), which is what ripgrep does for explicit files
+/// and stdin, and what fixes its line numbers and offsets. When the result has a binary offset,
+/// the coordinates no longer match the Source, so C9 treats such a file as Plain (no Processor).
+pub fn search_source(searcher: &mut Searcher, matcher: &RegexMatcher, src: &Source, quiet: bool) -> Result<Option<FileMatches>> {
     let started = std::time::Instant::now();
-    let mut sink = CollectSink::new(matcher, searcher.invert_match());
-    searcher.search_slice(matcher, src.bytes(), &mut sink)?;
+    let mut sink = CollectSink::new(matcher, searcher.invert_match(), quiet);
+    searcher.search_reader(matcher, std::io::Cursor::new(src.bytes()), &mut sink)?;
     if !sink.items.iter().any(|i| matches!(i, Item::Match(_))) { return Ok(None); }
     sink.stats.elapsed = started.elapsed();
     Ok(Some(FileMatches { path: src.path.clone(), explicit: src.explicit, items: sink.items, stats: sink.stats }))
 }
 ```
 
-How ripgrep counts `matches` for `-v` and for lines with several submatches is whatever
-grep-printer's JSON sink does (`json.rs`, the `stats` updates in its `matched`): read it and
-copy it exactly; the `subs.len().max(1)` above is a placeholder that C9's JSON comparison will
-catch if wrong. If `Searcher::invert_match()` is not a public getter, pass `args.invert_match`
-in instead.
+`stats.matches` adds the number of recorded submatches and `matched_lines` the lines of the
+Match, as grep-printer's JSON sink does (json.rs:736–737). If `Searcher::invert_match()` is not
+a public getter, pass `args.invert_match` in instead.
+
+**Streaming for `-q` and for passthrough.** `search_source` needs the whole Source because
+Trails need it. Two paths never build one: passthrough (C9 step 5) and `-q` without structural
+flags (C9 step 10), which search files with `searcher.search_path` and stdin with
+`searcher.search_reader(matcher, std::io::stdin().lock(), …)` directly, so `sfor -q needle`
+returns as soon as a Match is read, before stdin reaches EOF, as ripgrep does.
 
 - [ ] **Step 1: tests first** (`src/search.rs`):
 
@@ -2339,7 +2478,7 @@ mod tests {
 
     fn run(a: &Args, pats: &[&str], src: &Source) -> Option<FileMatches> {
         let pats: Vec<String> = pats.iter().map(|s| s.to_string()).collect();
-        search_source(&mut searcher(a, src.explicit), &matcher(a, &pats).unwrap(), src).unwrap()
+        search_source(&mut searcher(a, src.explicit), &matcher(a, &pats).unwrap(), src, false).unwrap()
     }
 
     #[test]
@@ -2371,6 +2510,38 @@ mod tests {
         let explicit = Source::open(&fixture("misc/bin.dat"), true).unwrap();
         let fm = run(&args(&["sfor", "x"]), &["binary"], &explicit).unwrap();
         assert!(fm.stats.binary_offset.is_some());
+    }
+
+    #[test]
+    fn submatches_as_ripgrep_records_them() {
+        let a = args(&["sfor", "x"]);
+        let crlf = Source::from_bytes("a".into(), b"a\r\n".to_vec(), false);
+        let Item::Match(m) = &run(&a, &["\\r"], &crlf).unwrap().items[0] else { panic!() };
+        assert_eq!(m.submatches, vec![Submatch { start: 1, end: 2 }]);
+        let Item::Match(m) = &run(&a, &["$"], &crlf).unwrap().items[0] else { panic!() };
+        assert_eq!(m.submatches, vec![Submatch { start: 2, end: 2 }]);
+        let eof = Source::from_bytes("a".into(), b"a".to_vec(), false);
+        let Item::Match(m) = &run(&a, &["$"], &eof).unwrap().items[0] else { panic!() };
+        assert!(m.submatches.is_empty());
+    }
+
+    #[test]
+    fn binary_stdin_coordinates_follow_nul_conversion() {
+        // rg 14.1.1: `printf 'needle first\nmore\0binary needle\n' | rg --json needle` reports
+        // the second match on line 3, absolute offset 18.
+        let src = Source::from_bytes("<stdin>".into(), b"needle first\nmore\0binary needle\n".to_vec(), true);
+        let fm = run(&args(&["sfor", "x"]), &["needle"], &src).unwrap();
+        let lines: Vec<(u64, u64)> = fm.matches().map(|m| (m.line_number, m.absolute_offset)).collect();
+        assert_eq!(lines.last(), Some(&(3, 18)));
+        assert!(fm.stats.binary_offset.is_some());
+    }
+
+    #[test]
+    fn quiet_stops_at_the_first_match() {
+        let src = Source::from_bytes("a".into(), b"needle\nneedle\n".to_vec(), false);
+        let a = args(&["sfor", "x"]);
+        let fm = search_source(&mut searcher(&a, false), &matcher(&a, &["needle".into()]).unwrap(), &src, true).unwrap().unwrap();
+        assert_eq!(fm.matches().count(), 1);
     }
 
     #[test]
@@ -2562,10 +2733,13 @@ Spec §6.1. Layout, two spaces of indentation per depth:
 - Context lines use `-` after the line number, Matches `:`, both without a space, as ripgrep.
   When `o.context` and two consecutive items are not adjacent lines, print `--` at the depth of
   the next item. Line numbers are omitted with `-N`.
-- Width for a line at depth `n`: `o.width - 2 × (n + 1) - len(line number prefix)`.
-- `--expand`: for each Match whose Section (from `d.sections`) was not printed yet, print the
-  Section's lines from `src` instead of the Match line (Matches in it with `:` and highlighted,
-  the rest with `-`); a Section already printed is skipped.
+- Width for a line at depth `n`: `o.width.saturating_sub(2 × (n + 1) + len(line number
+  prefix))`; C6 turns anything below its minimum into a 10-character Fragment text. No width
+  arithmetic in any printer may underflow (`saturating_sub` everywhere).
+- `--expand`: every distinct Section of the file's submatches (`d.sections[i][k]`) is printed
+  once, under the Trail of the first submatch that has it, in file order: the Section's lines
+  from `src` (lines with kept Matches with `:` and highlighted, the rest with `-`). A Match
+  whose Sections were all printed already prints nothing more.
 - An explicit binary file (`d.file.stats.binary_offset` is Some and `d.file.explicit`) prints
   `<path>` and, indented, `binary file matches (found "\0" byte around offset N)` instead of
   lines, as ripgrep prints for that file.
@@ -2574,7 +2748,9 @@ Spec §6.1. Layout, two spaces of indentation per depth:
 **Tests first** (snapshots, hand-built `Described` values): two Matches under `# A › ## B`;
 then one under `# A` only (prints nothing new for `# A`); context lines and a `--` gap; a long
 line as two Fragments; one table row with two submatches in different columns printed twice;
-`--expand` with two Matches in one Section prints it once; `-N`; the binary message.
+`--expand` with two Matches in one Section prints it once; one line whose two submatches have
+different Sections prints both Sections; `-N`; the binary message; `--fragment-width 5` with a
+four-Segment Trail renders without panicking.
 
 ### Task 7.4: flat.rs
 
@@ -2586,14 +2762,17 @@ Spec §6.2: `path:line: Trail │ text`, Trail joined with ` › ` in cyan, `│
 `path:line: text`. `-I` drops `path:`; `-N` drops `line:`. Context lines: `path-line-text`,
 as ripgrep. `--` between non-adjacent groups when context is on. Per-submatch Trails: one
 output line per distinct Trail of a Match line, as in the tree. Fragments: one output line per
-Fragment, same prefix. `--expand`: a header line `path:start-end: Trail`, the Section's lines
-verbatim (Matches highlighted), then an empty line; each Section once. A Trail longer than
+Fragment, same prefix; the space left for the text is `o.width.saturating_sub(prefix width)`.
+`--expand`: for every distinct Section (per submatch, as in the tree), a header line
+`path:start-end: Trail`, the Section's lines verbatim (Matches highlighted), then an empty
+line. A Trail longer than
 `o.width / 2` characters keeps its first and last Segments and puts `…` in between. Binary
 message: `path: binary file matches (found "\0" byte around offset N)` (without `path: ` under
 `-I`), as ripgrep prints it.
 
 **Tests first** (snapshots): plain Match; no Trail; `-I -N`; context with `--`; Fragment; two
-Trails on one line; elided long Trail; `--expand`; binary message.
+Trails on one line; elided long Trail; `--expand`; binary message; a prefix wider than
+`o.width` does not panic.
 
 ### Task 7.5: json.rs — ripgrep's JSON Lines from the model
 
@@ -2620,7 +2799,8 @@ pub struct JsonOptions {
 
 /// Writes begin, match and context messages, and end, for one Described file, in ripgrep's
 /// format, adding `format`, `trail`, `fragment` (and `section` with --expand) to each match.
-/// Returns the number of bytes written (ripgrep's `bytes_printed`).
+/// `bytes_printed` in the `end` stats is, as in grep-printer (json.rs:815), the bytes written
+/// for this file **before** the `end` message. Returns all bytes written, `end` included.
 pub fn render(d: &Described, src: &[u8], o: &JsonOptions, w: &mut dyn std::io::Write) -> std::io::Result<u64>;
 
 /// ripgrep's final message, keys in ripgrep's order.
@@ -2638,8 +2818,9 @@ Rules:
   (the Trail of the first submatch, or of the line for `-v`), `"fragment"` (null, or
   `{"text","start","omitted_before","omitted_after"}` of the line's first Fragment at
   `o.width`), and with `--expand` `"section"` with `start_line`, `end_line` and `text` on
-  **every** match message (spec §6.4). When submatches of one line have different Trails, each
-  submatch object also gets `"trail"` (spec §6.4 is amended by C10 to say so).
+  **every** match message (spec §6.4), for the first submatch. When submatches of one line have
+  different Trails, each submatch object also gets `"trail"`, and with `--expand` its own
+  `"section"` when it differs from the line's (spec §6.4 is amended by C10 to say so).
 - `line_number` is `null` when `o.line_numbers` is false (`-N`), as ripgrep.
 - `end.data.stats` comes from `d.file.stats`; `elapsed` objects are
   `{"secs","nanos","human"}` with `human` formatted like ripgrep (`"0.000028s"`).
@@ -2653,14 +2834,17 @@ Rules:
 context line: every line parses as JSON; `type` sequence is `begin, match, context, match,
 end`; ripgrep's keys come first and in grep-printer's order; `trail` is last-but-one before
 `fragment`; the two-Trail row carries `submatches[k].trail`; `-N` gives `"line_number":null`;
-`summary` of two `RunStats` adds counters and matches the literal key order.
+`summary` of two `RunStats` adds counters and matches the literal key order; `end`'s
+`bytes_printed` equals the length of the begin/match/context lines written before it (an
+assertion computed independently from the output, not from the function's return).
 
 ### Task 7.6: summary.rs — -c, --count-matches, -l, --files-without-match after filters
 
 Used only when a structural flag is present (design note 9); without one, C9 runs
 grep-printer's `Summary`. Same output as ripgrep: `path:N` (`N` alone without file names) for
 `-c` (kept lines) and `--count-matches` (kept submatches), `path` for `-l`, and for
-`--files-without-match` the searched files with no kept Match (C9 passes them in).
+`--files-without-match` every searched file that ends with no kept Match — including files the
+search found nothing in and files whose Matches were all filtered out (C9 passes both kinds).
 
 **Tests first:** each mode with and without file names.
 
@@ -2696,9 +2880,10 @@ pub fn within(trail: &Trail, wanted: &[String]) -> bool {
 /// a kept Match, and is dropped otherwise. Context lines stay only near a kept Match.
 pub fn retain(d: &mut Described, keep: &[Vec<bool>], before: usize, after: usize);
 
-/// --expand: per Match, the Section of the last Segment of its first kept Trail, or None.
-pub fn sections(d: &Described) -> Vec<Option<(u64, u64)>> {
-    d.trails.iter().map(|t| t.first().and_then(|t| t.last()).map(|s| (s.line, s.end_line))).collect()
+/// --expand: per submatch, the Section of the last Segment of its Trail, or None for an
+/// empty Trail. Aligned with `d.trails`.
+pub fn sections(d: &Described) -> Vec<Vec<Option<(u64, u64)>>> {
+    d.trails.iter().map(|ts| ts.iter().map(|t| t.last().map(|s| (s.line, s.end_line))).collect()).collect()
 }
 ```
 
@@ -2716,7 +2901,9 @@ becomes `Item::Context(ContextLine { line_number, absolute_offset, bytes, submat
   = 1`; drop the one on line 10 → lines 9, 10, 11 disappear, the rest stay.
 - A Match with two submatches in different columns, keep only the second → one submatch, one
   Trail.
-- `sections` on a Trail ending in a `column` Segment returns the table's lines.
+- `sections` on a Trail ending in a `column` Segment returns the table's lines; a line with two
+  submatches whose Trails end in `heading:Plans` and `column:Price` returns two different
+  Sections (Codex r2 #4: `-e '\| Pro' -e needle-10` on line 23 of the fixture).
 
 - [ ] Commit «Add --within and filtering».
 
@@ -2724,8 +2911,9 @@ becomes `Item::Context(ContextLine { line_number, absolute_offset, bytes, submat
 
 ## Chunk 9: Pipeline, end-to-end and compatibility tests, benchmark
 
-**Files:** `src/app.rs`, `tests/cli.rs`, `tests/rg_compat.rs`, `scripts/bench.sh`, and
-`src/lib.rs`/`src/main.rs` only if `run` needs a fix.
+**Files:** `src/app.rs`, `tests/cli.rs`, `tests/rg_compat.rs`, `scripts/bench.sh`, the one
+`-v`/`--in-headings` check in `src/cli/mod.rs`, and `src/lib.rs`/`src/main.rs` only if `run`
+needs a fix.
 
 ### Task 9.1: app.rs
 
@@ -2759,18 +2947,31 @@ pub fn run(args: Vec<OsString>) -> i32
    `keep[i][k] = within(...)` when `--within` → `filter::retain` → `filter::sections` with
    `--expand` → if no Match is left, nothing → render the layout's printer into a
    `termcolor::Buffer` (or JSON into a `Vec<u8>`) and send it with the file's stats.
+   A file whose search reported a binary offset skips the Processor (its coordinates follow
+   NUL conversion, C3) and prints ripgrep's binary message.
+   **Summary flags with structural flags** are dispatched before any discard: every searched
+   file reaches `output::summary` with its kept count, including files where the search found
+   nothing (for `--files-without-match`).
 8. **`--in-headings`** replaces step 7's search: for every walked file whose Format has a
-   Processor (Plain files are skipped), `processor.names(src.bytes(), params)`; run the matcher
-   on each `Name.text`; for each hit, build a `LineMatch` for the line holding `Name.range.start`
-   with one submatch: the hit's position mapped into the line when the name text appears there
-   verbatim at `Name.range`, the whole `Name.range` otherwise; its Trail is `Name.trail` minus
-   its last Segment. Then filters and rendering as in step 7.
+   Processor (Plain files are skipped), `processor.names(&input, params)`; run the matcher's
+   `find_iter` on each `Name.text`; map each hit through `Name::source_ranges` into byte ranges
+   of the Source, which may lie on several lines (a setext heading); group the ranges by line,
+   in file order, into one `LineMatch` per line with one submatch per range, each submatch's
+   Trail being its Name's `trail` minus its last Segment. Then `-m N` keeps the first N lines,
+   `-A/-B/-C` add `Item::Context` lines read from the Source around them (merging overlaps, as
+   the searcher would), and filters and rendering continue as in step 7. `-v` with
+   `--in-headings` is a usage error («--in-headings selects names; -v has no meaning there»),
+   checked in `cli::parse` (C9 adds it there; it is a one-line change to C2's file and the only
+   one C9 makes in it).
 9. Writer: prints each file's buffer as it arrives (blank line between files in tree layout),
    or in path order under `--sort path` (which also forces the sequential walker); in Json
    layout accumulates `RunStats` from printed files and prints `summary` at the end.
 10. `-q`: no output; stop the walk at the first kept Match (a shared `AtomicBool` checked by
     every worker); with structural flags the decision is made after filtering.
-11. Exit code (design note 10).
+11. Exit code (design note 10), decided by what the mode prints: for `--files-without-match`,
+    0 when at least one file is listed; for `-l`, `-c` and `--count-matches`, 0 when at least one
+    file had a kept Match; otherwise 0 when at least one Match was printed. Errors make it 2
+    unless `-q` found a Match.
 
 ### Task 9.2: end-to-end tests — tests/cli.rs (written first, RED until 9.1 is done)
 
@@ -2802,6 +3003,17 @@ an empty tempdir, `current_dir` at a copy of `tests/fixtures/`. Snapshot stdout 
 15. `-c --within linux needle md` and `-l --within linux needle md` → counts and files after
     filtering.
 16. `sfor binary misc/bin.dat --flat` → ripgrep's binary message.
+17. `--in-headings -m1 needle md`, `--in-headings -C1 '^Linux$' md --flat`,
+    `--in-headings Plan md --json` on a heading containing the word twice (fixture line added
+    in a separate `md/twice.md`: `# Plan of plans`, matched with `-i`) → one match message
+    with two submatches; `--in-headings -v x md` → exit 2.
+18. Read errors, run with `-j1 --sort path`: a missing path given before `md` → stderr error,
+    exit 2; the same with `-q` and a Match → no output, exit 0; with `-q` and no Match → exit 2;
+    with `--no-messages` → no stderr, same exit codes.
+19. `--files-without-match --within linux needle md misc` → lists the files whose Matches are
+    all outside Linux and the files with no Match, exit 0.
+20. Stdin: `printf 'needle\n' | sfor -q needle` exits 0; a variant that keeps the pipe open
+    (`sh -c 'printf "needle\n"; sleep 5' | sfor -q needle`) exits 0 in under 2 seconds.
 
 ### Task 9.3: ripgrep compatibility — tests/rg_compat.rs (written first)
 
@@ -2818,10 +3030,15 @@ stdout and exit code byte for byte:
 `-t markdown needle`, `--hidden needle`, `-M 40 needle`, `absent` (exit 1),
 `-e needle -e intro`, `-e --pcre2` (searching for that text), `-f <empty file>` (exit 1),
 `-v -f <empty file> md/guide.md` (every line), `binary misc/bin.dat` (explicit binary),
-`binary misc` (walked binary: nothing, exit 1), `needle -` with stdin from `md/guide.md`.
+`binary misc` (walked binary: nothing, exit 1), `needle -` with stdin from `md/guide.md`,
+`binary` with stdin from `misc/bin.dat` (implicit stdin) and `binary -` (explicit),
+`-uuu binary misc` and `-a binary misc/bin.dat` (binary vs text modes), `--json -c needle`
+and `-c --json needle`, `-l -c needle` and `-c -l needle` (last mode wins).
 
 Ordering: cases that walk a directory get `--sort path` on both sides. Then JSON: for
-`--json needle`, `--json -C1 needle` and `--json -N needle`, `sfor --json --no-trail` equals
+`--json needle`, `--json -C1 needle`, `--json -N needle`, `--json '\r' misc/crlf.txt`,
+`--json '$' misc/crlf.txt` (fixture `a\r\nb\n`), `--json '$' misc/noeol.txt` (fixture `a`,
+no newline) and `--json binary` with stdin from `misc/bin.dat`, `sfor --json --no-trail` equals
 `rg --json` byte for byte except the `elapsed` and `elapsed_total` objects (replaced by
 placeholders on both sides); and `sfor --json` (trail mode) equals it too after also removing
 our added keys (`format`, `trail`, `fragment`, `section`, `submatches[].trail`) and the
