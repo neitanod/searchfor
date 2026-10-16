@@ -60,7 +60,8 @@ a **Container**.
 _Avoid_: crumb, node, level
 
 **Section**:
-The span of a file covered by a **Segment**, from where it opens to where it ends.
+The span of a file covered by a **Segment**, from where it opens to where it ends. The Section
+of a table column Segment (`column`) is its whole table.
 _Avoid_: block, region
 
 **Container**:

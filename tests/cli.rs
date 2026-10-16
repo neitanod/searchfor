@@ -57,9 +57,7 @@ fn t03_json_lines_parse() {
     }
 }
 
-// C10 writes docs/json-schema.json and removes this #[ignore].
 #[test]
-#[ignore]
 fn t03_json_matches_validate_against_the_schema() {
     let schema: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(concat!(

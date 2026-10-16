@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/neitanod/searchfor/blob/main/docs/json-schema.json",
+  "title": "searchfor match data",
+  "description": "The `data` object of a `match` message of `sfor --json`. ripgrep's own fields (path, lines, line_number, absolute_offset, submatches) keep ripgrep's meaning and are not constrained here beyond what searchfor adds to them. Added field names are stable from v0.1: new fields may appear, existing ones are never renamed.",
+  "type": "object",
+  "required": ["format", "trail", "fragment"],
+  "properties": {
+    "format": {
+      "description": "Name of the file's Format (\"markdown\"), or null for Plain files.",
+      "type": ["string", "null"]
+    },
+    "trail": {
+      "description": "Trail of the line's first submatch (of the line start for an inverted match): the Segments from the root of the file down to the Match. Empty for Plain files and for Matches at the top level.",
+      "$ref": "#/$defs/trail"
+    },
+    "fragment": {
+      "description": "null when the line fits in --fragment-width; otherwise the line's first Fragment.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/fragment" }]
+    },
+    "section": {
+      "description": "Only with --expand: the Section of the last Segment of `trail`, or null when the Trail is empty.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/section" }]
+    },
+    "submatches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "trail": {
+            "description": "Present on every submatch when the submatches of the line have different Trails (two cells of one table row).",
+            "$ref": "#/$defs/trail"
+          },
+          "section": {
+            "description": "Only with --expand, on a submatch whose Section differs from the line's `section`.",
+            "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/section" }]
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "trail": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/segment" }
+    },
+    "segment": {
+      "description": "One step of a Trail.",
+      "type": "object",
+      "required": ["kind", "name", "line", "end_line"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "In v0.1: document, heading, code, item, column. Later Formats add kinds.",
+          "type": "string"
+        },
+        "name": { "type": "string" },
+        "line": {
+          "description": "1-based first line of the Segment's Section.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "end_line": {
+          "description": "1-based last line of the Section, inclusive.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "level": {
+          "description": "Heading level, for headings.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "signature": {
+          "description": "The line that declares the Segment, for code (from v0.2).",
+          "type": "string"
+        }
+      }
+    },
+    "fragment": {
+      "type": "object",
+      "required": ["text", "start", "omitted_before", "omitted_after"],
+      "additionalProperties": false,
+      "properties": {
+        "text": { "type": "string" },
+        "start": {
+          "description": "Byte offset of `text` in the line.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "omitted_before": {
+          "description": "Characters of the line before `text`.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "omitted_after": {
+          "description": "Characters of the line after `text`.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "section": {
+      "type": "object",
+      "required": ["start_line", "end_line", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "start_line": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "text": {
+          "description": "Lines start_line..=end_line of the file, line terminators included.",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

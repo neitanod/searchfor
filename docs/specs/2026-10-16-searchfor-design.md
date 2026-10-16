@@ -1,7 +1,7 @@
 # searchfor — v1 design
 
-Status: draft · 2026-10-16 · Task 768 · source of truth for decisions:
-[grill-respuestas.md](grill-respuestas.md) (numbers below, like **#6**, refer to its questions)
+Status: draft · 2026-10-16, aligned with the M1 implementation · Task 768 · source of truth
+for decisions: [grill-respuestas.md](grill-respuestas.md) (numbers below, like **#6**, refer to its questions)
 and [../../CONTEXT.md](../../CONTEXT.md) for the vocabulary.
 
 ## 1. Goal
@@ -22,7 +22,7 @@ contract. That combination is the product.
 
 | Area | What ships | Grill |
 |---|---|---|
-| Formats | Markdown, YAML, JSON, TOML, code via tree-sitter, HTML, XML, CSV, ELF/PE/Mach-O, Containers (zip, docx, epub, jar, tar, tar.gz) | #1 |
+| Formats | Markdown, YAML, JSON, TOML, code via tree-sitter, HTML, XML, CSV, subtitles, ELF/PE/Mach-O; with `--docs`, PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite (§3, M4) | #1, 8380, 8390, 8395 |
 | Engine | ripgrep's crates in-process ([ADR 0001](../adr/0001-embed-ripgrep-engine-as-library.md)) | #2 |
 | Flags | Full ripgrep flag compatibility as the target, plus searchfor's own flags | #3 |
 | Structural search | `--within`, `--expand`, `--in-headings` | #4 |
@@ -43,6 +43,9 @@ contract. That combination is the product.
   scope only as part of flag compatibility: it rewrites the printed line, never the file.
 - A TUI or GUI.
 - Debian/AUR packages (#18 chose four channels).
+- Archive Formats: zip, tar, 7z, rar, deb, rpm, jar (8390). searchfor searches what ripgrep
+  searches, and `-z` keeps ripgrep's meaning: single-stream compressed files (`.gz`, `.xz`,
+  `.bz2`, …).
 
 ## 3. Pipeline
 
@@ -50,7 +53,7 @@ contract. That combination is the product.
 paths ─▶ walker (ignore crate: .gitignore, -g, -t, --hidden…)
           │
           ├─ regular file ──────────────────────────────┐
-          └─ Container (only with -z) ─▶ Members ───────┤
+          └─ document (only with --docs) ─▶ extractor ──┤
                                                         ▼
                                     searcher (grep-searcher + grep-regex)
                                                         │ Matches, by file
@@ -67,11 +70,14 @@ paths ─▶ walker (ignore crate: .gitignore, -g, -t, --hidden…)
    of matching files.
 2. **`--in-headings` is the exception**: it needs Trails to decide what counts as a Match, so
    with it every candidate file is processed. It is documented as slower.
-3. **Containers** are opened only when `-z/--search-zip` is given. ripgrep already uses `-z`
-   for compressed streams (`.gz`, `.xz`, …); searchfor extends the same flag to Containers so
-   a default run never unpacks archives the user did not ask about. Each Member goes through
-   the same searcher, Detector and Processor as a file on disk, and becomes a Segment of the
-   Trail. Containers nest (a jar inside a zip) up to a depth of 3.
+3. **Documents with `--docs` (M4, decisions 8393–8395).** PDF, Word/ODT, Excel/ODS,
+   PowerPoint/ODP, EPUB and SQLite are searched only when `--docs` is given. Built-in
+   extractors, written in Rust with no external programs, turn each document into text plus
+   its structure (chapter, sheet, slide, table, row, column), and that text goes through the
+   same searcher, Detector and Processor as a file on disk. Without `--docs` those files are
+   treated as ripgrep treats them. `--docs` is independent of `-z`, which keeps ripgrep's
+   meaning (single-stream compressed files). ripgrep's `--pre` is implemented in the same
+   milestone. Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope (8390).
 4. **Binary files.** ripgrep prints `binary file matches` and stops. When the Detector
    recognises an object Format (ELF, PE, Mach-O), searchfor searches the whole file and
    describes each Match (§5.6). Any other binary file keeps ripgrep's behaviour, including
@@ -87,7 +93,8 @@ Signals, in order; the first one that decides wins:
    `--format '*.conf=toml'` to map a glob).
 2. Exact file name (`Dockerfile`, `Makefile`, `.bashrc`, `Cargo.lock`).
 3. Extension.
-4. Leading magic bytes (ELF, `MZ`/PE, Mach-O, zip `PK\x03\x04`, gzip, tar `ustar`).
+4. Leading magic bytes (ELF, `MZ`/PE, Mach-O, PDF `%PDF`, SQLite, zip `PK\x03\x04` for the
+   Office and EPUB documents of `--docs`).
 5. Shebang on the first line (`#!/usr/bin/env bash` → bash).
 
 A file no signal decides is **Plain**: its Matches print with an empty Trail, exactly like
@@ -125,8 +132,8 @@ kinds = { class_declaration = "class", method_declaration = "method", function_d
 
 ### 4.3 Processors
 
-A Processor gets the bytes of one file (or Member), its Format Definition parameters and the
-list of Matches (line numbers and byte offsets). It returns, for each Match, its Trail, and for
+A Processor gets the bytes of one file (or of a document's extracted text), its Format
+Definition parameters and the list of Matches (line numbers and byte offsets). It returns, for each Match, its Trail, and for
 each Segment its Section (start and end line). That contract is the same for built-in and
 External Processors.
 
@@ -137,7 +144,7 @@ External Processors.
 | `treesitter` | code (PHP, JS, TS, Bash, Go, Rust, Python and every other installed Grammar), HTML, XML | a tree-sitter query from the Definition |
 | `csv` | CSV, TSV | the csv crate |
 | `object` | ELF, PE, Mach-O | goblin |
-| `container` | zip, docx, epub, jar, tar, tar.gz | zip, tar, flate2 |
+| `docs` extractors | PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB, SQLite, only with `--docs` (M4) | Rust crates, no external programs; chosen in the M4 plan |
 | `external` | anything | a command named in the Definition (§4.4) |
 
 The generic `treesitter` Processor is what makes most new Formats a pure TOML change: adding a
@@ -154,20 +161,34 @@ command = ["proto-trail"]     # resolved through PATH
 timeout_ms = 2000
 ```
 
-Protocol, version 1, one process per file:
+Protocol, version 1, one process per request. The request's `op` says what is asked; both
+operations mirror the built-in Processor contract (`trails` and `names`):
 
-- **stdin**: `{"protocol":1,"path":"api/user.proto","format":"proto","matches":[{"line":42,"byte":1730}]}`
-  followed by EOF; the file content is read by the External Processor from `path`. For a
-  Member, searchfor writes it to a temporary file and passes that path.
-- **stdout**: `{"trails":[[{"kind":"message","name":"User","line":40,"end_line":55}]]}` — one
-  Trail per input Match, in the same order.
-- Non-zero exit, timeout or invalid JSON → the Matches of that file print with an empty Trail
-  and one warning on stderr naming the Definition. A broken External Processor never aborts
-  the search.
+- **`"op":"trails"`**, the Trail of each Match:
+  - stdin: `{"protocol":1,"op":"trails","path":"api/user.proto","format":"proto","matches":[{"line":42,"byte":1730}]}`
+    followed by EOF; the External Processor reads the file content from `path`. For
+    extracted document text (`--docs`), searchfor writes it to a temporary file and passes
+    that path.
+  - stdout: `{"trails":[[{"kind":"message","name":"User","line":40,"end_line":55}]]}` — one
+    Trail per input Match, in the same order.
+- **`"op":"names"`**, every searchable Segment name, for `--in-headings` (no `matches`):
+  - stdin: `{"protocol":1,"op":"names","path":"api/user.proto","format":"proto"}` and EOF.
+  - stdout: `{"names":[{"text":"User","pieces":[[0,4,1702,1706]],"anchor":1702,"trail":[…]}]}`.
+    `text` is the name as shown. `pieces` says where each piece of `text` comes from, as
+    `[text_start, text_end, src_start, src_end]` byte ranges: equal lengths when the text is
+    verbatim, different when the Processor decoded it (an entity like `&lt;` is 1 byte of
+    text over 4 of the file); a name spanning two lines has one piece per line. `anchor` is
+    the byte where an empty hit (`^`, `$`) lands when no piece contains it (a name with no
+    text). `trail` is the Trail of the named Segment, the Segment itself last.
+- Non-zero exit, timeout or invalid JSON on `trails` → the Matches of that file print with an
+  empty Trail and one warning on stderr naming the Definition. The same failure on `names`
+  makes `--in-headings` skip that file, with one warning. A broken External Processor never
+  aborts the search.
 
 ## 5. Trails
 
-A Segment has `kind`, `name`, `line` and `end_line`; tree output may also show its `signature`.
+A Segment has `kind`, `name`, `line` and `end_line` (the lines of its Section), `level` for
+headings, and an optional `signature` that tree output may show.
 
 ### 5.1 Markdown (#11)
 
@@ -177,6 +198,7 @@ A Segment has `kind`, `name`, `line` and `end_line`; tree output may also show i
 - A fenced code block is a Segment named by its info string (`kind = "code"`, `name = "bash"`).
 - A Match in a table row adds a Segment for its column, named by the header cell
   (`kind = "column"`). A Match spanning several cells uses the cell where the Match starts.
+  The Section of a `column` Segment is its table.
 - Parent list items are Segments (`kind = "item"`, `name` = first 40 characters of the item).
   #11 chose to include them; they are shown in tree output and in `--json`, and collapsed to
   `…` in the one-line output when the Trail would exceed the terminal width.
@@ -211,48 +233,65 @@ the printable string around the Match, as `strings` would extract it. The neares
 closest preceding symbol in the same section; when the binary is stripped, that Segment is
 omitted.
 
-### 5.7 Containers
+### 5.7 Documents (`--docs`, M4)
 
-Each Member is a Segment (`kind = "member"`, `name` = path inside the Container), followed by
-the Member's own Trail: `docs.zip › guide.md › Install › Linux`. For docx and epub the Member
-is the inner XML or XHTML file, processed by the `treesitter` Processor with the html or xml
-Definition.
+Decisions 8390 and 8393–8395 replaced the Containers of the first draft. Archive Formats (zip,
+tar, 7z, rar, deb, rpm, jar) are out of scope. PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB
+and SQLite are searched with `--docs` (§3): their extractor returns the text and the
+structure, and the Trail shows it, for example `report.pdf › 3 Results › 3.2 Costs` or
+`data.sqlite › users › row 12 › email`. The exact Trail of each document Format is fixed in
+the M4 plan.
 
 ## 6. Output (#13–#15)
 
 ### 6.1 Tree (default on a TTY)
 
-```
-docs/deploy.md
-  # Deploying Go apps
-    ## systemd
-      42: ExecStart=/opt/apps/notes/notes
-      47: Restart=always
-    ## Logs
-      63: journalctl -u notes -f
-```
+Real output of `sfor needle-pkg md --tree` over `tests/fixtures/`:
 
-Matches sharing a Trail prefix are grouped under it. Context lines (`-A/-B/-C`) print under
-their Match, as in ripgrep.
+````
+md/guide.md
+  Deploy guide
+    # Install
+      ## Linux
+        ```bash
+          12:apt install needle-pkg
+````
+
+Matches sharing a Trail prefix are grouped under it. Each Match line is `line:text`, and a
+context line (`-A/-B/-C`) is `line-text`, under its Match, as in ripgrep. Headings show their
+Markdown markers, a code block its fence and info string, a table column `column «Name»`.
 
 ### 6.2 One line per Match (default in a pipe, or `--flat`)
 
 ```
-docs/deploy.md:42: Deploying Go apps › systemd │ ExecStart=/opt/apps/notes/notes
+md/guide.md:12: Deploy guide › Install › Linux › bash │ apt install needle-pkg
 ```
 
-`--no-trail` prints exactly what ripgrep would print, for scripts that expect it.
+The layout is `path:line: Trail │ text`; with an empty Trail (Plain files) it is
+`path:line: text`. A line with Matches in Segments with different Trails (two table cells)
+prints once per Trail. `--no-trail` prints exactly what ripgrep would print, for scripts that
+expect it.
 
 ### 6.3 Fragments of long lines
 
 - A line longer than the available width is shown as a Fragment centred on the Match, with
-  the omitted count on each side: `…[+1834] text before MATCH text after […+2210]`.
-- Available width: the terminal width minus the indentation on a TTY; `--fragment-width`, by
-  default 200, in a pipe and in `--json`.
-- Several Matches on one long line: Matches closer than half the available width share one
-  Fragment; the rest get their own, one under the other (#14).
+  the omitted count on each side: `…[+1834] text before MATCH text after […+2210]`. Widths
+  count characters (`char`s); the display width of wide characters is out of scope for v0.1.
+- Width: the terminal width on a TTY; `--fragment-width`, by default 200, in a pipe and in
+  `--json`. In tree and one-line output the width covers the whole printed line, so the
+  Fragment gets what the path, line number, indentation and Trail leave; in `--json` the
+  Fragment gets the whole width.
+- **Markers.** `…[+N] ` before and ` […+M]` after take `5 + digits(line length)` characters
+  each, and both are reserved even when one turns out empty, so every Fragment of a line has
+  the same text width: `inner = width − 2 × marker`, never below 10 characters. With a width
+  too small for 10 characters plus the markers, the Fragment is wider than the width; that is
+  the defined behaviour for tiny widths.
+- **Clusters** (#14). Matches are taken in order; a Match joins the current cluster when the
+  cluster, extended to the Match's end, still fits in `inner` characters; otherwise it starts
+  a new cluster. Each cluster is one Fragment, printed one under the other, and each Fragment
+  highlights only its own cluster's Matches, so every Match is shown once.
 - ripgrep's `-M/--max-columns` keeps its meaning: with it, searchfor prints ripgrep's
-  `[Omitted long line]` messages instead of Fragments.
+  `[Omitted long matching line]` messages instead of Fragments.
 
 ### 6.4 `--json` (#15, follow-ups 8362 and 8365)
 
@@ -260,24 +299,41 @@ docs/deploy.md:42: Deploying Go apps › systemd │ ExecStart=/opt/apps/notes/n
 one per line, so it streams — and adds three fields inside each `match.data`
 ([ADR 0004](../adr/0004-json-extends-ripgrep.md)):
 
+The `match` message for line 12 of `sfor --json needle md` over `tests/fixtures/` (real output,
+one line, wrapped here):
+
 ```json
-{"type":"match","data":{"path":{"text":"docs/deploy.md"},"lines":{"text":"ExecStart=/opt/apps/notes/notes\n"},
- "line_number":42,"absolute_offset":1730,"submatches":[{"match":{"text":"ExecStart"},"start":0,"end":9}],
+{"type":"match","data":{"path":{"text":"md/guide.md"},"lines":{"text":"apt install needle-pkg\n"},
+ "line_number":12,"absolute_offset":96,"submatches":[{"match":{"text":"needle"},"start":12,"end":18}],
  "format":"markdown",
- "trail":[{"kind":"heading","name":"Deploying Go apps","line":1,"end_line":80,"level":1},
-          {"kind":"heading","name":"systemd","line":30,"end_line":55,"level":2}],
+ "trail":[{"kind":"document","name":"Deploy guide","line":1,"end_line":38},
+          {"kind":"heading","name":"Install","line":5,"end_line":34,"level":1},
+          {"kind":"heading","name":"Linux","line":9,"end_line":18,"level":2},
+          {"kind":"code","name":"bash","line":11,"end_line":13}],
  "fragment":null}}
 ```
 
 - Every existing consumer of `rg --json` keeps working: it ignores the added fields.
-- `fragment` is `null` unless the line exceeds `--fragment-width`; then it is
+- `format` is the Format's name, or `null` for Plain files (whose `trail` is `[]`).
+- `trail` is the Trail of the line's first submatch; for an inverted Match (`-v`), of the line
+  start.
+- `fragment` is `null` unless the line exceeds `--fragment-width`; then it is the line's
+  first Fragment,
   `{"text":"…","start":<byte offset of the Fragment in the line>,"omitted_before":N,"omitted_after":M}`.
-- With `--expand`, each `match.data` also carries
-  `"section":{"start_line":30,"end_line":55,"text":"…"}`.
-- A Member of a Container keeps the Container in `path` and appears as a Segment of `trail`.
+- With `--expand`, every `match.data` also carries the Section of the last Segment of
+  `trail`, text included: `"section":{"start_line":30,"end_line":55,"text":"…"}`, or `null`
+  when the Trail is empty.
+- **Per-submatch Trails.** When the submatches of one line have different Trails (two cells of
+  one table row), every object in `submatches` also carries its own `trail`; with `--expand`,
+  a submatch whose Section differs from the line's also carries its own `section`. When all
+  submatches share the line's Trail, these fields are absent.
+- The `stats` of `end` and `summary` count the Matches found by the search, before
+  `--within` and `--in-headings` filter them.
+- A document searched with `--docs` (M4) keeps the document in `path`; its structure appears
+  as Segments of `trail`.
 - Added field names are stable from v0.1; new ones may appear, existing ones are never renamed.
   Their schema lives in `docs/json-schema.json`.
-- `--json --no-trail` is byte-identical to `rg --json`.
+- `--json --no-trail` prints the same messages as `rg --json`; only the timings differ.
 
 ## 7. Grammars (#8, follow-up 8361)
 
@@ -304,8 +360,10 @@ parsing speed against a native Grammar. Only files with Matches are parsed (§3)
 
 ## 8. Command line (#3, #4)
 
-- **ripgrep compatibility.** ripgrep 14.1.1 lists 111 flags in `rg --help`. v1 accepts all of
-  them by name; they are implemented in order of use. A flag that is accepted but not yet
+- **ripgrep compatibility.** ripgrep 14.1.1 has 146 flag names: 104 flags in `rg --help`,
+  30 `--no-` negations and 12 negations with other names (counted from its source in M1, C2).
+  v1 accepts all of them by name; they are implemented in order of use. v0.1 implements 51
+  and accepts the other 95 as «not supported yet». A flag that is accepted but not yet
   implemented fails with `sfor: --<flag> is not supported yet` and exit code 2, never silently
   ignored. The compatibility table lives in `docs/rg-compat.md` and is checked by a test that
   parses `rg --help`.
@@ -322,6 +380,7 @@ parsing speed against a native Grammar. Only files with Matches are parsed (§3)
 | `--fragment-width <N>` | Fragment width when there is no terminal |
 | `--list-formats`, `--export-formats <DIR>` | Format Definitions |
 | `--install-grammar <LANG>`, `--list-grammars` | Grammars |
+| `--docs` | search PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite through the built-in extractors (M4, 8395) |
 | `--mcp` | run as an MCP server over stdio |
 
 Management actions are flags, not subcommands, because `sfor formats` must keep meaning
@@ -354,8 +413,8 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
 5. A Match inside a PHP method gets `class Cart › addItem`, and the tree output shows the
    method's signature.
 6. A Match in a stripped ELF binary shows format, section, offset and string, and no symbol.
-7. With `-z`, a Match in `guide.md` inside `docs.zip` gets `docs.zip › guide.md › …`; without
-   `-z`, the zip is not opened.
+7. With `--docs`, a Match in a PDF gets the PDF's chapter Trail; without `--docs`, the PDF
+   is treated as ripgrep treats it. A zip is never opened (8390).
 8. A 20 000-character minified JSON line with three Matches prints Fragments no wider than
    the terminal, with correct omitted counts.
 9. `--within "Install › Linux"` keeps only Matches under that Trail; `--expand` prints each
@@ -365,7 +424,7 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
 11. An External Processor that crashes leaves its Matches with an empty Trail and a warning;
     the exit code is still ripgrep's (0 if anything matched).
 12. Every `match` message of `--json` carries `trail`, `format` and `fragment` valid against
-    `docs/json-schema.json`; `--json --no-trail` is byte-identical to `rg --json` for the
+    `docs/json-schema.json`; `--json --no-trail` equals `rg --json`, timings aside, for the
     implemented flags.
 13. Performance: on `~/robotin/knowledge` (619 Markdown files on 2026-10-16), `sfor` takes at
     most 1.5× the wall time of `rg` for a pattern matching under 5 % of the files, measured as
