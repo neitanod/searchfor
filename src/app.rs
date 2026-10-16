@@ -816,18 +816,17 @@ impl Ctx<'_> {
                     }
                     _ => empty_trails(&fm),
                 };
-                let format = def.map(|d| d.name.clone());
-                (src, fm, trails, format)
+                let d = Described {
+                    file: fm,
+                    format: def.map(|d| d.name.clone()),
+                    trails,
+                    sections: Vec::new(),
+                };
+                (src, d)
             })
         };
-        let Some((src, file, trails, format)) = found else {
+        let Some((src, mut d)) = found else {
             return Ok(None);
-        };
-        let mut d = Described {
-            file,
-            format,
-            trails,
-            sections: Vec::new(),
         };
         if let Some(w) = &self.args.within {
             let wanted = filter::parse_within(w);
@@ -842,7 +841,7 @@ impl Ctx<'_> {
                 filter::limit(&mut d, m, self.args.before(), self.args.after());
             }
         }
-        if self.args.expand {
+        if self.args.expand && !self.args.in_headings {
             d.sections = filter::sections(&d);
         }
         Ok(Some((src, d)))
@@ -850,12 +849,7 @@ impl Ctx<'_> {
 
     /// --in-headings: the Source and its names, and the Matches in them. A Plain file is not
     /// reported.
-    #[allow(clippy::type_complexity)]
-    fn names_of(
-        &self,
-        t: &Target,
-        detector: &Detector,
-    ) -> Result<Option<(Source, FileMatches, Vec<Vec<Trail>>, Option<String>)>, ()> {
+    fn names_of(&self, t: &Target, detector: &Detector) -> Result<Option<(Source, Described)>, ()> {
         let src = match &t.fs {
             None => {
                 let mut v = Vec::new();
@@ -893,10 +887,22 @@ impl Ctx<'_> {
                 return Err(());
             }
         };
-        Ok(self.heading_matches(&src, &names).map(|(fm, trails)| {
-            let format = Some(def.name.clone());
-            (src, fm, trails, format)
-        }))
+        Ok(self
+            .heading_matches(&src, &names)
+            .map(|(file, trails, sections)| {
+                let d = Described {
+                    file,
+                    format: Some(def.name.clone()),
+                    trails,
+                    // With --expand, the Section of each named Segment (code review r1, Fable #4).
+                    sections: if self.args.expand {
+                        sections
+                    } else {
+                        Vec::new()
+                    },
+                };
+                (src, d)
+            }))
     }
 
     /// `trails[i][k]` from the Processor's one Trail per anchor; a failing Processor is a
@@ -939,15 +945,16 @@ impl Ctx<'_> {
         &self,
         src: &Source,
         names: &[Name],
-    ) -> Option<(FileMatches, Vec<Vec<Trail>>)> {
+    ) -> Option<HeadingFound> {
         let bytes = src.bytes();
-        let mut hits: Vec<(usize, usize, Trail)> = Vec::new();
+        let mut hits: Vec<(usize, usize, Trail, Section)> = Vec::new();
         for n in names {
-            let parent: Trail = n.trail[..n.trail.len().saturating_sub(1)].to_vec();
+            // --expand prints the Section of the named Segment.
+            let section = n.trail.last().map(|s| (s.line, s.end_line));
             // RegexMatcher's error type is NoError: the search cannot fail.
             let _ = self.matcher.find_iter(n.text.as_bytes(), |m| {
                 for r in n.source_ranges(m.start()..m.end()) {
-                    hits.push((r.start, r.end, parent.clone()));
+                    hits.push((r.start, r.end, n.trail_at(r.start), section));
                 }
                 true
             });
@@ -956,14 +963,15 @@ impl Ctx<'_> {
         hits.dedup_by_key(|h| (h.0, h.1));
         let li = LineIndex::new(bytes);
         let mut lines: Vec<HeadingLine> = Vec::new();
-        for (s, e, t) in hits {
+        for (s, e, t, sec) in hits {
             let l = li.line_of(s);
             match lines.last_mut() {
                 Some(last) if last.0 == l => {
                     last.1.push((s, e));
                     last.2.push(t);
+                    last.3.push(sec);
                 }
-                _ => lines.push((l, vec![(s, e)], vec![t])),
+                _ => lines.push((l, vec![(s, e)], vec![t], vec![sec])),
             }
         }
         // With --within, -m applies after the filter (`describe`).
@@ -987,7 +995,7 @@ impl Ctx<'_> {
         // line is visited once. Line number → index into `lines` for Matches, None for context.
         let (before, after) = (self.args.before() as u64, self.args.after() as u64);
         let mut spans: Vec<(u64, u64)> = Vec::new();
-        for (l, _, _) in &lines {
+        for (l, ..) in &lines {
             let (s, e) = (
                 l.saturating_sub(before).max(1),
                 l.saturating_add(after).min(last_line).max(*l),
@@ -999,11 +1007,12 @@ impl Ctx<'_> {
         }
         let mut next = lines.iter().enumerate().peekable();
         let order = spans.into_iter().flat_map(|(s, e)| s..=e).map(|l| {
-            let m = next.next_if(|(_, (ml, _, _))| *ml == l).map(|(i, _)| i);
+            let m = next.next_if(|(_, (ml, ..))| *ml == l).map(|(i, _)| i);
             (l, m)
         });
         let mut items = Vec::new();
         let mut trails = Vec::with_capacity(lines.len());
+        let mut sections = Vec::with_capacity(lines.len());
         let mut matches = 0;
         for (l, m) in order {
             let r = range(l);
@@ -1016,7 +1025,7 @@ impl Ctx<'_> {
             };
             match m {
                 Some(i) => {
-                    let (_, subs, ts) = &lines[i];
+                    let (_, subs, ts, secs) = &lines[i];
                     let submatches: Vec<Submatch> = subs
                         .iter()
                         .map(|&(s, e)| Submatch {
@@ -1026,6 +1035,7 @@ impl Ctx<'_> {
                         .collect();
                     matches += submatches.len() as u64;
                     trails.push(ts.clone());
+                    sections.push(secs.clone());
                     items.push(Item::Match(Line { submatches, ..line }));
                 }
                 None => items.push(Item::Context(line)),
@@ -1043,13 +1053,19 @@ impl Ctx<'_> {
             items,
             stats,
         };
-        Some((file, trails))
+        Some((file, trails, sections))
     }
 }
 
+/// A Section as 1-based inclusive lines, or None.
+type Section = Option<(u64, u64)>;
+
+/// What `heading_matches` finds: the Match lines, and per submatch its Trail and Section.
+type HeadingFound = (FileMatches, Vec<Vec<Trail>>, Vec<Vec<Section>>);
+
 /// A line with Matches in Segment names: its number, the byte ranges of the Matches in the
-/// Source, and the Trail of each.
-type HeadingLine = (u64, Vec<(usize, usize)>, Vec<Trail>);
+/// Source, and the Trail and the Section of the named Segment of each.
+type HeadingLine = (u64, Vec<(usize, usize)>, Vec<Trail>, Vec<Section>);
 
 /// One empty Trail per submatch (one per inverted Match): Plain files and binary files.
 fn empty_trails(fm: &FileMatches) -> Vec<Vec<Trail>> {

@@ -157,12 +157,30 @@ pub struct Name {
     pub pieces: Vec<(Range<usize>, Range<usize>)>,
     /// Trail of the named Segment, the Segment itself last.
     pub trail: Trail,
+    /// The label of each Segment of `trail` (the bytes that name it, design note 7): a Match
+    /// in the name leaves out the Segments whose label holds it, as `trail_for` does. Empty
+    /// when unknown: then only the named Segment is left out.
+    pub labels: Vec<Range<usize>>,
     /// Where an empty hit lands when no piece contains it (a name with no text, like `###`):
     /// the end of the heading's markers.
     pub anchor: usize,
 }
 
 impl Name {
+    /// The Trail of a Match in the name that starts at byte `at` of the Source: the Segments
+    /// of `trail` whose label does not hold it (code review r1, Fable #4).
+    pub fn trail_at(&self, at: usize) -> Trail {
+        if self.labels.len() != self.trail.len() {
+            return self.trail[..self.trail.len().saturating_sub(1)].to_vec();
+        }
+        self.trail
+            .iter()
+            .zip(&self.labels)
+            .filter(|(_, l)| !l.contains(&at))
+            .map(|(s, _)| s.clone())
+            .collect()
+    }
+
     /// Source ranges covered by the text range `hit`, one per piece it touches. A verbatim
     /// piece maps byte for byte; a decoded piece maps to its whole Source range. An empty hit
     /// (`^`, `$`) at text position `p` maps to an empty range: inside a verbatim piece at the
@@ -267,6 +285,7 @@ mod tests {
             text: "a<b".into(),
             pieces: vec![(0..1, 10..11), (1..2, 11..15), (2..3, 15..16)],
             trail: Vec::new(),
+            labels: Vec::new(),
             anchor: 7,
         };
         assert_eq!(name.source_ranges(1..2), vec![11..15]);
@@ -279,6 +298,7 @@ mod tests {
             text: String::new(),
             pieces: Vec::new(),
             trail: Vec::new(),
+            labels: Vec::new(),
             anchor: 7,
         };
         assert_eq!(empty.source_ranges(0..0), vec![7..7]);

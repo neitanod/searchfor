@@ -701,3 +701,42 @@ fn t29_max_count_counts_the_lines_within_keeps() {
         ["3", "5"]
     );
 }
+
+/// Code review r1, Fable #4: a Match in a name has the Trail a Match on that line has (a
+/// Segment whose label holds it is left out), and --expand prints the named Segment's Section.
+#[test]
+fn t30_in_headings_trails_and_sections() {
+    let fx = Fixture::new();
+    std::fs::write(fx.file("li.md"), "# A\n\n- # Head in item\n  needle\n").unwrap();
+    let plain = run(&mut fx.sfor(["--flat", "Head", "li.md"]));
+    let named = run(&mut fx.sfor(["--in-headings", "--flat", "Head", "li.md"]));
+    assert_eq!(stdout(&plain), "3: A │ - # Head in item\n");
+    assert_eq!(stdout(&named), stdout(&plain));
+    let o = run(&mut fx.sfor([
+        "--in-headings",
+        "--expand",
+        "--flat",
+        "^Linux$",
+        "md/guide.md",
+    ]));
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let out = stdout(&o);
+    assert!(
+        out.starts_with("9-18: Deploy guide › Install\n## Linux\n"),
+        "{out}"
+    );
+    let o = run(&mut fx.sfor([
+        "--in-headings",
+        "--expand",
+        "--json",
+        "^Linux$",
+        "md/guide.md",
+    ]));
+    let m: serde_json::Value = stdout(&o)
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .find(|m| m["type"] == "match")
+        .unwrap();
+    assert_eq!(m["data"]["section"]["start_line"], 9);
+    assert_eq!(m["data"]["section"]["end_line"], 18);
+}

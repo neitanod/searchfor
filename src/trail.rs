@@ -167,6 +167,13 @@ pub fn names_of(outline: &Outline) -> Vec<Name> {
                 .filter(|x| !x.hidden)
                 .map(|x| x.segment.clone())
                 .collect(),
+            labels: outline
+                .chain(i)
+                .into_iter()
+                .map(|j| &outline.segments[j])
+                .filter(|x| !x.hidden)
+                .map(|x| x.label.clone())
+                .collect(),
         })
         .collect()
 }

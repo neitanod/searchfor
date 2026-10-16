@@ -260,6 +260,7 @@ mod tests {
             text: text.clone(),
             pieces,
             trail: Vec::new(),
+            labels: Vec::new(),
             anchor: 0,
         };
         // Every verbatim piece is its Source bytes.

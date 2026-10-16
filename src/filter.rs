@@ -44,6 +44,9 @@ pub fn retain(d: &mut Described, keep: &[Vec<bool>], before: usize, after: usize
 
     let items = std::mem::take(&mut d.file.items);
     let mut trails = std::mem::take(&mut d.trails).into_iter();
+    // Sections already set (--in-headings with --expand) follow their Trails.
+    let mut sections = std::mem::take(&mut d.sections).into_iter();
+    let mut new_sections = Vec::new();
     let cut = d.file.stats.binary_cut;
     let mut new_cut = cut.map(|_| 0);
     let mut new_items = Vec::with_capacity(items.len());
@@ -54,8 +57,19 @@ pub fn retain(d: &mut Described, keep: &[Vec<bool>], before: usize, after: usize
             Item::Match(mut m) => {
                 let ks = &keep[i];
                 let ts = trails.next().unwrap_or_default();
+                let ss = sections.next();
                 i += 1;
                 if ks.iter().any(|&b| b) {
+                    if let Some(ss) = ss {
+                        new_sections.push(if m.submatches.is_empty() {
+                            ss
+                        } else {
+                            ss.into_iter()
+                                .zip(ks)
+                                .filter_map(|(s, &k)| k.then_some(s))
+                                .collect()
+                        });
+                    }
                     if m.submatches.is_empty() {
                         new_trails.push(ts);
                     } else {
@@ -96,6 +110,7 @@ pub fn retain(d: &mut Described, keep: &[Vec<bool>], before: usize, after: usize
     }
     d.file.items = new_items;
     d.trails = new_trails;
+    d.sections = new_sections;
     d.file.stats.binary_cut = new_cut;
 }
 
