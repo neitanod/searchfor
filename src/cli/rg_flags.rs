@@ -221,6 +221,23 @@ With `--within`, `-m` counts the Matches the filter keeps, so the search cannot 
 stopped searching binary file after match` with `--within '' -m1`, which rg 14.1.1 never
 reaches with `-m1`, as it stops before the NUL. The `end` and `summary` statistics of `--json`
 count that whole search (spec §6.4) (code review r3, Fable #5).
+
+### Stdin or a FIFO read to the end with `-m`
+
+rg 14.1.1 stops reading stdin or a FIFO at the `-m`th Match. sfor does too in `--flat`,
+`--tree` and `--no-trail`, but reads the input to its end in these cases, which on an input
+that never ends (`yes`) never answer:
+
+- `--expand` and `--json` when the input's Format has an Outline (`--format markdown`): the
+  Segment around a Match ends where the Outline says, which can be past the `-m`th Match.
+- `--within`, with any Format: `-m` counts the Matches the filter keeps (above).
+
+A plain-text Format gets no Outline, so `--expand` and `--json` stop as rg does (code review
+r4, Fable #5):
+
+```sh
+yes | sfor --format markdown --json -m1 y    # does not end; rg -m1 y does
+```
 ";
 
 #[cfg(test)]
