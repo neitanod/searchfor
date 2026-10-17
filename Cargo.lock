@@ -1113,11 +1113,14 @@ dependencies = [
 name = "searchfor"
 version = "0.1.0-dev"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "assert_cmd",
+ "bstr",
  "clap",
  "dirs",
  "encoding_rs",
+ "encoding_rs_io",
  "globset",
  "grep-cli",
  "grep-matcher",
@@ -1130,7 +1133,9 @@ dependencies = [
  "memchr",
  "memmap2",
  "pulldown-cmark",
+ "regex-automata",
  "regex-lite",
+ "regex-syntax",
  "serde",
  "serde_json",
  "tempfile",

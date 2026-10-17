@@ -18,15 +18,15 @@ path = "src/main.rs"
 anyhow = "1"
 clap = { version = "4.6", features = ["derive", "string", "wrap_help"] }
 dirs = "6"
-encoding_rs = "0.8"
-globset = "0.4"
+encoding_rs = "=0.8.34"
+globset = "=0.4.15"
 grep-cli = "=0.1.11"
 grep-matcher = "=0.1.7"
 grep-printer = "=0.2.2"
 grep-regex = "=0.1.13"
 grep-searcher = "=0.1.14"
 ignore = "=0.4.23"
-memchr = "2"
+memchr = "=2.7.4"
 memmap2 = "0.9"
 pulldown-cmark = { version = "0.13", default-features = false }
 serde = { version = "1", features = ["derive"] }
@@ -35,6 +35,14 @@ termcolor = "1.4"
 terminal_size = "0.4"
 thiserror = "2"
 toml = "1.1"
+# Not used directly: pinned to ripgrep 14.1.1's Cargo.lock so that a resolution without our
+# lock (`cargo install searchfor`) matches, decodes and walks as rg 14.1.1. regex-syntax and
+# regex-automata carry the Unicode tables (rg's Unicode 15) behind \w, \d, \b, -w and -i.
+aho-corasick = { version = "=1.1.3", default-features = false }
+bstr = { version = "=1.10.0", default-features = false }
+encoding_rs_io = "=0.1.7"
+regex-automata = { version = "=0.4.7", default-features = false }
+regex-syntax = { version = "=0.8.4", default-features = false }
 
 [dev-dependencies]
 assert_cmd = "2"
