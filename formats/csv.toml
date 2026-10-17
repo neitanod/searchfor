@@ -1,0 +1,12 @@
+# formats/csv.toml — CSV rows and columns (spec §5.5): `row 128 › Plan`.
+name       = "csv"
+extensions = ["csv"]
+processor  = "csv"
+
+[params]
+# "auto": the most frequent of `,` `;` tab `|` in the first line, outside quotes.
+delimiter = "auto"
+quote     = "\""
+# The first row names the columns; false names them `column 1`, `column 2`…
+headers   = true
+name_chars = 40

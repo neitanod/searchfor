@@ -1,0 +1,10 @@
+# formats/tsv.toml — TSV rows and columns (spec §5.5). Quotes are text, as in IANA's TSV.
+name       = "tsv"
+extensions = ["tsv"]
+processor  = "csv"
+
+[params]
+delimiter = "\t"
+quote     = ""
+headers   = true
+name_chars = 40

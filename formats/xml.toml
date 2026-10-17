@@ -1,0 +1,10 @@
+# formats/xml.toml — XML element paths (spec §5.4): `catalog › book[2] › title`.
+name       = "xml"
+extensions = ["xml", "xsd", "xsl", "xslt", "svg", "rss", "atom", "plist", "wsdl", "xlf", "xliff", "kml", "gpx", "csproj", "vbproj", "fsproj", "nuspec", "resx", "xaml"]
+# `<?xml`, read only for files without an extension (spec §4.1).
+magic      = [{ hex = "3c3f786d6c" }]
+processor  = "markup"
+
+[params]
+syntax = "xml"
+name_chars = 40

@@ -67,6 +67,8 @@ sha2 = "0.11"
 ureq = "3"
 # Temporary files for Helper Processors (spec §4.4, Paths).
 tempfile = "3"
+# CSV and TSV fields with their byte offsets (spec §5.5; M3 plan, D3).
+csv-core = "0.1"
 
 # Ctrl-C with Helper Processors running (spec §4.4, Lifetime; M2 plan, D42).
 [target.'cfg(unix)'.dependencies]

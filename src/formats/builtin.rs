@@ -19,4 +19,10 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("json.toml", include_str!("../../formats/json.toml")),
     ("toml.toml", include_str!("../../formats/toml.toml")),
     ("yaml.toml", include_str!("../../formats/yaml.toml")),
+    ("html.toml", include_str!("../../formats/html.toml")),
+    ("xml.toml", include_str!("../../formats/xml.toml")),
+    ("csv.toml", include_str!("../../formats/csv.toml")),
+    ("tsv.toml", include_str!("../../formats/tsv.toml")),
+    ("srt.toml", include_str!("../../formats/srt.toml")),
+    ("vtt.toml", include_str!("../../formats/vtt.toml")),
 ];

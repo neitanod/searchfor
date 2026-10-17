@@ -1,0 +1,4 @@
+# formats/vtt.toml — WebVTT subtitles (spec §5.6): `cue 12 00:01:02.500`.
+name       = "vtt"
+extensions = ["vtt"]
+processor  = "subtitles"

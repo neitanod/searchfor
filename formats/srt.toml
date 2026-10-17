@@ -1,0 +1,4 @@
+# formats/srt.toml — SubRip subtitles (spec §5.6): `cue 12 00:01:02,500`.
+name       = "srt"
+extensions = ["srt"]
+processor  = "subtitles"

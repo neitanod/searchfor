@@ -1,0 +1,9 @@
+# formats/html.toml — HTML element paths (spec §5.4): `section#pricing › table › tr[3] › td[2]`.
+name       = "html"
+extensions = ["html", "htm", "xhtml"]
+processor  = "markup"
+
+[params]
+syntax = "html"
+# Characters of an element's name (`tag#id.class…`) before it is cut with `…`.
+name_chars = 40

@@ -200,6 +200,29 @@ mod tests {
     }
 
     #[test]
+    fn the_m3_definitions_load_and_detect() {
+        let (r, warnings) = Registry::load(None, &known);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let det = detector::Detector::new(&r, &[]).unwrap();
+        for (path, head, format) in [
+            ("a/page.HTML", &b""[..], "html"),
+            ("p.xhtml", b"", "html"),
+            ("feed.xml", b"", "xml"),
+            ("icon.svg", b"", "xml"),
+            ("feed", b"<?xml version=\"1.0\"?>\n<r/>", "xml"),
+            ("t.csv", b"", "csv"),
+            ("t.tsv", b"", "tsv"),
+            ("m.srt", b"", "srt"),
+            ("m.vtt", b"", "vtt"),
+        ] {
+            let got = det
+                .detect(std::path::Path::new(path), head)
+                .map(|d| d.name.as_str());
+            assert_eq!(got, Some(format), "{path}");
+        }
+    }
+
+    #[test]
     fn user_file_overrides_builtin_and_adds_new() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(

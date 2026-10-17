@@ -1,8 +1,11 @@
 //! Processors turn Match anchors into Trails (design note 6).
+pub mod csv;
 pub mod external;
 pub mod frontmatter;
 pub mod keypath;
 pub mod markdown;
+pub mod markup;
+pub mod subtitles;
 pub mod treesitter;
 
 use crate::model::{Input, Name, Trail};
@@ -68,6 +71,9 @@ pub fn by_name(name: &str) -> Option<&'static dyn Processor> {
     match name {
         "markdown" => Some(&markdown::Markdown),
         "keypath" => Some(&keypath::Keypath),
+        "markup" => Some(&markup::Markup),
+        "csv" => Some(&csv::Csv),
+        "subtitles" => Some(&subtitles::Subtitles),
         _ => None,
     }
 }
@@ -352,6 +358,14 @@ mod tests {
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].text, "A");
         assert_eq!(n[0].pieces, vec![(0..1, 2..3)]);
+    }
+
+    #[test]
+    fn by_name_knows_the_m3_built_ins() {
+        for p in ["markup", "csv", "subtitles"] {
+            assert!(by_name(p).is_some(), "{p}");
+            assert!(Processors::known(p), "{p}");
+        }
     }
 
     #[test]
