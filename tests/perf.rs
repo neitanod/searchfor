@@ -819,3 +819,181 @@ fn markup_implied_ends_at_one_byte_stay_linear() {
     let body = format!("{}needle{}", "<x>".repeat(20_000), " ".repeat(200_000));
     markup_linear("trim.html", body, 256);
 }
+
+/// One M3 Format at 50 MB (M3 plan, Task 7.1): `unit(i, needle)` writes the i-th repetition,
+/// with `needle` at i = 0, in the middle and at the end. sfor must print three rows whose
+/// Trails start with `first` and `last`, within rg's time + 1 s (50 MB/s at least) and rg's
+/// RSS + 32 MiB: the walk keeps three short stacks, not the file's structure.
+fn m3_ceiling(
+    file: &str,
+    head: &str,
+    unit: impl Fn(usize, &str) -> String,
+    tail: &str,
+    first: &str,
+    last: &str,
+) {
+    let fx = Fixture::new();
+    let mut v = String::with_capacity(SIZE + 4096);
+    v.push_str(head);
+    let mut i = 0;
+    let mut middle = None;
+    while v.len() < SIZE {
+        let needle = if i == 0 || (middle.is_none() && v.len() >= SIZE / 2) {
+            if i > 0 {
+                middle = Some(i);
+            }
+            "needle"
+        } else {
+            "hay"
+        };
+        v.push_str(&unit(i, needle));
+        i += 1;
+    }
+    v.push_str(&unit(i, "needle"));
+    v.push_str(tail);
+    assert_eq!(v.matches("needle").count(), 3, "{file}");
+    std::fs::write(fx.file(file), &v).unwrap();
+    drop(v);
+    let args = ["--flat", "needle", file];
+    let (out, err) = sfor_output(&fx, &args);
+    assert_eq!(err, "", "{file}");
+    let trails: Vec<&str> = out
+        .lines()
+        .map(|l| l.split_once(" │ ").map_or("", |(t, _)| t))
+        .collect();
+    assert_eq!(trails.len(), 3, "{file}: {out:.400}");
+    // `{n}` is the 1-based position of the last unit: its book, row or cue number.
+    let last = last.replace("{n}", &(i + 1).to_string());
+    assert!(
+        trails[0].ends_with(first),
+        "{file}: {:?} ≠ …{first}",
+        trails[0]
+    );
+    assert!(
+        trails[2].ends_with(&last),
+        "{file}: {:?} ≠ …{last}",
+        trails[2]
+    );
+    let Some(((t, rss), (base, base_rss))) = against_rg(&fx, &args) else {
+        return;
+    };
+    eprintln!(
+        "50 MB {file}: sfor {t:?}, RSS {} MiB; rg {base:?}, RSS {} MiB",
+        rss / 1_048_576,
+        base_rss / 1_048_576
+    );
+    assert!(
+        t <= base + Duration::from_secs(1),
+        "{file}: {t:?} is more than rg's {base:?} + 1 s"
+    );
+    assert!(
+        rss <= base_rss + 32 * 1_048_576,
+        "{file}: RSS {rss} is more than rg's {base_rss} + 32 MiB"
+    );
+}
+
+#[test]
+#[ignore]
+fn markup_html_walks_at_fifty_megabytes_a_second() {
+    let _alone = alone();
+    m3_ceiling(
+        "big.html",
+        "<!DOCTYPE html>\n<html><body>\n<main id=\"all\">\n",
+        |i, n| {
+            format!(
+                "<section class=\"s\">\n  <h2>Part {i}</h2>\n  <ul><li>one<li>two <b>{n}</b><li>three</ul>\n  <p>text<br>\n</section>\n"
+            )
+        },
+        "</main>\n</body></html>\n",
+        ": main#all › section.s[1] › ul › li[2] › b",
+        " › ul › li[2] › b",
+    );
+}
+
+#[test]
+#[ignore]
+fn markup_xml_walks_at_fifty_megabytes_a_second() {
+    let _alone = alone();
+    m3_ceiling(
+        "big.xml",
+        "<?xml version=\"1.0\"?>\n<catalog>\n",
+        |i, n| {
+            format!(
+                "  <book id=\"b{i}\">\n    <title>{n}</title>\n    <!-- c -->\n    <price>{i}</price>\n  </book>\n"
+            )
+        },
+        "</catalog>\n",
+        ": catalog › book[1] › title",
+        ": catalog › book[{n}] › title",
+    );
+}
+
+#[test]
+#[ignore]
+fn csv_reads_at_fifty_megabytes_a_second() {
+    let _alone = alone();
+    m3_ceiling(
+        "big.csv",
+        "id,Name,Plan,Notes\n",
+        |i, n| {
+            // Only units without a needle are quoted, so the three needles are all in `Plan`
+            // (Fable r1 #9).
+            if i % 7 == 3 && n == "hay" {
+                format!("{i},Ana,pro,\"two, \"\"quoted\"\"\nlines {n}\"\n")
+            } else {
+                format!("{i},Bea,{n},plain notes here\n")
+            }
+        },
+        "",
+        ": row 1 › Plan",
+        // Unit i is row i + 1.
+        ": row {n} › Plan",
+    );
+}
+
+#[test]
+#[ignore]
+fn subtitles_read_at_fifty_megabytes_a_second() {
+    let _alone = alone();
+    m3_ceiling(
+        "big.srt",
+        "",
+        |i, n| {
+            format!(
+                "{}\r\n00:00:01,000 --> 00:00:02,000\r\nline of {n}\r\nsecond line\r\n\r\n",
+                i + 1
+            )
+        },
+        "",
+        ": cue 1 00:00:01,000",
+        ": cue {n} 00:00:01,000",
+    );
+}
+
+#[test]
+#[ignore]
+fn tsv_reads_at_fifty_megabytes_a_second() {
+    let _alone = alone();
+    m3_ceiling(
+        "big.tsv",
+        "id\tName\tPlan\tNotes\n",
+        |i, n| format!("{i}\tBea\t{n}\tplain \"notes\" here\n"),
+        "",
+        ": row 1 › Plan",
+        ": row {n} › Plan",
+    );
+}
+
+#[test]
+#[ignore]
+fn vtt_reads_at_fifty_megabytes_a_second() {
+    let _alone = alone();
+    m3_ceiling(
+        "big.vtt",
+        "WEBVTT\n\nNOTE a note\n\n",
+        |_, n| format!("00:00:01.000 --> 00:00:02.000 align:start\nline of {n}\nsecond line\n\n"),
+        "",
+        ": cue 1 00:00:01.000",
+        ": cue {n} 00:00:01.000",
+    );
+}
