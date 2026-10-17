@@ -1444,7 +1444,11 @@ fn inverted_count_matches_counts_lines_as_ripgrep() {
     }
     let fx = Fixture::new();
     std::fs::create_dir(fx.file("cnt")).unwrap();
-    std::fs::write(fx.file("cnt/w.md"), "# H\nneedle needle\nplain\nother\nneedle\n").unwrap();
+    std::fs::write(
+        fx.file("cnt/w.md"),
+        "# H\nneedle needle\nplain\nother\nneedle\n",
+    )
+    .unwrap();
     std::fs::write(fx.file("cnt/in.txt"), "needle\na\nb\nneedle needle\n").unwrap();
     let mut r = Report(Vec::new());
     for variant in [&["--no-trail"][..], &[], &["--within", ""]] {
@@ -1514,9 +1518,8 @@ fn stdin_read_for_patterns_cannot_be_read_again() {
             let mut s = vec![variant];
             s.extend_from_slice(args);
             let got = sfor(&fx, &s, pats);
-            let err = |o: &Output, name: &str| {
-                common::stderr(o).replace(&format!("{name}: "), "PROG: ")
-            };
+            let err =
+                |o: &Output, name: &str| common::stderr(o).replace(&format!("{name}: "), "PROG: ");
             let out = |o: &Output| {
                 if variant == "--no-trail" {
                     stdout(o)
