@@ -325,6 +325,25 @@ impl<'m> CollectSink<'m> {
     }
 }
 
+/// Numbers the lines of `items`, reported in file order by a search that did not count lines
+/// (`printing_searcher` without line numbers, as ripgrep searches without `-n`), from
+/// `bytes`, the Source the items' offsets point into: a line's number is one more than the
+/// line terminators before it. Only for a search that converted no binary data, whose NUL
+/// bytes the searcher would have counted as line terminators.
+pub fn number_lines(items: &mut [Item], bytes: &[u8]) {
+    let (mut counted, mut line) = (0usize, 1u64);
+    for item in items {
+        let (Item::Match(l) | Item::Context(l)) = item;
+        let at = (l.absolute_offset as usize).min(bytes.len());
+        if at < counted {
+            (counted, line) = (0, 1);
+        }
+        line += memchr::memchr_iter(b'\n', &bytes[counted..at]).count() as u64;
+        counted = at;
+        l.line_number = line;
+    }
+}
+
 /// grep-printer 0.2.2's JSON sink (`record_matches`, json.rs:611–644, and
 /// `find_iter_at_in_context`, util.rs:467–522), copied because those helpers are
 /// `pub(crate)`. Only the single-line branch: our searcher never runs in multi-line mode
@@ -737,6 +756,46 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// A search that does not count lines, numbered afterwards from the Source, reports the
+    /// lines a counting search reports: context, `-v`, `-m`, a BOM, UTF-16 and CRLF.
+    #[test]
+    fn lines_numbered_after_the_search_are_the_counted_ones() {
+        let utf16: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(
+                "a\nb needle\nc\nneedle\n"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes),
+            )
+            .collect();
+        let inputs: [&[u8]; 4] = [
+            b"one\ntwo needle\nthree\n\nneedle\nlast",
+            b"\xEF\xBB\xBFx\nneedle\ny\nneedle",
+            &utf16,
+            b"a\r\nneedle\r\nb\r\nneedle\r\n",
+        ];
+        for flags in [&["-C1"][..], &["-v"], &["-m1", "-A1"], &[]] {
+            let mut v = vec!["sfor"];
+            v.extend_from_slice(flags);
+            v.push("x");
+            let a = args(&v);
+            let m = matcher(&a, &["needle".to_string()]).unwrap();
+            for bytes in inputs {
+                let src = Source::from_bytes("a.txt".into(), bytes.to_vec(), false);
+                let collect = |s: &mut Searcher| {
+                    let mut sink = CollectSink::new(&m, a.invert_match, false).limit(max_count(&a));
+                    s.search_reader(&m, src.as_read(), &mut sink).unwrap();
+                    sink.items
+                };
+                let counted = collect(&mut streaming_searcher(&a, false, false));
+                let mut numbered = collect(&mut printing_searcher(&a, false, false, false));
+                number_lines(&mut numbered, src.bytes());
+                assert!(!counted.is_empty(), "{flags:?} {bytes:?}");
+                assert_eq!(numbered, counted, "{flags:?} {bytes:?}");
+            }
+        }
     }
 
     #[test]

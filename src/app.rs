@@ -366,6 +366,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
             ctx.walk(
                 || TrailState {
                     stream: search::streaming_searcher(args, false, false),
+                    unnumbered: search::printing_searcher(args, false, false, false),
                     source: search::searcher(args, false, true),
                     buf: ctx.out.buffer(),
                     binary_quit: false,
@@ -431,6 +432,9 @@ struct Target {
 /// on, a reader), one for Sources (already decoded), and the output buffer.
 struct TrailState {
     stream: Searcher,
+    /// `stream` without line numbers: a search that only finds out whether a file has a Match,
+    /// or whose lines are numbered afterwards (`search::number_lines`).
+    unnumbered: Searcher,
     source: Searcher,
     buf: Buffer,
     /// The last `describe`d file's search quit at binary data (`BinaryDetection::quit`).
@@ -896,7 +900,26 @@ impl Ctx<'_> {
                 Ok(src) => self.stream_file(st, t, ro, Streamed::Source(&src), None, None),
                 Err(e) => self.msgs.error(format_args!("{}: {e}", t.path.display())),
             },
+            // A file without Matches costs what it costs ripgrep: no line is counted (grill 8385).
+            Some(p) if t.regular && self.probe(st, t, p) != Some(true) => {}
             _ => self.stream_file(st, t, ro, Streamed::Raw, None, None),
+        }
+    }
+
+    /// Whether the file on disk at `path` has a Match, searched up to its first one without
+    /// counting lines. None: an error, already reported.
+    fn probe(&self, st: &mut TrailState, t: &Target, path: &Path) -> Option<bool> {
+        let mut probe = CollectSink::new(&self.matcher, self.args.invert_match, true);
+        st.unnumbered
+            .set_binary_detection(search::binary_detection(self.args, t.explicit));
+        let searched = File::open(path)
+            .and_then(|f| st.unnumbered.search_reader(&self.matcher, f, &mut probe));
+        match searched {
+            Err(e) => {
+                self.msgs.error(format_args!("{}: {e}", t.path.display()));
+                None
+            }
+            Ok(()) => Some(probe.items.iter().any(|i| matches!(i, Item::Match(_)))),
         }
     }
 
@@ -915,22 +938,8 @@ impl Ctx<'_> {
         p: &dyn Processor,
     ) -> bool {
         let Some(path) = &t.fs else { return false };
-        if !self.in_memory {
-            let mut probe = CollectSink::new(&self.matcher, self.args.invert_match, true);
-            st.stream
-                .set_binary_detection(search::binary_detection(self.args, t.explicit));
-            let searched = File::open(path)
-                .and_then(|f| st.stream.search_reader(&self.matcher, f, &mut probe));
-            match searched {
-                Err(e) => {
-                    self.msgs.error(format_args!("{}: {e}", t.path.display()));
-                    return true;
-                }
-                Ok(()) if !probe.items.iter().any(|i| matches!(i, Item::Match(_))) => {
-                    return true;
-                }
-                Ok(()) => {}
-            }
+        if !self.in_memory && self.probe(st, t, path) != Some(true) {
+            return true;
         }
         let src = match Source::open(path, t.explicit) {
             Ok(mut s) => {
@@ -1124,16 +1133,20 @@ impl Ctx<'_> {
             };
         }
         let started = Instant::now();
-        let mut sink = CollectSink::new(&self.matcher, self.args.invert_match, false)
-            .limit(search::max_count(self.args));
-        st.stream
-            .set_binary_detection(search::binary_detection(self.args, t.explicit));
+        let collect = || {
+            CollectSink::new(&self.matcher, self.args.invert_match, false)
+                .limit(search::max_count(self.args))
+        };
+        let mut sink = collect();
+        let binary = search::binary_detection(self.args, t.explicit);
+        // Lines are counted only in a file with a Match, as ripgrep without -n (grill 8385).
+        st.unnumbered.set_binary_detection(binary.clone());
         // What cannot be read twice (stdin, `/dev/stdin`, a FIFO) is kept as it is read (code
         // review r2, Codex #1).
         let mut kept = None;
         let r = match &t.fs {
             Some(p) if t.regular => {
-                File::open(p).and_then(|f| st.stream.search_reader(&self.matcher, f, &mut sink))
+                File::open(p).and_then(|f| st.unnumbered.search_reader(&self.matcher, f, &mut sink))
             }
             fs => {
                 let inner: Box<dyn Read> = match fs {
@@ -1150,7 +1163,7 @@ impl Ctx<'_> {
                     inner,
                     read: Vec::new(),
                 });
-                st.stream.search_reader(&self.matcher, tee, &mut sink)
+                st.unnumbered.search_reader(&self.matcher, tee, &mut sink)
             }
         };
         if let Err(e) = r {
@@ -1181,10 +1194,28 @@ impl Ctx<'_> {
             (None, Some(p)) => open(p)?,
             (None, None) => unreachable!("stdin is always kept"),
         };
+        let mut items = sink.items;
+        if stats.binary_offset.is_none() {
+            search::number_lines(&mut items, src.bytes());
+        } else {
+            // The searcher counts a NUL it converted as a line terminator: the bytes as the
+            // first search read them, searched again counting lines.
+            st.stream.set_binary_detection(binary);
+            let mut again = collect();
+            if let Err(e) = st.stream.search_reader(
+                &self.matcher,
+                std::io::Cursor::new(src.as_read()),
+                &mut again,
+            ) {
+                report(&e);
+                return Err(());
+            }
+            items = again.items;
+        }
         let fm = FileMatches {
             path: t.path.clone(),
             explicit: t.explicit,
-            items: sink.items,
+            items,
             stats,
         };
         Ok(Some((src, fm)))
