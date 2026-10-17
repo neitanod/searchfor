@@ -1013,3 +1013,48 @@ fn bytes_searched_when_the_context_crosses_several_buffers() {
     }
     r.assert_empty();
 }
+
+/// Code review r3, Codex #3 and Fable #2: `-v -m` on an explicit file with a NUL, searched in
+/// memory: rg 14.1.1 reports where its search stopped, but no further than the binary data.
+#[test]
+fn inverted_max_count_in_memory_stops_at_the_binary_data() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("vbin")).unwrap();
+    std::fs::write(
+        fx.file("vbin/one.dat"),
+        "needle first\nmore\0binary needle\nneedle again\n",
+    )
+    .unwrap();
+    std::fs::write(fx.file("vbin/two.dat"), "a\nneedle\nb\nneedle\nc\0d\ne\n").unwrap();
+    let mut r = Report(Vec::new());
+    let cases: [&[&str]; 6] = [
+        &["-v", "-m1", "absent", "misc/bin.dat"],
+        &["-v", "-m1", "first", "vbin/one.dat"],
+        &["-v", "-m1", "a", "vbin/two.dat"],
+        &["-v", "-m3", "needle", "vbin/two.dat"],
+        &["-v", "-m1", "needle", "vbin/two.dat"],
+        &["-v", "-m2", "needle", "vbin/two.dat"],
+    ];
+    for args in cases {
+        for quiet in [&[][..], &["-q"]] {
+            let mut a = vec!["--json"];
+            a.extend_from_slice(quiet);
+            a.extend_from_slice(args);
+            let want = rg(&fx, &a, In::Null);
+            for mode in [&["--no-trail"][..], &[]] {
+                let mut s = mode.to_vec();
+                s.extend_from_slice(&a);
+                let got = sfor(&fx, &s, In::Null);
+                r.check(
+                    format!("{s:?}"),
+                    (code(&want), format!("{:?}", bytes_searched(&want))),
+                    (code(&got), format!("{:?}", bytes_searched(&got))),
+                );
+            }
+        }
+    }
+    r.assert_empty();
+}

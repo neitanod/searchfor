@@ -437,7 +437,10 @@ impl MaxCount {
     pub fn bytes_searched(&self, byte_count: u64, reader: bool) -> u64 {
         match self.stopped {
             Some(rolled) if reader => rolled,
-            Some(_) => self.slice_stop.unwrap_or(byte_count),
+            // grep-searcher's count in memory is its position, but no further than the
+            // binary data (`SliceByLine::byte_count`); `byte_count` already stops there, and
+            // goes further than 0.1.14 otherwise (code review r3, Codex #3).
+            Some(_) => self.slice_stop.map_or(byte_count, |s| s.min(byte_count)),
             None => byte_count,
         }
     }
