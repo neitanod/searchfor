@@ -42,9 +42,20 @@ struct Chars<'a> {
     before: Vec<usize>,
 }
 
-/// The characters that start in `bytes`: the bytes that are not UTF-8 continuation bytes.
+/// The characters that start in `bytes`: the bytes that are not UTF-8 continuation bytes
+/// (`10xxxxxx`), counted eight at a time.
 fn starts(bytes: &[u8]) -> usize {
-    bytes.iter().filter(|&&b| (b as i8) >= -0x40).count()
+    let words = bytes.chunks_exact(8);
+    let rest = words.remainder();
+    let continuations: u32 = words
+        .map(|w| {
+            let w = u64::from_ne_bytes(w.try_into().expect("eight bytes"));
+            // Bit 7 of every byte set, and bit 6 clear (`w << 1` brings it to bit 7).
+            (w & !(w << 1) & 0x8080_8080_8080_8080).count_ones()
+        })
+        .sum();
+    let in_words = bytes.len() - rest.len() - continuations as usize;
+    in_words + rest.iter().filter(|&&b| (b as i8) >= -0x40).count()
 }
 
 impl<'a> Chars<'a> {
@@ -199,6 +210,11 @@ mod tests {
             assert_eq!(c.to_byte(i), o, "char {i}");
         }
         assert_eq!(Chars::new("").total(), 0);
+        let b = line.as_bytes();
+        for (i, j) in [(0, 1), (1, 9), (3, 20), (5, 4100), (0, b.len())] {
+            let plain = b[i..j].iter().filter(|&&x| (x as i8) >= -0x40).count();
+            assert_eq!(starts(&b[i..j]), plain, "{i}..{j}");
+        }
     }
 
     #[test]
