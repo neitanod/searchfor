@@ -147,8 +147,10 @@ fn a_file_over_max_bytes_is_not_parsed() {
     h.hello_with(params, 4);
     h.trails(1, &fixture(), &[60]);
     h.send(json!({"op":"names","id":2,"path":fixture()}));
-    for id in [1, 2] {
-        let r = h.recv();
+    // The helper serves `concurrent`ly, so the two answers come in either order.
+    let mut answers = [h.recv(), h.recv()];
+    answers.sort_by_key(|r| r["id"].as_u64());
+    for (id, r) in [1, 2].into_iter().zip(answers) {
         assert_eq!(r["id"], id, "{r}");
         assert!(r["trails"].is_null() && r["names"].is_null(), "{r}");
         let e = r["error"].as_str().unwrap_or_else(|| panic!("{r}"));
