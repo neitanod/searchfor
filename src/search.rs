@@ -477,11 +477,12 @@ impl Sink for BinarySink {
     }
 }
 
-/// Searches `src` for every line with `BinarySink`, through a reader as `search_source` would.
-pub fn binary_probe(searcher: &mut Searcher, src: &Source) -> Result<BinarySink> {
+/// Searches `reader` for every line with `BinarySink`: a Source's bytes, as `search_source`
+/// would, or the input itself when it cannot be read twice, so that its reads are rg's.
+pub fn binary_probe(searcher: &mut Searcher, reader: impl std::io::Read) -> Result<BinarySink> {
     let every = RegexMatcher::new_line_matcher("").expect("the empty pattern compiles");
     let mut sink = BinarySink::default();
-    searcher.search_reader(&every, std::io::Cursor::new(src.as_read()), &mut sink)?;
+    searcher.search_reader(&every, reader, &mut sink)?;
     Ok(sink)
 }
 

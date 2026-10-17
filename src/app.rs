@@ -1201,27 +1201,23 @@ impl Ctx<'_> {
         {
             return Ok(None);
         }
-        let mut src = match &t.fs {
-            None => {
-                let mut v = Vec::new();
-                if let Err(e) = std::io::stdin().lock().read_to_end(&mut v) {
-                    self.msgs.error(format_args!("<stdin>: {e}"));
-                    return Err(());
-                }
-                Source::from_bytes(t.path.clone(), v, true)
+        let (mut src, binary) = match &t.fs {
+            Some(p) if rewindable(p) => {
+                let src = match Source::open(p, t.explicit) {
+                    Ok(mut s) => {
+                        s.path = t.path.clone();
+                        s
+                    }
+                    Err(e) => {
+                        self.msgs.error(format_args!("{}: {e}", t.path.display()));
+                        return Err(());
+                    }
+                };
+                let binary = self.binary_probe(st, t, &src)?;
+                (src, binary)
             }
-            Some(p) => match Source::open(p, t.explicit) {
-                Ok(mut s) => {
-                    s.path = t.path.clone();
-                    s
-                }
-                Err(e) => {
-                    self.msgs.error(format_args!("{}: {e}", t.path.display()));
-                    return Err(());
-                }
-            },
+            _ => self.read_probed(st, t)?,
         };
-        let binary = self.binary_probe(st, t, &src)?;
         // Without Matches, rg reads on to the binary data; `heading_matches` decides otherwise.
         st.binary_quit = binary
             .as_ref()
@@ -1411,13 +1407,14 @@ impl Ctx<'_> {
         })
     }
 
-    /// --in-headings: where ripgrep 14.1.1's search of `src` detects its binary data, found as
-    /// `search_first` would search it, with its searcher and binary policy. A reader search
-    /// detects it when it fills the buffer with the NUL, after the lines before that buffer,
-    /// which `search::binary_probe` finds keeping no line (code review r7, Codex #4). A search
-    /// in memory looks for a NUL in its first 64 KiB (grep-searcher 0.1.14's
-    /// `DEFAULT_BUFFER_CAPACITY`, `SliceByLine::run`) and then in each line it reports
-    /// (`offset` None; code review r7, Codex #3). None: no binary data, or `-a`.
+    /// --in-headings: where ripgrep 14.1.1's search of `src`, a regular file, detects its binary
+    /// data, found as `search_first` would search it, with its searcher and binary policy (an
+    /// input that cannot be read twice: `read_probed`). A reader search detects it when it
+    /// fills the buffer with the NUL, after the lines before that buffer, which
+    /// `search::binary_probe` finds keeping no line (code review r7, Codex #4). A search in
+    /// memory looks for a NUL in its first 64 KiB (grep-searcher 0.1.14's
+    /// `DEFAULT_BUFFER_CAPACITY`, `SliceByLine::run`) and then in each line it reports (`offset`
+    /// None; code review r7, Codex #3). None: no binary data, or `-a`.
     fn binary_probe(
         &self,
         st: &mut TrailState,
@@ -1441,25 +1438,64 @@ impl Ctx<'_> {
             }));
         }
         st.stream.set_binary_detection(detection);
-        let probe = match search::binary_probe(&mut st.stream, src) {
+        let probe = match search::binary_probe(&mut st.stream, std::io::Cursor::new(src.as_read()))
+        {
             Ok(p) => p,
             Err(e) => {
                 self.msgs.error(format_args!("{}: {e:#}", t.path.display()));
                 return Err(());
             }
         };
-        let Some(offset) = probe.binary_offset else {
-            return Ok(None);
+        Ok(BinaryProbe::read(probe, quit, src))
+    }
+
+    /// --in-headings on what cannot be read twice (stdin, `/dev/stdin`, a FIFO): its Source, and
+    /// the binary data rg's search of it detects, found by `search::binary_probe` on the input
+    /// itself while a `Tee` keeps what it reads. A pipe gives its bytes in reads as they come, and
+    /// rg detects binary data in the read that brings it: a NUL that comes after the `-m`th Match
+    /// in a later read is never seen (code review r8, Codex #1). Then the rest is read.
+    fn read_probed(
+        &self,
+        st: &mut TrailState,
+        t: &Target,
+    ) -> Result<(Source, Option<BinaryProbe>), ()> {
+        let report = |e: &dyn std::fmt::Display| {
+            self.msgs.error(format_args!("{}: {e}", t.path.display()));
         };
-        // The end of the last line searched before the binary data was detected.
-        let cut = usize::try_from(probe.cut).unwrap_or(usize::MAX);
-        Ok(Some(BinaryProbe {
-            offset: Some(offset),
-            cut: cut.min(src.bytes().len()),
-            quit,
-            reader: true,
-            bytes_searched: probe.bytes_searched,
-        }))
+        let inner: Box<dyn Read> = match &t.fs {
+            None => Box::new(std::io::stdin().lock()),
+            Some(p) => match File::open(p) {
+                Ok(f) => Box::new(f),
+                Err(e) => {
+                    report(&e);
+                    return Err(());
+                }
+            },
+        };
+        let mut tee = Tee {
+            inner,
+            read: Vec::new(),
+        };
+        let detection = search::binary_detection(self.args, t.explicit);
+        let quit = detection.quit_byte().is_some();
+        let mut probe = None;
+        if quit || detection.convert_byte().is_some() {
+            st.stream.set_binary_detection(detection);
+            match search::binary_probe(&mut st.stream, &mut tee) {
+                Ok(p) => probe = Some(p),
+                Err(e) => {
+                    report(&format_args!("{e:#}"));
+                    return Err(());
+                }
+            }
+        }
+        if let Err(e) = std::io::copy(&mut tee, &mut std::io::sink()) {
+            report(&e);
+            return Err(());
+        }
+        let src = Source::from_bytes(t.path.clone(), tee.read, t.explicit);
+        let binary = probe.and_then(|p| BinaryProbe::read(p, quit, &src));
+        Ok((src, binary))
     }
 
     /// `trails[i][k]` from the Processor's one Trail per anchor; a failing Processor is a
@@ -1634,6 +1670,22 @@ struct BinaryProbe {
     reader: bool,
     /// rg's `bytes_searched` when it stops at `cut`.
     bytes_searched: u64,
+}
+
+impl BinaryProbe {
+    /// What a reader search of `src` (`search::binary_probe`) found. None: no binary data.
+    fn read(probe: search::BinarySink, quit: bool, src: &Source) -> Option<Self> {
+        let offset = probe.binary_offset?;
+        // The end of the last line searched before the binary data was detected.
+        let cut = usize::try_from(probe.cut).unwrap_or(usize::MAX);
+        Some(Self {
+            offset: Some(offset),
+            cut: cut.min(src.bytes().len()),
+            quit,
+            reader: true,
+            bytes_searched: probe.bytes_searched,
+        })
+    }
 }
 
 /// The line of a Match or of a context line.

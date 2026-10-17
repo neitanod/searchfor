@@ -1895,6 +1895,74 @@ fn within_detects_binary_data_where_ripgrep_does() {
     r.assert_empty();
 }
 
+/// Runs `c` with its stdin from a pipe a child process writes `first` to, then, 200 ms later,
+/// `then`: the reader sees them in separate reads.
+fn through_a_slow_pipe(mut c: Command, first: &str, then: &str) -> Output {
+    let script = format!("printf '{first}'; sleep 0.2; printf '{then}'");
+    let mut producer = Command::new("sh")
+        .args(["-c", &script])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    c.stdin(Stdio::from(producer.stdout.take().unwrap()));
+    let out = run(&mut c);
+    producer.wait().unwrap();
+    out
+}
+
+/// Code review r8, Codex #1: on stdin through a pipe, rg detects binary data when it reads it,
+/// so `-m1` stops before a NUL that arrives after the Match in a later read; with `-A1` it reads
+/// the NUL after printing the Match. `--in-headings` (also with `--within`) and `--within`
+/// report what rg reports.
+#[test]
+fn binary_data_in_a_later_read_of_a_pipe_as_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let mut r = Report(Vec::new());
+    let modes: [&[&str]; 3] = [
+        &["--in-headings", "--format", "markdown"],
+        &["--in-headings", "--within", "", "--format", "markdown"],
+        &["--within", "", "--format", "*=markdown"],
+    ];
+    let cases: [&[&str]; 5] = [
+        &["-m1"],
+        &["-m1", "-A1"],
+        &["--json", "-m1"],
+        &["--json", "-m1", "-A1"],
+        &[],
+    ];
+    for mode in modes {
+        for args in cases {
+            let json = args.contains(&"--json");
+            let mut a = if json { vec![] } else { vec!["-n"] };
+            a.extend_from_slice(args);
+            a.extend_from_slice(&["needle", "-"]);
+            let want = through_a_slow_pipe(fx.rg(&a), "# needle\\n", "\\000\\n");
+            let mut s = mode.to_vec();
+            if !json {
+                s.push("--flat");
+            }
+            s.extend_from_slice(&a[usize::from(!json)..]);
+            let got = through_a_slow_pipe(fx.sfor(&s), "# needle\\n", "\\000\\n");
+            r.check(
+                format!("{s:?}"),
+                (code(&want), binary_rows(&want).join("\n")),
+                (code(&got), binary_rows(&got).join("\n")),
+            );
+        }
+    }
+    // The pipe delivers the NUL late: rg's `-m1` reports the Match and no binary data.
+    let want = through_a_slow_pipe(
+        fx.rg(["-n", "-m1", "needle", "-"]),
+        "# needle\\n",
+        "\\000\\n",
+    );
+    assert_eq!(stdout(&want), "1:# needle\n");
+    r.assert_empty();
+}
+
 /// Code review r7, Codex #1: `-q --json` (grep-printer 0.2.2's summary printer with statistics,
 /// which reads past the first Match) drops the Matches of a walked file whose search quit at
 /// binary data, so a walk with only that file exits 1, as rg; with `-m1` the search stops
