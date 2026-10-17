@@ -48,7 +48,7 @@ const COMMON: &[&str] = &[
 const YAML: &[&str] = &[
     "a", "key", "ñ", "é: ", r#""é x""#, "'ü'''", ": ", ":", "- ", "-", "? ", "[", "]", "{", "}",
     ", ", "|", "|-\n  ", ">", "&x ", "*x", "---\n", "...\n", "!!str ", "%YAML 1.2\n",
-    r#""\u00e9""#, "\"a\\\n  b\"", "# ñ comment",
+    r#""\u00e9""#, "\"a\\\n  b\"", "# ñ comment", "? |\n  ", "? >-\n  ", "|+\n",
 ];
 
 #[rustfmt::skip]
@@ -70,6 +70,7 @@ const CODE: &[&str] = &[
     "type ", "interface ", "namespace ", "<?php ", "$x", "ñandú", "Café", "日本", "(", ")", "{",
     "}", ":", ";", "=>", "->", "=", ".", "::", "<", ">", "//", "/*", "*/", r#""s""#, "'c'", "`t`",
     "<div>", "</div>", "export ", "async ", "self", "return ", "if ", "then\n", "fi\n", "() {",
+    r#""a\u0062""#, r#"'\x41'"#, "\\\n", r#""\uD83D""#, r#"{ "k\u{31}": () => needle }"#,
 ];
 
 /// Key spellings, plain and multi-byte; the generators quote and escape some.
@@ -127,6 +128,17 @@ fn yaml_map(rng: &mut Rng, depth: usize, indent: usize) -> String {
     for i in 0..1 + rng.below(4) {
         if i > 0 {
             s.push_str(rng.br());
+        }
+        // A block scalar key (`? |`) now and then (review m2-code-r2, Fable #1).
+        if rng.below(6) == 0 {
+            let (b1, b2, b3) = (rng.br(), rng.br(), rng.br());
+            let style = rng.pick(&["|", ">", "|-", ">+", "|2"]);
+            let (k, k2) = (rng.pick(KEYS), rng.pick(VALUES));
+            let v = yaml_value(rng, depth, indent);
+            s.push_str(&format!(
+                "{pad}? {style}{b1}{pad}  {k}{b2}{pad}  {k2}{b3}{pad}:{v}"
+            ));
+            continue;
         }
         let k = yaml_key(rng);
         let v = yaml_value(rng, depth, indent);
@@ -208,7 +220,7 @@ fn code_doc(rng: &mut Rng) -> String {
     let mut s = String::new();
     for _ in 0..1 + rng.below(5) {
         let (id, id2, br) = (rng.pick(IDS), rng.pick(IDS), rng.br());
-        let t = match rng.below(9) {
+        let t = match rng.below(10) {
             0 => format!("fn {id}() {{{br}    let x = \"needle\";{br}}}"),
             1 => format!("impl {id} {{{br}    fn {id2}(&self) {{ needle(); }}{br}}}"),
             2 => format!("struct {id} {{ é: u8 }}"),
@@ -217,6 +229,10 @@ fn code_doc(rng: &mut Rng) -> String {
             5 => format!("function {id}() {{{br}  return 'needle';{br}}}"),
             6 => format!("func ({id} T) {id2}() {{ needle() }}"),
             7 => format!("<?php class {id} {{ function {id2}() {{ needle(); }} }}"),
+            // Quoted keys with escapes (review m2-code-r2, Codex #1).
+            8 => format!(
+                "const o = {{ \"{id}\\u0062\": () => needle, '': function () {{{br}return 'needle'; }}, \"\\uD83D\\uDE00\\{br}{id2}\": async () => {{ needle }} }};"
+            ),
             _ => format!("{id}() {{{br}  echo needle{br}}}"),
         };
         s.push_str(&t);
