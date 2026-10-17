@@ -187,3 +187,29 @@ fn walked_binary_files_are_not_read_before_the_search() {
         "{t:?} is more than 1.5 × the {base:?} of --no-trail"
     );
 }
+
+/// `count` copies of `unit`, written to `name` in the fixture copy.
+fn repeated(fx: &Fixture, name: &str, unit: &str, count: usize) -> String {
+    std::fs::write(fx.file(name), unit.repeat(count)).unwrap();
+    name.to_string()
+}
+
+/// Code review r2, Fable #2 and Codex #4: an explicit Markdown file (searched in memory, as
+/// ripgrep) without Matches costs its search; its Processor does not run (spec §3.1).
+#[test]
+#[ignore]
+fn an_explicit_markdown_file_without_matches_skips_the_processor() {
+    let fx = Fixture::new();
+    let unit = "# Heading\n\nsome text\n";
+    let file = repeated(&fx, "heads.md", unit, 20 * 1024 * 1024 / unit.len());
+    let Some((t, _)) = best_of_three(&fx, &["--flat", "zzqq", &file]) else {
+        eprintln!("skipping: /usr/bin/time not found");
+        return;
+    };
+    let (base, _) = best_of_three(&fx, &["--no-trail", "zzqq", &file]).unwrap();
+    eprintln!("20 MB explicit Markdown, no Match: --flat {t:?}, --no-trail {base:?}");
+    assert!(
+        t <= base * 3,
+        "{t:?} is more than 3 × the {base:?} of --no-trail"
+    );
+}

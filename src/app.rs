@@ -664,9 +664,10 @@ impl Ctx<'_> {
     }
 
     /// A file whose Processor builds an Outline, printed as `plain_file` with the Trail of each
-    /// row computed as it is printed. A file searched with a reader is searched first, up to its
-    /// first Match, and read only when it has one (spec §3.1); then the search runs again over
-    /// the Source. Returns false, printing nothing, for the files the model's path handles: one
+    /// row computed as it is printed. The Processor runs only for a file with a Match (spec
+    /// §3.1): a file searched with a reader is searched first, up to its first Match, and read
+    /// only when it has one; a file searched in memory is read, and its Source searched up to
+    /// its first Match. Then the search runs again over the Source. Returns false, printing nothing, for the files the model's path handles: one
     /// with binary data (no Trails, step 7) or a BOM (whose reader search reads differently).
     fn outlined_file(
         &self,
@@ -710,8 +711,32 @@ impl Ctx<'_> {
             path: &src.path,
             format: &def.name,
         };
+        let outline_of = || p.outline_of(&input, &def.params);
+        let outline = if self.in_memory {
+            // Searched in memory as ripgrep: the search first, here too (code review r2,
+            // Fable #2 and Codex #4).
+            st.source
+                .set_binary_detection(search::binary_detection(self.args, t.explicit));
+            let invert = self.args.invert_match;
+            match if_matched(
+                &mut st.source,
+                &self.matcher,
+                invert,
+                src.bytes(),
+                outline_of,
+            ) {
+                Err(e) => {
+                    self.msgs.error(format_args!("{}: {e}", t.path.display()));
+                    return true;
+                }
+                Ok(None) => return true,
+                Ok(Some(o)) => o,
+            }
+        } else {
+            outline_of()
+        };
         // A failing Processor is a warning and leaves the file without Trails.
-        let outline = match p.outline_of(&input, &def.params) {
+        let outline = match outline {
             Some(Ok(o)) => Some(o),
             Some(Err(e)) => {
                 self.msgs
@@ -1156,6 +1181,24 @@ type HeadingFound = (FileMatches, Vec<Vec<Trail>>, Vec<Vec<Section>>);
 /// Source, and the Trail and the Section of the named Segment of each.
 type HeadingLine = (u64, Vec<(usize, usize)>, Vec<Trail>, Vec<Section>);
 
+/// Spec §3.1 for bytes searched in memory: the search, stopped at its first Match, and `then`
+/// (the Processor) only when it found one. None: no Match.
+fn if_matched<T>(
+    searcher: &mut Searcher,
+    matcher: &RegexMatcher,
+    invert: bool,
+    bytes: &[u8],
+    then: impl FnOnce() -> T,
+) -> std::io::Result<Option<T>> {
+    let mut probe = CollectSink::new(matcher, invert, true).in_memory();
+    searcher.search_slice(matcher, bytes, &mut probe)?;
+    Ok(probe
+        .items
+        .iter()
+        .any(|i| matches!(i, Item::Match(_)))
+        .then(then))
+}
+
 /// One empty Trail per submatch (one per inverted Match): Plain files and binary files.
 fn empty_trails(fm: &FileMatches) -> Vec<Vec<Trail>> {
     fm.matches()
@@ -1247,5 +1290,46 @@ fn run_stats(s: &Stats) -> RunStats {
         bytes_printed: s.bytes_printed(),
         matched_lines: s.matched_lines(),
         matches: s.matches(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn searcher_for(argv: &[&str]) -> (Searcher, RegexMatcher, bool) {
+        let mut v = vec!["sfor"];
+        v.extend_from_slice(argv);
+        let a = cli::parse(v.iter().map(Into::into).collect()).unwrap();
+        let m = search::matcher(&a, &a.patterns().unwrap().patterns).unwrap();
+        (search::searcher(&a, true, true), m, a.invert_match)
+    }
+
+    /// Code review r2, Fable #2 and Codex #4: an explicit file searched in memory runs its
+    /// Processor only when the search found a Match (spec §3.1).
+    #[test]
+    fn the_processor_runs_only_after_a_match() {
+        let calls = std::cell::Cell::new(0);
+        let processor = || calls.set(calls.get() + 1);
+        let (mut s, m, invert) = searcher_for(&["needle"]);
+        let found = if_matched(&mut s, &m, invert, b"# A\nnothing here\n", processor).unwrap();
+        assert!(found.is_none());
+        assert_eq!(calls.get(), 0);
+        let found = if_matched(&mut s, &m, invert, b"# A\na needle\n", processor).unwrap();
+        assert!(found.is_some());
+        assert_eq!(calls.get(), 1);
+        // -v: a line without the pattern is a Match.
+        let (mut s, m, invert) = searcher_for(&["-v", "needle"]);
+        assert!(
+            if_matched(&mut s, &m, invert, b"needle\n", processor)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            if_matched(&mut s, &m, invert, b"needle\nx\n", processor)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(calls.get(), 2);
     }
 }
