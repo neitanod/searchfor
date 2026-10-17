@@ -10,3 +10,6 @@ description = "Example Helper Processor for searchfor: INI sections and keys, ov
 [dependencies]
 anyhow = "1"
 searchfor = { path = "../.." }
+
+[dev-dependencies]
+serde_json = "1"
