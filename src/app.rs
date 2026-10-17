@@ -940,6 +940,7 @@ impl Ctx<'_> {
         &self,
         st: &mut TrailState,
         t: &Target,
+        detector: &Detector,
     ) -> Result<Option<(Source, FileMatches)>, ()> {
         let report = |e: &dyn std::fmt::Display| {
             self.msgs.error(format_args!("{}: {e}", t.path.display()));
@@ -1021,7 +1022,15 @@ impl Ctx<'_> {
             return Ok(None);
         }
         let src = match (kept, &t.fs) {
-            (Some(tee), _) => Source::from_bytes(t.path.clone(), tee.read, t.explicit),
+            (Some(mut tee), _) => {
+                if stop.is_set() && self.complete_input(t, &tee.read, detector) {
+                    if let Err(e) = std::io::copy(&mut tee, &mut std::io::sink()) {
+                        report(&e);
+                        return Err(());
+                    }
+                }
+                Source::from_bytes(t.path.clone(), tee.read, t.explicit)
+            }
             (None, Some(p)) => open(p)?,
             (None, None) => unreachable!("stdin is always kept"),
         };
@@ -1032,6 +1041,20 @@ impl Ctx<'_> {
             stats,
         };
         Ok(Some((src, fm)))
+    }
+
+    /// Whether an input the search stopped reading at `-m` (`read` so far) is read to its end
+    /// before its Source is built: when it has an Outline and the output shows where its
+    /// Segments end (`--expand`'s Sections, `--json`'s `end_line`), which the rest of the input
+    /// decides (code review r3, Fable #1). Otherwise the answer comes at the limit, as rg's.
+    fn complete_input(&self, t: &Target, read: &[u8], detector: &Detector) -> bool {
+        if !(self.args.expand || self.args.json) {
+            return false;
+        }
+        let partial = Source::from_bytes(t.path.clone(), read.to_vec(), t.explicit);
+        detector
+            .detect(&partial.path, partial.head())
+            .is_some_and(|d| processors::by_name(&d.processor).is_some())
     }
 
     /// Steps 6 to 8 for one file: its search (or with --in-headings its names), the Source of a
@@ -1047,7 +1070,7 @@ impl Ctx<'_> {
         let found = if self.args.in_headings {
             self.names_of(t, detector)?
         } else {
-            self.search_first(st, t)?.map(|(src, fm)| {
+            self.search_first(st, t, detector)?.map(|(src, fm)| {
                 let def = detector.detect(&src.path, src.head());
                 let trails = match def.and_then(|d| Some((processors::by_name(&d.processor)?, d))) {
                     // A binary file's coordinates follow NUL conversion: no Processor (step 7).

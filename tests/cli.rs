@@ -852,18 +852,20 @@ fn t34_a_path_that_cannot_be_read_twice_is_read_as_stdin() {
 /// Code review r2, Codex #1: a FIFO whose writer keeps it open answers `-m1` at the limit, and
 /// is not opened again (which would wait for the writer to close it, and find nothing). With
 /// `--within`, `-m` counts the lines the filter keeps, so the search reads to the end, as on stdin.
+/// So does `--json` on a Markdown FIFO, whose `end_line`s need the whole input (code review r3,
+/// Fable #1, `t36`): the `--json` case is a FIFO without an Outline.
 #[test]
 fn t35_max_count_on_an_open_fifo_stops_at_the_limit() {
     let fx = Fixture::new();
-    for (n, args) in [
-        &["-m1", "needle"][..],
-        &["-m1", "--tree", "needle"],
-        &["-m1", "--json", "needle"],
+    for (n, (args, ext)) in [
+        (&["-m1", "needle"][..], "md"),
+        (&["-m1", "--tree", "needle"], "md"),
+        (&["-m1", "--json", "needle"], "txt"),
     ]
     .into_iter()
     .enumerate()
     {
-        let name = format!("pipe{n}.md");
+        let name = format!("pipe{n}.{ext}");
         let fifo = fx.file(&name);
         let made = std::process::Command::new("mkfifo").arg(&fifo).status();
         if !made.is_ok_and(|s| s.success()) {
@@ -955,5 +957,79 @@ fn t37_output_printed_while_searching_stops_quietly_on_a_closed_pipe() {
         let o = child.wait_with_output().unwrap();
         assert_eq!(stderr(&o), "", "{layout}");
         assert_eq!(code(&o), 1, "{layout}");
+    }
+}
+
+/// sfor with `input` written to a pipe on its stdin from another thread, which ignores a
+/// closed pipe: a search that stops reading does not block the test.
+fn fed(fx: &Fixture, args: &[&str], input: Vec<u8>) -> std::process::Output {
+    let mut c = fx.sfor(args);
+    c.stdin(Stdio::piped()).stdout(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    let mut w = child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || {
+        let _ = w.write_all(&input);
+    });
+    let o = child.wait_with_output().unwrap();
+    writer.join().unwrap();
+    o
+}
+
+/// Code review r3, Fable #1: with `-m`, a search through stdin stops reading at the limit; the
+/// Sections that `--expand` prints and the `end_line` of `--json` still come from the whole
+/// input, as from the same file given by path.
+#[test]
+fn t36_sections_of_stdin_with_max_count_span_the_whole_input() {
+    let fx = Fixture::new();
+    let bigsec = format!(
+        "# Top\n\nneedle\n{}# Next\n",
+        "filler line\n".repeat(10_000)
+    );
+    std::fs::write(fx.file("bigsec.md"), &bigsec).unwrap();
+    let matches = |o: &std::process::Output| -> Vec<String> {
+        stdout(o)
+            .lines()
+            .filter(|l| l.contains("\"type\":\"match\""))
+            .map(|l| l.replace("bigsec.md", "<stdin>"))
+            .collect()
+    };
+    for flags in [&["-m1", "--expand"][..], &["-m1", "-A1", "--expand"]] {
+        let mut path = vec!["--format", "markdown"];
+        path.extend_from_slice(flags);
+        path.extend(["needle", "bigsec.md"]);
+        let want = run(&mut fx.sfor(&path));
+        assert_eq!(stdout(&want).lines().count(), 10_005, "{path:?}");
+        let mut dash = path.clone();
+        *dash.last_mut().unwrap() = "-";
+        let got = fed(&fx, &dash, bigsec.clone().into_bytes());
+        assert_eq!(
+            (code(&got), stdout(&got)),
+            (0, stdout(&want).replace("bigsec.md", "<stdin>")),
+            "{dash:?}"
+        );
+    }
+    let path = [
+        "--format",
+        "markdown",
+        "--json",
+        "-m1",
+        "needle",
+        "bigsec.md",
+    ];
+    let want = run(&mut fx.sfor(path));
+    assert!(
+        stdout(&want).contains("\"end_line\":10003"),
+        "{}",
+        stdout(&want)
+    );
+    for input in ["-", "/dev/stdin"] {
+        let mut dash = path.to_vec();
+        *dash.last_mut().unwrap() = input;
+        let got = fed(&fx, &dash, bigsec.clone().into_bytes());
+        let got: Vec<String> = matches(&got)
+            .into_iter()
+            .map(|l| l.replace("/dev/stdin", "<stdin>"))
+            .collect();
+        assert_eq!(got, matches(&want), "{dash:?}");
     }
 }
