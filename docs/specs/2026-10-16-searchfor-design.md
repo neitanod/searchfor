@@ -1,10 +1,11 @@
 # searchfor — v1 design
 
 Status: draft · 2026-10-17, aligned with the M1 implementation, the M2 decisions of the Hilo
-(8449–8459) and the M2 implementation (v0.2) · Task 768 · source of truth for decisions:
-[grill-respuestas.md](grill-respuestas.md) (numbers below, like **#6**, refer to its questions;
-four-digit numbers are Hilo messages; «M2 plan» marks a decision taken in
-[the M2 plan](../plans/2026-10-17-searchfor-m2.md) where Sebastián left it open)
+(8449–8459), the M2 implementation (v0.2) and the decisions of the M3 plan · Task 768 · source of
+truth for decisions: [grill-respuestas.md](grill-respuestas.md) (numbers below, like **#6**, refer
+to its questions; four-digit numbers are Hilo messages; «M2 plan» and «M3 plan» mark a decision
+taken in [the M2 plan](../plans/2026-10-17-searchfor-m2.md) or
+[the M3 plan](../plans/2026-10-17-searchfor-m3.md) where Sebastián left it open)
 and [../../CONTEXT.md](../../CONTEXT.md) for the vocabulary.
 
 ## 1. Goal
@@ -25,7 +26,7 @@ contract. That combination is the product.
 
 | Area | What ships | Grill |
 |---|---|---|
-| Formats | Markdown, YAML, JSON, TOML, code via tree-sitter, HTML, XML, CSV, subtitles, ELF/PE/Mach-O; with `--docs`, PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite (§3, M4) | #1, 8380, 8390, 8395 |
+| Formats | Markdown, YAML, JSON, TOML, code via tree-sitter, HTML, XML, CSV and TSV, subtitles (SubRip, WebVTT), ELF/PE/Mach-O; with `--docs`, PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite (§3, M4) | #1, 8380, 8390, 8395 |
 | Engine | ripgrep's crates in-process ([ADR 0001](../adr/0001-embed-ripgrep-engine-as-library.md)) | #2 |
 | Flags | Full ripgrep flag compatibility as the target, plus searchfor's own flags | #3 |
 | Structural search | `--within`, `--expand`, `--in-headings` | #4 |
@@ -83,7 +84,7 @@ paths ─▶ walker (ignore crate: .gitignore, -g, -t, --hidden…)
    milestone. Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope (8390).
 4. **Binary files.** ripgrep prints `binary file matches` and stops. When the Detector
    recognises an object Format (ELF, PE, Mach-O), searchfor searches the whole file and
-   describes each Match (§5.6). Any other binary file keeps ripgrep's behaviour, including
+   describes each Match (§5.7). Any other binary file keeps ripgrep's behaviour, including
    `-a/--text` and `--binary`.
 
 ## 4. Formats, Detector and Format Definitions
@@ -97,7 +98,7 @@ Signals, in order; the first one that decides wins:
 2. Exact file name (`Dockerfile`, `Makefile`, `.bashrc`, `Cargo.lock`).
 3. Extension.
 4. Leading magic bytes (ELF, `MZ`/PE, Mach-O, PDF `%PDF`, SQLite, zip `PK\x03\x04` for the
-   Office and EPUB documents of `--docs`).
+   Office and EPUB documents of `--docs`; `<?xml` for XML, M3 plan).
 5. Shebang on the first line (`#!/usr/bin/env bash` → bash).
 
 Magic bytes and shebangs (signals 4 and 5) are read only for a file whose name has no extension
@@ -157,8 +158,10 @@ it by speaking protocol v1 (§4.4).
 |---|---|---|
 | `markdown` | Markdown | pulldown-cmark, with source offsets |
 | `keypath` | YAML, JSON, TOML (the Definition's `syntax`) | native parsers: a JSON scanner of our own, `saphyr-parser` for YAML (its character offsets converted to bytes), `toml_edit` for TOML |
-| `treesitter` | code: PHP, JavaScript, TypeScript, TSX, Bash, Go, Rust and Python with their Grammars compiled in; any other language through an installed Grammar Helper (§7). HTML and XML are decided in M3 | a tree-sitter query from the Definition |
-| `csv` | CSV, TSV | the csv crate |
+| `treesitter` | code: PHP, JavaScript, TypeScript, TSX, Bash, Go, Rust and Python with their Grammars compiled in; any other language through an installed Grammar Helper (§7) | a tree-sitter query from the Definition |
+| `markup` | HTML, XML (the Definition's `syntax`) | a tag scanner of our own (§5.4) |
+| `csv` | CSV, TSV | `csv-core`, which reads fields and reports the bytes each one takes (§5.5) |
+| `subtitles` | SubRip (`.srt`), WebVTT (`.vtt`) | a line scanner of our own (§5.6) |
 | `object` | ELF, PE, Mach-O | goblin |
 | `docs` extractors | PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB, SQLite, only with `--docs` (M4) | Rust crates, no external programs; chosen in the M4 plan |
 | `external` | anything | a Helper Processor named in the Definition (§4.4) |
@@ -168,6 +171,15 @@ turns any file over 32 768 lines into one error node (its scanner counts rows in
 and a lock file can pass that size; tree-sitter's TOML tree does not model TOML tables, so
 `[[products.variants]]` would need TOML's table rules reimplemented; and the JSON scanner took
 11 ms on an 859 KB file where tree-sitter took 300 ms.
+
+`markup`, `csv` and `subtitles` scan the file themselves instead of using a tree-sitter Grammar
+(M3 plan, measured on this machine on 2026-10-17): tree-sitter-html 0.23.2 parsed a generated
+20 MB HTML file at 5.0 MB/s and its query took 1.5 s more, and tree-sitter-xml 0.7.0 parsed a
+20 MB XML file at 3.9 MB/s, while ripgrep searches either in 13 ms; the `markup` scanner walks
+them, Trails included, in about 0.11 s and 0.10 s. A Grammar would make one HTML file with a Match
+cost seconds, against 8385. The three keep in memory only what the Matches need, as `keypath`
+does, and read a file no further than its last Match where the Format allows it (CSV, subtitles).
+They have no `max_bytes`: each walks a file once, at 80 MB/s or more on this machine (§11 #13).
 
 The generic `treesitter` Processor is what makes most new languages a TOML change: a query in a
 Format Definition, over a Grammar that is compiled in or installed as a Grammar Helper.
@@ -410,23 +422,175 @@ each Segment: the `@signature` capture, or else the first line of the Segment wi
 
 ### 5.4 HTML and XML
 
-Each element is a Segment named `tag#id.class1.class2` (HTML) or the tag name (XML). Elements
-with neither id nor class collapse runs of the same tag: `div › div › div` stays as is, but
-`ul › li` gets its index, `li[3]`.
+The `markup` Processor reads both; the Definition's `syntax` (`html` or `xml`) chooses the rules.
 
-### 5.5 CSV
+- Each element is a Segment (`kind = "tag"`). In HTML it is named `tag#id.class1.class2`: the tag
+  as written, then `#` and the value of `id`, then `.` and each word of `class`, in order. In XML
+  it is named by its tag as written, prefix included (`dc:creator`). A name longer than the
+  Definition's `name_chars` (40 characters) is cut with `…`.
+- An element without an `id` whose parent has two or more child elements with its tag gets its
+  1-based position among them, as XPath counts: `ul › li[3]`, `table › tr[3] › td[2]`,
+  `catalog › book[2] › title`. An element alone with its tag has no index (`div › div › div`),
+  and one with an `id` never has one. Empty elements count among the siblings. Tags compare
+  without case in HTML and with case in XML (M3 plan).
+- The Section of an element runs from its start tag to its end tag. A Match inside a start tag —
+  in its name or in an attribute value — is not inside that element, as a Match on a heading
+  line (§5.1): it gets the Trail of the element's parent. A Match in text, a comment or a CDATA
+  section belongs to the element around it.
+- An element that holds nothing but its tag is never a Segment: HTML's void elements (`area`,
+  `base`, `br`, `col`, `embed`, `hr`, `img`, `input`, `link`, `meta`, `param`, `source`, `track`,
+  `wbr`) and empty elements (`<x/>`, in both syntaxes).
+- **HTML.** `html` and `body` are hidden, because they hold the whole page: Trails start below
+  them (`nav.top.menu › ul › li[3]`), and `head` stays. `script`, `style`, `textarea`, `title`,
+  `xmp`, `iframe`, `noembed`, `noframes` and `plaintext` hold text up to their own end tag, so a
+  `"</div>"` inside a script closes nothing. The end tags HTML lets an author leave out are
+  inferred: a `<li>` ends the open `li` of its list, `<td>` and `<th>` the open cell of their row,
+  `<tr>` the open row, `<thead>`, `<tbody>` and `<tfoot>` the open table section, `<dt>` and
+  `<dd>` the open term or definition, `<option>` the open option, and the start of a block
+  (`address`, `article`, `aside`, `blockquote`, `details`, `dialog`, `dd`, `div`, `dl`, `dt`,
+  `fieldset`, `figcaption`, `figure`, `footer`, `form`, `h1`–`h6`, `header`, `hgroup`, `hr`, `li`,
+  `main`, `menu`, `nav`, `ol`, `p`, `pre`, `section`, `table`, `ul`) ends an open `p`, unless a
+  table cell, a `button` or another scope boundary of HTML lies between them. An end tag closes
+  the innermost open element with its name and every element inside it; an end tag with no open
+  element of its name is ignored. An element ended this way has a Section that ends at its last
+  byte that is not white space. searchfor describes the markup as written and never inserts the
+  elements a browser would add: `<table><tr>` gives `table › tr`, with no `tbody`. HTML has no
+  syntax errors: a construct the file ends inside (a comment, a tag) is dropped, as the HTML
+  parser drops it.
+- **XML.** The first construct that is not well formed — an end tag that does not close the
+  current element, a `<` that starts no tag, comment, CDATA section, processing instruction or
+  doctype, or one of those the file ends inside — ends the structure there. Matches before it
+  keep their Trails and the Matches from it on print with an empty Trail, without a warning, as
+  YAML and JSON (§5.2). Elements still open when the file ends end there. A Match in the doctype,
+  its internal subset included, or in a processing instruction has the Trail of where it sits:
+  empty before the root element.
+- Past 256 open elements no more Segments open; deeper Matches get the Trail of the deepest one,
+  and nesting of any depth never crashes sfor (as JSON, §5.2).
+- `--in-headings` searches element names. The tag, the `id` and each class word come from the
+  file; `#`, `.`, a cut's `…` and an index `[n]` are text of the name only, so a pattern that
+  matches only them finds nothing.
+- **Encodings.** The bytes are the ones ripgrep searches: a UTF-8 BOM removed, UTF-16 transcoded
+  (§4.4, Paths). A `<meta charset>` or an `encoding=` declaration is not read: a name whose bytes
+  are not UTF-8 shows each invalid sequence as U+FFFD. CRLF line ends need nothing.
+- Real output over the fixtures (`tests/fixtures/markup/`, one-line layout):
 
-Segments: `row 128` and `column «Plan»`, from the header row. A file whose first row is not a
-header (`--no-headers`) names columns by number.
+  ```
+  page.html:12: nav.top.menu › ul › li[3] │       <li><a href="/needle">Needle</a>
+  page.html:23: main#content › section#pricing.card.wide › table › tr[3] › td[2] │         <tr><td>Pro<td>needle 9
+  page.html:27: main#content │     <img src="needle.png" alt="">
+  feed.xml:12: catalog › book[2] › title │     <title>The needle</title>
+  broken.xml:3: root › a › b │   <a><b>needle inside</a>
+  broken.xml:4:   <c>needle after</c>
+  ```
 
-### 5.6 Object files (#12)
+  The tree layout shows each element by its name (`li[3]`, `section#pricing.card.wide`).
+
+### 5.5 CSV and TSV
+
+The `csv` Processor reads both, with four Definition parameters (M3 plan): `delimiter`, `quote`,
+`headers` and `name_chars`.
+
+- **Dialects.** CSV: `delimiter = "auto"`, which picks the most frequent of `,`, `;`, tab and `|`
+  in the first line, outside quotes (`,` on a tie or when none appears), so the `;` files that a
+  spreadsheet exports in many locales read as they are; `quote = "\""`. TSV: `delimiter = "\t"`
+  and `quote = ""`, so quotes are text, as in IANA's TSV, and a stray `"` cannot swallow the
+  rest of the file.
+- **Trail.** `row N › Column`. The row Segment (`kind = "row"`) is named `row N`, the N-th record
+  after the header, 1-based; blank lines are not records. The column Segment (`kind = "column"`,
+  as in Markdown) is named by its header cell — quotes removed, `""` decoded, white space trimmed,
+  cut at `name_chars` (40) with `…` — or `column K`, 1-based, when the header cell is empty, when
+  the record has more fields than the header, or with `headers = false`. A Match spanning cells
+  uses the cell where it starts; a field ends with the delimiter or the line break after it, so a
+  Match that starts on a delimiter belongs to the field before it.
+- **Sections.** The Section of a row is its record, which a quoted field may spread over several
+  lines. The Section of a CSV column is its row: in CSV the table is the whole file, and
+  `--expand` must print the record, not the file (M3 plan; in Markdown a column's Section is its
+  table, §5.1).
+- A Match in the header row has an empty Trail: it is in a column's name, as a Match in a key's
+  own text (§5.2). `--in-headings` searches the header cells; a header cell that a stray quote
+  made csv-core read leniently still names its column but is not searched.
+- **Quotes.** As csv-core reads them: a quote opens a quoted field only as the field's first
+  byte, and inside an unquoted field it is text. When the file ends inside a quoted field, the
+  structure ends at that record: Matches in it and after it print with an empty Trail, without a
+  warning.
+- sfor reads the records only up to the one that holds the file's last Match, so a Match on row
+  3 of a 1 GB file reads three rows.
+- **Encodings.** A UTF-8 BOM and UTF-16 as ripgrep (§5.4); a header whose bytes are not UTF-8
+  (Latin-1 exports) shows each invalid sequence as U+FFFD. CRLF and LF line ends both end a
+  record.
+- A file without a header row is read with a Definition that says `headers = false`: copy
+  `csv.toml` from `--export-formats` under another name (`csv-raw`, no extensions) and pick it
+  with `--format 'exports/*.csv=csv-raw'`. The first draft's `--no-headers` flag is this
+  parameter (M3 plan): searchfor's own flags apply to every Format.
+- Real output over the fixtures (`tests/fixtures/table/`, one-line layout):
+
+  ```
+  plans.csv:3: row 2 › Plan │ 2,Bea,needle,"likes ""quotes"", and commas"
+  plans.csv:5: row 3 › Notes │ lines with needle"
+  semi.csv:3: row 2 › Precio │ Bea;pro;9,50 needle
+  people.tsv:2: row 1 › Note │ "Ana	admin	needle "quoted
+  ```
+
+  The tree layout shows `row 2`, then `column «Plan»`.
+
+### 5.6 Subtitles (8380)
+
+The `subtitles` Processor reads SubRip (`.srt`) and WebVTT (`.vtt`) files; its Definitions have
+no parameters (M3 plan).
+
+- A **cue** is the block of a timing line, `START --> END` followed by optional settings
+  (`align:start`, SRT coordinates). A timestamp is two or three groups of digits joined by `:`,
+  then `,` or `.` and one to three digits, so `00:01:02,500`, `01:02.500` and `01:00:00.000` are
+  all read.
+- The cue Segment (`kind = "cue"`) is named `cue ID START`. ID is the cue's identifier line —
+  the non-blank line right before the timing line, when a blank line or the start of the file
+  precedes it: the SRT counter, or a WebVTT identifier, its first 40 characters — and, when the
+  cue has none, its 1-based position among the file's cues. START is the start time as written.
+  `signature` is `cue ID START --> END`, which the tree layout shows.
+- The Section of a cue runs from its identifier line, or its timing line, to its last line
+  before a blank line, the next timing line, or the end of the file; a missing blank line between
+  two cues still separates them. A Match in the identifier or the timing line is inside its cue,
+  unlike a Match on a heading line: a cue has no parent to fall back to, and its time is what a
+  person searches for.
+- A Match outside every cue — the `WEBVTT` header, a `NOTE`, `STYLE` or `REGION` block, text
+  under no timing line — has an empty Trail. A timing line that does not parse starts no cue.
+  Nothing in a subtitle file causes a warning.
+- `--in-headings` searches cue names: ID (when it is an identifier line) and START come from the
+  file, and `cue ` is text of the name only, so `--in-headings '01:02'` finds the cues that start
+  at that time and `--in-headings cue` finds nothing.
+- **Encodings.** The BOM many SRT files start with is removed and UTF-16 is transcoded, as by
+  ripgrep (§5.4); text in Latin-1 is searched as ripgrep searches it, and timing lines are ASCII.
+  CRLF, LF and files that mix them are read the same; a lone CR is not a line break, as for
+  ripgrep.
+- Real output over the fixtures (`tests/fixtures/subs/`, one-line layout; `movie.srt` has a BOM
+  and CRLF line ends):
+
+  ```
+  movie.srt:8: cue 2 00:00:04,000 │ - A needle, in there?
+  talk.vtt:3: NOTE needle in a note
+  talk.vtt:10: cue 2 00:02.500 │ <v Ana>The needle is here.
+  ```
+
+  and the tree of `movie.srt`:
+
+  ```
+  subs/movie.srt
+    cue 1 00:00:01,000 --> 00:00:03,500
+      3:Where is the needle?
+    cue 2 00:00:04,000 --> 00:00:06,000
+      8:- A needle, in there?
+    cue 3 00:01:02,500 --> 00:01:04,000
+      12:<i>needle</i>
+  ```
+
+### 5.7 Object files (#12)
 
 Trail: `ELF x86-64 › .rodata › main.version+0x10`. The Match line shows the offset in hex and
 the printable string around the Match, as `strings` would extract it. The nearest symbol is the
 closest preceding symbol in the same section; when the binary is stripped, that Segment is
 omitted.
 
-### 5.7 Documents (`--docs`, M4)
+### 5.8 Documents (`--docs`, M4)
 
 Decisions 8390 and 8393–8395 replaced the Containers of the first draft. Archive Formats (zip,
 tar, 7z, rar, deb, rpm, jar) are out of scope. PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB
@@ -530,6 +694,16 @@ one line, wrapped here):
   Their schema lives in `docs/json-schema.json`.
 - `--json --no-trail` prints the same messages as `rg --json`; only the timings differ.
 
+### 6.5 Control characters in names (M3 plan)
+
+In tree and one-line output, each control character of a Segment name or signature — C0 and C1
+controls, DEL, and the separators U+2028 and U+2029 — prints as its escape: `\n`, `\r`, `\t`,
+`\0`, and `\u{1b}` for the others. A JSON, TOML, YAML or JavaScript key `"a\nb"` prints `a\nb`
+and its row stays one line, in every Format, and a name cannot write escape sequences to the
+terminal. A backslash prints as itself, so the key `a\\nb` (a backslash and an `n`) prints the
+same `a\nb`; `--json` carries the name as decoded, and `--within` and `--in-headings` match the
+decoded name. The text of the printed line is ripgrep's and is not escaped.
+
 ## 7. Grammars (#8, 8361, 8451–8454)
 
 Requirements from #8: every Grammar of the v1 Formats included in the default install, extra
@@ -539,8 +713,8 @@ ones easy to add, and a flag that installs them. 8454 replaced the WebAssembly G
 
 - **Compiled in.** The Grammars of the code Formats of §2 — php, javascript, typescript, tsx,
   bash, go, rust, python — are linked into sfor from their crates.io crates. YAML, JSON and TOML
-  use native parsers (§4.3) and Markdown uses pulldown-cmark, so they need no Grammar. M3
-  decides whether HTML and XML use one.
+  use native parsers (§4.3) and Markdown uses pulldown-cmark, so they need no Grammar. HTML,
+  XML, CSV and subtitles use scanners of their own (§4.3, M3 plan), so they need none either.
 - **Grammar Helpers.** Any other language is a **Grammar Helper**: a separate binary, built by
   searchfor from the same `treesitter` code with one Grammar compiled in, that speaks the Helper
   Processor protocol (§4.4) in `concurrent` mode. It lives in
@@ -655,7 +829,12 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
     the median of 10 runs with `hyperfine`. On code (M2, `scripts/bench-code.sh`): with a
     pattern no file matches, and with `--no-trail`, at most 1.1× `rg`; with a pattern matching
     under 5 % of the files, sfor's time over `rg`'s is at most the size of the matching files
-    divided by 2.5 MB/s per search thread, the cost of parsing them.
+    divided by 2.5 MB/s per search thread, the cost of parsing them. On HTML, XML, CSV, TSV and
+    subtitles (M3, `scripts/bench-m3.sh`): with a pattern no file matches, and with `--no-trail`,
+    at most 1.1× `rg`; with a pattern matching under 5 % of the files, sfor's time over `rg`'s is
+    at most the largest matching file divided by 50 MB/s, plus the size of all the matching files
+    divided by 50 MB/s per search thread, plus 0.05 s. A 50 MB file of each of these Formats with
+    three Matches gets its Trails within `rg`'s time plus 1 s (`tests/perf.rs`).
 14. `sfor --mcp` answers a `search` call from Claude Code.
 15. In `pool`, `concurrent` and `oneshot` modes, an example Helper Processor gives the same
     Trails; a pool never runs more copies than search threads; a concurrent helper that answers
@@ -664,3 +843,12 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
     resident memory after 5 000 requests is at most 2 MiB over its value after 500.
 17. `sfor --install-grammar` installs a Grammar Helper from an index, refuses a binary whose
     SHA-256 does not match, and the installed Grammar gives Trails.
+18. A Match in the third `<li>` of the `<ul>` of `<nav class="top menu">` gets
+    `nav.top.menu › ul › li[3]`; in XML, a Match in the title of the second `book` gets
+    `catalog › book[2] › title`, and the Matches after an XML syntax error get an empty Trail.
+19. A Match in the `Plan` column of the second record of a CSV file gets `row 2 › Plan`; a CSV
+    file whose first line is separated by `;` is read with `;`.
+20. A Match in an SRT cue gets `cue 2 00:00:04,000` in the one-line output and
+    `cue 2 00:00:04,000 --> 00:00:06,000` in the tree, the same with a BOM and CRLF line ends.
+21. A key `"a\nb"` in JSON, TOML, YAML or JavaScript prints `a\nb` on one row in tree and one-line
+    output, and as the decoded name in `--json`.

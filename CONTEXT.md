@@ -69,13 +69,15 @@ The ordered list of **Segments** leading from the root of a file down to a **Mat
 _Avoid_: breadcrumb, path, context, scope
 
 **Segment**:
-One step of a **Trail**: a heading, a function, a key, a section of a binary, or a page,
-sheet or table of a document read by an **Extractor**.
+One step of a **Trail**: a heading, a function, a key, an element of HTML or XML, a row or column
+of a CSV file, a subtitle cue, a section of a binary, or a page, sheet or table of a document read
+by an **Extractor**.
 _Avoid_: crumb, node, level
 
 **Section**:
 The span of a file covered by a **Segment**, from where it opens to where it ends. The Section
-of a table column Segment (`column`) is its whole table.
+of a Markdown table column Segment (`column`) is its whole table; in a CSV file, where the table
+is the whole file, a column's Section is its row.
 _Avoid_: block, region
 
 **Extractor**:
