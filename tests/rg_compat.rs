@@ -1189,3 +1189,71 @@ fn bytes_searched_with_a_bom_equals_ripgrep() {
     }
     r.assert_empty();
 }
+
+/// Code review r5, Codex #1: the matcher's Unicode tables are rg 14.1.1's (Unicode 15), so
+/// letters, digits and case pairs that Unicode 16 added match as in rg: `\w`, `\d`, `\b`, `-w`,
+/// `-i`, general categories and scripts, on files and stdin, and the submatches in JSON with and
+/// without trails. Each character new in Unicode 16 sits alone on its line, so a line matches
+/// only when the class includes it.
+#[test]
+fn unicode_classes_equal_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("uni")).unwrap();
+    // U+105C0 Todhri letter, U+10D40 Garay digit zero, U+10D50/U+10D70 Garay capital and small
+    // letters, U+A7CB/U+0264 and U+A7DC/U+019B case pairs: all new in Unicode 16.
+    let text = "needle\u{105C0}\n\
+                \u{105C0}\n\
+                \u{10D40}\n\
+                \u{10D50}\u{10D70}\n\
+                \u{A7CB} \u{A7DC}\n\
+                needle plain\n";
+    std::fs::write(fx.file("uni/u.txt"), text).unwrap();
+    std::fs::write(fx.file("uni/u.md"), format!("# Title\n\n{text}")).unwrap();
+    let pats = [
+        &["-w", "needle"][..],
+        &[r"\w"],
+        &[r"^\w+$"],
+        &[r"\d"],
+        &[r"\bneedle\b"],
+        &[r"needle\B"],
+        &[r"\b\w"],
+        &["-i", "\u{0264}"],
+        &["-i", "\u{019B}"],
+        &["-i", "\u{10D70}"],
+        &[r"\p{Lu}"],
+        &[r"\p{Ll}"],
+        &[r"^\pL+$"],
+        &[r"\p{Nd}"],
+        &[r"\p{Garay}"],
+        &[r"[^\W\d]"],
+    ];
+    let mut r = Report(Vec::new());
+    for pat in pats {
+        for file in ["uni/u.txt", "uni/u.md"] {
+            let mut a = pat.to_vec();
+            a.push(file);
+            passthrough(&fx, &mut r, &a, In::Null);
+        }
+        let mut a = pat.to_vec();
+        a.push("-");
+        passthrough(&fx, &mut r, &a, In::File("uni/u.txt"));
+        let mut a = vec!["--json"];
+        a.extend_from_slice(pat);
+        a.push("uni/u.md");
+        let want = rg(&fx, &a, In::Null);
+        for (mode, trail) in [(&["--no-trail"][..], false), (&[], true)] {
+            let mut s = mode.to_vec();
+            s.extend_from_slice(&a);
+            let got = sfor(&fx, &s, In::Null);
+            r.check(
+                format!("{s:?}"),
+                (code(&want), json_lines(&want, trail)),
+                (code(&got), json_lines(&got, trail)),
+            );
+        }
+    }
+    r.assert_empty();
+}
