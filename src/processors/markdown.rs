@@ -291,29 +291,70 @@ impl OutlineProcessor for Markdown {
             }
         }
 
-        // Close heading Sections inside their container (spec §5.1): at the next heading of the
-        // same or a higher level in the same container, never past the container's end.
-        let container_of = |pos: usize| {
-            containers
-                .iter()
-                .filter(|c| c.start <= pos && pos < c.end)
-                .min_by_key(|c| c.end - c.start)
-                .cloned()
-        };
-        let starts: Vec<(usize, u8, Option<Range<usize>>)> = headings
-            .iter()
-            .map(|&(i, l)| (i, l, container_of(segs[i].range.start)))
-            .collect();
-        for (k, (i, lvl, cont)) in starts.iter().enumerate() {
-            let limit = cont.as_ref().map(|c| c.end).unwrap_or(text.len());
-            let next = starts[k + 1..]
-                .iter()
-                .find(|(j, l, c)| l <= lvl && c == cont && segs[*j].range.start < limit)
-                .map(|(j, _, _)| segs[*j].range.start);
-            segs[*i].range.end = next.unwrap_or(limit);
-        }
+        close_sections(&mut segs, &headings, &containers, text.len());
         segs.retain(|s| !(s.segment.kind == "document" && s.segment.name.is_empty()));
         Ok(Outline::build(segs, content))
+    }
+}
+
+/// Closes heading Sections inside their container (spec §5.1): at the next heading of the same
+/// or a higher level in the same container (the innermost item or blockquote around its start),
+/// else at the container's end, or the file's. One pass (code review r2, Fable #1): `containers`
+/// come in document order and nest, so the containers around a position are a stack; each
+/// container keeps the stack of its open headings, by increasing level.
+fn close_sections(
+    segs: &mut [OutlineSegment],
+    headings: &[(usize, u8)],
+    containers: &[Range<usize>],
+    file_end: usize,
+) {
+    /// A container around the current position, and its open headings.
+    struct Open<'c> {
+        end: usize,
+        container: Option<&'c Range<usize>>,
+        headings: Vec<(usize, u8)>,
+    }
+    fn close(segs: &mut [OutlineSegment], o: Open) {
+        for (j, _) in o.headings {
+            segs[j].range.end = o.end;
+        }
+    }
+    // The file is the outermost container.
+    let mut around = vec![Open {
+        end: file_end,
+        container: None,
+        headings: Vec::new(),
+    }];
+    let mut next_container = containers.iter().peekable();
+    for &(i, level) in headings {
+        let pos = segs[i].range.start;
+        let mut leave = |around: &mut Vec<Open>, at: usize| {
+            while around.len() > 1 && around.last().is_some_and(|o| o.end <= at) {
+                close(segs, around.pop().expect("checked"));
+            }
+        };
+        while let Some(c) = next_container.next_if(|c| c.start <= pos) {
+            leave(&mut around, c.start);
+            // Two containers over the same bytes are one, as the innermost around a position.
+            if around.last().is_some_and(|o| o.container == Some(c)) {
+                continue;
+            }
+            around.push(Open {
+                end: c.end,
+                container: Some(c),
+                headings: Vec::new(),
+            });
+        }
+        leave(&mut around, pos);
+        let open = &mut around.last_mut().expect("the file").headings;
+        while let Some(&(j, _)) = open.last().filter(|(_, l)| *l >= level) {
+            segs[j].range.end = pos;
+            open.pop();
+        }
+        open.push((i, level));
+    }
+    for o in around {
+        close(segs, o);
     }
 }
 
@@ -589,5 +630,72 @@ mod tests {
         assert_eq!(n[0].text, "");
         assert!(n[0].pieces.is_empty());
         assert_eq!(n[0].source_ranges(0..0), vec![3..3]);
+    }
+
+    /// The quadratic closing `close_sections` replaced, kept as the reference.
+    fn close_sections_naive(
+        segs: &mut [OutlineSegment],
+        headings: &[(usize, u8)],
+        containers: &[Range<usize>],
+        file_end: usize,
+    ) {
+        let container_of = |pos: usize| {
+            containers
+                .iter()
+                .filter(|c| c.start <= pos && pos < c.end)
+                .min_by_key(|c| c.end - c.start)
+                .cloned()
+        };
+        let starts: Vec<(usize, u8, Option<Range<usize>>)> = headings
+            .iter()
+            .map(|&(i, l)| (i, l, container_of(segs[i].range.start)))
+            .collect();
+        for (k, (i, lvl, cont)) in starts.iter().enumerate() {
+            let limit = cont.as_ref().map(|c| c.end).unwrap_or(file_end);
+            let next = starts[k + 1..]
+                .iter()
+                .find(|(j, l, c)| l <= lvl && c == cont && segs[*j].range.start < limit)
+                .map(|(j, _, _)| segs[*j].range.start);
+            segs[*i].range.end = next.unwrap_or(limit);
+        }
+    }
+
+    /// Nested containers in document order inside `range`, from a small deterministic generator.
+    fn nest(range: Range<usize>, seed: &mut u64, depth: u32, out: &mut Vec<Range<usize>>) {
+        let mut at = range.start;
+        while depth < 4 && at + 4 < range.end {
+            *seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let len = 2 + (*seed >> 33) as usize % (range.end - at).min(60);
+            let c = at + 1..(at + 1 + len).min(range.end);
+            out.push(c.clone());
+            nest(c.clone(), seed, depth + 1, out);
+            at = c.end + (*seed >> 40) as usize % 5;
+        }
+    }
+
+    #[test]
+    fn sections_close_as_the_naive_closing_did() {
+        for round in 0..200u64 {
+            let mut seed = round;
+            let mut containers = Vec::new();
+            nest(0..400, &mut seed, 0, &mut containers);
+            let mut segs = Vec::new();
+            let mut headings = Vec::new();
+            for pos in (0..400).step_by(3) {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                if (seed >> 35) % 3 == 0 {
+                    let s = OutlineSegment::new("heading", "h", pos..pos + 1, pos..pos + 1);
+                    segs.push(s);
+                    headings.push((segs.len() - 1, 1 + ((seed >> 50) % 4) as u8));
+                }
+            }
+            let mut want = segs.clone();
+            close_sections_naive(&mut want, &headings, &containers, 400);
+            close_sections(&mut segs, &headings, &containers, 400);
+            let ends = |v: &[OutlineSegment]| v.iter().map(|s| s.range.end).collect::<Vec<_>>();
+            assert_eq!(ends(&segs), ends(&want), "round {round}");
+        }
     }
 }

@@ -213,3 +213,30 @@ fn an_explicit_markdown_file_without_matches_skips_the_processor() {
         "{t:?} is more than 3 × the {base:?} of --no-trail"
     );
 }
+
+/// Code review r2, Fable #1: headings inside list items (or blockquotes) close their Sections in
+/// one pass. 2 MB of `- # Head` items cost at most 3 × the same items without headings (before
+/// the fix: 40 s against 0.4 s). The review asked for 3 × `--no-trail`, which no dense Markdown
+/// file reaches: pulldown-cmark alone parses these 2 MB in 130 ms, and `--no-trail` takes 30 ms.
+#[test]
+#[ignore]
+fn headings_inside_items_stay_under_the_ceiling() {
+    let fx = Fixture::new();
+    let size = 2 * 1024 * 1024;
+    let (unit, plain) = ("- # Head\n  text\n", "- Head\n  text\n");
+    let file = repeated(&fx, "items.md", unit, size / unit.len());
+    let reference = repeated(&fx, "plain-items.md", plain, size / plain.len());
+    let Some((t, _)) = best_of_three(&fx, &["--flat", "text", &file]) else {
+        eprintln!("skipping: /usr/bin/time not found");
+        return;
+    };
+    let (base, _) = best_of_three(&fx, &["--flat", "text", &reference]).unwrap();
+    let (raw, _) = best_of_three(&fx, &["--no-trail", "text", &file]).unwrap();
+    eprintln!(
+        "2 MB of headings in items: {t:?}; items without headings: {base:?}; --no-trail: {raw:?}"
+    );
+    assert!(
+        t <= base * 3,
+        "{t:?} is more than 3 × the {base:?} of the items without headings"
+    );
+}
