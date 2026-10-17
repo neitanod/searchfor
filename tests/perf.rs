@@ -400,3 +400,40 @@ fn the_binary_probe_of_in_headings_keeps_no_lines() {
         "RSS {nul} is not below {text} + 2 × {size}"
     );
 }
+
+/// Code review r8, Fable #2: with `--in-headings`, a walked Plain file has no names, and rg's
+/// search of it shows only in `--files-without-match` (at its binary data) and in `-q --json`.
+/// It is searched with a reader, as `--within ''` searches it, without reading it whole: 50 MiB
+/// without a NUL cost 52 MiB more than `--within ''` before the fix.
+#[test]
+#[ignore]
+fn a_walked_plain_file_is_not_read_whole_with_in_headings() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let dir = fx.file("plain");
+    std::fs::create_dir(&dir).unwrap();
+    big_file(&dir, "big.log");
+    let Some((_, base)) = measure(
+        &sfor_bin(),
+        &fx,
+        &["--within", "", "--files-without-match", "zzz", "plain"],
+    ) else {
+        eprintln!("skipping: /usr/bin/time not found");
+        return;
+    };
+    for mode in [&["--files-without-match"][..], &["-q", "--json"]] {
+        let mut args = vec!["--in-headings"];
+        args.extend_from_slice(mode);
+        args.extend_from_slice(&["zzz", "plain"]);
+        let (_, rss) = measure(&sfor_bin(), &fx, &args).unwrap();
+        eprintln!(
+            "{args:?}: RSS {} MiB; --within '': {} MiB",
+            rss / 1_048_576,
+            base / 1_048_576
+        );
+        assert!(
+            rss < base + SIZE as u64 / 4,
+            "{args:?}: RSS {rss} is not below {base} + {SIZE} / 4"
+        );
+    }
+}

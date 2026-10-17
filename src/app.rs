@@ -1190,15 +1190,18 @@ impl Ctx<'_> {
     ) -> Result<Option<(Source, Described)>, ()> {
         // A Plain file has no names. rg searches it, which shows in the statistics of
         // `-q --json` and, at a walked file's binary data, in --files-without-match (code review
-        // r7, Codex #2 and Fable #4): it is read only for those.
+        // r7, Codex #2 and Fable #4): it is searched only for those, without a Source (code
+        // review r8, Fable #2).
         let plain = matches!(detector.detect_by_path(&t.path), Some(None));
         let quits = search::binary_detection(self.args, t.explicit)
             .quit_byte()
             .is_some();
-        if plain
-            && !(self.args.json && self.args.quiet)
-            && !(quits && self.summary == Some(summary::Mode::FilesWithoutMatch))
-        {
+        if plain {
+            if (self.args.json && self.args.quiet)
+                || (quits && self.summary == Some(summary::Mode::FilesWithoutMatch))
+            {
+                self.search_unnamed(st, t)?;
+            }
             return Ok(None);
         }
         let (mut src, binary) = match &t.fs {
@@ -1223,16 +1226,12 @@ impl Ctx<'_> {
             .as_ref()
             .is_some_and(|b| b.quit && b.offset.is_some());
         if let Some(b) = binary.as_ref().filter(|b| b.quit && b.cut == 0) {
-            // rg 14.1.1 skips a walked file whose first buffer has binary data.
+            // rg 14.1.1 reports no line of a walked file before its binary data.
             let stats = FileStats {
                 bytes_searched: b.bytes_searched,
                 ..FileStats::default()
             };
             self.count_quiet_json(&stats, false);
-            return Ok(None);
-        }
-        if plain {
-            self.count_unnamed(st, binary.as_ref(), &src);
             return Ok(None);
         }
         if let Some(b) = &binary {
@@ -1332,6 +1331,41 @@ impl Ctx<'_> {
             };
             (src, d)
         }))
+    }
+
+    /// --in-headings: searches a Plain file, which has no names, as rg searches it, with a reader
+    /// and no Source: for `-q --json`'s summary and for whether its search quits at binary data.
+    fn search_unnamed(&self, st: &mut TrailState, t: &Target) -> Result<(), ()> {
+        let report = |e: &dyn std::fmt::Display| {
+            self.msgs.error(format_args!("{}: {e}", t.path.display()));
+        };
+        let reader: Box<dyn Read> = match &t.fs {
+            None => Box::new(std::io::stdin().lock()),
+            Some(p) => match File::open(p) {
+                Ok(f) => Box::new(f),
+                Err(e) => {
+                    report(&e);
+                    return Err(());
+                }
+            },
+        };
+        let detection = search::binary_detection(self.args, t.explicit);
+        let quit = detection.quit_byte().is_some();
+        st.stream.set_binary_detection(detection);
+        let probe = match search::binary_probe(&mut st.stream, &self.matcher, reader) {
+            Ok(p) => p,
+            Err(e) => {
+                report(&format_args!("{e:#}"));
+                return Err(());
+            }
+        };
+        st.binary_quit = quit && probe.binary_offset.is_some();
+        let stats = FileStats {
+            bytes_searched: probe.bytes_searched,
+            ..FileStats::default()
+        };
+        self.count_quiet_json(&stats, false);
+        Ok(())
     }
 
     /// --in-headings, `-q --json`: adds a Source without names (Plain) to the summary, searched
