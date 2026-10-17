@@ -441,34 +441,49 @@ The `markup` Processor reads both; the Definition's `syntax` (`html` or `xml`) c
   `base`, `br`, `col`, `embed`, `hr`, `img`, `input`, `link`, `meta`, `param`, `source`, `track`,
   `wbr`) and empty elements (`<x/>`, in both syntaxes).
 - **HTML.** `html` and `body` are hidden, because they hold the whole page: Trails start below
-  them (`nav.top.menu › ul › li[3]`), and `head` stays. `script`, `style`, `textarea`, `title`,
+  them (`nav.top.menu › ul › li[3]`), and `head` stays; `--in-headings` does not search their
+  names either (M3 plan, D7). `script`, `style`, `textarea`, `title`,
   `xmp`, `iframe`, `noembed`, `noframes` and `plaintext` hold text up to their own end tag, so a
   `"</div>"` inside a script closes nothing. The end tags HTML lets an author leave out are
-  inferred: a `<li>` ends the open `li` of its list, `<td>` and `<th>` the open cell of their row,
-  `<tr>` the open row, `<thead>`, `<tbody>` and `<tfoot>` the open table section, `<dt>` and
-  `<dd>` the open term or definition, `<option>` the open option, and the start of a block
+  inferred (M3 plan, D11): a `<li>` ends the innermost open `li`, searching inward-out and stopping
+  at `ul`, `ol`, `menu`, `table`, `td`, `th` and `template`; `<td>` and `<th>` end the open cell,
+  stopping at `tr`, `table` and `template`; `<tr>` the open row and `<thead>`, `<tbody>` and
+  `<tfoot>` the open table section, stopping at `table` and `template`; `<dt>` and `<dd>` the open
+  term or definition, stopping at `dl`, `table`, `td`, `th` and `template`; `<option>` the open
+  option, stopping at `select`, `datalist` and `optgroup`; `<optgroup>` the open group, stopping at
+  `select`, or else an option that is the current element; a heading start tag (`h1`–`h6`) a
+  heading that is the current element; and the start of a block
   (`address`, `article`, `aside`, `blockquote`, `details`, `dialog`, `dd`, `div`, `dl`, `dt`,
   `fieldset`, `figcaption`, `figure`, `footer`, `form`, `h1`–`h6`, `header`, `hgroup`, `hr`, `li`,
   `main`, `menu`, `nav`, `ol`, `p`, `pre`, `section`, `table`, `ul`) ends an open `p`, unless a
   table cell, a `button` or another scope boundary of HTML lies between them. An end tag closes
   the innermost open element with its name and every element inside it; an end tag with no open
-  element of its name is ignored. An element ended this way has a Section that ends at its last
+  element of its name is ignored. These rules are a subset of HTML's parsing algorithm, whose
+  stop lists are longer: `<ul><li><div>a<li>b</ul>` gives two sibling items here, where a
+  browser nests the second inside the `div`. A quote opens an attribute value only right after
+  `=`, and an unquoted value runs to the next space or `>`, so the slashes of `href=/docs/` are
+  part of it and only a `/` right before `>`, outside a value, makes a tag self-closing. An element ended this way has a Section that ends at its last
   byte that is not white space. searchfor describes the markup as written and never inserts the
   elements a browser would add: `<table><tr>` gives `table › tr`, with no `tbody`. HTML has no
   syntax errors: a construct the file ends inside (a comment, a tag) is dropped, as the HTML
   parser drops it.
 - **XML.** The first construct that is not well formed — an end tag that does not close the
   current element, a `<` that starts no tag, comment, CDATA section, processing instruction or
-  doctype, or one of those the file ends inside — ends the structure there. Matches before it
+  doctype, a tag whose name or attributes do not follow XML's syntax (`<a=b>`, an unquoted value
+  `<a x=bare>`, a `<` inside a value, attributes without a space between them, `</a junk>`), or
+  one of those the file ends inside — ends the structure there. Matches before it
   keep their Trails and the Matches from it on print with an empty Trail, without a warning, as
-  YAML and JSON (§5.2). Elements still open when the file ends end there. A Match in the doctype,
-  its internal subset included, or in a processing instruction has the Trail of where it sits:
-  empty before the root element.
+  YAML and JSON (§5.2). Elements still open when the file ends end there. A doctype ends at the
+  first `>` outside its quoted literals and, in its internal subset, outside comments and
+  processing instructions, so `<!ENTITY e "]> <fake>">` declares no element. A Match in the
+  doctype, its internal subset included, or in a processing instruction has the Trail of where
+  it sits: empty before the root element.
 - Past 256 open elements no more Segments open; deeper Matches get the Trail of the deepest one,
   and nesting of any depth never crashes sfor (as JSON, §5.2).
 - `--in-headings` searches element names. The tag, the `id` and each class word come from the
   file; `#`, `.`, a cut's `…` and an index `[n]` are text of the name only, so a pattern that
-  matches only them finds nothing.
+  matches only them finds nothing. A cut name stays searchable up to its cut: an `id` of 50
+  letters shows its first ones, and `--in-headings` finds them there (M3 plan, D31).
 - **Encodings.** The bytes are the ones ripgrep searches: a UTF-8 BOM removed, UTF-16 transcoded
   (§4.4, Paths). A `<meta charset>` or an `encoding=` declaration is not read: a name whose bytes
   are not UTF-8 shows each invalid sequence as U+FFFD. CRLF line ends need nothing.
@@ -507,12 +522,15 @@ The `csv` Processor reads both, with four Definition parameters (M3 plan): `deli
   `--expand` must print the record, not the file (M3 plan; in Markdown a column's Section is its
   table, §5.1).
 - A Match in the header row has an empty Trail: it is in a column's name, as a Match in a key's
-  own text (§5.2). `--in-headings` searches the header cells; a header cell that a stray quote
-  made csv-core read leniently still names its column but is not searched.
+  own text (§5.2). `--in-headings` searches the header cells, a cut one up to its cut; a header
+  cell that a stray quote made csv-core read leniently still names its column but is not
+  searched.
 - **Quotes.** As csv-core reads them: a quote opens a quoted field only as the field's first
-  byte, and inside an unquoted field it is text. When the file ends inside a quoted field, the
-  structure ends at that record: Matches in it and after it print with an empty Trail, without a
-  warning.
+  byte, and inside an unquoted field it is text; inside a quoted field `""` is a quote, and a
+  closing quote followed by anything but a delimiter or a line break turns the rest of the field
+  into text, whose quotes are literal (`"needle"junk"` is the closed field `needlejunk"`). When
+  the file ends inside a quoted field, the structure ends at that record: Matches in it and
+  after it print with an empty Trail, without a warning.
 - sfor reads the records only up to the one that holds the file's last Match, so a Match on row
   3 of a 1 GB file reads three rows.
 - **Encodings.** A UTF-8 BOM and UTF-16 as ripgrep (§5.4); a header whose bytes are not UTF-8
@@ -544,14 +562,20 @@ no parameters (M3 plan).
   all read.
 - The cue Segment (`kind = "cue"`) is named `cue ID START`. ID is the cue's identifier line —
   the non-blank line right before the timing line, when a blank line or the start of the file
-  precedes it: the SRT counter, or a WebVTT identifier, its first 40 characters — and, when the
-  cue has none, its 1-based position among the file's cues. START is the start time as written.
+  precedes it and it is not itself a timing line: the SRT counter, or a WebVTT identifier, its
+  first 40 characters, searchable up to the cut — and, when the cue has none, its 1-based
+  position among the file's cues. START is the start time as written.
   `signature` is `cue ID START --> END`, which the tree layout shows.
 - The Section of a cue runs from its identifier line, or its timing line, to its last line
   before a blank line, the next timing line, or the end of the file; a missing blank line between
   two cues still separates them. A Match in the identifier or the timing line is inside its cue,
   unlike a Match on a heading line: a cue has no parent to fall back to, and its time is what a
   person searches for.
+- **WebVTT blocks.** In a file that starts with `WEBVTT`, its header block and every block whose
+  first line is `NOTE`, `STYLE` or `REGION` (alone or followed by white space) run to the next
+  blank line and hold no cue, even when a line in them looks like a timing line; they are not
+  counted among the cues either. A file without the `WEBVTT` header follows SubRip's rules, where
+  a line `NOTE` is an identifier like any other.
 - A Match outside every cue — the `WEBVTT` header, a `NOTE`, `STYLE` or `REGION` block, text
   under no timing line — has an empty Trail. A timing line that does not parse starts no cue.
   Nothing in a subtitle file causes a warning.
@@ -834,7 +858,10 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
     at most 1.1× `rg`; with a pattern matching under 5 % of the files, sfor's time over `rg`'s is
     at most the largest matching file divided by 50 MB/s, plus the size of all the matching files
     divided by 50 MB/s per search thread, plus 0.05 s. A 50 MB file of each of these Formats with
-    three Matches gets its Trails within `rg`'s time plus 1 s (`tests/perf.rs`).
+    three Matches gets its Trails within `rg`'s time plus 1 s (`tests/perf.rs`). The reference is
+    `/usr/bin/rg`, which must be ripgrep 14.1.1 (another `rg` may come first on `PATH`), and a
+    comparison that cannot run makes an acceptance run fail instead of passing silently
+    (`SFOR_REQUIRE_REFERENCE=1`, M3 plan, D33).
 14. `sfor --mcp` answers a `search` call from Claude Code.
 15. In `pool`, `concurrent` and `oneshot` modes, an example Helper Processor gives the same
     Trails; a pool never runs more copies than search threads; a concurrent helper that answers

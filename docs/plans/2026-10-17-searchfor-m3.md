@@ -105,11 +105,11 @@ ones it describes marked «M3 plan».
 | D4 | CSV `delimiter = "auto"`: the most frequent of `,` `;` tab `|` in the first line outside quotes, `,` on a tie; TSV `delimiter = "\t"`, `quote = ""` | Spreadsheets in many locales (es-AR among them) export `;`; IANA's TSV has no quoting, and a stray `"` in a TSV must not swallow the rest of the file |
 | D5 | `row N` counts records after the header, 1-based, blank lines excluded (as csv-core reads them); `column K`, 1-based, for an empty header cell, an extra field or `headers = false` | `row 1` is the first data row, as M4's SQLite `row 12` will be; the line number printed beside it gives the file position |
 | D6 | A cue is `cue ID START`: ID is the identifier line (SRT counter, WebVTT identifier, 40 characters), else the cue's 1-based position; START as written; `signature` `cue ID START --> END` for the tree; the cue's label is empty | The user asked for the cue number and the timestamp; as written keeps it greppable in the file; an empty label puts a Match in the timing line inside its cue, which has no parent to fall back to |
-| D7 | `html` and `body` are hidden Segments; `head` is shown | They hold the whole page and would open every HTML Trail with the same two names |
+| D7 | `html` and `body` are hidden Segments, not searchable by name; `head` is shown | They hold the whole page and would open every HTML Trail with the same two names; a name that never shows in a Trail should not be found by `--in-headings` either (review r1, Fable #6) |
 | D8 | An element without an id gets `[n]`, 1-based as XPath, when its parent has two or more children with its tag; empty elements count; the index goes after the (cut) name | Spec §5.4's `li[3]`; XPath and CSS `:nth-of-type` count from 1, so `li[3]` reads as both; an id is unique and needs no index |
 | D9 | An element's label is its whole start tag: a Match in its name or an attribute gets the parent's Trail | The rule of headings and keys (spec §5.1, §5.2); one rule for every Format |
 | D10 | A CSV column's Section is its row (CONTEXT.md updated) | In Markdown a column's Section is its table; in CSV the table is the file, and `--expand` would print a 1 GB file |
-| D11 | HTML: void elements, raw text elements, the end tags HTML lets authors omit (`li`, `dt`/`dd`, `tr`, `td`/`th`, table sections, `option`/`optgroup`, `p` before a block, heading after heading), an end tag closing what is inside it; nothing is inserted | The Trail describes the markup as written; an inserted `tbody` would name an element that is not in the file |
+| D11 | HTML: void elements, raw text elements, the end tags HTML lets authors omit (`li`, `dt`/`dd`, `tr`, `td`/`th`, table sections, `option`, `optgroup` — which also ends an open `option` —, `p` before a block, heading after heading), each with the stop list of spec §5.4, and an end tag closing what is inside it; unquoted attribute values run to a space or `>`; nothing is inserted | The Trail describes the markup as written; an inserted `tbody` would name an element that is not in the file |
 | D12 | XML: the first construct that is not well formed ends the structure, silently; elements open at the end of the file end there | YAML's and JSON's rule (M2 plan, D3): a warning per broken file would bury the output |
 | D13 | Void and empty elements are not Segments | They hold nothing but their tag, which is their label (D9), so they could never be in a Trail |
 | D14 | Tree and one-line output print the control characters of names and signatures as escapes (`\n`, `\u{1b}`); `--json`, `--within` and `--in-headings` keep the decoded name. The fix is in the printers (`text::visible`), not in `Name::text` | M2's leftover: `"a\nb"` broke the row in JSON, TOML, YAML and JavaScript. `Name::text` feeds the `--in-headings` search, which must see the decoded name; only the terminal rendering needs one line, and escaping also stops a key from writing escape sequences to the terminal |
@@ -125,6 +125,13 @@ ones it describes marked «M3 plan».
 | D24 | Attribute values are used verbatim in names (no entity decoding) | Entities in `id` and `class` are rare, and verbatim pieces map to the Source byte for byte |
 | D25 | Past 256 open elements no more Segments open | JSON's limit (M2 plan, D34); the walk is iterative, so any depth is safe |
 | D26 | `tests/fixtures/table/` and `tests/fixtures/subs/` carry a `.gitattributes` with `* -text` | Their fixtures hold CRLF line ends on purpose; `core.autocrlf=input` would rewrite them on commit (as M1's `misc/`) |
+| D27 | `Outline::build` computes the lines of its Segments by counting line breaks up to the bytes asked for (`trail::fill_lines`), instead of a `LineIndex` of the whole file | A `LineIndex` holds one `usize` per line: one Match in 50 MB of line breaks took 467 MiB (review r1, Codex #2); every Processor that builds an Outline gets the same lines with memory proportional to its Segments |
+| D28 | Each open element counts its children's tags in a `Vec`, and past 8 distinct tags also in a `HashMap` from the tag (lowercased in HTML) to its slot | A linear search per child was quadratic: 200 000 distinct sibling tags took 82 s (review r1, Codex #1, Fable #1). Memory: one entry per distinct child tag of each open element |
+| D29 | WebVTT blocks: in a file that starts with `WEBVTT`, the header and the `NOTE`, `STYLE` and `REGION` blocks run to their blank line and hold no cue; a timing line is never an identifier | A `NOTE` line before a timing line became `cue NOTE …` and shifted the ordinals; two timing lines in a row made one cue named by the first (review r1, Codex #3, Fable #4). The `WEBVTT` header decides, so the two Definitions keep no parameters |
+| D30 | XML tags are checked against XML's syntax (names, `S attr S? = S? "value"`, no `<` in values, `</name S?>`), and a doctype ends at its first `>` outside literals, comments and processing instructions | `<a=b>` and `<a x=bare>` were taken as elements, and `<!ENTITY e "]> <fake>">` invented a `fake` (review r1, Codex #4, #5); spec §5.4 ends the structure at the first construct that is not well formed |
+| D31 | `text::cut_name`, written in C1 and used by C2–C4: a cut keeps the pieces of the visible prefix; only `…` maps to nothing | Each Processor dropped the piece that crossed the cut, so a 50-letter header, `id` or cue identifier was not found by `--in-headings` (review r1, Codex #6); one function, because three chunks of one tanda need it |
+| D32 | The end of a CSV file is inside a quote only when csv-core's states say so: quoted from the first byte, `""` stays quoted, a closing quote followed by anything else turns the rest into text | Counting quotes lost `1,"needle"junk"` at the end of a file, which csv-core reads closed (review r1, Codex #7, Fable #2) |
+| D33 | The reference is `SFOR_RG`, else `/usr/bin/rg`; it must be ripgrep 14.1.1. Under `SFOR_REQUIRE_REFERENCE=1` a comparison that cannot run (no rg 14.1.1, no `/usr/bin/time`) fails instead of skipping; acceptance runs set it, and `scripts/bench-m3.sh` always refuses another rg | The `rg` on `PATH` was 15.2.0 in a review session, and a skipped comparison passed the test (review r1, Codex #8) |
 
 ## Verified for this plan (2026-10-17)
 
@@ -150,22 +157,31 @@ repository at `f7cccfe` plus this plan's code).
   and leaves the `\n` to the next read; a quote inside an unquoted field is text; an unclosed
   quote runs to the end of the file; a last field without a line break comes from the call with
   empty input.
-- `m3tree` (this plan's code): `cargo build --workspace`, `cargo clippy --workspace
-  --all-targets -- -D warnings` (no findings) and `cargo test --workspace` pass: 380 unit tests,
-  every M1 and M2 test with the one known change (`m2_07`, Task 1.3), the 13 tests of
-  `tests/cli_m3.rs`, the fuzz with 17 000 inputs (default) and 340 000 (`SFOR_FUZZ_N=20000`,
-  `SFOR_FUZZ_SEED=42`); the fuzz found two mapping bugs in header and cue names, fixed in the code
-  below. `Cargo.lock` gains only `csv-core 0.1.13`. Without a lock (`cargo generate-lockfile`,
-  what `cargo install searchfor` does) the same versions resolve, every ripgrep pin included.
-- The perf ceilings of Task 7.1 in release: 50 MB HTML 0.58 s (rg 0.021 s), XML 0.32 s, CSV
-  0.31 s, SRT 0.15 s; RSS at most rg's + 21 MiB.
-- `scripts/bench-m3.sh` on its generated corpus (20 004 files, 137 MB, 204 matching): none 1.00–
-  1.07 × rg, `--no-trail` 1.01–1.04 ×, sparse extra 0.11 s against a budget of 0.53 s, dense
-  13.7 × rg (reported). A 5 004-file corpus gave 1.10 × for «none» once: the process start of
-  sfor (5.8 ms against rg's 4.5 ms; 5.4 ms at `f7cccfe`) weighs too much on a 22 ms run, hence
-  the 20 000 files.
+- `m3tree` (this plan's code, after review r1): `cargo build --workspace`, `cargo clippy
+  --workspace --all-targets -- -D warnings` (no findings) and `cargo test --workspace` pass
+  entirely: 393 unit tests passed and 2 ignored, `cli` 41, `cli_m2` 16 (with the one known
+  change, `m2_07`, Task 1.3), `cli_m3` 14, `fuzz` 2, `helpers` 22, `rg_compat` 37, and the
+  helpers' own. The fuzz passes with 17 000 inputs (default) and 340 000 (`SFOR_FUZZ_N=20000 SFOR_FUZZ_SEED=42`); before review r1
+  it found two mapping bugs in header and cue names, fixed in the code below. `Cargo.lock`
+  gains only `csv-core 0.1.13`. Without a lock (`cargo generate-lockfile`, what `cargo install
+  searchfor` does) the same versions resolve, every ripgrep pin included.
+- Review r1 regressions, each measured RED with the release binary built before its fix and
+  GREEN after it: 40 000 distinct sibling tags 3.26 s → 0.02 s (Codex #1; Fable measured 82 s for
+  200 000); one Match in 50 MB of line breaks 467 MiB → 58 MiB of RSS, rg 56 MiB (Codex #2);
+  `--in-headings AAAA` over a 50-letter header, `id` and cue identifier, and `ññññ` over a
+  multi-byte header, exit 1 → 0 (Codex #6). The unit tests of Codex #3, #4, #5, #7, #9 and Fable
+  #2, #4, #5 FAILED against the first version of their file and PASS now.
+- The perf ceilings of Task 7.1 in release, with `SFOR_REQUIRE_REFERENCE=1` and `/usr/bin/rg`
+  14.1.1: 50 MB HTML 0.50 s (rg 0.021 s), XML 0.27 s, CSV 0.26 s, TSV 0.25 s, SRT 0.14 s, VTT
+  0.13 s, RSS 57 MiB against rg's 56; 200 000 distinct siblings and 50 MB of line breaks pass
+  too.
+- `scripts/bench-m3.sh` on its generated corpus (24 006 files, 246 of them matching the sparse pattern): none 1.04 × rg, `--no-trail` 1.02 ×, sparse extra 0.14 s against a budget of 0.58 s, dense 14.4 × rg with 660 MiB of RSS against rg's 61 (reported only); `SFOR_RG=/nonexistent` and `SFOR_BIN=scripts/fake-sfor-exit-2.sh` make it exit 1.
+  A 5 004-file corpus once gave 1.10 × for «none» before review r1: the process start of sfor
+  (5.8 ms against rg's 4.5 ms) weighs too much on a 22 ms run, hence the larger corpus.
 - Dense, 50 MB, every line matching (release, `/usr/bin/time`): JSON Lines 3.51 s and 876 MiB,
-  Markdown 3.62 s and 409 MiB, CSV 5.36 s and 1.48 GiB; `--no-trail` 0.16–0.46 s (D16).
+  Markdown 3.62 s and 409 MiB, CSV 5.36 s and 1.48 GiB; `--no-trail` 0.16–0.46 s (D16). With
+  `.` as the pattern (every character a Match) the bench's CSV files took 24 s and 6.3 GiB, which
+  is why its dense pattern is `^.`, one Match per line.
 - The release binary of `m3tree` weighs 16.5 MB (spec §7 gives 16.4 MB for v0.2).
 - The M2 leftover reproduces at `f7cccfe`: `{"a\nb": "needle"}`, `"a\nb" = "needle"`,
   `"a\nb": needle` and `{"a\nb": () => "needle"}` print the row split in two (`1: a` / `b │ …`)
@@ -180,7 +196,8 @@ in chunk 7. Every other statement above was measured.
 M3 is done when all of these hold; each names the test or script that measures it.
 
 1. `cargo build --workspace`, `cargo clippy --workspace --all-targets -- -D warnings` and
-   `cargo test --workspace` pass, every M1 and M2 test included (`m2_07` updated, Task 1.3).
+   `SFOR_REQUIRE_REFERENCE=1 cargo test --workspace` pass, every M1 and M2 test included (`m2_07`
+   updated, Task 1.3).
 2. Spec §11 #2 for the six new Formats: a fixture and tree, one-line and JSON snapshots each,
    JSON valid against `docs/json-schema.json` (C6, `m3_01`).
 3. Spec §11 #18: the HTML and XML Trails of `m3_02` and `m3_03`, line for line, and the unit
@@ -190,14 +207,20 @@ M3 is done when all of these hold; each names the test or script that measures i
 5. Spec §11 #20: the cues of `m3_05` (SRT with BOM and CRLF, WebVTT with header, note and
    identifiers) and `m3_12` (UTF-16).
 6. Spec §11 #21: `m3_08` for JSON, TOML, YAML and JavaScript, and ESC escaped.
-7. Spec §11 #13 on M3's Formats: `scripts/bench-m3.sh` exits 0, and `scripts/bench.sh` and
-   `scripts/bench-code.sh` still exit 0 (C7).
-8. The four ceilings of Task 7.1 pass in release (`cargo test --release --test perf --
-   --ignored`): 50 MB of each M3 Format with three Matches within rg's time + 1 s and rg's RSS +
-   32 MiB.
+7. Spec §11 #13 on M3's Formats: `scripts/bench-m3.sh` exits 0 (it checks that
+   `/usr/bin/rg` is 14.1.1 and refuses any other), and `PATH=/usr/bin:$PATH scripts/bench.sh`
+   and `PATH=/usr/bin:$PATH scripts/bench-code.sh` still exit 0 after `PATH=/usr/bin:$PATH rg
+   --version` printed `ripgrep 14.1.1` (C7).
+8. The eight M3 tests of Task 7.1 pass in release with the reference required:
+   `SFOR_REQUIRE_REFERENCE=1 cargo test --release --test perf -- --ignored` — 50 MB of each of
+   the six M3 Formats with three Matches within rg's time + 1 s and rg's RSS + 32 MiB, 200 000
+   distinct sibling tags within rg's time + 1 s, and one Match in 50 MB of line breaks within
+   rg's RSS + 32 MiB. A run without `SFOR_REQUIRE_REFERENCE=1`, or one that printed
+   `skipping:`, does not count.
 9. The fuzz of Task 6.2 passes with its default 1 000 inputs per Format (17 Formats) and with
    `SFOR_FUZZ_N=20000` once before the merge.
-10. `--no-trail` prints ripgrep's lines over the three fixture directories (`m3_10`).
+10. `--no-trail` prints ripgrep's lines over the three fixture directories (`m3_10`), run as
+    `SFOR_REQUIRE_REFERENCE=1 cargo test --test cli_m3` so that it cannot skip.
 11. `Cargo.lock` gains `csv-core` and nothing else; `cargo tree -i regex-automata` and
     `cargo tree -i regex-syntax` show only 0.4.7 and 0.8.4 (Task 1.1).
 12. `target/release/sfor` is at most 20 MB (measured in C7 and reported; 16.5 MB in the probe).
@@ -214,7 +237,8 @@ M3 is done when all of these hold; each names the test or script that measures i
    one warning per file (`app.rs`, `trails`).
 3. **markup** (C2). `scan.rs` finds tags with `memchr` and skips comments, CDATA, processing
    instructions and doctypes; `html.rs` classifies a tag name once (`html::info`) and decides which
-   open elements a start tag ends; `mod.rs` walks the tags with a stack of `Frame`s and hands
+   open elements a start tag ends; `mod.rs` walks the tags with a stack of `Frame`s (each counts
+   its children's tags, with a map past 8 distinct ones, D28) and hands
    keypath's `Collector` (`crate::processors::keypath::collect`, unchanged) only the elements that
    hold an anchor, built when they close (D22). A child without an id waits in its parent's
    `pending` list until the parent closes, when the sibling counts are final and `[n]` can be
@@ -251,7 +275,9 @@ src/processors/mod.rs                        module lines, by_name (C1)
 src/processors/markup/{mod,scan,html}.rs     markup: walk, tag scanner, HTML rules (stubs C1, C2)
 src/processors/csv.rs                        csv (stub C1, C3)
 src/processors/subtitles.rs                  subtitles (stub C1, C4)
-src/text.rs                                  visible() (C5)
+src/text.rs                                  cut_name() (C1), visible() (C5)
+src/trail.rs                                 fill_lines(): Outline lines without a line index (C2)
+tests/common/mod.rs, tests/rg_compat.rs      the reference rg, SFOR_REQUIRE_REFERENCE (C1)
 src/output/{flat,tree}.rs                    escaped names, labels of tag/row/cue (C5)
 tests/cli_m2.rs                              m2_07's count of exported Definitions (C1)
 tests/fixtures/markup/                       page.html, feed.xml, broken.xml (C2)
@@ -268,17 +294,20 @@ README.md, README.es.md, skills/searchfor/SKILL.md, docs/json-schema.json, the s
 
 | Chunk | Content | Depends on | Files and folders (exclusive within its tanda) | Tanda |
 |---|---|---|---|---|
-| C1 | csv-core, the six Definitions, stubs of the three Processors, `by_name`, `m2_07` | — | `Cargo.toml`, `Cargo.lock`, `formats/{html,xml,csv,tsv,srt,vtt}.toml`, `src/formats/builtin.rs`, `src/formats/mod.rs` (tests), `src/processors/mod.rs`, stubs `src/processors/markup/{mod,scan,html}.rs`, `src/processors/{csv,subtitles}.rs`, `tests/cli_m2.rs` | 1 |
-| C2 | markup: scanner, HTML rules, walk | C1 | `src/processors/markup/**`, `tests/fixtures/markup/**` | 2 |
+| C1 | csv-core, the six Definitions, stubs of the three Processors, `by_name`, `m2_07`, `text::cut_name`, the reference rg of the tests | — | `Cargo.toml`, `Cargo.lock`, `formats/{html,xml,csv,tsv,srt,vtt}.toml`, `src/formats/builtin.rs`, `src/formats/mod.rs` (tests), `src/processors/mod.rs`, stubs `src/processors/markup/{mod,scan,html}.rs`, `src/processors/{csv,subtitles}.rs`, `src/text.rs` (`cut_name`), `tests/cli_m2.rs`, `tests/common/mod.rs`, `tests/rg_compat.rs`, `tests/perf.rs` (three hunks) | 1 |
+| C2 | markup: scanner, HTML rules, walk; Outline lines without a line index | C1 | `src/processors/markup/**`, `src/trail.rs`, `tests/fixtures/markup/**` | 2 |
 | C3 | csv | C1 | `src/processors/csv.rs`, `tests/fixtures/table/**` | 2 |
 | C4 | subtitles | C1 | `src/processors/subtitles.rs`, `tests/fixtures/subs/**` | 2 |
-| C5 | Escaped names in the printers, tree labels of the new kinds | C1 | `src/text.rs`, `src/output/flat.rs`, `src/output/tree.rs` | 2 |
+| C5 | Escaped names in the printers, tree labels of the new kinds | C1 | `src/text.rs` (`visible`), `src/output/flat.rs`, `src/output/tree.rs` | 2 |
 | C6 | End-to-end tests and snapshots; fuzz targets | C2–C5 | `tests/cli_m3.rs`, `tests/snapshots/cli_m3__*.snap`, `tests/fuzz.rs` | 3 |
 | C7 | Perf ceilings, benchmark; M1's and M2's benchmarks rerun | C2–C5 | `tests/perf.rs`, `scripts/bench-m3.sh` | 3 |
 | C8 | README, README.es, skill, JSON schema, spec reconciliation | C2–C5 | `README.md`, `README.es.md`, `skills/searchfor/SKILL.md`, `docs/json-schema.json`, `docs/specs/2026-10-16-searchfor-design.md` | 3 |
 
-Eight chunks in three tandas. C1 writes every `mod` line, the dependency, the Definitions and a
-stub for every new file, so the chunks of tanda 2 only fill their own files and never share one;
+Eight chunks in three tandas, as before review r1; C1 grew two tasks (1.4, 1.5) and C2 one
+(2.3b), and no file is shared within a tanda: C1 and C5 both edit `src/text.rs`, and C1 and C7
+`tests/perf.rs`, in different tandas. C1 writes every `mod` line, the dependency, the
+Definitions, `cut_name` and a stub for every new file, so the chunks of tanda 2 only fill their
+own files and never share one;
 after tanda 2 the pipeline describes every new Format, so the three chunks of tanda 3 test,
 measure and document the merged result in parallel. C8 pastes real output: it runs the merged
 binary of tanda 2, not a snapshot of C6.
@@ -553,6 +582,241 @@ impl Processor for Markup {
   src/formats/mod.rs src/processors/ tests/cli_m2.rs` and
   `git commit -m "Add the M3 Format Definitions, csv-core and Processor stubs"`.
 
+### Task 1.4: `text::cut_name`, shared by the three Processors (D31)
+
+C2, C3 and C4 cut names at `name_chars` (D21) in parallel, so the cut lives in C1. A cut keeps
+the pieces of what stays visible: before review r1 each Processor dropped the piece that crossed
+the cut, and `--in-headings AAAA` found nothing in a header, an `id` or a cue identifier of 50
+`A`s (Codex #6).
+
+- [ ] **Step 1:** the test, first in `src/text.rs`'s `tests` module:
+
+```rust
+    #[test]
+    fn cut_names_keep_the_pieces_of_what_stays_visible() {
+        // A verbatim piece across the cut keeps its prefix, multi-byte included.
+        let mut t = "ab".to_string() + &"ñ".repeat(10);
+        let mut p: Pieces = vec![(0..2, 100..102), (2..22, 200..220)];
+        cut_name(&mut t, &mut p, 5);
+        assert_eq!(t, "abññ…");
+        assert_eq!(p, vec![(0..2, 100..102), (2..6, 200..204)]);
+        // A decoded piece across the cut maps its visible part to its whole Source range...
+        let mut t = "\u{FFFD}\u{FFFD}ab".to_string();
+        let mut p: Pieces = vec![(0..8, 0..4)];
+        cut_name(&mut t, &mut p, 2);
+        assert_eq!(t, "\u{FFFD}…");
+        assert_eq!(p, vec![(0..3, 0..4)]);
+        // ...unless the lengths would match, which would read as verbatim; a piece past the
+        // cut goes.
+        let mut t = "\u{FFFD}abcd".to_string();
+        let mut p: Pieces = vec![(0..6, 0..4), (6..7, 9..10)];
+        cut_name(&mut t, &mut p, 3);
+        assert_eq!(t, "\u{FFFD}a…");
+        assert_eq!(p, Pieces::new());
+        // Short names are untouched.
+        let mut t = "short".to_string();
+        let mut p: Pieces = vec![(0..5, 0..5)];
+        cut_name(&mut t, &mut p, 40);
+        assert_eq!((t.as_str(), p), ("short", vec![(0..5, 0..5)]));
+    }
+```
+
+- [ ] **Step 2:** `cargo test --lib text::`: FAILS to compile (`cut_name`, `Pieces`).
+
+- [ ] **Step 3:** above the `tests` module:
+
+```rust
+/// A name's pieces, in the format of `model::Name::pieces`: (range in the text, range in the
+/// Source).
+pub type Pieces = Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>;
+
+/// Cuts `text` to `max` characters, the last one `…`, when it is longer (M3 plan, D21). The
+/// pieces keep mapping what stays visible (M3 review r1, Codex #6): a piece past the cut goes;
+/// a verbatim piece across it keeps its bytes before the cut; a decoded piece across it maps
+/// its visible part to its whole Source range, unless that would make the two lengths equal,
+/// which would read as verbatim. Only the `…` maps to nothing.
+pub fn cut_name(text: &mut String, pieces: &mut Pieces, max: usize) {
+    if max == 0 || text.chars().count() <= max {
+        return;
+    }
+    let cut = text
+        .char_indices()
+        .nth(max - 1)
+        .map_or(text.len(), |(i, _)| i);
+    text.truncate(cut);
+    text.push('…');
+    pieces.retain_mut(|(t, s)| {
+        if t.end <= cut {
+            return true;
+        }
+        if t.start >= cut {
+            return false;
+        }
+        let verbatim = t.len() == s.len();
+        t.end = cut;
+        if verbatim {
+            s.end = s.start + t.len();
+            true
+        } else {
+            t.len() != s.len()
+        }
+    });
+}
+```
+
+- [ ] **Step 4:** `cargo test --lib text::`: PASS. Commit: `git add -- src/text.rs` and
+  `git commit -m "Cut a name keeping the pieces of its visible part"`.
+
+### Task 1.5: the reference ripgrep in the tests (D33)
+
+`rg` on `PATH` may be another version (15.2.0 in a review session, while `/usr/bin/rg` was
+14.1.1), and `reference_rg()` turned a missing reference into a silent skip, so a perf ceiling
+or a compatibility test could pass without comparing anything (Codex #8). C1 owns the shared
+test helpers, so the tanda-3 chunks only use them.
+
+- [ ] **Step 1:** RED: `SFOR_RG=/nonexistent SFOR_REQUIRE_REFERENCE=1 cargo test --test rg_compat`
+  still PASSES at this point (nothing reads those variables): that is the gap.
+
+- [ ] **Step 2:** `rg_path`, `missing_reference` and `reference_rg` in `tests/common/mod.rs`;
+  `Fixture::rg`, `rg_compat.rs`'s `reference` and `perf.rs`'s `rg_bin` and `/usr/bin/time` check
+  use them:
+
+```diff
+--- a/tests/common/mod.rs
++++ b/tests/common/mod.rs
+@@ -68,13 +68,14 @@
+         c
+     }
+ 
+-    /// rg 14.1.1 in the fixture copy, stdin from /dev/null, `--color never` unless set.
++    /// The reference rg (`rg_path`) in the fixture copy, stdin from /dev/null, `--color never`
++    /// unless set.
+     pub fn rg<I, S>(&self, args: I) -> Command
+     where
+         I: IntoIterator<Item = S>,
+         S: AsRef<OsStr>,
+     {
+-        let mut c = Command::new("rg");
++        let mut c = Command::new(rg_path());
+         c.current_dir(self.path())
+             .env_remove("RIPGREP_CONFIG_PATH")
+             .stdin(Stdio::null());
+@@ -152,17 +153,38 @@
+     exe
+ }
+ 
+-/// True when the reference rg 14.1.1 is installed; prints a note otherwise.
++/// The reference ripgrep: `SFOR_RG` when set, else `/usr/bin/rg` when it exists (another rg,
++/// such as 15.x, may come first on `PATH`), else `rg` on `PATH` (M3 review r1, Codex #8).
++pub fn rg_path() -> PathBuf {
++    if let Some(p) = std::env::var_os("SFOR_RG") {
++        return p.into();
++    }
++    let usr = Path::new("/usr/bin/rg");
++    if usr.is_file() {
++        return usr.to_path_buf();
++    }
++    PathBuf::from("rg")
++}
++
++/// A comparison or measurement that cannot run: a note, or a failure when
++/// `SFOR_REQUIRE_REFERENCE=1`, which acceptance runs set so that a skipped comparison never
++/// counts as passed (M3 review r1, Codex #8). Returns false.
++pub fn missing_reference(what: &str) -> bool {
++    if std::env::var_os("SFOR_REQUIRE_REFERENCE").is_some_and(|v| v == "1") {
++        panic!("{what} is required (SFOR_REQUIRE_REFERENCE=1) and missing");
++    }
++    eprintln!("skipping: {what} not found");
++    false
++}
++
++/// True when `rg_path()` is ripgrep 14.1.1; otherwise `missing_reference`.
+ pub fn reference_rg() -> bool {
+-    let ok = Command::new("rg")
++    let ok = Command::new(rg_path())
+         .arg("--version")
+         .env_remove("RIPGREP_CONFIG_PATH")
+         .output()
+         .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).starts_with("ripgrep 14.1.1"));
+-    if !ok {
+-        eprintln!("skipping: reference rg 14.1.1 not found");
+-    }
+-    ok
++    ok || missing_reference(&format!("reference rg 14.1.1 at {}", rg_path().display()))
+ }
+ 
+ pub fn run(c: &mut Command) -> Output {
+```
+
+```diff
+--- a/tests/rg_compat.rs
++++ b/tests/rg_compat.rs
+@@ -432,7 +432,7 @@
+ 
+ /// rg 14.1.1 run with `args` and `RIPGREP_CONFIG_PATH` unset, as the reference.
+ fn reference(args: &[&str]) -> Output {
+-    run(Command::new("rg")
++    run(Command::new(common::rg_path())
+         .args(args)
+         .env_remove("RIPGREP_CONFIG_PATH")
+         .stdin(Stdio::null()))
+```
+
+  and in `tests/perf.rs` the three places that skipped (`measure_to`, `rg_bin`,
+  `json_without_trails_of_a_big_file_is_as_fast_as_ripgrep`):
+
+```diff
+--- a/tests/perf.rs
++++ b/tests/perf.rs
+@@ -97,6 +97,7 @@
+ ) -> Option<(Duration, u64)> {
+     let time = Path::new("/usr/bin/time");
+     if !time.exists() {
++        common::missing_reference("/usr/bin/time");
+         return None;
+     }
+     let mut c = Command::new(time);
+@@ -361,10 +362,11 @@
+ #[ignore]
+ fn json_without_trails_of_a_big_file_is_as_fast_as_ripgrep() {
+     let _alone = alone();
+-    let rg = Path::new("/usr/bin/rg");
+-    if !common::reference_rg() || !rg.exists() {
++    let Some(rg) = rg_bin() else {
+         return;
+-    }
++    };
++    let rg = rg.as_path();
++
+     let fx = Fixture::new();
+     let line = "line of text here\n";
+     let file = repeated(&fx, "ten.txt", line, 10 * 1024 * 1024 / line.len());
+@@ -456,14 +458,10 @@
+     }
+ }
+ 
+-/// The reference rg 14.1.1 on `PATH`, or None (with a note) when it is missing.
++/// The reference rg 14.1.1 (`common::rg_path`), or None (with a note, or a failure under
++/// `SFOR_REQUIRE_REFERENCE=1`) when it is missing.
+ fn rg_bin() -> Option<std::path::PathBuf> {
+-    if !common::reference_rg() {
+-        return None;
+-    }
+-    std::env::split_paths(&std::env::var_os("PATH")?)
+-        .map(|d| d.join("rg"))
+-        .find(|p| p.is_file())
++    common::reference_rg().then(common::rg_path)
+ }
+ 
+ /// The fastest of three runs of `bin args` with their output read, and the largest RSS seen.
+```
+
+- [ ] **Step 3:** `SFOR_RG=/nonexistent SFOR_REQUIRE_REFERENCE=1 cargo test --test rg_compat`:
+  FAILS with `reference rg 14.1.1 at /nonexistent is required (SFOR_REQUIRE_REFERENCE=1) and
+  missing`. `SFOR_REQUIRE_REFERENCE=1 cargo test --workspace`: PASSES with `/usr/bin/rg` 14.1.1.
+  Commit: `git add -- tests/common/mod.rs tests/rg_compat.rs tests/perf.rs` and
+  `git commit -m "Compare against /usr/bin/rg 14.1.1 and fail acceptance runs that skip it"`.
+
 ## Chunk 2: markup — HTML and XML
 
 Read spec §5.4 and design note 3 first. The three files are written in this order: the scanner
@@ -598,6 +862,12 @@ mod tests {
         // A quote opens a value only after `=`: `it's` does not hide the `>`.
         assert_eq!(tags("<a title=it's>x</a><i>", false), ["<a", "</a", "<i"]);
         assert_eq!(tags(r#"<a href="x>y">z</a>"#, false), ["<a", "</a"]);
+        // A `/` inside an unquoted value is not a self-closing slash (M3 review r1, Fable #5).
+        assert_eq!(
+            tags("<a href=/x/>z</a><a href=/>z</a>", false),
+            ["<a", "</a", "<a", "</a"]
+        );
+        assert_eq!(tags("<br/><x a=1 />", false), ["<br/", "<x/"]);
         // The file ends inside a comment or a tag: what came before stays.
         assert_eq!(tags("<p>x<!-- open", false), ["<p"]);
         assert_eq!(tags("<p>x<a href='", false), ["<p"]);
@@ -619,6 +889,36 @@ mod tests {
         assert_eq!(tags("<r>a < b</r>", true), ["<r", "error at 5"]);
         assert_eq!(tags("<r><!-- open", true), ["<r", "error at 3"]);
         assert_eq!(tags("<r><!ELEMENT x></r>", true), ["<r", "error at 3"]);
+    }
+
+    #[test]
+    fn a_doctype_ends_outside_its_literals_and_comments() {
+        assert_eq!(
+            tags(
+                r#"<!DOCTYPE r [<!ENTITY e "]> <fake>"><!-- ]> --><?p ]>?>]><r>x</r>"#,
+                true
+            ),
+            ["<r", "</r"]
+        );
+        assert_eq!(tags("<!DOCTYPE r SYSTEM 'a>b.dtd'><r/>", true), ["<r/"]);
+    }
+
+    #[test]
+    fn xml_tags_must_be_well_formed() {
+        assert_eq!(tags("<r><a=b>x</a=b></r>", true), ["<r", "error at 3"]);
+        assert_eq!(tags("<r><a x=bare>x</a></r>", true), ["<r", "error at 3"]);
+        assert_eq!(
+            tags("<r><a x='1'y='2'>x</a></r>", true),
+            ["<r", "error at 3"]
+        );
+        assert_eq!(tags("<r><a x=\"<\">x</a></r>", true), ["<r", "error at 3"]);
+        assert_eq!(tags("<r></r junk>", true), ["<r", "error at 3"]);
+        assert_eq!(
+            tags("<r a = 'x' b=\"y\" ><s.t-1 /></r >", true),
+            ["<r", "<s.t-1/", "</r"]
+        );
+        // HTML stays tolerant.
+        assert_eq!(tags("<p a=bare b>x</p junk>", false), ["<p", "</p"]);
     }
 
     #[test]
@@ -710,27 +1010,119 @@ impl<'a> Scanner<'a> {
             .map(|i| from + i + pat.len())
     }
 
-    /// The end of a tag whose name ends at `from`: the byte after its `>`, skipping attribute
-    /// values in quotes (a quote opens a value only right after `=` and optional spaces).
-    fn tag_end(&self, from: usize) -> Option<usize> {
+    /// HTML: the end of a tag whose name ends at `from` — the byte after its `>` — and whether
+    /// a `/` right before that `>` makes it self-closing. Attribute values are skipped: a
+    /// quote opens a value only right after `=` and optional spaces, and an unquoted value runs
+    /// to the next space or `>`, so the `/`s of `href=/docs/` are part of it (M3 review r1,
+    /// Fable #5).
+    fn tag_end(&self, from: usize) -> Option<(usize, bool)> {
         let s = self.src;
         let mut i = from;
         let mut after_eq = false;
+        let mut slash = false;
         while i < s.len() {
             let b = s[i];
             if after_eq && (b == b'"' || b == b'\'') {
                 i = memchr::memchr(b, &s[i + 1..]).map(|k| i + 1 + k)?;
                 after_eq = false;
+                slash = false;
+            } else if after_eq && !is_space(b) && b != b'>' {
+                while i < s.len() && !is_space(s[i]) && s[i] != b'>' {
+                    i += 1;
+                }
+                after_eq = false;
+                slash = false;
+                continue;
             } else if b == b'>' {
-                return Some(i + 1);
+                return Some((i + 1, slash));
             } else if b == b'=' {
                 after_eq = true;
             } else if !is_space(b) {
-                after_eq = false;
+                slash = b == b'/';
             }
             i += 1;
         }
         None
+    }
+
+    /// The byte after the `>` that ends a doctype whose keyword ends at `from`: outside quoted
+    /// literals and, in the internal subset, outside comments and processing instructions, so a
+    /// `]>` inside an entity value ends nothing (M3 review r1, Codex #4).
+    fn doctype_end(&self, from: usize) -> Option<usize> {
+        let s = self.src;
+        let mut i = from;
+        let mut subset = false;
+        while i < s.len() {
+            match s[i] {
+                q @ (b'"' | b'\'') => {
+                    i = memchr::memchr(q, &s[i + 1..]).map(|k| i + 1 + k)?;
+                }
+                b'<' if subset && s[i..].starts_with(b"<!--") => {
+                    i = self.after(i + 4, b"-->")? - 1;
+                }
+                b'<' if subset && s[i..].starts_with(b"<?") => {
+                    i = self.after(i + 2, b"?>")? - 1;
+                }
+                b'[' if !subset => subset = true,
+                b']' if subset => subset = false,
+                b'>' if !subset => return Some(i + 1),
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// XML: the byte after a well-formed tag whose name starts at `ns` (`<name (S attr S? =
+    /// S? "value")* S? /?>`, or `</name S?>`); Err when it is not one.
+    fn xml_tag_end(&self, ns: usize, close: bool) -> Result<usize, ()> {
+        let s = self.src;
+        let name = |mut i: usize| -> Result<usize, ()> {
+            if !s.get(i).is_some_and(|&b| name_start(b, true)) {
+                return Err(());
+            }
+            while i < s.len()
+                && (name_start(s[i], true) || s[i].is_ascii_digit() || matches!(s[i], b'-' | b'.'))
+            {
+                i += 1;
+            }
+            Ok(i)
+        };
+        let spaces = |mut i: usize| {
+            while i < s.len() && is_space(s[i]) {
+                i += 1;
+            }
+            i
+        };
+        let mut i = name(ns)?;
+        if close {
+            i = spaces(i);
+            return if s.get(i) == Some(&b'>') {
+                Ok(i + 1)
+            } else {
+                Err(())
+            };
+        }
+        loop {
+            let j = spaces(i);
+            match s.get(j) {
+                Some(b'>') => return Ok(j + 1),
+                Some(b'/') if s.get(j + 1) == Some(&b'>') => return Ok(j + 2),
+                Some(_) if j > i => {}
+                _ => return Err(()),
+            }
+            i = spaces(name(j)?);
+            if s.get(i) != Some(&b'=') {
+                return Err(());
+            }
+            i = spaces(i + 1);
+            let q = *s.get(i).filter(|&&b| b == b'"' || b == b'\'').ok_or(())?;
+            let v = memchr::memchr(q, &s[i + 1..]).ok_or(())? + i + 1;
+            if s[i + 1..v].contains(&b'<') {
+                return Err(());
+            }
+            i = v + 1;
+        }
     }
 
     /// The end of the name that starts at `from`.
@@ -809,16 +1201,7 @@ impl<'a> Scanner<'a> {
                     self.pos = s.len();
                     return Step::Error(lt);
                 }
-                let gt = memchr::memchr(b'>', rest);
-                let br = memchr::memchr(b'[', rest);
-                let end = match (br, gt) {
-                    (Some(b), Some(g)) if b < g => self
-                        .after(lt + b, b"]")
-                        .and_then(|e| memchr::memchr(b'>', &s[e..]).map(|k| e + k + 1)),
-                    (_, Some(g)) => Some(lt + g + 1),
-                    _ => None,
-                };
-                match end {
+                match self.doctype_end(lt + 9) {
                     Some(e) => self.pos = e,
                     None => return unfinished(self),
                 }
@@ -852,8 +1235,21 @@ impl<'a> Scanner<'a> {
                 continue;
             }
             let ne = self.name_end(ns);
-            let Some(end) = self.tag_end(ne) else {
-                return unfinished(self);
+            let (end, self_closing) = if self.xml {
+                // XML: a tag must be well formed, attributes included (M3 review r1, Codex #5).
+                match self.xml_tag_end(ns, close) {
+                    // Values are quoted, so a `/` before the `>` can only be `/>`.
+                    Ok(e) => (e, s[e - 2] == b'/'),
+                    Err(()) => {
+                        self.pos = s.len();
+                        return Step::Error(lt);
+                    }
+                }
+            } else {
+                match self.tag_end(ne) {
+                    Some(t) => t,
+                    None => return unfinished(self),
+                }
             };
             self.pos = end;
             let name = ns..ne;
@@ -861,7 +1257,6 @@ impl<'a> Scanner<'a> {
             if close {
                 return Step::Tag(Tag::End { name, tag });
             }
-            let self_closing = end >= 2 && s[end - 2] == b'/' && end - 2 >= ne;
             return Step::Tag(Tag::Start {
                 name,
                 tag,
@@ -934,7 +1329,11 @@ pub fn attribute(
 }
 ```
 
-- [ ] **Step 4:** `cargo test --lib markup::scan`: 5 tests PASS.
+- [ ] **Step 4:** `cargo test --lib markup::scan`: 7 tests PASS. `html_skips_comments_…` holds
+  review r1's Fable #5 (`<a href=/x/>` is no self-closing tag). Two tests come from review r1: `a_doctype_ends_outside_its_literals_and_comments` (Codex #4: `<!DOCTYPE r [<!ENTITY e
+  "]> <fake>">]>` invented a `fake` element) and `xml_tags_must_be_well_formed` (Codex #5:
+  `<a=b>` and `<a x=bare>` were taken as elements); both FAILED against the first version of
+  this scanner (D30).
 
 ### Task 2.2: the HTML rules (src/processors/markup/html.rs)
 
@@ -961,6 +1360,8 @@ mod tests {
         assert_eq!(closed(&["table", "tbody", "tr", "td"], "tbody"), 3);
         assert_eq!(closed(&["dl", "dt"], "dd"), 1);
         assert_eq!(closed(&["select", "option"], "option"), 1);
+        assert_eq!(closed(&["select", "option"], "optgroup"), 1);
+        assert_eq!(closed(&["select", "optgroup", "option"], "optgroup"), 2);
     }
 
     #[test]
@@ -1029,7 +1430,7 @@ pub struct Info {
     pub void: bool,
     /// Its content is text up to its own end tag.
     pub raw_text: bool,
-    /// A hidden Segment: it holds the whole page and names nothing (M3 plan, D7).
+    /// A hidden Segment, not searchable by name: it holds the whole page (M3 plan, D7).
     pub hidden: bool,
 }
 
@@ -1187,6 +1588,11 @@ where
             }
         }
     }
+    // An `optgroup` that closes no group still ends an option that is the current element
+    // (M3 review r1, Codex #9).
+    if start.known == Optgroup && open.clone().last().is_some_and(|el| el.known == Option) {
+        return 1;
+    }
     // A heading start tag closes a heading that is the current element.
     if start.known == Heading && open.last().is_some_and(|el| el.known == Heading) {
         return 1;
@@ -1195,7 +1601,8 @@ where
 }
 ```
 
-- [ ] **Step 4:** `cargo test --lib markup::html`: 3 tests PASS.
+- [ ] **Step 4:** `cargo test --lib markup::html`: 3 tests PASS (the `optgroup` asserts are
+  review r1's Codex #9).
 
 ### Task 2.3: the fixtures
 
@@ -1274,6 +1681,87 @@ its line, counted with `grep -n needle` in the probe.
 
 - [ ] **Step 4:** check: `grep -n needle tests/fixtures/markup/*` prints exactly the lines above,
   and `wc -l` gives 30, 18 and 5.
+
+### Task 2.3b: Outline line numbers without an index of every line (src/trail.rs, D27)
+
+`Outline::build` built a `LineIndex` of the whole Source, one `usize` per line, whatever the
+number of Segments kept: one Match in an XML file of 50 MB of line breaks took 467 MiB, against
+rg's 56 (Codex #2, measured with the probe's binary). `fill_lines` counts line breaks only up to
+the bytes it is asked for. Markdown, keypath and treesitter build their Outlines the same way and
+get the same lines.
+
+- [ ] **Step 1:** RED is the perf test `markup_keeps_no_index_of_the_lines` of Task 7.1, which
+  needs the walk of Task 2.4; here the existing tests of `src/trail.rs` and every Processor's are
+  the guard: they must stay green.
+
+- [ ] **Step 2:** the change:
+
+```diff
+--- a/src/trail.rs
++++ b/src/trail.rs
+@@ -88,7 +88,6 @@
+                 .cmp(&b.range.start)
+                 .then(b.range.end.cmp(&a.range.end))
+         });
+-        let lines = LineIndex::new(content);
+         let mut stack: Vec<usize> = Vec::new();
+         for i in 0..segments.len() {
+             let start = segments[i].range.start;
+@@ -105,14 +104,9 @@
+                 }
+             }
+             segments[i].parent = stack.last().copied();
+-            let r = segments[i].range.clone();
+-            let seg = &mut segments[i].segment;
+-            if seg.line == 0 {
+-                seg.line = lines.line_of(r.start);
+-                seg.end_line = lines.line_of(r.end.saturating_sub(1).max(r.start));
+-            }
+             stack.push(i);
+         }
++        fill_lines(&mut segments, content);
+         Self { segments }
+     }
+ 
+@@ -135,6 +129,35 @@
+     }
+ }
+ 
++/// Fills the `line` and `end_line` left at 0 from the ranges, counting line breaks only up to
++/// the last byte asked: memory grows with the Segments, never with the lines of the file (M3
++/// review r1, Codex #2).
++fn fill_lines(segments: &mut [OutlineSegment], content: &[u8]) {
++    // (byte, Segment index, whether it is the end) for every line to compute.
++    let mut asks: Vec<(usize, usize, bool)> = Vec::new();
++    for (i, s) in segments.iter().enumerate() {
++        if s.segment.line == 0 {
++            let r = &s.range;
++            asks.push((r.start, i, false));
++            asks.push((r.end.saturating_sub(1).max(r.start), i, true));
++        }
++    }
++    asks.sort_unstable();
++    let (mut at, mut line) = (0usize, 1u64);
++    for (byte, i, end) in asks {
++        let to = byte.min(content.len());
++        if to > at {
++            line += memchr::memchr_iter(b'\n', &content[at..to]).count() as u64;
++            at = to;
++        }
++        if end {
++            segments[i].segment.end_line = line;
++        } else {
++            segments[i].segment.line = line;
++        }
++    }
++}
++
+ /// Trails of byte offsets asked in non-decreasing order, from a stack of the Segments open at
+ /// the last offset instead of a scan of the whole Outline per offset. An offset smaller than the
+ /// last one starts over.
+```
+
+- [ ] **Step 3:** `cargo test --workspace`: PASS, no expectation changed.
 
 ### Task 2.4: the walk and the Processor (src/processors/markup/mod.rs)
 
@@ -1396,6 +1884,58 @@ mod tests {
     }
 
     #[test]
+    fn xml_doctypes_and_malformed_tags_do_not_invent_elements() {
+        // M3 review r1, Codex #4 and #5.
+        assert_eq!(
+            needles(
+                br#"<!DOCTYPE r [<!ENTITY e "]> <fake>">]><r>needle</r>"#,
+                "xml"
+            ),
+            pairs(&[(1, "r")])
+        );
+        assert_eq!(
+            needles(
+                b"<r><ok>needle</ok><a=b>needle</a=b><c x=bare>needle</c></r>",
+                "xml"
+            ),
+            pairs(&[(1, "r › ok"), (1, ""), (1, "")])
+        );
+    }
+
+    #[test]
+    fn an_optgroup_ends_the_open_option() {
+        // M3 review r1, Codex #9.
+        let src = b"<select><option>first<optgroup label=x><option>needle</optgroup><optgroup><option>needle</select>";
+        assert_eq!(
+            needles(src, "html"),
+            pairs(&[
+                (1, "select › optgroup[1] › option"),
+                (1, "select › optgroup[2] › option")
+            ])
+        );
+    }
+
+    #[test]
+    fn many_distinct_sibling_tags_keep_their_indexes() {
+        // Past LINEAR distinct tags the index finds the slot (M3 review r1, Codex #1).
+        let mut src = String::from("<r>");
+        for i in 0..40 {
+            src.push_str(&format!("<t{i}/><T{i}/>"));
+        }
+        src.push_str("<t7>needle</t7><x>needle</x></r>");
+        assert_eq!(
+            needles(src.as_bytes(), "xml"),
+            pairs(&[(1, "r › t7[2]"), (1, "r › x")])
+        );
+        let html = src.replace("<r>", "<div>").replace("</r>", "</div>");
+        // HTML compares tags without case: t7, T7 and the last t7 are three.
+        assert_eq!(
+            needles(html.as_bytes(), "html"),
+            pairs(&[(1, "div › t7[3]"), (1, "div › x")])
+        );
+    }
+
+    #[test]
     fn names_are_searchable_with_their_pieces() {
         let src = br#"<div id="main" class="a b"><p>x</p><p>y</p></div>"#;
         let input = Input {
@@ -1424,6 +1964,34 @@ mod tests {
                 ("p[1]", vec![(0..1, 28..29)]),
                 ("p[2]", vec![(0..1, 36..37)]),
             ]
+        );
+    }
+
+    #[test]
+    fn html_and_body_are_not_names() {
+        let src = b"<html><body><p>x</p></body></html>";
+        let input = Input {
+            bytes: src,
+            path: Path::new("x"),
+            format: "html",
+            disk: None,
+        };
+        let n = Markup.names(&input, &params("html")).unwrap();
+        let texts: Vec<&str> = n.iter().map(|n| n.text.as_str()).collect();
+        assert_eq!(texts, ["p"]);
+    }
+
+    #[test]
+    fn the_sibling_index_agrees_with_the_linear_count() {
+        // Fable r1 #1: 20 distinct tags cross LINEAR, then `a` again is `a[2]`.
+        let mut src = String::from("<r><a>needle</a>");
+        for i in 0..20 {
+            src.push_str(&format!("<t{i}/>"));
+        }
+        src.push_str("<a>needle</a></r>");
+        assert_eq!(
+            needles(src.as_bytes(), "xml"),
+            pairs(&[(1, "r › a[1]"), (1, "r › a[2]")])
         );
     }
 
@@ -1459,16 +2027,18 @@ use crate::model::{Input, Name, Trail};
 use crate::processors::keypath::collect::Collector;
 use crate::trail::{Outline, OutlineSegment, TrailCursor, names_of};
 use scan::{Scanner, Step, Tag};
+use std::collections::HashMap;
 use std::ops::Range;
 
-/// A name's pieces, in the format of `Name::pieces`.
-type Pieces = Vec<(Range<usize>, Range<usize>)>;
+use crate::text::Pieces;
 
 pub struct Markup;
 
 /// Past this many open elements no more Segments open (as JSON's 256, M2 plan D34).
 pub const MAX_DEPTH: usize = 256;
 pub const DEFAULT_NAME_CHARS: usize = 40;
+/// Distinct child tags a parent compares one by one before it builds an index.
+const LINEAR: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Syntax {
@@ -1511,6 +2081,10 @@ struct Frame {
     ordinal: u32,
     /// Children seen so far, by tag name: (a name of that tag, count).
     counts: Vec<(Range<usize>, u32)>,
+    /// Past `LINEAR` distinct tags, the slot in `counts` of each tag's key (`key`), so a parent
+    /// with thousands of distinct child tags costs constant time per child (M3 review r1,
+    /// Codex #1). Memory: one entry per distinct child tag of each open element.
+    index: Option<HashMap<Box<[u8]>, usize>>,
     /// Closed children kept as Segments and without an id, which get `[n]` when their tag
     /// repeats: they reach the Collector when this element closes and the counts are final.
     pending: Vec<(OutlineSegment, usize, u32)>,
@@ -1526,6 +2100,7 @@ impl Frame {
             slot: 0,
             ordinal: 0,
             counts: Vec::new(),
+            index: None,
             pending: Vec::new(),
         }
     }
@@ -1588,16 +2163,62 @@ impl Walk<'_, '_, '_> {
                 }
             }
         }
-        if text.chars().count() > self.p.name_chars {
-            let cut = text
-                .char_indices()
-                .nth(self.p.name_chars - 1)
-                .map_or(text.len(), |(i, _)| i);
-            text.truncate(cut);
-            text.push('…');
-            pieces.retain(|(t, _)| t.end <= cut);
-        }
+        crate::text::cut_name(&mut text, &mut pieces, self.p.name_chars);
         (text, pieces, has_id)
+    }
+
+    /// How siblings' tags compare: without case in HTML.
+    fn key(&self, name: &Range<usize>) -> Box<[u8]> {
+        let b = &self.src[name.clone()];
+        match self.p.syntax {
+            Syntax::Html => b.to_ascii_lowercase().into(),
+            Syntax::Xml => b.into(),
+        }
+    }
+
+    /// Counts a child named `name` in the current element; returns its slot in `counts`.
+    fn slot(&mut self, name: &Range<usize>) -> usize {
+        let key = (self.stack.last().unwrap().counts.len() >= LINEAR).then(|| self.key(name));
+        let src = self.src;
+        let html = self.p.syntax == Syntax::Html;
+        let parent = self.stack.last_mut().unwrap();
+        let found = match (&key, &parent.index) {
+            (Some(k), Some(ix)) => ix.get(k).copied(),
+            _ => parent.counts.iter().position(|(n, _)| {
+                let (a, b) = (&src[n.clone()], &src[name.clone()]);
+                if html {
+                    a.eq_ignore_ascii_case(b)
+                } else {
+                    a == b
+                }
+            }),
+        };
+        if let Some(k) = found {
+            parent.counts[k].1 += 1;
+            return k;
+        }
+        parent.counts.push((name.clone(), 1));
+        let k = parent.counts.len() - 1;
+        if let Some(key) = key {
+            if parent.index.is_none() {
+                // Index the tags counted so far, then this one.
+                let mut ix = HashMap::new();
+                for (j, (n, _)) in parent.counts[..k].iter().enumerate() {
+                    let b = &src[n.clone()];
+                    ix.insert(
+                        if html {
+                            b.to_ascii_lowercase().into()
+                        } else {
+                            b.into()
+                        },
+                        j,
+                    );
+                }
+                parent.index = Some(ix);
+            }
+            parent.index.as_mut().unwrap().insert(key, k);
+        }
+        k
     }
 
     /// Closes the innermost open element at `end` (exclusive).
@@ -1607,7 +2228,9 @@ impl Walk<'_, '_, '_> {
         if f.seg && self.c.keeps(f.tag.start, end) {
             let (text, pieces, has_id) = self.name_of(&f);
             let mut s = OutlineSegment::new("tag", text, f.tag.start..end, f.tag.clone());
-            s.name = Some(pieces);
+            // `html` and `body` are hidden and not searchable by name (D7, M3 review r1,
+            // Fable #6).
+            s.name = (!f.info.hidden).then_some(pieces);
             s.name_anchor = f.name.start;
             s.hidden = f.info.hidden;
             if has_id {
@@ -1658,29 +2281,7 @@ impl Walk<'_, '_, '_> {
                 self.close_implied(tag.start);
             }
         }
-        let slot = {
-            let src = self.src;
-            let syntax = self.p.syntax;
-            let parent = self.stack.last_mut().unwrap();
-            let k = parent.counts.iter().position(|(n, _)| {
-                let (a, b) = (&src[n.clone()], &src[name.clone()]);
-                if syntax == Syntax::Html {
-                    a.eq_ignore_ascii_case(b)
-                } else {
-                    a == b
-                }
-            });
-            match k {
-                Some(k) => {
-                    parent.counts[k].1 += 1;
-                    k
-                }
-                None => {
-                    parent.counts.push((name.clone(), 1));
-                    parent.counts.len() - 1
-                }
-            }
-        };
+        let slot = self.slot(&name);
         let ordinal = self.stack.last().unwrap().counts[slot].1;
         // An empty element (`<x/>`, a void element) holds nothing but its tag: no Segment, but
         // it counts among its siblings.
@@ -1696,6 +2297,7 @@ impl Walk<'_, '_, '_> {
             slot,
             ordinal,
             counts: Vec::new(),
+            index: None,
             pending: Vec::new(),
         });
         if raw {
@@ -1790,14 +2392,19 @@ impl Processor for Markup {
 }
 ```
 
-- [ ] **Step 4:** `cargo test --lib markup`: the 6 walk tests and the 8 of Tasks 2.1–2.2 PASS.
+- [ ] **Step 4:** `cargo test --lib markup`: the 11 walk tests and the 10 of Tasks 2.1–2.2
+  PASS. From review r1: `xml_doctypes_and_malformed_tags_do_not_invent_elements` (Codex #4, #5),
+  `an_optgroup_ends_the_open_option` (Codex #9, it FAILED before `html.rs` closed the option),
+  `many_distinct_sibling_tags_keep_their_indexes` and
+  `the_sibling_index_agrees_with_the_linear_count` (Codex #1, Fable #1: 20 distinct tags cross
+  `LINEAR`, then `a` again is `a[2]`; D28), and `html_and_body_are_not_names` (Fable #6, D7).
   Then `cargo test --workspace` and clippy.
 
 - [ ] **Step 5:** by hand, with `cargo build`: `target/debug/sfor --flat needle
   tests/fixtures/markup/page.html` prints the seven rows of `m3_02` (Task 6.1), and `--tree`
   shows `li[3]` under `ul` under `nav.top.menu`.
 
-- [ ] **Step 6:** commit: `git add -- src/processors/markup tests/fixtures/markup` and
+- [ ] **Step 6:** commit: `git add -- src/processors/markup src/trail.rs tests/fixtures/markup` and
   `git commit -m "Trail HTML and XML elements with a tag scanner of our own"`.
 
 ## Chunk 3: csv — CSV and TSV
@@ -1920,6 +2527,30 @@ mod tests {
             needles(src, ""),
             [vec!["row 1:2-2".to_string(), "b:2-2".to_string()], vec![]]
         );
+        // A stray quote after the closing one is text: the field is closed (Fable r1 #2).
+        assert_eq!(
+            needles(b"a,b\nneedle,\"x\"y\"", ""),
+            [vec!["row 1:2-2", "a:2-2"]]
+        );
+    }
+
+    #[test]
+    fn text_after_a_closed_quote_is_not_an_open_quote() {
+        // csv-core reads `"needle"junk"` as `needlejunk"`: the field is closed, at the end of
+        // the file or not (M3 review r1, Codex #7).
+        assert_eq!(
+            needles(b"a,b\n1,\"needle\"junk\"\n", ""),
+            [vec!["row 1:2-2", "b:2-2"]]
+        );
+        assert_eq!(
+            needles(b"a,b\n1,\"needle\"junk\"\n2,end\n", ""),
+            [vec!["row 1:2-2", "b:2-2"]]
+        );
+        // `""` inside quotes keeps the field open: this one never closes.
+        assert_eq!(
+            needles(b"a,b\n1,\"needle\"\"x\n", ""),
+            [Vec::<String>::new()]
+        );
     }
 
     #[test]
@@ -1986,8 +2617,7 @@ use super::Processor;
 use crate::model::{Input, Name, Segment, Trail};
 use std::ops::Range;
 
-/// A name's pieces, in the format of `Name::pieces`.
-type Pieces = Vec<(Range<usize>, Range<usize>)>;
+use crate::text::Pieces;
 
 pub struct Csv;
 
@@ -2056,6 +2686,33 @@ pub fn sniff(src: &[u8], quote: Option<u8>) -> u8 {
         }
     }
     CANDIDATES[best]
+}
+
+/// Whether csv-core would still be inside the quotes of `field` at its end (M3 review r1,
+/// Codex #7): a field quoted from its first byte, where `""` is a quote inside the field and a
+/// closing quote followed by anything but a quote turns the rest into plain text, whose quotes
+/// are literal (csv-core 0.1.13, `reader.rs`, states `InQuotedField` and `InDoubleEscapedQuote`).
+fn ends_quoted(field: &[u8], q: u8) -> bool {
+    if field.first() != Some(&q) {
+        return false;
+    }
+    let mut quoted = true;
+    let mut after_quote = false;
+    for &b in &field[1..] {
+        if quoted {
+            if b == q {
+                quoted = false;
+                after_quote = true;
+            }
+        } else if after_quote && b == q {
+            quoted = true;
+            after_quote = false;
+        } else {
+            // Plain text from here to the end of the field.
+            return false;
+        }
+    }
+    quoted
 }
 
 /// One field: `raw` is its bytes in the Source, quotes included, without the delimiter or line
@@ -2151,13 +2808,9 @@ impl<'s> Records<'s> {
                     if record_end
                         && self.pos == src.len()
                         && let Some(q) = self.quote
+                        && ends_quoted(&src[raw.clone()], q)
                     {
-                        let bytes = &src[raw.clone()];
-                        if bytes.first() == Some(&q)
-                            && bytes.iter().filter(|&&b| b == q).count() % 2 == 1
-                        {
-                            return Next::Unclosed;
-                        }
+                        return Next::Unclosed;
                     }
                     let mut end = self.pos;
                     if record_end
@@ -2284,15 +2937,7 @@ fn header_name(
     if text.is_empty() {
         return None;
     }
-    if text.chars().count() > name_chars {
-        let cut = text
-            .char_indices()
-            .nth(name_chars - 1)
-            .map_or(text.len(), |(i, _)| i);
-        text.truncate(cut);
-        text.push('…');
-        pieces.retain(|(t, _)| t.end <= cut);
-    }
+    crate::text::cut_name(&mut text, &mut pieces, name_chars);
     Some(HeaderName {
         text,
         pieces,
@@ -2452,8 +3097,10 @@ impl Processor for Csv {
 }
 ```
 
-- [ ] **Step 4:** `cargo test --lib processors::csv`: 7 tests PASS; `cargo test --workspace` and
-  clippy.
+- [ ] **Step 4:** `cargo test --lib processors::csv`: 8 tests PASS; `cargo test --workspace` and
+  clippy. `text_after_a_closed_quote_is_not_an_open_quote` is review r1's Codex #7: the first
+  version counted quotes and lost `1,"needle"junk"` at the end of a file; it FAILED against it
+  (D32). `an_unclosed_quote_ends_the_structure` also holds Fable #2's `a,b\nneedle,"x"y"`.
 
 - [ ] **Step 5:** by hand: `target/debug/sfor --flat needle tests/fixtures/table` prints the rows
   of `m3_04` (Task 6.1), and `--expand 'lines with' tests/fixtures/table/plans.csv` prints lines
@@ -2583,6 +3230,34 @@ mod tests {
     }
 
     #[test]
+    fn vtt_blocks_hold_no_cue_even_with_a_timing_line() {
+        let src = "WEBVTT\n00:00.000 --> 00:00.500\nneedle\n\nNOTE\n00:01.000 --> 00:02.000\nneedle\n\nSTYLE\n00:01.000 --> 00:02.000\n::cue { needle }\n\n00:03.000 --> 00:04.000\nneedle\n";
+        assert_eq!(
+            needles(src),
+            [
+                vec![],
+                vec![],
+                vec![],
+                vec![("cue 1 00:03.000".into(), 13, 14)]
+            ]
+        );
+        // Without the WEBVTT header (SubRip) a line `NOTE` is an identifier like any other.
+        assert_eq!(
+            needles("NOTE\n00:01,000 --> 00:02,000\nneedle\n"),
+            [vec![("cue NOTE 00:01,000".into(), 1, 3)]]
+        );
+    }
+
+    #[test]
+    fn a_timing_line_is_never_an_identifier() {
+        // M3 review r1, Fable #4: two timing lines in a row are two cues.
+        assert_eq!(
+            needles("00:00:01,000 --> 00:00:02,000\n00:00:03,000 --> 00:00:04,000\nneedle\n"),
+            [vec![("cue 2 00:00:03,000".into(), 2, 3)]]
+        );
+    }
+
+    #[test]
     fn text_outside_cues_has_no_trail() {
         assert_eq!(
             needles("needle\n\n00:00:01,000 --> 00:00:02,000\nx\n\nneedle\n"),
@@ -2659,6 +3334,11 @@ pub fn timing(line: &[u8]) -> Option<(Range<usize>, Range<usize>)> {
     Some((a..a_end, b..b_end))
 }
 
+/// True when `line` starts with the word `w`, followed by white space or nothing.
+fn block_word(line: &[u8], w: &[u8]) -> bool {
+    line.starts_with(w) && line.get(w.len()).is_none_or(|b| b.is_ascii_whitespace())
+}
+
 /// One cue: its Section (`range`), its identifier line, its timestamps (Source ranges), its
 /// 1-based position, and its lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2672,21 +3352,24 @@ struct Cue {
 }
 
 impl Cue {
+    /// The identifier as the name shows it, trimmed and cut at `ID_CHARS`, with the pieces
+    /// that map it to the Source (M3 review r1, Codex #6); the position when there is none.
+    fn id(&self, src: &[u8]) -> (String, crate::text::Pieces) {
+        let Some(r) = &self.id else {
+            return (self.ordinal.to_string(), Vec::new());
+        };
+        let raw = &src[r.clone()];
+        let lead = raw.len() - raw.trim_ascii_start().len();
+        let trimmed = raw.trim_ascii();
+        let s0 = r.start + lead;
+        let mut text = String::from_utf8_lossy(trimmed).into_owned();
+        let mut pieces = vec![(0..text.len(), s0..s0 + trimmed.len())];
+        crate::text::cut_name(&mut text, &mut pieces, ID_CHARS);
+        (text, pieces)
+    }
+
     fn id_text(&self, src: &[u8]) -> String {
-        match &self.id {
-            Some(r) => {
-                let t = String::from_utf8_lossy(&src[r.clone()]);
-                let t = t.trim();
-                if t.chars().count() > ID_CHARS {
-                    let mut c: String = t.chars().take(ID_CHARS - 1).collect();
-                    c.push('…');
-                    c
-                } else {
-                    t.to_string()
-                }
-            }
-            None => self.ordinal.to_string(),
-        }
+        self.id(src).0
     }
 
     fn segment(&self, src: &[u8]) -> Segment {
@@ -2708,13 +3391,18 @@ impl Cue {
 fn cues(src: &[u8], mut f: impl FnMut(&Cue) -> bool) {
     // The cue being read; its range ends after its last non-blank line.
     let mut open: Option<Cue> = None;
-    // The previous line: (range without terminator, blank, its line number); and whether the
-    // line before it was blank or absent.
-    let mut prev: Option<(Range<usize>, bool, u64)> = None;
+    // The previous line: (range without terminator, blank, its line number, a timing line);
+    // and whether the line before it was blank or absent.
+    let mut prev: Option<(Range<usize>, bool, u64, bool)> = None;
     let mut before_prev_blank = true;
     let mut ordinal = 0;
     let mut pos = 0;
     let mut line_no = 0u64;
+    // WebVTT (a file that starts with `WEBVTT`): its header and its NOTE, STYLE and REGION
+    // blocks hold no cue, even when a line in them looks like a timing line (M3 review r1,
+    // Codex #3). `excluded` is true inside one, up to the blank line that ends it.
+    let vtt = block_word(src, b"WEBVTT");
+    let mut excluded = false;
     while pos < src.len() {
         line_no += 1;
         let nl = memchr::memchr(b'\n', &src[pos..]).map_or(src.len(), |k| pos + k);
@@ -2726,12 +3414,27 @@ fn cues(src: &[u8], mut f: impl FnMut(&Cue) -> bool) {
         };
         let line = &src[content.clone()];
         let blank = line.iter().all(|b| matches!(b, b' ' | b'\t'));
-        if let Some((a, b)) = timing(line) {
-            // The line before is the identifier when it starts a block.
+        let block_start = prev.as_ref().is_none_or(|(_, b, _, _)| *b);
+        if vtt
+            && !blank
+            && block_start
+            && (line_no == 1
+                || [&b"NOTE"[..], b"STYLE", b"REGION"]
+                    .iter()
+                    .any(|w| block_word(line, w)))
+        {
+            excluded = true;
+        }
+        let tm = if excluded { None } else { timing(line) };
+        if excluded {
+            excluded = !blank;
+        } else if let Some((a, b)) = tm.clone() {
+            // The line before is the identifier when it starts a block and is not a timing
+            // line itself (M3 review r1, Fable #4).
             let id = prev
                 .as_ref()
-                .filter(|(_, pb, _)| !pb && before_prev_blank)
-                .map(|(r, _, n)| (r.clone(), *n));
+                .filter(|(_, pb, _, pt)| !pb && !pt && before_prev_blank)
+                .map(|(r, _, n, _)| (r.clone(), *n));
             // A timing line right after a cue's text starts the next cue (a missing blank line).
             if let Some(c) = open.take()
                 && !f(&c)
@@ -2761,8 +3464,8 @@ fn cues(src: &[u8], mut f: impl FnMut(&Cue) -> bool) {
             c.range.end = next;
             c.lines.1 = line_no;
         }
-        before_prev_blank = prev.as_ref().is_none_or(|(_, b, _)| *b);
-        prev = Some((content, blank, line_no));
+        before_prev_blank = prev.as_ref().is_none_or(|(_, b, _, _)| *b);
+        prev = Some((content, blank, line_no, tm.is_some()));
         pos = next;
     }
     if let Some(c) = open {
@@ -2800,20 +3503,13 @@ impl Processor for Subtitles {
         let mut names = Vec::new();
         cues(src, |c| {
             let seg = c.segment(src);
-            let id = c.id_text(src);
-            // "cue ", the identifier, " ", the start time: the identifier and the time come from
-            // the Source; the rest is text of the name.
-            let mut pieces = Vec::new();
-            // The identifier is a piece when the name shows it whole; a cut or decoded one is
-            // text of the name only.
-            if let Some(r) = &c.id {
-                let raw = &src[r.clone()];
-                let lead = raw.len() - raw.trim_ascii_start().len();
-                let trimmed = raw.trim_ascii();
-                if std::str::from_utf8(trimmed).is_ok_and(|t| t == id) {
-                    pieces.push((4..4 + id.len(), r.start + lead..r.start + lead + id.len()));
-                }
-            }
+            // "cue ", the identifier, " ", the start time: the identifier (when it is an
+            // identifier line) and the time come from the Source; the rest is text of the name.
+            let (id, id_pieces) = c.id(src);
+            let mut pieces: crate::text::Pieces = id_pieces
+                .into_iter()
+                .map(|(t, s)| (4 + t.start..4 + t.end, s))
+                .collect();
             let at = 4 + id.len() + 1;
             pieces.push((at..at + c.start.len(), c.start.clone()));
             names.push(Name {
@@ -2833,8 +3529,11 @@ impl Processor for Subtitles {
 }
 ```
 
-- [ ] **Step 4:** `cargo test --lib processors::subtitles`: 5 tests PASS; `cargo test
-  --workspace` and clippy.
+- [ ] **Step 4:** `cargo test --lib processors::subtitles`: 7 tests PASS; `cargo test
+  --workspace` and clippy. From review r1 (D29): `vtt_blocks_hold_no_cue_even_with_a_timing_line`
+  (Codex #3, Fable #3: the first version printed `cue NOTE 00:01.000` and numbered the next cue
+  4; the cue it expects is on lines 13–14) and `a_timing_line_is_never_an_identifier` (Fable #4);
+  both FAILED against the first version.
 
 - [ ] **Step 5:** by hand: `target/debug/sfor --tree needle tests/fixtures/subs/movie.srt` prints
   the tree of spec §5.6.
@@ -3312,9 +4011,38 @@ fn m3_13_latin1_headers_are_decoded_lossily() {
     let o = run(&mut fx.sfor(["needle", "m.csv", "--flat"]));
     assert_eq!(stdout(&o), "2: row 1 › A\u{FFFD}o │ needle,1\n");
 }
+
+#[test]
+fn m3_14_a_cut_name_stays_searchable_up_to_its_cut() {
+    // M3 review r1, Codex #6: the visible part of a cut name is still a name.
+    let fx = Fixture::new();
+    let a = "A".repeat(50);
+    let n = "ñ".repeat(50);
+    std::fs::write(fx.file("long.csv"), format!("id,{a}\n1,x\n")).unwrap();
+    std::fs::write(fx.file("long.html"), format!("<div id=\"{a}\">x</div>\n")).unwrap();
+    std::fs::write(
+        fx.file("long.vtt"),
+        format!("WEBVTT\n\n{a}\n00:01.000 --> 00:02.000\nx\n"),
+    )
+    .unwrap();
+    std::fs::write(fx.file("longn.csv"), format!("id,{n}\n1,x\n")).unwrap();
+    for (file, pattern) in [
+        ("long.csv", "AAAA"),
+        ("long.html", "AAAA"),
+        ("long.vtt", "AAAA"),
+        ("longn.csv", "ññññ"),
+    ] {
+        let o = run(&mut fx.sfor(["--flat", "--in-headings", pattern, file]));
+        assert_eq!(code(&o), 0, "{file}: {}", stderr(&o));
+        assert_eq!(stdout(&o).lines().count(), 1, "{file}");
+    }
+    // The cut's `…` maps to nothing.
+    let o = run(&mut fx.sfor(["--in-headings", "…", "long.csv"]));
+    assert_eq!(code(&o), 1);
+}
 ```
 
-- [ ] **Step 2:** `INSTA_UPDATE=always cargo test --test cli_m3`: the 13 tests PASS and `m3_01`
+- [ ] **Step 2:** `INSTA_UPDATE=always cargo test --test cli_m3`: the 14 tests PASS and `m3_01`
   writes 18 snapshots. Read every `tests/snapshots/cli_m3__m3_01_*.snap` in full: each tree shows
   the Segments of the flat rows of `m3_02`–`m3_05`, each JSON line validates (the test checks it)
   and carries `"format"` and the kinds `tag`, `row`/`column` or `cue`. For example
@@ -3337,6 +4065,9 @@ table/plans.csv
   `cargo test --test cli_m3 m3_08`: FAILS (the row splits at the line break); then
   `git checkout -- src/output/flat.rs` and the test PASSES again. Report it: this is the test that
   pins M2's leftover.
+
+- [ ] **Step 3b:** `m3_14` is review r1's Codex #6: with the release binary built before
+  `cut_name` (Task 1.4) the four `--in-headings` runs exit 1; with it, each prints one row.
 
 - [ ] **Step 4:** commit: `git add -- tests/cli_m3.rs tests/snapshots` (only the
   `cli_m3__*` files are new) and `git commit -m "Test the M3 Formats end to end"`.
@@ -3613,14 +4344,25 @@ table/plans.csv
 
 ### Task 7.1: the ceilings of tests/perf.rs
 
-- [ ] **Step 1:** append `m3_ceiling` and its four tests (each writes a 50 MB file with three
-  `needle`s — the first unit, one in the middle, the last — and checks the first and last
-  Trails before timing):
+- [ ] **Step 1:** append `m3_ceiling` and its six tests, one per M3 Format (each writes a 50 MB
+  file with three `needle`s — the first unit, one in the middle, the last — and checks the first
+  and last Trails before timing), and the two regressions of review r1:
+  `markup_many_distinct_sibling_tags_stay_linear` (Codex #1: 3.3 s before the sibling index,
+  against rg's 0.02 s) and `markup_keeps_no_index_of_the_lines` (Codex #2: 467 MiB before
+  `fill_lines`). The diff is against `tests/perf.rs` after Task 1.5:
 
 ```diff
 --- a/tests/perf.rs
 +++ b/tests/perf.rs
-@@ -708,3 +708,151 @@
+@@ -366,7 +366,6 @@
+         return;
+     };
+     let rg = rg.as_path();
+-
+     let fx = Fixture::new();
+     let line = "line of text here\n";
+     let file = repeated(&fx, "ten.txt", line, 10 * 1024 * 1024 / line.len());
+@@ -706,3 +705,235 @@
          "{t:?} is more than rg's {base:?} + 1 s"
      );
  }
@@ -3741,7 +4483,9 @@ table/plans.csv
 +        "big.csv",
 +        "id,Name,Plan,Notes\n",
 +        |i, n| {
-+            if i % 7 == 3 {
++            // Only units without a needle are quoted, so the three needles are all in `Plan`
++            // (Fable r1 #9).
++            if i % 7 == 3 && n == "hay" {
 +                format!("{i},Ana,pro,\"two, \"\"quoted\"\"\nlines {n}\"\n")
 +            } else {
 +                format!("{i},Bea,{n},plain notes here\n")
@@ -3749,7 +4493,7 @@ table/plans.csv
 +        },
 +        "",
 +        ": row 1 › Plan",
-+        // Unit i is row i + 1; the last one is a plain row.
++        // Unit i is row i + 1.
 +        ": row {n} › Plan",
 +    );
 +}
@@ -3772,16 +4516,100 @@ table/plans.csv
 +        ": cue {n} 00:00:01,000",
 +    );
 +}
++
++#[test]
++#[ignore]
++fn tsv_reads_at_fifty_megabytes_a_second() {
++    let _alone = alone();
++    m3_ceiling(
++        "big.tsv",
++        "id\tName\tPlan\tNotes\n",
++        |i, n| format!("{i}\tBea\t{n}\tplain \"notes\" here\n"),
++        "",
++        ": row 1 › Plan",
++        ": row {n} › Plan",
++    );
++}
++
++#[test]
++#[ignore]
++fn vtt_reads_at_fifty_megabytes_a_second() {
++    let _alone = alone();
++    m3_ceiling(
++        "big.vtt",
++        "WEBVTT\n\nNOTE a note\n\n",
++        |_, n| format!("00:00:01.000 --> 00:00:02.000 align:start\nline of {n}\nsecond line\n\n"),
++        "",
++        ": cue 1 00:00:01.000",
++        ": cue {n} 00:00:01.000",
++    );
++}
++
++/// M3 review r1, Codex #1 and Fable #1: a parent with 200 000 distinct child tags costs
++/// constant time per child (82 s before the sibling index, against rg's 0.01 s).
++#[test]
++#[ignore]
++fn markup_many_distinct_sibling_tags_stay_linear() {
++    let _alone = alone();
++    let fx = Fixture::new();
++    let mut v = String::from("<r>");
++    for i in 0..200_000 {
++        v.push_str(&format!("<row{i}/>"));
++    }
++    v.push_str("<x>needle</x></r>\n");
++    std::fs::write(fx.file("siblings.xml"), &v).unwrap();
++    let args = ["--flat", "needle", "siblings.xml"];
++    let (out, _) = sfor_output(&fx, &args);
++    assert!(out.starts_with("1: r › x │ "), "{out:.100}");
++    let Some(((t, _), (base, _))) = against_rg(&fx, &args) else {
++        return;
++    };
++    assert!(
++        t <= base + Duration::from_millis(500),
++        "{t:?} against rg's {base:?}"
++    );
++}
++
++/// M3 review r1, Codex #2: one Match in 50 MB of line breaks keeps no index of the lines
++/// (467 MiB of RSS before the fix, against rg's 56 MiB).
++#[test]
++#[ignore]
++fn markup_keeps_no_index_of_the_lines() {
++    let _alone = alone();
++    let fx = Fixture::new();
++    let mut v = String::with_capacity(SIZE + 64);
++    v.push_str("<r>\n");
++    v.push_str(&"\n".repeat(SIZE));
++    v.push_str("<x>needle</x></r>\n");
++    std::fs::write(fx.file("blank.xml"), &v).unwrap();
++    drop(v);
++    let args = ["--flat", "needle", "blank.xml"];
++    let (out, _) = sfor_output(&fx, &args);
++    assert!(out.ends_with(": r › x │ <x>needle</x></r>\n"), "{out:.100}");
++    let Some(((t, rss), (base, base_rss))) = against_rg(&fx, &args) else {
++        return;
++    };
++    assert!(
++        t <= base + Duration::from_secs(1),
++        "{t:?} against rg's {base:?}"
++    );
++    assert!(
++        rss <= base_rss + 32 * 1_048_576,
++        "RSS {rss} is more than rg's {base_rss} + 32 MiB"
++    );
++}
 ```
 
 - [ ] **Step 2:** RED check, as M2's ceilings: `SFOR_BIN=<a build of f7cccfe> cargo test
-  --release --test perf -- --ignored markup_ csv_ subtitles_`: the four FAIL on their
-  Trail assertions (the Formats are Plain there).
+  --release --test perf -- --ignored markup_ csv_ tsv_ subtitles_ vtt_`: the eight FAIL on
+  their Trail assertions (the Formats are Plain there).
 
-- [ ] **Step 3:** `cargo test --release --test perf -- --ignored --nocapture markup_ csv_
-  subtitles_`: PASS. Probe values, for the report's comparison: HTML 0.58 s, XML 0.32 s, CSV
-  0.31 s, SRT 0.15 s, rg about 0.021 s, RSS at most rg's + 21 MiB. Then the whole
-  `cargo test --release --test perf -- --ignored`: M1's and M2's ceilings still PASS.
+- [ ] **Step 3:** check the reference first: `/usr/bin/rg --version` prints `ripgrep 14.1.1`.
+  Then `SFOR_REQUIRE_REFERENCE=1 cargo test --release --test perf -- --ignored --nocapture
+  markup_ csv_ tsv_ subtitles_ vtt_`: PASS; without `SFOR_REQUIRE_REFERENCE=1` a missing rg or
+  `/usr/bin/time` only skips the timing, and such a run does not count for criterion 8. Probe
+  values (release, this machine): HTML 0.50 s, XML 0.27 s, CSV 0.26 s, TSV 0.25 s, SRT 0.14 s, VTT 0.13 s, rg about 0.02 s, RSS 57 MiB against rg's 56. Then the whole `SFOR_REQUIRE_REFERENCE=1 cargo test --release --test
+  perf -- --ignored`: M1's and M2's ceilings still PASS.
 
 - [ ] **Step 4:** commit: `git add -- tests/perf.rs` and
   `git commit -m "Bound the time and memory of the M3 Processors on 50 MB files"`.
@@ -3794,20 +4622,28 @@ table/plans.csv
 ```bash
 #!/usr/bin/env bash
 # M3 acceptance (spec §11 #13, M3 plan D15), on a generated corpus of HTML, XML, CSV, TSV, SRT
-# and VTT files (small ones and one 20 MB file of each Format):
+# and VTT files (small ones and one big file of each Format), against ripgrep 14.1.1:
 #   - a pattern no file matches, and --no-trail: sfor ≤ 1.1 × rg;
 #   - a pattern matching under 5 % of the files, the big ones included: sfor − rg ≤ the
 #     largest matching file ÷ 50 MB/s + all matching bytes ÷ (50 MB/s × threads) + 0.05 s
 #     (a file is walked by one thread);
-#   - a dense pattern (every row of the CSV files): reported only (D16).
+#   - a dense pattern (every non-empty line of the CSV files matches, once): time and RSS
+#     reported, not bounded (D16); sfor must still exit 0 and print every line rg prints.
 # Usage: scripts/bench-m3.sh [CORPUS_DIR]  (generated there when missing; a temporary one by
-# default). Needs hyperfine, jq, awk and GNU stat. SFOR_BIN replaces the sfor under test
-# (SFOR_BIN=scripts/fake-sfor-exit-2.sh must make it exit 1).
+# default). Needs hyperfine, jq, awk, GNU stat and /usr/bin/time. SFOR_BIN replaces the sfor
+# under test (SFOR_BIN=scripts/fake-sfor-exit-2.sh must make it exit 1). The reference is
+# SFOR_RG, else /usr/bin/rg, which must be ripgrep 14.1.1 (M3 review r1, Codex #8): another rg
+# may come first on PATH.
 set -euo pipefail
 export LC_ALL=C
 cargo build --release --quiet
 sfor="${SFOR_BIN:-./target/release/sfor}"
 export SFOR_BIN_PATH="$sfor"
+rg="${SFOR_RG:-/usr/bin/rg}"
+if ! "$rg" --version 2>/dev/null | head -1 | grep -qx 'ripgrep 14.1.1'; then
+  echo "FAIL: the reference $rg is not ripgrep 14.1.1"; exit 1
+fi
+export SFOR_RG_PATH="$rg"
 iso=$(mktemp -d)
 trap 'rm -rf "$iso"' EXIT
 mkdir -p "$iso/formats" "$iso/grammars"
@@ -3815,11 +4651,11 @@ export SFOR_FORMATS_DIR="$iso/formats" SFOR_GRAMMARS_DIR="$iso/grammars" SFOR_GR
 unset RIPGREP_CONFIG_PATH
 threads=$(nproc); [ "$threads" -gt 12 ] && threads=12
 dir="${1:-$iso/corpus}"
-sparse='zqsparse'; none='zzqq-searchfor-bench-none'; dense='plan'
+sparse='zqsparse'; none='zzqq-searchfor-bench-none'; dense='^.'
 fail=0
 
-# gen DIR: small files (every 200th holds the sparse word) and one 20 MB file per Format, whose
-# last line holds it.
+# gen DIR: small files (every 200th holds the sparse word) and one big file (9–19 MB) per
+# Format, whose last line holds it.
 gen() {
   mkdir -p "$1"
   awk -v d="$1" -v sp="$sparse" 'BEGIN {
@@ -3834,6 +4670,10 @@ gen() {
       printf "<?xml version=\"1.0\"?>\n<catalog>\n" > f
       for (j = 0; j < 60; j++) printf "  <book id=\"b%d\"><title>%s</title><price>%d</price></book>\n", j, (j == 30 ? w : "t"), j > f
       printf "</catalog>\n" > f; close(f)
+      f = sprintf("%s/u%04d.tsv", d, i)
+      printf "id\tName\tPlan\n" > f
+      for (j = 0; j < 80; j++) printf "%d\tAna\t%s plan\n", j, (j == 40 ? w : "pro") > f
+      close(f)
       f = sprintf("%s/t%04d.csv", d, i)
       printf "id,Name,Plan,Notes\n" > f
       for (j = 0; j < 80; j++) printf "%d,Ana,%s plan,\"a, \"\"b\"\"\"\n", j, (j == 40 ? w : "pro") > f
@@ -3858,6 +4698,12 @@ gen() {
     f = d "/big.csv"; printf "id,Name,Plan,Notes\n" > f
     for (j = 0; j < 500000; j++) printf "%d,Bea,pro plan,\"x, \"\"y\"\"\nz\"\n", j > f
     printf "%d,Bea,%s,end\n", j, sp > f; close(f)
+    f = d "/big.tsv"; printf "id\tName\tPlan\n" > f
+    for (j = 0; j < 700000; j++) printf "%d\tBea\tpro plan\n", j > f
+    printf "%d\tBea\t%s\n", j, sp > f; close(f)
+    f = d "/big.vtt"; printf "WEBVTT\n\nNOTE generated\n\n" > f
+    for (j = 1; j <= 300000; j++) printf "00:00:01.000 --> 00:00:02.000 align:start\nline of text\n\n" > f
+    printf "00:00:01.000 --> 00:00:02.000\n%s\n", sp > f; close(f)
     f = d "/big.srt"
     for (j = 1; j <= 300000; j++) printf "%d\n00:00:01,000 --> 00:00:02,000\nline of text\nsecond line\n\n", j > f
     printf "%d\n00:00:01,000 --> 00:00:02,000\n%s\n", j, sp > f; close(f)
@@ -3869,6 +4715,11 @@ export SFOR_BENCH_DIR="$dir" SFOR_BENCH_PATTERN="$sparse" SFOR_BENCH_NONE="$none
 # median NAME CMD_RG CMD_SFOR → prints sfor/rg and sets RG_S, SFOR_S (seconds).
 median() {
   hyperfine --ignore-failure --warmup 3 --runs 20 --export-json "$iso/$1.json" "$2" "$3" >/dev/null
+  # --ignore-failure lets a run that found nothing (exit 1) be timed; a crash, an OOM kill or an
+  # error (exit 2) during the timing still fails the benchmark (M3 review r1, Codex #11).
+  if ! jq -e '[.results[].exit_codes[]] | all(. == 0 or . == 1)' "$iso/$1.json" >/dev/null; then
+    echo "  FAIL $1: a timed run did not exit 0 or 1"; fail=1
+  fi
   RG_S=$(jq '.results[0].median' "$iso/$1.json")
   SFOR_S=$(jq '.results[1].median' "$iso/$1.json")
   awk -v a="$SFOR_S" -v b="$RG_S" -v n="$1" 'BEGIN { printf "%-14s rg %.3f s  sfor %.3f s  ratio %.2f\n", n, b, a, a / b }'
@@ -3880,7 +4731,7 @@ check() {
   local name="$1" flag="$2"; shift 2
   local code=0 rgcode=0
   "$sfor" --color never "$flag" "$@" >"$iso/sfor.out" 2>"$iso/sfor.err" || code=$?
-  rg --color never "$@" >"$iso/rg.out" 2>"$iso/rg.err" || rgcode=$?
+  "$rg" --color never "$@" >"$iso/rg.out" 2>"$iso/rg.err" || rgcode=$?
   local e1=0 e2=0
   [ -s "$iso/sfor.err" ] && e1=1
   [ -s "$iso/rg.err" ] && e2=1
@@ -3894,9 +4745,9 @@ check() {
   fi
 }
 
-total=$(rg --files -- "$dir" | wc -l)
-hits=$( (rg -l -e "$sparse" -- "$dir" || true) | wc -l)
-sizes=$( (rg -l -0 -e "$sparse" -- "$dir" || true) | xargs -0 -r stat -c %s)
+total=$("$rg" --files -- "$dir" | wc -l)
+hits=$( ("$rg" -l -e "$sparse" -- "$dir" || true) | wc -l)
+sizes=$( ("$rg" -l -0 -e "$sparse" -- "$dir" || true) | xargs -0 -r stat -c %s)
 bytes=$(echo "$sizes" | awk '{ s += $1 } END { print s + 0 }')
 largest=$(echo "$sizes" | awk '$1 > m { m = $1 } END { print m + 0 }')
 echo "== $dir: files $total, matching $hits ($bytes bytes), threads $threads"
@@ -3905,29 +4756,43 @@ check none --flat -e "$none" -- "$dir"
 check sparse --flat -e "$sparse" -- "$dir"
 check no-trail --no-trail -e "$sparse" -- "$dir"
 [ "$fail" = 0 ] || exit 1
-median none 'rg --color never -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR"' \
+median none '"$SFOR_RG_PATH" --color never -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR"' \
   '"$SFOR_BIN_PATH" --color never --flat -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR"'
 awk -v a="$SFOR_S" -v b="$RG_S" 'BEGIN { exit !(a <= 1.1 * b) }' || { echo "  FAIL: over 1.1 × rg"; fail=1; }
-median no-trail 'rg --color never -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"' \
+median no-trail '"$SFOR_RG_PATH" --color never -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"' \
   '"$SFOR_BIN_PATH" --color never --no-trail -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'
 awk -v a="$SFOR_S" -v b="$RG_S" 'BEGIN { exit !(a <= 1.1 * b) }' || { echo "  FAIL: over 1.1 × rg"; fail=1; }
-median sparse 'rg --color never -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"' \
+median sparse '"$SFOR_RG_PATH" --color never -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"' \
   '"$SFOR_BIN_PATH" --color never --flat -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'
 awk -v a="$SFOR_S" -v b="$RG_S" -v by="$bytes" -v big="$largest" -v t="$threads" \
   'BEGIN { budget = big / 50e6 + by / (50e6 * t) + 0.05; printf "  extra %.3f s, budget %.3f s\n", a - b, budget; exit !(a - b <= budget) }' \
   || { echo "  FAIL: over the budget"; fail=1; }
+# Dense: every non-empty line of the CSV files matches `^.`, once. Checked like the others (exit
+# code, stderr, lines), then timed; its RSS comes from /usr/bin/time (D16: reported only).
+check dense --flat -e "$dense" -g '*.csv' -- "$dir"
 export SFOR_BENCH_PATTERN="$dense"
-median dense 'rg --color never -e "$SFOR_BENCH_PATTERN" -g "*.csv" -- "$SFOR_BENCH_DIR"' \
+median dense '"$SFOR_RG_PATH" --color never -e "$SFOR_BENCH_PATTERN" -g "*.csv" -- "$SFOR_BENCH_DIR"' \
   '"$SFOR_BIN_PATH" --color never --flat -e "$SFOR_BENCH_PATTERN" -g "*.csv" -- "$SFOR_BENCH_DIR"'
+for prog in "$rg" "$sfor"; do
+  flag=(); [ "$prog" = "$sfor" ] && flag=(--flat)
+  rc=0
+  /usr/bin/time -f '%M' -o "$iso/rss" "$prog" --color never "${flag[@]}" -e "$dense" -g '*.csv' -- "$dir" >/dev/null 2>"$iso/dense.err" || rc=$?
+  [ "$rc" = 0 ] || { echo "  FAIL dense: $prog exited $rc"; fail=1; }
+  printf '  dense RSS %s: %s MiB\n' "$(basename "$prog")" "$(( $(tail -1 "$iso/rss") / 1024 ))"
+done
 exit "$fail"
 ```
 
 - [ ] **Step 2:** `chmod +x scripts/bench-m3.sh`; `scripts/bench-m3.sh` exits 0, twice in a row
-  (probe: none 1.00–1.07, no-trail 1.01–1.04, sparse extra 0.11 s against 0.53 s).
-  `SFOR_BIN=scripts/fake-sfor-exit-2.sh scripts/bench-m3.sh` exits 1.
+  (probe after review r1: none 1.04, no-trail 1.02, sparse extra 0.14 s against 0.58 s, dense 14.4 × and 660 MiB reported). It refuses a reference that is not 14.1.1:
+  `SFOR_RG=/nonexistent scripts/bench-m3.sh` exits 1, as does
+  `SFOR_BIN=scripts/fake-sfor-exit-2.sh scripts/bench-m3.sh`. A timed run that exits with 2 or
+  a signal fails it (Codex #11).
 
-- [ ] **Step 3:** M1's `scripts/bench.sh` and M2's `scripts/bench-code.sh` exit 0 — to verify in
-  this chunk; M3 only adds work to files of the new Formats and a `Cow` check per printed name,
+- [ ] **Step 3:** M1's `scripts/bench.sh` and M2's `scripts/bench-code.sh` call `rg` from `PATH`;
+  run them as `PATH=/usr/bin:$PATH scripts/bench.sh` and `PATH=/usr/bin:$PATH
+  scripts/bench-code.sh` after checking that `PATH=/usr/bin:$PATH rg --version` prints
+  `ripgrep 14.1.1`. Both exit 0 — to verify in this chunk; M3 only adds work to files of the new Formats and a `Cow` check per printed name,
   so neither should move. Report their ratios and the size of `target/release/sfor` (criterion
   12).
 
