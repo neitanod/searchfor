@@ -10,18 +10,15 @@ fn width(s: &str) -> usize {
 
 /// The Trail as shown, fitted in `room` characters (spec §5.1): whole when it fits; else with
 /// each run of `item` Segments as `…`; else first › … › last; else cut with `…` at the end.
+/// Names print with their control characters escaped (M3 plan, D14): the widths count the
+/// escapes, and the cut keeps or drops each escape whole (M3 code review r1, Fable #5).
 fn fit_trail(trail: &[Segment], room: usize) -> String {
-    let fits = |s: &str| width(s) <= room;
-    // Names print with their control characters escaped (M3 plan, D14).
-    let names: Vec<std::borrow::Cow<'_, str>> =
-        trail.iter().map(|s| text::visible(&s.name)).collect();
-    let full = names
-        .iter()
-        .map(|n| n.as_ref())
-        .collect::<Vec<_>>()
-        .join(" › ");
+    let shown = |s: &str| width(&text::visible(s));
+    let fits = |s: &str| shown(s) <= room;
+    let names: Vec<&str> = trail.iter().map(|s| s.name.as_str()).collect();
+    let full = names.join(" › ");
     if fits(&full) {
-        return full;
+        return text::visible(&full).into_owned();
     }
     let mut parts: Vec<&str> = Vec::new();
     for (s, n) in trail.iter().zip(&names) {
@@ -33,18 +30,29 @@ fn fit_trail(trail: &[Segment], room: usize) -> String {
     }
     let mut shortest = parts.join(" › ");
     if fits(&shortest) {
-        return shortest;
+        return text::visible(&shortest).into_owned();
     }
     if trail.len() > 2 {
         let ends = format!("{} › … › {}", names[0], names[names.len() - 1]);
-        if width(&ends) < width(&shortest) {
+        if shown(&ends) < shown(&shortest) {
             shortest = ends;
         }
     }
     if fits(&shortest) {
-        return shortest;
+        return text::visible(&shortest).into_owned();
     }
-    let mut cut: String = shortest.chars().take(room.saturating_sub(1)).collect();
+    let mut cut = String::new();
+    let mut used = 0;
+    let mut buf = [0u8; 4];
+    for c in shortest.chars() {
+        let v = text::visible(c.encode_utf8(&mut buf));
+        let w = width(&v);
+        if used + w > room.saturating_sub(1) {
+            break;
+        }
+        used += w;
+        cut.push_str(&v);
+    }
     cut.truncate(cut.trim_end().len());
     cut.push('…');
     cut
@@ -296,6 +304,8 @@ mod tests {
         // The width counts the escapes: 4 + 3 + 10 characters.
         assert_eq!(fit_trail(&t, 17), "a\\nb › \\u{1b}[31m");
         assert_eq!(fit_trail(&t, 16), "a\\nb › \\u{1b}[3…");
+        // The cut never splits an escape (M3 code review r1, Fable #5).
+        assert_eq!(fit_trail(&t, 10), "a\\nb ›…");
     }
 
     fn plain(d: &Described, src: &[u8], o: &RenderOptions) -> String {
