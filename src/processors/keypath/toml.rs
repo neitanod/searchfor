@@ -402,10 +402,8 @@ impl Build<'_> {
                     Step::Index(_) => None,
                 };
                 let own = p == h.path.len();
-                if !own {
-                    if covers(&h.path[..p], h.span.start) {
-                        continue;
-                    }
+                if !own && covers(&h.path[..p], h.span.start) {
+                    continue;
                 }
                 let seg = match &h.path[p - 1] {
                     Step::Key(k) => {

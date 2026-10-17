@@ -428,9 +428,20 @@ struct Target {
     params: toml::Table,
 }
 
+/// (format, extension, treesitter, shape, token pool, fixture directory, fixture extensions).
+type Row = (
+    &'static str,
+    &'static str,
+    bool,
+    Shape,
+    &'static [&'static str],
+    &'static str,
+    &'static [&'static str],
+);
+
 fn targets() -> Vec<Target> {
     #[rustfmt::skip]
-    let list: [(&str, &str, bool, Shape, &[&str], &str, &[&str]); 11] = [
+    let list: [Row; 11] = [
         ("yaml", "yaml", false, Shape::Yaml, YAML, "data", &["yaml"]),
         ("json", "json", false, Shape::Json, JSON, "data", &["json", "jsonl"]),
         ("toml", "toml", false, Shape::Toml, TOML, "data", &["toml"]),
