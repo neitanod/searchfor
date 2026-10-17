@@ -1,8 +1,27 @@
-//! The tree-sitter Grammars compiled into sfor (spec §7, ADR 0005). C6 fills it.
+//! The Grammars compiled into sfor (spec §7, ADR 0005).
+use tree_sitter::Language;
 
-/// The Grammars compiled into sfor (spec §7).
-pub const COMPILED_IN: &[&str] = &[];
+pub const COMPILED_IN: &[&str] = &[
+    "php",
+    "javascript",
+    "typescript",
+    "tsx",
+    "bash",
+    "go",
+    "rust",
+    "python",
+];
 
-pub fn language(_name: &str) -> Option<tree_sitter::Language> {
-    None
+pub fn language(name: &str) -> Option<Language> {
+    Some(match name {
+        "php" => tree_sitter_php::LANGUAGE_PHP.into(),
+        "javascript" => tree_sitter_javascript::LANGUAGE.into(),
+        "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        "bash" => tree_sitter_bash::LANGUAGE.into(),
+        "go" => tree_sitter_go::LANGUAGE.into(),
+        "rust" => tree_sitter_rust::LANGUAGE.into(),
+        "python" => tree_sitter_python::LANGUAGE.into(),
+        _ => return None,
+    })
 }
