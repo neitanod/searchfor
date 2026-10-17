@@ -912,3 +912,48 @@ fn json_quiet_equals_ripgrep() {
     }
     r.assert_empty();
 }
+
+/// Code review r3, Codex #1: with a filter, `-c` and `--count-matches` stop at `-m` as rg
+/// 14.1.1's summary printer does, without the Matches of the after context that the printing
+/// modes keep. With `--within` the filter keeps every Match; with `--in-headings` every line
+/// is a heading, so the Matches are rg's.
+#[test]
+fn filtered_counts_stop_at_max_count() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("cnt")).unwrap();
+    std::fs::write(fx.file("cnt/w.md"), "# H\nneedle needle\nneedle needle\n").unwrap();
+    std::fs::write(fx.file("cnt/h.md"), "# Hello\n# Hello Hello\n# Hello\n").unwrap();
+    let mut r = Report(Vec::new());
+    let filters: [(&[&str], &str, &str); 3] = [
+        (&["--within", ""], "needle", "cnt/w.md"),
+        (&["--within", "H"], "needle", "cnt/w.md"),
+        (&["--in-headings"], "Hello", "cnt/h.md"),
+    ];
+    for (filter, pattern, path) in filters {
+        for count in ["-c", "--count-matches"] {
+            for limit in [
+                &["-m1", "-A1"][..],
+                &["-m1", "-C2"],
+                &["-m2", "-A1"],
+                &["-m1"],
+            ] {
+                let mut a = vec![count];
+                a.extend_from_slice(limit);
+                a.extend([pattern, path]);
+                let want = rg(&fx, &a, In::Null);
+                let mut s = filter.to_vec();
+                s.extend_from_slice(&a);
+                let got = sfor(&fx, &s, In::Null);
+                r.check(
+                    format!("{s:?}"),
+                    (code(&want), stdout(&want)),
+                    (code(&got), stdout(&got)),
+                );
+            }
+        }
+    }
+    r.assert_empty();
+}

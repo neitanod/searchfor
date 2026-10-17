@@ -720,6 +720,17 @@ impl Ctx<'_> {
         self.print(buf);
     }
 
+    /// The after context `-m` lets run after the last Match allowed: none for -c and
+    /// --count-matches, which stop at the limit as grep-printer 0.2.2's summary printer
+    /// (`MaxCount::summary`; code review r3, Codex #1).
+    fn max_count_after(&self) -> usize {
+        if self.summary.is_some() {
+            0
+        } else {
+            self.args.after()
+        }
+    }
+
     fn json_options(&self, ro: &RenderOptions) -> JsonOptions {
         JsonOptions {
             line_numbers: ro.line_numbers,
@@ -1072,7 +1083,7 @@ impl Ctx<'_> {
             filter::retain(&mut d, &keep, self.args.before(), self.args.after());
             // -m counts the lines the filter kept (code review r1, Fable #3).
             if let Some(m) = self.args.max_count {
-                filter::limit(&mut d, m, self.args.before(), self.args.after());
+                filter::limit(&mut d, m, self.args.before(), self.max_count_after());
             }
         }
         if self.args.expand && !self.args.in_headings {
@@ -1218,7 +1229,7 @@ impl Ctx<'_> {
         // -m as ripgrep 14.1.1 counts it (`search::MaxCount`): the first `m` lines, then the
         // Matches in the after context of the last, which ends there. With --within, -m
         // applies after the filter (`describe`).
-        let (before, after) = (self.args.before() as u64, self.args.after() as u64);
+        let (before, after) = (self.args.before() as u64, self.max_count_after() as u64);
         let mut window_end = u64::MAX;
         if let Some(m) = search::max_count(self.args) {
             let m = usize::try_from(m).unwrap_or(usize::MAX);
