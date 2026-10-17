@@ -176,10 +176,11 @@ and a lock file can pass that size; tree-sitter's TOML tree does not model TOML 
 (M3 plan, measured on this machine on 2026-10-17): tree-sitter-html 0.23.2 parsed a generated
 20 MB HTML file at 5.0 MB/s and its query took 1.5 s more, and tree-sitter-xml 0.7.0 parsed a
 20 MB XML file at 3.9 MB/s, while ripgrep searches either in 13 ms; the `markup` scanner walks
-them, Trails included, in about 0.11 s and 0.10 s. A Grammar would make one HTML file with a Match
+them, Trails included, in about 0.15 s and 0.11 s. A Grammar would make one HTML file with a Match
 cost seconds, against 8385. The three keep in memory only what the Matches need, as `keypath`
 does, and read a file no further than its last Match where the Format allows it (CSV, subtitles).
-They have no `max_bytes`: each walks a file once, at 80 MB/s or more on this machine (§11 #13).
+They have no `max_bytes`: each walks a file once, at 60 MB/s or more on this machine (66 MB/s on
+a tag-dense 50 MB HTML file, the slowest case measured; §11 #13).
 
 The generic `treesitter` Processor is what makes most new languages a TOML change: a query in a
 Format Definition, over a Grammar that is compiled in or installed as a Grammar Helper.
@@ -470,8 +471,10 @@ The `markup` Processor reads both; the Definition's `syntax` (`html` or `xml`) c
 - **XML.** The first construct that is not well formed — an end tag that does not close the
   current element, a `<` that starts no tag, comment, CDATA section, processing instruction or
   doctype, a tag whose name or attributes do not follow XML's syntax (`<a=b>`, an unquoted value
-  `<a x=bare>`, a `<` inside a value, attributes without a space between them, `</a junk>`), or
-  one of those the file ends inside — ends the structure there. Matches before it
+  `<a x=bare>`, a `<` inside a value, attributes without a space between them, `</a junk>`, a
+  name with a character XML names do not allow, such as `<©>`, a form feed where XML wants white
+  space, an attribute given twice), or one of those the file ends inside — ends the structure
+  there. Matches before it
   keep their Trails and the Matches from it on print with an empty Trail, without a warning, as
   YAML and JSON (§5.2). Elements still open when the file ends end there. A doctype ends at the
   first `>` outside its quoted literals and, in its internal subset, outside comments and
@@ -483,7 +486,8 @@ The `markup` Processor reads both; the Definition's `syntax` (`html` or `xml`) c
 - `--in-headings` searches element names. The tag, the `id` and each class word come from the
   file; `#`, `.`, a cut's `…` and an index `[n]` are text of the name only, so a pattern that
   matches only them finds nothing. A cut name stays searchable up to its cut: an `id` of 50
-  letters shows its first ones, and `--in-headings` finds them there (M3 plan, D31).
+  letters shows its first ones, and `--in-headings` finds them there, also when a byte that is
+  not UTF-8 (a Latin-1 `é`) precedes them (M3 plan, D31).
 - **Encodings.** The bytes are the ones ripgrep searches: a UTF-8 BOM removed, UTF-16 transcoded
   (§4.4, Paths). A `<meta charset>` or an `encoding=` declaration is not read: a name whose bytes
   are not UTF-8 shows each invalid sequence as U+FFFD. CRLF line ends need nothing.
@@ -574,8 +578,12 @@ no parameters (M3 plan).
 - **WebVTT blocks.** In a file that starts with `WEBVTT`, its header block and every block whose
   first line is `NOTE`, `STYLE` or `REGION` (alone or followed by white space) run to the next
   blank line and hold no cue, even when a line in them looks like a timing line; they are not
-  counted among the cues either. A file without the `WEBVTT` header follows SubRip's rules, where
-  a line `NOTE` is an identifier like any other.
+  counted among the cues either. Here sfor departs on purpose from WebVTT's parsing algorithm,
+  where a line with `-->` ends the open block and starts a cue (named `NOTE` when the block had
+  one line): such a file is malformed either way, and a timing line inside a `NOTE` or `STYLE`
+  block is almost always a comment about that time or a quoted example, not a cue someone wants
+  to find by its number (M3 plan, D29). A file without the `WEBVTT` header follows SubRip's
+  rules, where a line `NOTE` is an identifier like any other.
 - A Match outside every cue — the `WEBVTT` header, a `NOTE`, `STYLE` or `REGION` block, text
   under no timing line — has an empty Trail. A timing line that does not parse starts no cue.
   Nothing in a subtitle file causes a warning.

@@ -99,7 +99,7 @@ ones it describes marked «M3 plan».
 
 | Id | Decision | Reason |
 |---|---|---|
-| D1 | HTML and XML use a tag scanner of our own (`markup`), CSV and TSV `csv-core`, subtitles a line scanner; no tree-sitter Grammar | Measured on 20 MB generated files: tree-sitter-html 0.23.2 parses at 5.0 MB/s plus 1.5 s of query, tree-sitter-xml 0.7.0 at 3.9 MB/s plus 2.6 s; the M3 scanner walks the same files with Trails in 0.11 s and 0.10 s, ripgrep searches them in 13 ms. Both Grammars are ABI 14 and resolve with the pins, so the choice is speed (8385), not compatibility. quick-xml 0.42.0 scanned XML at 192 MB/s, but HTML needs our own tokenizer anyway (void elements, raw text, unquoted attributes), and one scanner serves both |
+| D1 | HTML and XML use a tag scanner of our own (`markup`), CSV and TSV `csv-core`, subtitles a line scanner; no tree-sitter Grammar | Measured on 20 MB generated files: tree-sitter-html 0.23.2 parses at 5.0 MB/s plus 1.5 s of query, tree-sitter-xml 0.7.0 at 3.9 MB/s plus 2.6 s; the M3 scanner walks the same files with Trails in about 0.15 s and 0.11 s, ripgrep searches them in 13 ms. Both Grammars are ABI 14 and resolve with the pins, so the choice is speed (8385), not compatibility. quick-xml 0.42.0 scanned XML at 192 MB/s, but HTML needs our own tokenizer anyway (void elements, raw text, unquoted attributes), and one scanner serves both |
 | D2 | One `markup` Processor for HTML and XML, chosen by `syntax` in `[params]`, as `keypath` | The tokenizer, the walk and the naming are shared; the syntaxes differ in a few rules |
 | D3 | `csv-core` 0.1, not the `csv` crate and not a scanner of our own | `read_field` reports how many input bytes each call consumed, so every field's byte range in the Source is known; the `csv` crate's records give positions in its decoded buffer only. csv-core is BurntSushi's, has no dependencies besides memchr, and read 140–160 MB/s in the probe |
 | D4 | CSV `delimiter = "auto"`: the most frequent of `,` `;` tab `|` in the first line outside quotes, `,` on a tie; TSV `delimiter = "\t"`, `quote = ""` | Spreadsheets in many locales (es-AR among them) export `;`; IANA's TSV has no quoting, and a stray `"` in a TSV must not swallow the rest of the file |
@@ -113,9 +113,9 @@ ones it describes marked «M3 plan».
 | D12 | XML: the first construct that is not well formed ends the structure, silently; elements open at the end of the file end there | YAML's and JSON's rule (M2 plan, D3): a warning per broken file would bury the output |
 | D13 | Void and empty elements are not Segments | They hold nothing but their tag, which is their label (D9), so they could never be in a Trail |
 | D14 | Tree and one-line output print the control characters of names and signatures as escapes (`\n`, `\u{1b}`); `--json`, `--within` and `--in-headings` keep the decoded name. The fix is in the printers (`text::visible`), not in `Name::text` | M2's leftover: `"a\nb"` broke the row in JSON, TOML, YAML and JavaScript. `Name::text` feeds the `--in-headings` search, which must see the decoded name; only the terminal rendering needs one line, and escaping also stops a key from writing escape sequences to the terminal |
-| D15 | Benchmark criterion (`scripts/bench-m3.sh`): no-match and `--no-trail` ≤ 1.1 × rg; sparse extra time ≤ largest matching file ÷ 50 MB/s + matching bytes ÷ (50 MB/s × threads) + 0.05 s | One file is walked by one thread, so the largest file bounds the wall time; 50 MB/s is under half the slowest measured walk (HTML, 87 MB/s on a tag-dense 50 MB file); 0.05 s covers process start and Detector work on 200 small files |
+| D15 | Benchmark criterion (`scripts/bench-m3.sh`): no-match and `--no-trail` ≤ 1.1 × rg; sparse extra time ≤ largest matching file ÷ 50 MB/s + matching bytes ÷ (50 MB/s × threads) + 0.05 s | One file is walked by one thread, so the largest file bounds the wall time; 50 MB/s is below the slowest measured walk (a tag-dense 50 MB HTML file, 66 MB/s under a load average of 5); 0.05 s covers process start and Detector work on 200 small files |
 | D16 | Dense Matches (every row matching) are reported by the benchmark, not bounded | The cost is the pipeline's, in every Format (see «What M3 leaves out») |
-| D17 | No `max_bytes` for `markup`, `csv` and `subtitles` | They walk a file once at 80 MB/s or more and keep memory proportional to depth × Matches; `treesitter`'s limit exists because it parses at 3 MB/s |
+| D17 | No `max_bytes` for `markup`, `csv` and `subtitles` | They walk a file once at 60 MB/s or more and keep memory proportional to depth × Matches; `treesitter`'s limit exists because it parses at 3 MB/s |
 | D18 | A Match in the CSV header row has an empty Trail; `--in-headings` searches header cells; a cell that csv-core read leniently (stray quotes) names its column but is not searched | The header is the columns' names (spec §5.2's rule for keys); the pieces of a lenient reading cannot be mapped to the Source exactly, and the fuzz found such cells |
 | D19 | When a CSV file ends inside a quoted field, the structure ends at that record | Otherwise every Match after an unclosed quote would claim to be in one giant field of that record |
 | D20 | Extensions: html `html`, `htm`, `xhtml`; xml `xml`, `xsd`, `xsl`, `xslt`, `svg`, `rss`, `atom`, `plist`, `wsdl`, `xlf`, `xliff`, `kml`, `gpx`, `csproj`, `vbproj`, `fsproj`, `nuspec`, `resx`, `xaml`, and the magic `<?xml`; csv `csv`; tsv `tsv`; srt `srt`; vtt `vtt` | `.xhtml` is read by the tolerant HTML rules, which give the same Trails on well-formed files and lose nothing at a syntax error; the XML list is the common XML-syntax files; `.tab` is left out because MapInfo uses it for another format |
@@ -125,19 +125,23 @@ ones it describes marked «M3 plan».
 | D24 | Attribute values are used verbatim in names (no entity decoding) | Entities in `id` and `class` are rare, and verbatim pieces map to the Source byte for byte |
 | D25 | Past 256 open elements no more Segments open | JSON's limit (M2 plan, D34); the walk is iterative, so any depth is safe |
 | D26 | `tests/fixtures/table/` and `tests/fixtures/subs/` carry a `.gitattributes` with `* -text` | Their fixtures hold CRLF line ends on purpose; `core.autocrlf=input` would rewrite them on commit (as M1's `misc/`) |
-| D27 | `Outline::build` computes the lines of its Segments by counting line breaks up to the bytes asked for (`trail::fill_lines`), instead of a `LineIndex` of the whole file | A `LineIndex` holds one `usize` per line: one Match in 50 MB of line breaks took 467 MiB (review r1, Codex #2); every Processor that builds an Outline gets the same lines with memory proportional to its Segments |
+| D27 | `Outline::build` computes the lines of its Segments by counting line breaks up to the bytes asked for (`trail::fill_lines`), instead of a `LineIndex` of the whole file | A `LineIndex` holds one `usize` per line: one Match in 50 MB of line breaks took 467 MiB (review r1, Codex #2). Every Processor that builds an Outline gets the same lines; markup, keypath and treesitter stop paying a line index, while Markdown and the Helper Processors keep their own (M1, M2; review r2, Fable #4) |
 | D28 | Each open element counts its children's tags in a `Vec`, and past 8 distinct tags also in a `HashMap` from the tag (lowercased in HTML) to its slot | A linear search per child was quadratic: 200 000 distinct sibling tags took 82 s (review r1, Codex #1, Fable #1). Memory: one entry per distinct child tag of each open element |
 | D29 | WebVTT blocks: in a file that starts with `WEBVTT`, the header and the `NOTE`, `STYLE` and `REGION` blocks run to their blank line and hold no cue; a timing line is never an identifier | A `NOTE` line before a timing line became `cue NOTE …` and shifted the ordinals; two timing lines in a row made one cue named by the first (review r1, Codex #3, Fable #4). The `WEBVTT` header decides, so the two Definitions keep no parameters |
-| D30 | XML tags are checked against XML's syntax (names, `S attr S? = S? "value"`, no `<` in values, `</name S?>`), and a doctype ends at its first `>` outside literals, comments and processing instructions | `<a=b>` and `<a x=bare>` were taken as elements, and `<!ENTITY e "]> <fake>">` invented a `fake` (review r1, Codex #4, #5); spec §5.4 ends the structure at the first construct that is not well formed |
-| D31 | `text::cut_name`, written in C1 and used by C2–C4: a cut keeps the pieces of the visible prefix; only `…` maps to nothing | Each Processor dropped the piece that crossed the cut, so a 50-letter header, `id` or cue identifier was not found by `--in-headings` (review r1, Codex #6); one function, because three chunks of one tanda need it |
+| D30 | XML tags are checked against XML's syntax: Names with XML 1.0's NameStartChar and NameChar over Unicode, XML's white space (no form feed), `S attr S? = S? "value"`, no `<` in values, no attribute twice, `</name S?>`; a doctype ends at its first `>` outside literals, comments and processing instructions | `<a=b>` and `<a x=bare>` were taken as elements, `<!ENTITY e "]> <fake>">` invented a `fake` (review r1, Codex #4, #5), and `<©>`, `<a\fb='x'>` and `<a x='1' x='2'>` still were (review r2, Codex #3); spec §5.4 ends the structure at the first construct that is not well formed. Duplicates are compared one by one up to 16 attributes and in a set past them |
+| D31 | `text::push_lossy` and `text::cut_name`, written in C1 and used by C2–C4: a name's text is built with one piece per valid UTF-8 run and one per replaced sequence, and a cut keeps the pieces of the visible prefix; only `…` maps to nothing | Each Processor dropped the piece that crossed the cut, so a 50-letter header, `id` or cue identifier was not found by `--in-headings` (review r1, Codex #6), and a Latin-1 `é` before the letters made the whole run one decoded piece, dropped the same way (review r2, Codex #2); one module, because three chunks of one tanda need it |
 | D32 | The end of a CSV file is inside a quote only when csv-core's states say so: quoted from the first byte, `""` stays quoted, a closing quote followed by anything else turns the rest into text | Counting quotes lost `1,"needle"junk"` at the end of a file, which csv-core reads closed (review r1, Codex #7, Fable #2) |
+| D34 | The markup walk never searches the open elements per element: each open element keeps its `html::Reach` (where each implied-end rule would stop, computed from its parent's when it opens), HTML tags get an id with a count of open elements per id, and `close_implied` trims the white space before a byte once | 40 000 nested `div`s took 4.8 s (each start tag searched the stack for a `p`), 20 000 end tags with nothing open 2.9 s, and 20 000 elements ended after 200 000 spaces 5.7 s (review r2, Codex #1). An end tag's search now only covers the elements it closes, and the limit of 256 Segments (D25) stays |
 | D33 | The reference is `SFOR_RG`, else `/usr/bin/rg`; it must be ripgrep 14.1.1. Under `SFOR_REQUIRE_REFERENCE=1` a comparison that cannot run (no rg 14.1.1, no `/usr/bin/time`) fails instead of skipping; acceptance runs set it, and `scripts/bench-m3.sh` always refuses another rg | The `rg` on `PATH` was 15.2.0 in a review session, and a skipped comparison passed the test (review r1, Codex #8) |
 
 ## Verified for this plan (2026-10-17)
 
 Outputs in `/tmp/subtask/m3-plan/outputs/`; probes in `/tmp/subtask/m3-plan/realtree` (the
-repository at `f7cccfe` plus the candidate dependencies) and `/tmp/subtask/m3-plan/m3tree` (the
-repository at `f7cccfe` plus this plan's code).
+repository at `f7cccfe` plus the candidate dependencies) and, for this plan's code, the frozen
+copy `/tmp/subtask/m3-plan/m3tree-<commit>`: the repository at `f7cccfe` plus the code of this
+version of the plan, named after the commit that wrote that code into the plan. The working copy
+`/tmp/subtask/m3-plan/m3tree` keeps changing with the reviews; the frozen one does not (review
+r2, Fable #2).
 
 - `rustc 1.90.0`, `cargo 1.90.0`, `rg 14.1.1`, 20 cores.
 - `realtree`: adding `tree-sitter-html =0.23.2`, `tree-sitter-xml =0.7.0`, `quick-xml 0.42` and
@@ -157,9 +161,9 @@ repository at `f7cccfe` plus this plan's code).
   and leaves the `\n` to the next read; a quote inside an unquoted field is text; an unclosed
   quote runs to the end of the file; a last field without a line break comes from the call with
   empty input.
-- `m3tree` (this plan's code, after review r1): `cargo build --workspace`, `cargo clippy
-  --workspace --all-targets -- -D warnings` (no findings) and `cargo test --workspace` pass
-  entirely: 393 unit tests passed and 2 ignored, `cli` 41, `cli_m2` 16 (with the one known
+- The frozen copy (this plan's code, after review r2): `cargo build --workspace`, `cargo clippy
+  --workspace --all-targets -- -D warnings` (no findings) and `SFOR_REQUIRE_REFERENCE=1 cargo
+  test --workspace` pass entirely: 393 unit tests passed and 2 ignored, `cli` 41, `cli_m2` 16 (with the one known
   change, `m2_07`, Task 1.3), `cli_m3` 14, `fuzz` 2, `helpers` 22, `rg_compat` 37, and the
   helpers' own. The fuzz passes with 17 000 inputs (default) and 340 000 (`SFOR_FUZZ_N=20000 SFOR_FUZZ_SEED=42`); before review r1
   it found two mapping bugs in header and cue names, fixed in the code below. `Cargo.lock`
@@ -171,10 +175,17 @@ repository at `f7cccfe` plus this plan's code).
   `--in-headings AAAA` over a 50-letter header, `id` and cue identifier, and `ññññ` over a
   multi-byte header, exit 1 → 0 (Codex #6). The unit tests of Codex #3, #4, #5, #7, #9 and Fable
   #2, #4, #5 FAILED against the first version of their file and PASS now.
-- The perf ceilings of Task 7.1 in release, with `SFOR_REQUIRE_REFERENCE=1` and `/usr/bin/rg`
-  14.1.1: 50 MB HTML 0.50 s (rg 0.021 s), XML 0.27 s, CSV 0.26 s, TSV 0.25 s, SRT 0.14 s, VTT
-  0.13 s, RSS 57 MiB against rg's 56; 200 000 distinct siblings and 50 MB of line breaks pass
-  too.
+- Review r2 regressions, RED with the release binary of review r1 and GREEN now: 40 000 nested
+  `div`s 3.96 s → 0.03 s, 20 000 end tags with nothing open 2.88 s → 0.02 s, 20 000 elements
+  ended after 200 000 spaces 5.65 s → 0.02 s (rg about 0.009 s; Codex #1); `--in-headings AAAA`
+  over a header, `id` and cue identifier with a Latin-1 `é` before the letters, exit 1 → 0
+  (Codex #2); the XML cases of Codex #3 in the unit tests. The RSS guard of `fill_lines`, run
+  with the walk of this plan and the `Outline::build` of `f7cccfe`, FAILS on its RSS assertion
+  (457 MiB against rg's 56 + 32) and PASSES with `fill_lines` (Codex #4). The walk's bookkeeping
+  costs time on tag-dense HTML: the generated 20 MB HTML takes 0.15 s against 0.12 s for the
+  review-r1 walk, measured side by side under a load average of 5.
+- The perf ceilings of Task 7.1 and the guards of Task 2.5 in release, with
+  `SFOR_REQUIRE_REFERENCE=1` and `/usr/bin/rg` 14.1.1: 50 MB HTML 0.76 s (rg 0.022 s), XML 0.37 s, CSV 0.30 s, TSV 0.30 s, SRT 0.16 s, VTT 0.14 s, RSS 57 MiB against rg's 56; 40 000 nested `div`s 0.03 s, 20 000 end tags with nothing open 0.02 s, 20 000 implied ends after 200 000 spaces 0.02 s (rg 0.008 s); 200 000 distinct siblings and 50 MB of line breaks pass. The HTML ceiling keeps 0.26 s of margin under that load; `scripts/bench-m3.sh` (24 006 files) gave none 1.02 × rg, `--no-trail` 1.01 ×, sparse extra 0.21 s against 0.58 s, dense 14.5 × and 660 MiB.
 - `scripts/bench-m3.sh` on its generated corpus (24 006 files, 246 of them matching the sparse pattern): none 1.04 × rg, `--no-trail` 1.02 ×, sparse extra 0.14 s against a budget of 0.58 s, dense 14.4 × rg with 660 MiB of RSS against rg's 61 (reported only); `SFOR_RG=/nonexistent` and `SFOR_BIN=scripts/fake-sfor-exit-2.sh` make it exit 1.
   A 5 004-file corpus once gave 1.10 × for «none» before review r1: the process start of sfor
   (5.8 ms against rg's 4.5 ms) weighs too much on a 22 ms run, hence the larger corpus.
@@ -211,11 +222,12 @@ M3 is done when all of these hold; each names the test or script that measures i
    `/usr/bin/rg` is 14.1.1 and refuses any other), and `PATH=/usr/bin:$PATH scripts/bench.sh`
    and `PATH=/usr/bin:$PATH scripts/bench-code.sh` still exit 0 after `PATH=/usr/bin:$PATH rg
    --version` printed `ripgrep 14.1.1` (C7).
-8. The eight M3 tests of Task 7.1 pass in release with the reference required:
+8. The eleven M3 tests of Tasks 2.5 and 7.1 pass in release with the reference required:
    `SFOR_REQUIRE_REFERENCE=1 cargo test --release --test perf -- --ignored` — 50 MB of each of
-   the six M3 Formats with three Matches within rg's time + 1 s and rg's RSS + 32 MiB, 200 000
-   distinct sibling tags within rg's time + 1 s, and one Match in 50 MB of line breaks within
-   rg's RSS + 32 MiB. A run without `SFOR_REQUIRE_REFERENCE=1`, or one that printed
+   the six M3 Formats with three Matches within rg's time + 1 s and rg's RSS + 32 MiB; 200 000
+   distinct sibling tags, 40 000 nested `div`s, 20 000 end tags with nothing open and 20 000
+   elements ended after 200 000 spaces, each within rg's time + 1 s; and one Match in 50 MB of
+   line breaks within rg's RSS + 32 MiB. A run without `SFOR_REQUIRE_REFERENCE=1`, or one that printed
    `skipping:`, does not count.
 9. The fuzz of Task 6.2 passes with its default 1 000 inputs per Format (17 Formats) and with
    `SFOR_FUZZ_N=20000` once before the merge.
@@ -238,7 +250,8 @@ M3 is done when all of these hold; each names the test or script that measures i
 3. **markup** (C2). `scan.rs` finds tags with `memchr` and skips comments, CDATA, processing
    instructions and doctypes; `html.rs` classifies a tag name once (`html::info`) and decides which
    open elements a start tag ends; `mod.rs` walks the tags with a stack of `Frame`s (each counts
-   its children's tags, with a map past 8 distinct ones, D28) and hands
+   its children's tags, with a map past 8 distinct ones, D28, and keeps its `Reach` and tag id,
+   D34) and hands
    keypath's `Collector` (`crate::processors::keypath::collect`, unchanged) only the elements that
    hold an anchor, built when they close (D22). A child without an id waits in its parent's
    `pending` list until the parent closes, when the sibling counts are final and `[n]` can be
@@ -285,7 +298,7 @@ tests/fixtures/table/                        plans.csv, semi.csv, people.tsv, .g
 tests/fixtures/subs/                         movie.srt, talk.vtt, .gitattributes (C4)
 tests/cli_m3.rs, tests/snapshots/cli_m3__*   end-to-end tests of the new Formats (C6)
 tests/fuzz.rs                                the M3 targets (C6)
-tests/perf.rs                                the M3 ceilings (C7)
+tests/perf.rs                                the markup guards (C2), the M3 ceilings (C7)
 scripts/bench-m3.sh                          the M3 benchmark (C7)
 README.md, README.es.md, skills/searchfor/SKILL.md, docs/json-schema.json, the spec   (C8)
 ```
@@ -295,17 +308,18 @@ README.md, README.es.md, skills/searchfor/SKILL.md, docs/json-schema.json, the s
 | Chunk | Content | Depends on | Files and folders (exclusive within its tanda) | Tanda |
 |---|---|---|---|---|
 | C1 | csv-core, the six Definitions, stubs of the three Processors, `by_name`, `m2_07`, `text::cut_name`, the reference rg of the tests | — | `Cargo.toml`, `Cargo.lock`, `formats/{html,xml,csv,tsv,srt,vtt}.toml`, `src/formats/builtin.rs`, `src/formats/mod.rs` (tests), `src/processors/mod.rs`, stubs `src/processors/markup/{mod,scan,html}.rs`, `src/processors/{csv,subtitles}.rs`, `src/text.rs` (`cut_name`), `tests/cli_m2.rs`, `tests/common/mod.rs`, `tests/rg_compat.rs`, `tests/perf.rs` (three hunks) | 1 |
-| C2 | markup: scanner, HTML rules, walk; Outline lines without a line index | C1 | `src/processors/markup/**`, `src/trail.rs`, `tests/fixtures/markup/**` | 2 |
+| C2 | markup: scanner, HTML rules, walk; Outline lines without a line index; the walk's perf guards | C1 | `src/processors/markup/**`, `src/trail.rs`, `tests/fixtures/markup/**`, `tests/perf.rs` (the markup guards) | 2 |
 | C3 | csv | C1 | `src/processors/csv.rs`, `tests/fixtures/table/**` | 2 |
 | C4 | subtitles | C1 | `src/processors/subtitles.rs`, `tests/fixtures/subs/**` | 2 |
 | C5 | Escaped names in the printers, tree labels of the new kinds | C1 | `src/text.rs` (`visible`), `src/output/flat.rs`, `src/output/tree.rs` | 2 |
 | C6 | End-to-end tests and snapshots; fuzz targets | C2–C5 | `tests/cli_m3.rs`, `tests/snapshots/cli_m3__*.snap`, `tests/fuzz.rs` | 3 |
-| C7 | Perf ceilings, benchmark; M1's and M2's benchmarks rerun | C2–C5 | `tests/perf.rs`, `scripts/bench-m3.sh` | 3 |
+| C7 | Perf ceilings of the six Formats, benchmark; M1's and M2's benchmarks rerun | C2–C5 | `tests/perf.rs` (the Format ceilings), `scripts/bench-m3.sh` | 3 |
 | C8 | README, README.es, skill, JSON schema, spec reconciliation | C2–C5 | `README.md`, `README.es.md`, `skills/searchfor/SKILL.md`, `docs/json-schema.json`, `docs/specs/2026-10-16-searchfor-design.md` | 3 |
 
 Eight chunks in three tandas, as before review r1; C1 grew two tasks (1.4, 1.5) and C2 one
-(2.3b), and no file is shared within a tanda: C1 and C5 both edit `src/text.rs`, and C1 and C7
-`tests/perf.rs`, in different tandas. C1 writes every `mod` line, the dependency, the
+(2.5), and no file is shared within a tanda: C1 and C5 both edit `src/text.rs`, and C1, C2 and
+C7 `tests/perf.rs`, each in its own tanda (review r2, Codex #4 moved the markup guards to C2, so
+their RED runs against C2's own code). C1 writes every `mod` line, the dependency, the
 Definitions, `cut_name` and a stub for every new file, so the chunks of tanda 2 only fill their
 own files and never share one;
 after tanda 2 the pipeline describes every new Format, so the three chunks of tanda 3 test,
@@ -582,12 +596,14 @@ impl Processor for Markup {
   src/formats/mod.rs src/processors/ tests/cli_m2.rs` and
   `git commit -m "Add the M3 Format Definitions, csv-core and Processor stubs"`.
 
-### Task 1.4: `text::cut_name`, shared by the three Processors (D31)
+### Task 1.4: `text::push_lossy` and `text::cut_name`, shared by the three Processors (D31)
 
-C2, C3 and C4 cut names at `name_chars` (D21) in parallel, so the cut lives in C1. A cut keeps
-the pieces of what stays visible: before review r1 each Processor dropped the piece that crossed
-the cut, and `--in-headings AAAA` found nothing in a header, an `id` or a cue identifier of 50
-`A`s (Codex #6).
+C2, C3 and C4 build and cut names at `name_chars` (D21) in parallel, so both functions live in
+C1. `push_lossy` gives each valid UTF-8 run and each replaced sequence its own piece, and a cut
+keeps the pieces of what stays visible: before review r1 each Processor dropped the piece that
+crossed the cut, and `--in-headings AAAA` found nothing in a header, an `id` or a cue identifier
+of 50 `A`s (Codex #6); before review r2 a Latin-1 `é` before the letters still lost them
+(Codex #2).
 
 - [ ] **Step 1:** the test, first in `src/text.rs`'s `tests` module:
 
@@ -600,19 +616,21 @@ the cut, and `--in-headings AAAA` found nothing in a header, an `id` or a cue id
         cut_name(&mut t, &mut p, 5);
         assert_eq!(t, "abññ…");
         assert_eq!(p, vec![(0..2, 100..102), (2..6, 200..204)]);
-        // A decoded piece across the cut maps its visible part to its whole Source range...
+        // Latin-1: `push_lossy` gives the replaced byte its own piece, so the run after it is
+        // verbatim and keeps its visible prefix (M3 review r2, Codex #2).
+        let src = [b"\xe9".as_slice(), &[b'A'; 40]].concat();
+        let (mut t, mut p) = (String::new(), Pieces::new());
+        push_lossy(&mut t, &mut p, &src, 0..src.len());
+        assert_eq!(p, vec![(0..3, 0..1), (3..43, 1..41)]);
+        cut_name(&mut t, &mut p, 10);
+        assert_eq!(t, format!("\u{FFFD}{}…", "A".repeat(8)));
+        assert_eq!(p, vec![(0..3, 0..1), (3..11, 1..9)]);
+        // A decoded piece of several characters across the cut maps its visible part to its
+        // whole Source range, unless the lengths would match, which would read as verbatim.
         let mut t = "\u{FFFD}\u{FFFD}ab".to_string();
         let mut p: Pieces = vec![(0..8, 0..4)];
         cut_name(&mut t, &mut p, 2);
-        assert_eq!(t, "\u{FFFD}…");
-        assert_eq!(p, vec![(0..3, 0..4)]);
-        // ...unless the lengths would match, which would read as verbatim; a piece past the
-        // cut goes.
-        let mut t = "\u{FFFD}abcd".to_string();
-        let mut p: Pieces = vec![(0..6, 0..4), (6..7, 9..10)];
-        cut_name(&mut t, &mut p, 3);
-        assert_eq!(t, "\u{FFFD}a…");
-        assert_eq!(p, Pieces::new());
+        assert_eq!((t.as_str(), p), ("\u{FFFD}…", vec![(0..3, 0..4)]));
         // Short names are untouched.
         let mut t = "short".to_string();
         let mut p: Pieces = vec![(0..5, 0..5)];
@@ -621,7 +639,7 @@ the cut, and `--in-headings AAAA` found nothing in a header, an `id` or a cue id
     }
 ```
 
-- [ ] **Step 2:** `cargo test --lib text::`: FAILS to compile (`cut_name`, `Pieces`).
+- [ ] **Step 2:** `cargo test --lib text::`: FAILS to compile (`push_lossy`, `cut_name`, `Pieces`).
 
 - [ ] **Step 3:** above the `tests` module:
 
@@ -629,6 +647,28 @@ the cut, and `--in-headings AAAA` found nothing in a header, an `id` or a cue id
 /// A name's pieces, in the format of `model::Name::pieces`: (range in the text, range in the
 /// Source).
 pub type Pieces = Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>;
+
+/// Appends the text of `src[r]`, invalid UTF-8 as U+FFFD, with one piece per valid run
+/// (verbatim) and one per invalid sequence (its U+FFFD over its bytes): a cut then keeps every
+/// visible run, a Latin-1 `é` before 40 `A`s included (M3 review r2, Codex #2).
+pub fn push_lossy(text: &mut String, pieces: &mut Pieces, src: &[u8], r: std::ops::Range<usize>) {
+    let mut at = r.start;
+    for chunk in src[r].utf8_chunks() {
+        for (part, replaced) in [(chunk.valid().as_bytes(), false), (chunk.invalid(), true)] {
+            if part.is_empty() {
+                continue;
+            }
+            let t = text.len();
+            if replaced {
+                text.push('\u{FFFD}');
+            } else {
+                text.push_str(chunk.valid());
+            }
+            pieces.push((t..text.len(), at..at + part.len()));
+            at += part.len();
+        }
+    }
+}
 
 /// Cuts `text` to `max` characters, the last one `…`, when it is longer (M3 plan, D21). The
 /// pieces keep mapping what stays visible (M3 review r1, Codex #6): a piece past the cut goes;
@@ -776,7 +816,7 @@ test helpers, so the tanda-3 chunks only use them.
          return None;
      }
      let mut c = Command::new(time);
-@@ -361,10 +362,11 @@
+@@ -361,10 +362,10 @@
  #[ignore]
  fn json_without_trails_of_a_big_file_is_as_fast_as_ripgrep() {
      let _alone = alone();
@@ -787,11 +827,10 @@ test helpers, so the tanda-3 chunks only use them.
 -    }
 +    };
 +    let rg = rg.as_path();
-+
      let fx = Fixture::new();
      let line = "line of text here\n";
      let file = repeated(&fx, "ten.txt", line, 10 * 1024 * 1024 / line.len());
-@@ -456,14 +458,10 @@
+@@ -456,14 +457,10 @@
      }
  }
  
@@ -917,6 +956,18 @@ mod tests {
             tags("<r a = 'x' b=\"y\" ><s.t-1 /></r >", true),
             ["<r", "<s.t-1/", "</r"]
         );
+        // XML's names and spaces, and no attribute twice (M3 review r2, Codex #3).
+        assert_eq!(tags("<r><©>x</©></r>", true), ["<r", "error at 3"]);
+        assert_eq!(tags("<r><a\x0cb='x'>x</a></r>", true), ["<r", "error at 3"]);
+        assert_eq!(
+            tags("<r><a x='1' x='2'>x</a></r>", true),
+            ["<r", "error at 3"]
+        );
+        assert_eq!(
+            tags("<r><ñandú·x ü='1'>x</ñandú·x></r>", true),
+            ["<r", "<ñandú·x", "</ñandú·x", "</r"]
+        );
+        assert_eq!(tags("<r><·a/></r>", true), ["<r", "error at 3"]);
         // HTML stays tolerant.
         assert_eq!(tags("<p a=bare b>x</p junk>", false), ["<p", "</p"]);
     }
@@ -991,6 +1042,65 @@ pub struct Scanner<'a> {
 
 fn is_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c')
+}
+
+/// The end of the XML Name that starts at `i`: a NameStartChar, then NameChars, as XML 1.0
+/// (fifth edition) defines them over Unicode; Err when there is none or the bytes are not
+/// UTF-8 (M3 review r2, Codex #3: `<©>` is no tag).
+fn xml_name_end(s: &[u8], mut i: usize) -> Result<usize, ()> {
+    let start = i;
+    while i < s.len() {
+        // ASCII without decoding: the common case.
+        if s[i] < 0x80 {
+            let b = s[i];
+            let ok = b.is_ascii_alphabetic()
+                || b == b'_'
+                || b == b':'
+                || (i > start && (b.is_ascii_digit() || b == b'-' || b == b'.'));
+            if !ok {
+                break;
+            }
+            i += 1;
+            continue;
+        }
+        let len = match s[i] {
+            0xc0..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf7 => 4,
+            _ => return Err(()),
+        };
+        let c = std::str::from_utf8(s.get(i..i + len).ok_or(())?)
+            .map_err(|_| ())?
+            .chars()
+            .next()
+            .unwrap();
+        let ok = if i == start {
+            xml_name_start(c)
+        } else {
+            xml_name_char(c)
+        };
+        if !ok {
+            break;
+        }
+        i += len;
+    }
+    if i == start { Err(()) } else { Ok(i) }
+}
+
+fn xml_name_start(c: char) -> bool {
+    matches!(c, ':' | 'A'..='Z' | '_' | 'a'..='z' | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}'
+        | '\u{F8}'..='\u{2FF}' | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}'
+        | '\u{200C}'..='\u{200D}' | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}'
+        | '\u{3001}'..='\u{D7FF}' | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}'
+        | '\u{10000}'..='\u{EFFFF}')
+}
+
+fn xml_name_char(c: char) -> bool {
+    xml_name_start(c)
+        || matches!(
+            c,
+            '-' | '.' | '0'..='9' | '\u{B7}' | '\u{300}'..='\u{36F}' | '\u{203F}'..='\u{2040}'
+        )
 }
 
 /// Where a tag name may start: an ASCII letter in HTML; in XML also `_`, `:` and any non-ASCII
@@ -1077,24 +1187,14 @@ impl<'a> Scanner<'a> {
     /// S? "value")* S? /?>`, or `</name S?>`); Err when it is not one.
     fn xml_tag_end(&self, ns: usize, close: bool) -> Result<usize, ()> {
         let s = self.src;
-        let name = |mut i: usize| -> Result<usize, ()> {
-            if !s.get(i).is_some_and(|&b| name_start(b, true)) {
-                return Err(());
-            }
-            while i < s.len()
-                && (name_start(s[i], true) || s[i].is_ascii_digit() || matches!(s[i], b'-' | b'.'))
-            {
-                i += 1;
-            }
-            Ok(i)
-        };
+        // XML's white space: no form feed (M3 review r2, Codex #3).
         let spaces = |mut i: usize| {
-            while i < s.len() && is_space(s[i]) {
+            while i < s.len() && matches!(s[i], b' ' | b'\t' | b'\n' | b'\r') {
                 i += 1;
             }
             i
         };
-        let mut i = name(ns)?;
+        let mut i = xml_name_end(s, ns)?;
         if close {
             i = spaces(i);
             return if s.get(i) == Some(&b'>') {
@@ -1103,6 +1203,9 @@ impl<'a> Scanner<'a> {
                 Err(())
             };
         }
+        // The attribute names seen, for duplicates; past 16 of them, also a set.
+        let mut seen: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut set: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
         loop {
             let j = spaces(i);
             match s.get(j) {
@@ -1111,7 +1214,21 @@ impl<'a> Scanner<'a> {
                 Some(_) if j > i => {}
                 _ => return Err(()),
             }
-            i = spaces(name(j)?);
+            let name_end = xml_name_end(s, j)?;
+            let attr = &s[j..name_end];
+            let dup = if seen.len() < 16 {
+                seen.iter().any(|r| &s[r.clone()] == attr)
+            } else {
+                if set.is_empty() {
+                    set.extend(seen.iter().map(|r| &s[r.clone()]));
+                }
+                !set.insert(attr)
+            };
+            if dup {
+                return Err(());
+            }
+            seen.push(j..name_end);
+            i = spaces(name_end);
             if s.get(i) != Some(&b'=') {
                 return Err(());
             }
@@ -1346,7 +1463,11 @@ mod tests {
 
     fn closed(open: &[&str], name: &str) -> usize {
         let open: Vec<Info> = open.iter().map(|s| info(s.as_bytes())).collect();
-        closed_by_start(open.iter(), &info(name.as_bytes()))
+        let mut r = NO_REACH;
+        for (at, i) in open.iter().enumerate() {
+            r = reach(&r, i, at);
+        }
+        closed_by_start(open.len(), open.last(), &r, &info(name.as_bytes()))
     }
 
     #[test]
@@ -1432,6 +1553,9 @@ pub struct Info {
     pub raw_text: bool,
     /// A hidden Segment, not searchable by name: it holds the whole page (M3 plan, D7).
     pub hidden: bool,
+    /// Bit `k`: it is what rule `k` ends, or what stops rule `k`'s search (`RULES`, `P_RULE`).
+    targets: u8,
+    stops: u8,
 }
 
 /// Classifies a tag name, without case.
@@ -1444,6 +1568,8 @@ pub fn info(name: &[u8]) -> Info {
         void: false,
         raw_text: false,
         hidden: false,
+        targets: 0,
+        stops: 0,
     };
     if name.len() > buf.len() {
         return i;
@@ -1546,55 +1672,105 @@ pub fn info(name: &[u8]) -> Info {
             | b"plaintext"
     );
     i.hidden = matches!(&*lower, b"html" | b"body");
+    let (targets, stops) = masks()[i.known as usize];
+    i.targets = targets;
+    i.stops = stops;
+    i.stops |= (i.scope as u8) << P_RULE;
     i
 }
 
-/// How many of the open elements (`open`, outermost first) the start tag `start` closes: the
-/// innermost ones, up to and including the element it ends implicitly. 0 when it ends none.
-pub fn closed_by_start<'a, I>(open: I, start: &Info) -> usize
-where
-    I: DoubleEndedIterator<Item = &'a Info> + ExactSizeIterator + Clone,
-{
+/// The implied-end rules that search the open elements: what a start tag ends, and what stops
+/// the search (spec §5.4). `P` is the «close a p element» rule, which `scope` elements stop.
+const RULES: [(&[Known], &[Known]); 7] = {
     use Known::*;
-    // (the elements it ends, the elements that stop the search)
-    let (targets, stops): (&[Known], &[Known]) = match start.known {
-        Li => (&[Li], &[Ul, Ol, Menu, Table, Td, Th, Template]),
-        Dt | Dd => (&[Dt, Dd], &[Dl, Table, Td, Th, Template]),
-        Tr => (&[Tr], &[Table, Template]),
-        Td | Th => (&[Td, Th], &[Tr, Table, Template]),
-        Thead | Tbody | Tfoot => (&[Thead, Tbody, Tfoot], &[Table, Template]),
-        Option => (&[Option], &[Select, Datalist, Optgroup]),
-        Optgroup => (&[Optgroup], &[Select]),
-        _ => (&[], &[]),
-    };
-    let len = open.len();
-    if !targets.is_empty() {
-        for (k, el) in open.clone().enumerate().rev() {
-            if targets.contains(&el.known) {
-                return len - k;
-            }
-            if stops.contains(&el.known) {
-                break;
-            }
+    [
+        (&[Li], &[Ul, Ol, Menu, Table, Td, Th, Template]),
+        (&[Dt, Dd], &[Dl, Table, Td, Th, Template]),
+        (&[Tr], &[Table, Template]),
+        (&[Td, Th], &[Tr, Table, Template]),
+        (&[Thead, Tbody, Tfoot], &[Table, Template]),
+        (&[Option], &[Select, Datalist, Optgroup]),
+        (&[Optgroup], &[Select]),
+    ]
+};
+const P_RULE: usize = RULES.len();
+
+/// For each rule, the 0-based position among the open elements of the innermost one that rule
+/// would end, when no stop lies between it and the current element. Kept per open element and
+/// computed when it opens (`reach`), so a start tag finds what it ends in constant time, however
+/// deep the elements are (M3 review r2, Codex #1: 40 000 nested `div`s searched the whole stack
+/// for a `p` each).
+/// `NONE` where nothing is reachable.
+pub type Reach = [u32; RULES.len() + 1];
+pub const NONE: u32 = u32::MAX;
+pub const NO_REACH: Reach = [NONE; RULES.len() + 1];
+
+/// The `Reach` of an element at position `at` with tag `info`, opened inside `parent`'s.
+pub fn reach(parent: &Reach, info: &Info, at: usize) -> Reach {
+    let mut r = *parent;
+    if info.targets | info.stops == 0 {
+        return r;
+    }
+    for (k, slot) in r.iter_mut().enumerate() {
+        if info.targets >> k & 1 == 1 {
+            *slot = at as u32;
+        } else if info.stops >> k & 1 == 1 {
+            *slot = NONE;
         }
     }
-    if start.closes_p {
-        for (k, el) in open.clone().enumerate().rev() {
-            if el.known == P {
-                return len - k;
+    r
+}
+
+/// For each `Known`, the bits of the rules it is a target or a stop of (`RULES`), computed once.
+fn masks() -> &'static [(u8, u8); Known::Other as usize + 1] {
+    static MASKS: std::sync::OnceLock<[(u8, u8); Known::Other as usize + 1]> =
+        std::sync::OnceLock::new();
+    MASKS.get_or_init(|| {
+        let mut m = [(0u8, 0u8); Known::Other as usize + 1];
+        for (k, (targets, stops)) in RULES.iter().enumerate() {
+            for t in *targets {
+                m[*t as usize].0 |= 1 << k;
             }
-            if el.scope {
-                break;
+            for t in *stops {
+                m[*t as usize].1 |= 1 << k;
             }
         }
+        m[Known::P as usize].0 |= 1 << P_RULE;
+        m
+    })
+}
+
+/// How many of the `open` open elements the start tag `start` closes, given the current
+/// element `top` and its `Reach`: the innermost ones, up to and including the element it ends
+/// implicitly. 0 when it ends none.
+pub fn closed_by_start(open: usize, top: Option<&Info>, reach: &Reach, start: &Info) -> usize {
+    use Known::*;
+    let rule = match start.known {
+        Li => Some(0),
+        Dt | Dd => Some(1),
+        Tr => Some(2),
+        Td | Th => Some(3),
+        Thead | Tbody | Tfoot => Some(4),
+        Option => Some(5),
+        Optgroup => Some(6),
+        _ => None,
+    };
+    let ends = |k: usize| (reach[k] != NONE).then(|| open - reach[k] as usize);
+    if let Some(n) = rule.and_then(ends) {
+        return n;
+    }
+    if start.closes_p
+        && let Some(n) = ends(P_RULE)
+    {
+        return n;
     }
     // An `optgroup` that closes no group still ends an option that is the current element
     // (M3 review r1, Codex #9).
-    if start.known == Optgroup && open.clone().last().is_some_and(|el| el.known == Option) {
+    if start.known == Optgroup && top.is_some_and(|el| el.known == Option) {
         return 1;
     }
     // A heading start tag closes a heading that is the current element.
-    if start.known == Heading && open.last().is_some_and(|el| el.known == Heading) {
+    if start.known == Heading && top.is_some_and(|el| el.known == Heading) {
         return 1;
     }
     0
@@ -1681,87 +1857,6 @@ its line, counted with `grep -n needle` in the probe.
 
 - [ ] **Step 4:** check: `grep -n needle tests/fixtures/markup/*` prints exactly the lines above,
   and `wc -l` gives 30, 18 and 5.
-
-### Task 2.3b: Outline line numbers without an index of every line (src/trail.rs, D27)
-
-`Outline::build` built a `LineIndex` of the whole Source, one `usize` per line, whatever the
-number of Segments kept: one Match in an XML file of 50 MB of line breaks took 467 MiB, against
-rg's 56 (Codex #2, measured with the probe's binary). `fill_lines` counts line breaks only up to
-the bytes it is asked for. Markdown, keypath and treesitter build their Outlines the same way and
-get the same lines.
-
-- [ ] **Step 1:** RED is the perf test `markup_keeps_no_index_of_the_lines` of Task 7.1, which
-  needs the walk of Task 2.4; here the existing tests of `src/trail.rs` and every Processor's are
-  the guard: they must stay green.
-
-- [ ] **Step 2:** the change:
-
-```diff
---- a/src/trail.rs
-+++ b/src/trail.rs
-@@ -88,7 +88,6 @@
-                 .cmp(&b.range.start)
-                 .then(b.range.end.cmp(&a.range.end))
-         });
--        let lines = LineIndex::new(content);
-         let mut stack: Vec<usize> = Vec::new();
-         for i in 0..segments.len() {
-             let start = segments[i].range.start;
-@@ -105,14 +104,9 @@
-                 }
-             }
-             segments[i].parent = stack.last().copied();
--            let r = segments[i].range.clone();
--            let seg = &mut segments[i].segment;
--            if seg.line == 0 {
--                seg.line = lines.line_of(r.start);
--                seg.end_line = lines.line_of(r.end.saturating_sub(1).max(r.start));
--            }
-             stack.push(i);
-         }
-+        fill_lines(&mut segments, content);
-         Self { segments }
-     }
- 
-@@ -135,6 +129,35 @@
-     }
- }
- 
-+/// Fills the `line` and `end_line` left at 0 from the ranges, counting line breaks only up to
-+/// the last byte asked: memory grows with the Segments, never with the lines of the file (M3
-+/// review r1, Codex #2).
-+fn fill_lines(segments: &mut [OutlineSegment], content: &[u8]) {
-+    // (byte, Segment index, whether it is the end) for every line to compute.
-+    let mut asks: Vec<(usize, usize, bool)> = Vec::new();
-+    for (i, s) in segments.iter().enumerate() {
-+        if s.segment.line == 0 {
-+            let r = &s.range;
-+            asks.push((r.start, i, false));
-+            asks.push((r.end.saturating_sub(1).max(r.start), i, true));
-+        }
-+    }
-+    asks.sort_unstable();
-+    let (mut at, mut line) = (0usize, 1u64);
-+    for (byte, i, end) in asks {
-+        let to = byte.min(content.len());
-+        if to > at {
-+            line += memchr::memchr_iter(b'\n', &content[at..to]).count() as u64;
-+            at = to;
-+        }
-+        if end {
-+            segments[i].segment.end_line = line;
-+        } else {
-+            segments[i].segment.line = line;
-+        }
-+    }
-+}
-+
- /// Trails of byte offsets asked in non-decreasing order, from a stack of the Segments open at
- /// the last offset instead of a scan of the whole Outline per offset. An offset smaller than the
- /// last one starts over.
-```
-
-- [ ] **Step 3:** `cargo test --workspace`: PASS, no expectation changed.
 
 ### Task 2.4: the walk and the Processor (src/processors/markup/mod.rs)
 
@@ -1900,6 +1995,19 @@ mod tests {
             ),
             pairs(&[(1, "r › ok"), (1, ""), (1, "")])
         );
+        // M3 review r2, Codex #3: a name XML does not allow, a form feed, a repeated attribute.
+        for bad in [
+            "<©>needle</©>",
+            "<a\x0cb='x'>needle</a>",
+            "<a x='1' x='2'>needle</a>",
+        ] {
+            let src = format!("<r><ok>needle</ok>{bad}</r>");
+            assert_eq!(
+                needles(src.as_bytes(), "xml"),
+                pairs(&[(1, "r › ok"), (1, "")]),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
@@ -2073,6 +2181,10 @@ struct Frame {
     tag: Range<usize>,
     /// HTML: its tag classified once (`html::info`).
     info: html::Info,
+    /// HTML: what the implied-end rules would end from here (`html::reach`).
+    reach: html::Reach,
+    /// HTML: the id of its tag in `Walk::ids`.
+    id: u32,
     /// It may become a Segment (not the root, not past MAX_DEPTH).
     seg: bool,
     /// Its place among its parent's children of the same tag: (slot in the parent's
@@ -2084,7 +2196,7 @@ struct Frame {
     /// Past `LINEAR` distinct tags, the slot in `counts` of each tag's key (`key`), so a parent
     /// with thousands of distinct child tags costs constant time per child (M3 review r1,
     /// Codex #1). Memory: one entry per distinct child tag of each open element.
-    index: Option<HashMap<Box<[u8]>, usize>>,
+    index: Option<Map<usize>>,
     /// Closed children kept as Segments and without an id, which get `[n]` when their tag
     /// repeats: they reach the Collector when this element closes and the counts are final.
     pending: Vec<(OutlineSegment, usize, u32)>,
@@ -2096,6 +2208,8 @@ impl Frame {
             name: 0..0,
             tag: 0..0,
             info: html::info(b""),
+            reach: html::NO_REACH,
+            id: 0,
             seg: false,
             slot: 0,
             ordinal: 0,
@@ -2106,12 +2220,9 @@ impl Frame {
     }
 }
 
-/// A name's text and pieces from the Source bytes `r`: verbatim when they are UTF-8, else one
-/// decoded piece (invalid bytes become U+FFFD).
+/// A name's text and pieces from the Source bytes `r` (`text::push_lossy`).
 fn push_piece(src: &[u8], r: Range<usize>, text: &mut String, pieces: &mut Pieces) {
-    let at = text.len();
-    text.push_str(&String::from_utf8_lossy(&src[r.clone()]));
-    pieces.push((at..text.len(), r));
+    crate::text::push_lossy(text, pieces, src, r);
 }
 
 /// The walk builds a Segment only when its element closes and holds an anchor (`keeps`), so
@@ -2121,6 +2232,52 @@ struct Walk<'s, 'c, 'a> {
     p: Params,
     c: &'c mut Collector<'a>,
     stack: Vec<Frame>,
+    /// HTML: an id per distinct tag (`fill_key`) of the file, and how many elements of each are
+    /// open: an end tag with none open is ignored at once instead of searching the stack (M3
+    /// review r2, Codex #1). One allocation per distinct tag; a closing element finds its count
+    /// by the id its Frame keeps.
+    ids: Map<u32>,
+    open: Vec<u32>,
+    /// The key being looked up, reused.
+    buf: Vec<u8>,
+    /// The last `at` that `close_implied` trimmed back from, and where white space before it
+    /// starts: many elements ended at one byte trim its white space once.
+    trimmed: (usize, usize),
+}
+
+/// FNV-1a: the maps of the walk hash short tag names, where SipHash's cost per lookup showed in
+/// the walk's time; nothing in them comes from an attacker who can choose collisions that
+/// matter more than a slower walk.
+#[derive(Default)]
+struct Fnv(u64);
+
+impl std::hash::Hasher for Fnv {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut h = if self.0 == 0 {
+            0xcbf2_9ce4_8422_2325
+        } else {
+            self.0
+        };
+        for &b in bytes {
+            h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        self.0 = h;
+    }
+}
+
+type Map<V> = HashMap<Box<[u8]>, V, std::hash::BuildHasherDefault<Fnv>>;
+
+/// The key of a tag in `buf`: its bytes, lowercased in HTML.
+fn fill_key(buf: &mut Vec<u8>, name: &[u8], syntax: Syntax) {
+    buf.clear();
+    buf.extend_from_slice(name);
+    if syntax == Syntax::Html {
+        buf.make_ascii_lowercase();
+    }
 }
 
 impl Walk<'_, '_, '_> {
@@ -2167,26 +2324,21 @@ impl Walk<'_, '_, '_> {
         (text, pieces, has_id)
     }
 
-    /// How siblings' tags compare: without case in HTML.
-    fn key(&self, name: &Range<usize>) -> Box<[u8]> {
-        let b = &self.src[name.clone()];
-        match self.p.syntax {
-            Syntax::Html => b.to_ascii_lowercase().into(),
-            Syntax::Xml => b.into(),
-        }
-    }
-
     /// Counts a child named `name` in the current element; returns its slot in `counts`.
     fn slot(&mut self, name: &Range<usize>) -> usize {
-        let key = (self.stack.last().unwrap().counts.len() >= LINEAR).then(|| self.key(name));
         let src = self.src;
-        let html = self.p.syntax == Syntax::Html;
+        let syntax = self.p.syntax;
+        let indexed = self.stack.last().unwrap().counts.len() >= LINEAR;
+        if indexed {
+            fill_key(&mut self.buf, &src[name.clone()], syntax);
+        }
+        let buf = &self.buf;
         let parent = self.stack.last_mut().unwrap();
-        let found = match (&key, &parent.index) {
-            (Some(k), Some(ix)) => ix.get(k).copied(),
+        let found = match (indexed, &parent.index) {
+            (true, Some(ix)) => ix.get(&buf[..]).copied(),
             _ => parent.counts.iter().position(|(n, _)| {
                 let (a, b) = (&src[n.clone()], &src[name.clone()]);
-                if html {
+                if syntax == Syntax::Html {
                     a.eq_ignore_ascii_case(b)
                 } else {
                     a == b
@@ -2199,31 +2351,40 @@ impl Walk<'_, '_, '_> {
         }
         parent.counts.push((name.clone(), 1));
         let k = parent.counts.len() - 1;
-        if let Some(key) = key {
-            if parent.index.is_none() {
+        if indexed {
+            let ix = parent.index.get_or_insert_with(|| {
                 // Index the tags counted so far, then this one.
-                let mut ix = HashMap::new();
+                let mut ix = Map::default();
+                let mut key = Vec::new();
                 for (j, (n, _)) in parent.counts[..k].iter().enumerate() {
-                    let b = &src[n.clone()];
-                    ix.insert(
-                        if html {
-                            b.to_ascii_lowercase().into()
-                        } else {
-                            b.into()
-                        },
-                        j,
-                    );
+                    fill_key(&mut key, &src[n.clone()], syntax);
+                    ix.insert(key.clone().into_boxed_slice(), j);
                 }
-                parent.index = Some(ix);
-            }
-            parent.index.as_mut().unwrap().insert(key, k);
+                ix
+            });
+            ix.insert(buf.clone().into_boxed_slice(), k);
         }
         k
+    }
+
+    /// HTML: the id of the tag `name`, given one when it is new.
+    fn tag_id(&mut self, name: &Range<usize>) -> u32 {
+        fill_key(&mut self.buf, &self.src[name.clone()], self.p.syntax);
+        if let Some(&id) = self.ids.get(&self.buf[..]) {
+            return id;
+        }
+        let id = self.open.len() as u32;
+        self.ids.insert(self.buf.clone().into_boxed_slice(), id);
+        self.open.push(0);
+        id
     }
 
     /// Closes the innermost open element at `end` (exclusive).
     fn close(&mut self, end: usize) {
         let mut f = self.stack.pop().expect("the root is never closed here");
+        if self.p.syntax == Syntax::Html {
+            self.open[f.id as usize] -= 1;
+        }
         self.flush(&mut f);
         if f.seg && self.c.keeps(f.tag.start, end) {
             let (text, pieces, has_id) = self.name_of(&f);
@@ -2259,10 +2420,19 @@ impl Walk<'_, '_, '_> {
     /// ends after its last byte that is not white space, so it ends on its own last line.
     fn close_implied(&mut self, at: usize) {
         let floor = self.stack.last().map_or(0, |f| f.tag.end);
-        let mut end = at.max(floor);
-        while end > floor && self.src[end - 1].is_ascii_whitespace() {
-            end -= 1;
+        if self.trimmed.0 != at {
+            let mut t = at;
+            while t > 0 && self.src[t - 1].is_ascii_whitespace() {
+                t -= 1;
+            }
+            self.trimmed = (at, t);
         }
+        // Trimming back from `at` and stopping at `floor` ends at the larger of the two.
+        let end = if at <= floor {
+            floor
+        } else {
+            self.trimmed.1.max(floor)
+        };
         self.close(end);
     }
 
@@ -2276,8 +2446,10 @@ impl Walk<'_, '_, '_> {
         let html = self.p.syntax == Syntax::Html;
         let info = html::info(if html { &self.src[name.clone()] } else { b"" });
         if html {
-            let open = self.stack[1..].iter().map(|f| &f.info);
-            for _ in 0..html::closed_by_start(open, &info) {
+            let top = self.stack.last().unwrap();
+            let open = self.stack.len() - 1;
+            let current = (open > 0).then_some(&top.info);
+            for _ in 0..html::closed_by_start(open, current, &top.reach, &info) {
                 self.close_implied(tag.start);
             }
         }
@@ -2289,10 +2461,24 @@ impl Walk<'_, '_, '_> {
             return;
         }
         let raw = info.raw_text;
+        let reach = html::reach(
+            &self.stack.last().unwrap().reach,
+            &info,
+            self.stack.len() - 1,
+        );
+        let id = if html {
+            let id = self.tag_id(&name);
+            self.open[id as usize] += 1;
+            id
+        } else {
+            0
+        };
         self.stack.push(Frame {
             name: name.clone(),
             tag,
             info,
+            reach,
+            id,
             seg: self.stack.len() <= MAX_DEPTH,
             slot,
             ordinal,
@@ -2307,21 +2493,31 @@ impl Walk<'_, '_, '_> {
 
     /// An end tag: XML closes the current element or stops (Err with the error's byte); HTML
     /// closes the innermost open element of that name and the ones inside it, or ignores it.
+    /// Each search is linear only in the elements it then closes, so the walk stays linear.
     fn end(&mut self, name: Range<usize>, tag: Range<usize>) -> Result<(), usize> {
+        let top = self.stack.len() - 1;
+        if self.p.syntax == Syntax::Xml {
+            if top > 0 && self.same(&self.stack[top].name, &name) {
+                self.close(tag.end);
+                return Ok(());
+            }
+            return Err(tag.start);
+        }
+        fill_key(&mut self.buf, &self.src[name.clone()], self.p.syntax);
+        let Some(&id) = self.ids.get(&self.buf[..]) else {
+            return Ok(());
+        };
+        if self.open[id as usize] == 0 {
+            return Ok(());
+        }
         let k = (1..self.stack.len())
             .rev()
-            .find(|&k| self.same(&self.stack[k].name, &name));
-        match (self.p.syntax, k) {
-            (Syntax::Xml, Some(k)) if k == self.stack.len() - 1 => self.close(tag.end),
-            (Syntax::Xml, _) => return Err(tag.start),
-            (Syntax::Html, Some(k)) => {
-                while self.stack.len() > k + 1 {
-                    self.close_implied(tag.start);
-                }
-                self.close(tag.end);
-            }
-            (Syntax::Html, None) => {}
+            .find(|&k| self.stack[k].id == id)
+            .expect("an element of this tag is open");
+        while self.stack.len() > k + 1 {
+            self.close_implied(tag.start);
         }
+        self.close(tag.end);
         Ok(())
     }
 
@@ -2360,6 +2556,10 @@ fn outline(src: &[u8], p: Params, mut c: Collector<'_>) -> Outline {
         p,
         c: &mut c,
         stack: vec![Frame::root()],
+        ids: Map::default(),
+        open: Vec::new(),
+        buf: Vec::new(),
+        trimmed: (usize::MAX, 0),
     }
     .run();
     c.finish(end, src)
@@ -2404,8 +2604,225 @@ impl Processor for Markup {
   tests/fixtures/markup/page.html` prints the seven rows of `m3_02` (Task 6.1), and `--tree`
   shows `li[3]` under `ul` under `nav.top.menu`.
 
-- [ ] **Step 6:** commit: `git add -- src/processors/markup src/trail.rs tests/fixtures/markup` and
+- [ ] **Step 6:** commit: `git add -- src/processors/markup tests/fixtures/markup` and
   `git commit -m "Trail HTML and XML elements with a tag scanner of our own"`.
+
+### Task 2.5: the walk's perf guards, and Outline lines without a line index (D27, D28, D34)
+
+C2 owns these guards because their RED must run against C2's own code (review r2, Codex #4).
+`Outline::build` built a `LineIndex` of the whole Source, one `usize` per line, whatever the
+number of Segments kept: one Match in an XML file of 50 MB of line breaks took 467 MiB, against
+rg's 56 (review r1, Codex #2). `fill_lines` counts line breaks only up to the bytes it is asked
+for; Markdown, keypath and treesitter get the same lines.
+
+- [ ] **Step 1:** append the five guards to `tests/perf.rs` (after the ceilings of M2; Task 1.5's
+  three hunks are already in the file):
+
+```diff
+--- a/tests/perf.rs
++++ b/tests/perf.rs
+@@ -705,3 +705,117 @@
+         "{t:?} is more than rg's {base:?} + 1 s"
+     );
+ }
++
++/// M3 review r1, Codex #1 and Fable #1: a parent with 200 000 distinct child tags costs
++/// constant time per child (82 s before the sibling index, against rg's 0.01 s).
++#[test]
++#[ignore]
++fn markup_many_distinct_sibling_tags_stay_linear() {
++    let _alone = alone();
++    let fx = Fixture::new();
++    let mut v = String::from("<r>");
++    for i in 0..200_000 {
++        v.push_str(&format!("<row{i}/>"));
++    }
++    v.push_str("<x>needle</x></r>\n");
++    std::fs::write(fx.file("siblings.xml"), &v).unwrap();
++    let args = ["--flat", "needle", "siblings.xml"];
++    let (out, _) = sfor_output(&fx, &args);
++    assert!(out.starts_with("1: r › x │ "), "{out:.100}");
++    let Some(((t, _), (base, _))) = against_rg(&fx, &args) else {
++        return;
++    };
++    assert!(
++        t <= base + Duration::from_millis(500),
++        "{t:?} against rg's {base:?}"
++    );
++}
++
++/// M3 review r1, Codex #2: one Match in 50 MB of line breaks keeps no index of the lines
++/// (467 MiB of RSS before the fix, against rg's 56 MiB).
++#[test]
++#[ignore]
++fn markup_keeps_no_index_of_the_lines() {
++    let _alone = alone();
++    let fx = Fixture::new();
++    let mut v = String::with_capacity(SIZE + 64);
++    v.push_str("<r>\n");
++    v.push_str(&"\n".repeat(SIZE));
++    v.push_str("<x>needle</x></r>\n");
++    std::fs::write(fx.file("blank.xml"), &v).unwrap();
++    drop(v);
++    let args = ["--flat", "needle", "blank.xml"];
++    let (out, _) = sfor_output(&fx, &args);
++    assert!(out.ends_with(": r › x │ <x>needle</x></r>\n"), "{out:.100}");
++    let Some(((t, rss), (base, base_rss))) = against_rg(&fx, &args) else {
++        return;
++    };
++    assert!(
++        t <= base + Duration::from_secs(1),
++        "{t:?} against rg's {base:?}"
++    );
++    assert!(
++        rss <= base_rss + 32 * 1_048_576,
++        "RSS {rss} is more than rg's {base_rss} + 32 MiB"
++    );
++}
++
++/// One of M3 review r2's linear walks (Codex #1): `body` in `name`, one Match, sfor within rg's
++/// time + 1 s, and the Match's Trail with `segments` Segments (256 at most, D25).
++fn markup_linear(name: &str, body: String, segments: usize) {
++    let fx = Fixture::new();
++    std::fs::write(fx.file(name), &body).unwrap();
++    let (out, _) = sfor_output(&fx, &["--json", "needle", name]);
++    let m = out
++        .lines()
++        .find(|l| l.contains(r#""type":"match""#))
++        .unwrap();
++    assert_eq!(m.matches(r#""kind":"tag""#).count(), segments, "{name}");
++    let Some(((t, _), (base, _))) = against_rg(&fx, &["--flat", "needle", name]) else {
++        return;
++    };
++    eprintln!("{name}: sfor {t:?}, rg {base:?}");
++    assert!(
++        t <= base + Duration::from_secs(1),
++        "{name}: {t:?} against rg's {base:?}"
++    );
++}
++
++/// 40 000 nested `div`s: a start tag finds the `p` it ends without searching the stack (4.8 s
++/// before `html::Reach`).
++#[test]
++#[ignore]
++fn markup_deep_nesting_stays_linear() {
++    let _alone = alone();
++    let body = format!(
++        "{}needle{}",
++        "<div>".repeat(40_000),
++        "</div>".repeat(40_000)
++    );
++    markup_linear("deep.html", body, 256);
++}
++
++/// 20 000 end tags with no element of their tag open: each is ignored at once (2.9 s before
++/// the open counts).
++#[test]
++#[ignore]
++fn markup_end_tags_with_nothing_open_stay_linear() {
++    let _alone = alone();
++    let body = format!(
++        "{}{}needle{}",
++        "<x>".repeat(20_000),
++        "</q>".repeat(20_000),
++        "</x>".repeat(20_000)
++    );
++    markup_linear("unmatched.html", body, 256);
++}
++
++/// 20 000 elements ended together at the end of the file, after 200 000 spaces: the white
++/// space is trimmed once (6.6 s before).
++#[test]
++#[ignore]
++fn markup_implied_ends_at_one_byte_stay_linear() {
++    let _alone = alone();
++    let body = format!("{}needle{}", "<x>".repeat(20_000), " ".repeat(200_000));
++    markup_linear("trim.html", body, 256);
++}
+```
+
+- [ ] **Step 2:** RED of the line index: `cargo build --release` with `src/trail.rs` still as in
+  `f7cccfe`, then `SFOR_REQUIRE_REFERENCE=1 cargo test --release --test perf -- --ignored
+  --nocapture markup_keeps_no_index_of_the_lines`: FAILS on its RSS assertion, not on the Trail
+  (probe: `RSS 479186944 is more than rg's 58785792 + 32 MiB`).
+
+- [ ] **Step 3:** `fill_lines`:
+
+```diff
+--- a/src/trail.rs
++++ b/src/trail.rs
+@@ -88,7 +88,6 @@
+                 .cmp(&b.range.start)
+                 .then(b.range.end.cmp(&a.range.end))
+         });
+-        let lines = LineIndex::new(content);
+         let mut stack: Vec<usize> = Vec::new();
+         for i in 0..segments.len() {
+             let start = segments[i].range.start;
+@@ -105,14 +104,9 @@
+                 }
+             }
+             segments[i].parent = stack.last().copied();
+-            let r = segments[i].range.clone();
+-            let seg = &mut segments[i].segment;
+-            if seg.line == 0 {
+-                seg.line = lines.line_of(r.start);
+-                seg.end_line = lines.line_of(r.end.saturating_sub(1).max(r.start));
+-            }
+             stack.push(i);
+         }
++        fill_lines(&mut segments, content);
+         Self { segments }
+     }
+ 
+@@ -135,6 +129,35 @@
+     }
+ }
+ 
++/// Fills the `line` and `end_line` left at 0 from the ranges, counting line breaks only up to
++/// the last byte asked: memory grows with the Segments, never with the lines of the file (M3
++/// review r1, Codex #2).
++fn fill_lines(segments: &mut [OutlineSegment], content: &[u8]) {
++    // (byte, Segment index, whether it is the end) for every line to compute.
++    let mut asks: Vec<(usize, usize, bool)> = Vec::new();
++    for (i, s) in segments.iter().enumerate() {
++        if s.segment.line == 0 {
++            let r = &s.range;
++            asks.push((r.start, i, false));
++            asks.push((r.end.saturating_sub(1).max(r.start), i, true));
++        }
++    }
++    asks.sort_unstable();
++    let (mut at, mut line) = (0usize, 1u64);
++    for (byte, i, end) in asks {
++        let to = byte.min(content.len());
++        if to > at {
++            line += memchr::memchr_iter(b'\n', &content[at..to]).count() as u64;
++            at = to;
++        }
++        if end {
++            segments[i].segment.end_line = line;
++        } else {
++            segments[i].segment.line = line;
++        }
++    }
++}
++
+ /// Trails of byte offsets asked in non-decreasing order, from a stack of the Segments open at
+ /// the last offset instead of a scan of the whole Outline per offset. An offset smaller than the
+ /// last one starts over.
+```
+
+- [ ] **Step 4:** `cargo test --workspace`: PASS, no expectation changed. Then the five guards,
+  `SFOR_REQUIRE_REFERENCE=1 cargo test --release --test perf -- --ignored --nocapture markup_`:
+  PASS (the walk of Task 2.4 already holds D28 and D34). They cannot be seen RED against this
+  plan's walk, which is linear from its first version; the probe measured each of them against
+  the walk of review r1 instead: 200 000 distinct siblings 82 s (Fable), 40 000 nested `div`s
+  3.96 s, 20 000 end tags with nothing open 2.88 s, 20 000 elements ended after 200 000 spaces
+  5.65 s, against rg's 0.01 s.
+
+- [ ] **Step 5:** commit: `git add -- src/trail.rs tests/perf.rs` and
+  `git commit -m "Count Outline lines without a line index and guard the markup walk"`.
 
 ## Chunk 3: csv — CSV and TSV
 
@@ -2926,9 +3343,13 @@ fn header_name(
     let mut text = String::new();
     let mut pieces = Vec::new();
     for (b, r) in &runs {
-        let at = text.len();
-        text.push_str(&String::from_utf8_lossy(b));
-        pieces.push((at..text.len(), r.clone()));
+        if b.len() == r.len() {
+            crate::text::push_lossy(&mut text, &mut pieces, src, r.clone());
+        } else {
+            let at = text.len();
+            text.push_str(&String::from_utf8_lossy(b));
+            pieces.push((at..text.len(), r.clone()));
+        }
     }
     if !searchable {
         text = String::from_utf8_lossy(decoded).trim_ascii().to_string();
@@ -3362,8 +3783,8 @@ impl Cue {
         let lead = raw.len() - raw.trim_ascii_start().len();
         let trimmed = raw.trim_ascii();
         let s0 = r.start + lead;
-        let mut text = String::from_utf8_lossy(trimmed).into_owned();
-        let mut pieces = vec![(0..text.len(), s0..s0 + trimmed.len())];
+        let (mut text, mut pieces) = (String::new(), Vec::new());
+        crate::text::push_lossy(&mut text, &mut pieces, src, s0..s0 + trimmed.len());
         crate::text::cut_name(&mut text, &mut pieces, ID_CHARS);
         (text, pieces)
     }
@@ -4036,6 +4457,30 @@ fn m3_14_a_cut_name_stays_searchable_up_to_its_cut() {
         assert_eq!(code(&o), 0, "{file}: {}", stderr(&o));
         assert_eq!(stdout(&o).lines().count(), 1, "{file}");
     }
+    // Latin-1 before the letters: the replaced byte is a piece of its own (M3 review r2,
+    // Codex #2).
+    let l1 = |file: &str, body: Vec<u8>| {
+        std::fs::write(fx.file(file), body).unwrap();
+        let o = run(&mut fx.sfor(["--flat", "--in-headings", "AAAA", file]));
+        assert_eq!(code(&o), 0, "{file}: {}", stderr(&o));
+    };
+    l1(
+        "l1.csv",
+        [&b"id,\xe9"[..], &[b'A'; 40], b"\n1,x\n"].concat(),
+    );
+    l1(
+        "l1.html",
+        [&b"<div id=\"\xe9"[..], &[b'A'; 36], b"\">x</div>\n"].concat(),
+    );
+    l1(
+        "l1.vtt",
+        [
+            &b"WEBVTT\n\n\xe9"[..],
+            &[b'A'; 40],
+            b"\n00:01.000 --> 00:02.000\nx\n",
+        ]
+        .concat(),
+    );
     // The cut's `…` maps to nothing.
     let o = run(&mut fx.sfor(["--in-headings", "…", "long.csv"]));
     assert_eq!(code(&o), 1);
@@ -4346,25 +4791,14 @@ table/plans.csv
 
 - [ ] **Step 1:** append `m3_ceiling` and its six tests, one per M3 Format (each writes a 50 MB
   file with three `needle`s — the first unit, one in the middle, the last — and checks the first
-  and last Trails before timing), and the two regressions of review r1:
-  `markup_many_distinct_sibling_tags_stay_linear` (Codex #1: 3.3 s before the sibling index,
-  against rg's 0.02 s) and `markup_keeps_no_index_of_the_lines` (Codex #2: 467 MiB before
-  `fill_lines`). The diff is against `tests/perf.rs` after Task 1.5:
+  and last Trails before timing). The diff is against `tests/perf.rs` after Tasks 1.5 and 2.5:
 
 ```diff
 --- a/tests/perf.rs
 +++ b/tests/perf.rs
-@@ -366,7 +366,6 @@
-         return;
-     };
-     let rg = rg.as_path();
--
-     let fx = Fixture::new();
-     let line = "line of text here\n";
-     let file = repeated(&fx, "ten.txt", line, 10 * 1024 * 1024 / line.len());
-@@ -706,3 +705,235 @@
-         "{t:?} is more than rg's {base:?} + 1 s"
-     );
+@@ -819,3 +819,181 @@
+     let body = format!("{}needle{}", "<x>".repeat(20_000), " ".repeat(200_000));
+     markup_linear("trim.html", body, 256);
  }
 +
 +/// One M3 Format at 50 MB (M3 plan, Task 7.1): `unit(i, needle)` writes the i-th repetition,
@@ -4544,65 +4978,11 @@ table/plans.csv
 +        ": cue {n} 00:00:01.000",
 +    );
 +}
-+
-+/// M3 review r1, Codex #1 and Fable #1: a parent with 200 000 distinct child tags costs
-+/// constant time per child (82 s before the sibling index, against rg's 0.01 s).
-+#[test]
-+#[ignore]
-+fn markup_many_distinct_sibling_tags_stay_linear() {
-+    let _alone = alone();
-+    let fx = Fixture::new();
-+    let mut v = String::from("<r>");
-+    for i in 0..200_000 {
-+        v.push_str(&format!("<row{i}/>"));
-+    }
-+    v.push_str("<x>needle</x></r>\n");
-+    std::fs::write(fx.file("siblings.xml"), &v).unwrap();
-+    let args = ["--flat", "needle", "siblings.xml"];
-+    let (out, _) = sfor_output(&fx, &args);
-+    assert!(out.starts_with("1: r › x │ "), "{out:.100}");
-+    let Some(((t, _), (base, _))) = against_rg(&fx, &args) else {
-+        return;
-+    };
-+    assert!(
-+        t <= base + Duration::from_millis(500),
-+        "{t:?} against rg's {base:?}"
-+    );
-+}
-+
-+/// M3 review r1, Codex #2: one Match in 50 MB of line breaks keeps no index of the lines
-+/// (467 MiB of RSS before the fix, against rg's 56 MiB).
-+#[test]
-+#[ignore]
-+fn markup_keeps_no_index_of_the_lines() {
-+    let _alone = alone();
-+    let fx = Fixture::new();
-+    let mut v = String::with_capacity(SIZE + 64);
-+    v.push_str("<r>\n");
-+    v.push_str(&"\n".repeat(SIZE));
-+    v.push_str("<x>needle</x></r>\n");
-+    std::fs::write(fx.file("blank.xml"), &v).unwrap();
-+    drop(v);
-+    let args = ["--flat", "needle", "blank.xml"];
-+    let (out, _) = sfor_output(&fx, &args);
-+    assert!(out.ends_with(": r › x │ <x>needle</x></r>\n"), "{out:.100}");
-+    let Some(((t, rss), (base, base_rss))) = against_rg(&fx, &args) else {
-+        return;
-+    };
-+    assert!(
-+        t <= base + Duration::from_secs(1),
-+        "{t:?} against rg's {base:?}"
-+    );
-+    assert!(
-+        rss <= base_rss + 32 * 1_048_576,
-+        "RSS {rss} is more than rg's {base_rss} + 32 MiB"
-+    );
-+}
 ```
 
 - [ ] **Step 2:** RED check, as M2's ceilings: `SFOR_BIN=<a build of f7cccfe> cargo test
-  --release --test perf -- --ignored markup_ csv_ tsv_ subtitles_ vtt_`: the eight FAIL on
-  their Trail assertions (the Formats are Plain there).
+  --release --test perf -- --ignored _a_second`: the six FAIL on their Trail assertions (the
+  Formats are Plain there).
 
 - [ ] **Step 3:** check the reference first: `/usr/bin/rg --version` prints `ripgrep 14.1.1`.
   Then `SFOR_REQUIRE_REFERENCE=1 cargo test --release --test perf -- --ignored --nocapture
