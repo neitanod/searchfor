@@ -1040,11 +1040,12 @@ impl Ctx<'_> {
         }
         let src = match (kept, &t.fs) {
             (Some(mut tee), _) => {
-                if stop.is_set() && self.complete_input(t, &tee.read, detector) {
-                    if let Err(e) = std::io::copy(&mut tee, &mut std::io::sink()) {
-                        report(&e);
-                        return Err(());
-                    }
+                if stop.is_set()
+                    && self.complete_input(t, &tee.read, detector)
+                    && let Err(e) = std::io::copy(&mut tee, &mut std::io::sink())
+                {
+                    report(&e);
+                    return Err(());
                 }
                 Source::from_bytes(t.path.clone(), tee.read, t.explicit)
             }
