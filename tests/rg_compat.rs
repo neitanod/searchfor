@@ -1809,3 +1809,49 @@ fn in_headings_detects_binary_data_where_ripgrep_does() {
     }
     r.assert_empty();
 }
+
+/// `--within ''` keeps every Match, and `-m` counts them after the filter, so the search reads
+/// past the `-m`th Match; the binary data it finds there is reported only when rg's search,
+/// stopped by `-m` and its after context, detects it: a walked file and stdin with `-m1` stop
+/// in their first buffer, before the NUL (matrix of code review r7).
+#[test]
+fn within_detects_binary_data_where_ripgrep_does() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("wm")).unwrap();
+    std::fs::write(fx.file("wm/late.md"), late_nul_markdown()).unwrap();
+    let stdin = In::File("wm/late.md");
+    let mut r = Report(Vec::new());
+    let cases: [(&[&str], In); 10] = [
+        (&["-m1", "needle", "wm"], In::Null),
+        (&["-m1", "-A2", "needle", "wm"], In::Null),
+        (&["--json", "-m1", "needle", "wm"], In::Null),
+        (&["needle", "wm"], In::Null),
+        (&["-m1", "needle", "-g", "late-nul.txt", "misc"], In::Null),
+        (&["-m1", "needle", "-"], stdin),
+        (&["-m1", "-A2", "needle", "-"], stdin),
+        (&["--json", "-m1", "needle", "-"], stdin),
+        (&["needle", "-"], stdin),
+        (&["-m1", "needle", "wm/late.md"], In::Null),
+    ];
+    for (args, input) in cases {
+        let json = args.contains(&"--json");
+        let mut a = if json { vec![] } else { vec!["-n"] };
+        a.extend_from_slice(args);
+        let want = rg(&fx, &a, input);
+        let mut s = vec!["--within", "", "--format", "*=markdown"];
+        if !json {
+            s.push("--flat");
+        }
+        s.extend_from_slice(args);
+        let got = sfor(&fx, &s, input);
+        r.check(
+            format!("{s:?}"),
+            (code(&want), binary_rows(&want).join("\n")),
+            (code(&got), binary_rows(&got).join("\n")),
+        );
+    }
+    r.assert_empty();
+}

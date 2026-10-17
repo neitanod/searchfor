@@ -717,14 +717,11 @@ impl Ctx<'_> {
         if let Some(mode) = self.summary {
             let d = found.as_ref().map(|(_, d)| d).filter(|_| kept);
             // rg 14.1.1's summary printer prints nothing for a file whose search quit at binary
-            // data (grep-printer-0.2.2/src/summary.rs:744-766), unless -m stopped the search
-            // first; -l stops at the first Match, before the binary data. Its count is zero,
-            // which for --files-without-match still counts as a Match in the exit code
-            // (`SummarySink::has_match`).
-            let stopped_first = self.args.max_count.is_some_and(|m| {
-                d.map_or(0, |d| d.file.matches().count() as u64) >= m
-            });
-            if st.binary_quit && mode != summary::Mode::FilesWithMatches && !stopped_first {
+            // data (grep-printer-0.2.2/src/summary.rs:744-766); `binary_quit` is false when -m
+            // stopped the search first (`describe`), and -l stops at the first Match, before
+            // the binary data. Its count is zero, which for --files-without-match still counts
+            // as a Match in the exit code (`SummarySink::has_match`).
+            if st.binary_quit && mode != summary::Mode::FilesWithMatches {
                 if mode == summary::Mode::FilesWithoutMatch {
                     self.matched.store(true, Relaxed);
                 }
@@ -1153,6 +1150,7 @@ impl Ctx<'_> {
         let Some((src, mut d)) = found else {
             return Ok(None);
         };
+        let searched_to = d.file.items.last().map_or(0, |i| item_line(i).line_number);
         if let Some(w) = &self.args.within {
             let wanted = filter::parse_within(w);
             let keep: Vec<Vec<bool>> = d
@@ -1164,6 +1162,11 @@ impl Ctx<'_> {
             // -m counts the lines the filter kept (code review r1, Fable #3).
             if let Some(m) = self.args.max_count {
                 filter::limit(&mut d, m, self.args.before(), self.max_count_after());
+                if d.file.stats.binary_offset.is_some() && !self.detected_by(&d, t, searched_to) {
+                    d.file.stats.binary_offset = None;
+                    d.file.stats.binary_cut = None;
+                    st.binary_quit = false;
+                }
             }
         }
         if self.args.expand && !self.args.in_headings {
@@ -1320,6 +1323,31 @@ impl Ctx<'_> {
             && search::binary_detection(self.args, t.explicit)
                 .quit_byte()
                 .is_some()
+    }
+
+    /// --within with `-m`: rg's search, which `-m` and its after context stop, detects the
+    /// binary data the unlimited search found (`searched_to`: the line it reported last). rg
+    /// stops after the window of the `-m`th Match kept, so it detects the binary data when the
+    /// window keeps a line reported after the detection, or, at a walked file's binary data
+    /// (`quit`), when the window runs past the last line the search reported.
+    fn detected_by(&self, d: &Described, t: &Target, searched_to: u64) -> bool {
+        let Some(mth) = self
+            .args
+            .max_count
+            .and_then(|m| usize::try_from(m).ok()?.checked_sub(1))
+            .and_then(|i| d.file.matches().nth(i))
+        else {
+            return true;
+        };
+        let window_end = mth.line_number.saturating_add(self.max_count_after() as u64);
+        let quit = search::binary_detection(self.args, t.explicit)
+            .quit_byte()
+            .is_some();
+        d.file
+            .stats
+            .binary_cut
+            .is_some_and(|c| c < d.file.items.len())
+            || (quit && window_end > searched_to)
     }
 
     /// `file`'s search stops at `-m` and its after context, as rg's (`search::MaxCount`), before

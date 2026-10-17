@@ -219,13 +219,13 @@ sfor --flat -B1 needle nul.txt
 printf 'needle first\\nmore\\0binary needle\\nneedle again\\n' | sfor --flat -v -C1 needle
 ```
 
-### The binary warning with `--within` and `-m`
+### The `--json` statistics with `--within` and `-m`
 
 With `--within`, `-m` counts the Matches the filter keeps, so the search cannot stop at the
-`-m`th Match and reads on. A walked file with a NUL after its first Match prints `WARNING:
-stopped searching binary file after match` with `--within '' -m1`, which rg 14.1.1 never
-reaches with `-m1`, as it stops before the NUL. The `end` and `summary` statistics of `--json`
-count that whole search (spec §6.4) (code review r3, Fable #5).
+`-m`th Match and reads on. The `end` and `summary` statistics of `--json` count that whole
+search (spec §6.4) (code review r3, Fable #5). Binary data found past the point where rg 14.1.1
+stops is not reported, as rg never reaches it: `--within '' -m1` on a walked file with a NUL
+after its first Match prints no `WARNING`, as `rg -m1` (code review r7).
 
 ### The `--json` statistics with `--in-headings`
 
