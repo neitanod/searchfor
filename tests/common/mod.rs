@@ -107,6 +107,51 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
+/// The executable `bin` of the workspace member `package`, built with `features` (D29: cargo
+/// only exposes `CARGO_BIN_EXE_*` for the root package's own binaries). Built once per
+/// (package, features) per test binary; a build failure panics with cargo's stderr.
+pub fn workspace_bin(package: &str, bin: &str, features: &[&str]) -> PathBuf {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    type Built = Mutex<HashMap<(String, String, Vec<String>), PathBuf>>;
+    static BUILT: OnceLock<Built> = OnceLock::new();
+    let key = (
+        package.to_string(),
+        bin.to_string(),
+        features.iter().map(|f| f.to_string()).collect::<Vec<_>>(),
+    );
+    // Held for the build, so concurrent tests wait for one cargo instead of starting several.
+    let mut built = BUILT.get_or_init(Default::default).lock().unwrap();
+    if let Some(p) = built.get(&key) {
+        return p.clone();
+    }
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let mut c = Command::new(cargo);
+    c.current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["build", "--quiet", "-p", package, "--bin", bin]);
+    if !features.is_empty() {
+        c.arg("--features").arg(features.join(","));
+    }
+    let o = c
+        .arg("--message-format=json")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        o.status.success(),
+        "cargo build -p {package} --bin {bin} failed:\n{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let exe = String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|m| m["reason"] == "compiler-artifact" && m["target"]["name"] == bin)
+        .find_map(|m| m["executable"].as_str().map(PathBuf::from))
+        .unwrap_or_else(|| panic!("cargo built no executable `{bin}` for {package}"));
+    built.insert(key, exe.clone());
+    exe
+}
+
 /// True when the reference rg 14.1.1 is installed; prints a note otherwise.
 pub fn reference_rg() -> bool {
     let ok = Command::new("rg")
