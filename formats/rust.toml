@@ -1,0 +1,16 @@
+# formats/rust.toml — Rust: classes, functions and methods (spec §5.3).
+name       = "rust"
+extensions = ["rs"]
+processor  = "treesitter"
+
+[params]
+grammar = "rust"
+query = '''
+(mod_item name: (identifier) @name) @segment
+(struct_item name: (type_identifier) @name) @segment
+(enum_item name: (type_identifier) @name) @segment
+(trait_item name: (type_identifier) @name) @segment
+(impl_item type: (_) @name) @segment
+(function_item name: (identifier) @name) @segment
+'''
+kinds = { mod_item = "module", struct_item = "struct", enum_item = "enum", trait_item = "trait", impl_item = "impl", function_item = "function" }

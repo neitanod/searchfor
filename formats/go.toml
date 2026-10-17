@@ -1,0 +1,20 @@
+# formats/go.toml — Go: classes, functions and methods (spec §5.3).
+name       = "go"
+extensions = ["go"]
+processor  = "treesitter"
+
+[params]
+grammar = "go"
+query = '''
+(type_spec name: (type_identifier) @name) @segment
+(function_declaration name: (identifier) @name) @segment
+(method_declaration
+  receiver: (parameter_list
+    (parameter_declaration
+      type: [(type_identifier) @prefix
+             (pointer_type (type_identifier) @prefix)
+             (generic_type type: (type_identifier) @prefix)
+             (pointer_type (generic_type type: (type_identifier) @prefix))]))
+  name: (field_identifier) @name) @segment
+'''
+kinds = { type_spec = "type", function_declaration = "function", method_declaration = "method" }

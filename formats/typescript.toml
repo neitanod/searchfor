@@ -1,0 +1,21 @@
+# formats/typescript.toml — TypeScript: classes, functions and methods (spec §5.3).
+name       = "typescript"
+extensions = ["ts", "mts", "cts"]
+shebangs   = ["ts-node"]
+processor  = "treesitter"
+
+[params]
+grammar = "typescript"
+query = '''
+(internal_module name: (_) @name) @segment
+(class_declaration name: (type_identifier) @name) @segment
+(abstract_class_declaration name: (type_identifier) @name) @segment
+(interface_declaration name: (type_identifier) @name) @segment
+(method_definition name: (_) @name) @segment
+(abstract_method_signature name: (_) @name) @segment
+(method_signature name: (_) @name) @segment
+(function_declaration name: (identifier) @name) @segment
+(variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)]) @segment
+(public_field_definition name: (_) @name value: [(arrow_function) (function_expression)]) @segment
+'''
+kinds = { internal_module = "namespace", class_declaration = "class", abstract_class_declaration = "class", interface_declaration = "interface", method_definition = "method", abstract_method_signature = "method", method_signature = "method", function_declaration = "function", variable_declarator = "function", public_field_definition = "method" }
