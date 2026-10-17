@@ -1536,3 +1536,57 @@ fn stdin_read_for_patterns_cannot_be_read_again() {
     }
     r.assert_empty();
 }
+
+/// The deviation «The `--json` statistics with `--in-headings`» of docs/rg-compat.md: the names
+/// search reads the whole Source, so `bytes_searched` is its size even when `-m1` stops rg at
+/// its first Match, and the counts are those of the Matches in names, which rg's line search
+/// does not find (`^needle` against `# needle`).
+#[test]
+fn in_headings_stats_deviate_as_documented() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let text = "# needle\nneedle again\nmore text here\n";
+    std::fs::write(fx.file("h.md"), text).unwrap();
+    let size = text.len() as u64;
+    // (bytes_searched, matched_lines, matches) of every `end` and `summary` message.
+    let counts = |o: &Output| -> Vec<(u64, u64, u64)> {
+        stdout(o)
+            .lines()
+            .filter_map(|l| {
+                let v: Value = serde_json::from_str(l).ok()?;
+                let s = &v["data"]["stats"];
+                Some((
+                    s["bytes_searched"].as_u64()?,
+                    s["matched_lines"].as_u64()?,
+                    s["matches"].as_u64()?,
+                ))
+            })
+            .collect()
+    };
+    for (args, rg_counts) in [
+        (&["--json", "-m1", "needle"][..], (9, 1, 1)),
+        (&["-q", "--json", "-m1", "needle"], (9, 1, 1)),
+        (&["--json", "^needle"], (size, 1, 1)),
+    ] {
+        let mut a = args.to_vec();
+        a.push("h.md");
+        let want = counts(&rg(&fx, &a, In::Null));
+        assert!(
+            !want.is_empty() && want.iter().all(|c| *c == rg_counts),
+            "rg {a:?}: {want:?}"
+        );
+        let mut s = vec!["--in-headings"];
+        s.extend_from_slice(&a);
+        let got = counts(&sfor(&fx, &s, In::Null));
+        assert!(
+            !got.is_empty() && got.iter().all(|c| *c == (size, 1, 1)),
+            "sfor {s:?}: {got:?}"
+        );
+    }
+    let o = sfor(&fx, &["--in-headings", "--flat", "^needle", "h.md"], In::Null);
+    assert!(stdout(&o).starts_with("1:"), "{}", stdout(&o));
+    let o = rg(&fx, &["-n", "^needle", "h.md"], In::Null);
+    assert_eq!(stdout(&o), "2:needle again\n");
+}
