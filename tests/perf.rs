@@ -705,3 +705,117 @@ fn many_arrays_of_tables_stay_linear() {
         "{t:?} is more than rg's {base:?} + 1 s"
     );
 }
+
+/// M3 review r1, Codex #1 and Fable #1: a parent with 200 000 distinct child tags costs
+/// constant time per child (82 s before the sibling index, against rg's 0.01 s).
+#[test]
+#[ignore]
+fn markup_many_distinct_sibling_tags_stay_linear() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let mut v = String::from("<r>");
+    for i in 0..200_000 {
+        v.push_str(&format!("<row{i}/>"));
+    }
+    v.push_str("<x>needle</x></r>\n");
+    std::fs::write(fx.file("siblings.xml"), &v).unwrap();
+    let args = ["--flat", "needle", "siblings.xml"];
+    let (out, _) = sfor_output(&fx, &args);
+    assert!(out.starts_with("1: r › x │ "), "{out:.100}");
+    let Some(((t, _), (base, _))) = against_rg(&fx, &args) else {
+        return;
+    };
+    assert!(
+        t <= base + Duration::from_millis(500),
+        "{t:?} against rg's {base:?}"
+    );
+}
+
+/// M3 review r1, Codex #2: one Match in 50 MB of line breaks keeps no index of the lines
+/// (467 MiB of RSS before the fix, against rg's 56 MiB).
+#[test]
+#[ignore]
+fn markup_keeps_no_index_of_the_lines() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let mut v = String::with_capacity(SIZE + 64);
+    v.push_str("<r>\n");
+    v.push_str(&"\n".repeat(SIZE));
+    v.push_str("<x>needle</x></r>\n");
+    std::fs::write(fx.file("blank.xml"), &v).unwrap();
+    drop(v);
+    let args = ["--flat", "needle", "blank.xml"];
+    let (out, _) = sfor_output(&fx, &args);
+    assert!(out.ends_with(": r › x │ <x>needle</x></r>\n"), "{out:.100}");
+    let Some(((t, rss), (base, base_rss))) = against_rg(&fx, &args) else {
+        return;
+    };
+    assert!(
+        t <= base + Duration::from_secs(1),
+        "{t:?} against rg's {base:?}"
+    );
+    assert!(
+        rss <= base_rss + 32 * 1_048_576,
+        "RSS {rss} is more than rg's {base_rss} + 32 MiB"
+    );
+}
+
+/// One of M3 review r2's linear walks (Codex #1): `body` in `name`, one Match, sfor within rg's
+/// time + 1 s, and the Match's Trail with `segments` Segments (256 at most, D25).
+fn markup_linear(name: &str, body: String, segments: usize) {
+    let fx = Fixture::new();
+    std::fs::write(fx.file(name), &body).unwrap();
+    let (out, _) = sfor_output(&fx, &["--json", "needle", name]);
+    let m = out
+        .lines()
+        .find(|l| l.contains(r#""type":"match""#))
+        .unwrap();
+    assert_eq!(m.matches(r#""kind":"tag""#).count(), segments, "{name}");
+    let Some(((t, _), (base, _))) = against_rg(&fx, &["--flat", "needle", name]) else {
+        return;
+    };
+    eprintln!("{name}: sfor {t:?}, rg {base:?}");
+    assert!(
+        t <= base + Duration::from_secs(1),
+        "{name}: {t:?} against rg's {base:?}"
+    );
+}
+
+/// 40 000 nested `div`s: a start tag finds the `p` it ends without searching the stack (3.96 s
+/// before `html::Reach`).
+#[test]
+#[ignore]
+fn markup_deep_nesting_stays_linear() {
+    let _alone = alone();
+    let body = format!(
+        "{}needle{}",
+        "<div>".repeat(40_000),
+        "</div>".repeat(40_000)
+    );
+    markup_linear("deep.html", body, 256);
+}
+
+/// 20 000 end tags with no element of their tag open: each is ignored at once (2.88 s before
+/// the open counts).
+#[test]
+#[ignore]
+fn markup_end_tags_with_nothing_open_stay_linear() {
+    let _alone = alone();
+    let body = format!(
+        "{}{}needle{}",
+        "<x>".repeat(20_000),
+        "</q>".repeat(20_000),
+        "</x>".repeat(20_000)
+    );
+    markup_linear("unmatched.html", body, 256);
+}
+
+/// 20 000 elements ended together at the end of the file, after 200 000 spaces: the white
+/// space is trimmed once (5.65 s before).
+#[test]
+#[ignore]
+fn markup_implied_ends_at_one_byte_stay_linear() {
+    let _alone = alone();
+    let body = format!("{}needle{}", "<x>".repeat(20_000), " ".repeat(200_000));
+    markup_linear("trim.html", body, 256);
+}

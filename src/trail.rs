@@ -88,7 +88,6 @@ impl Outline {
                 .cmp(&b.range.start)
                 .then(b.range.end.cmp(&a.range.end))
         });
-        let lines = LineIndex::new(content);
         let mut stack: Vec<usize> = Vec::new();
         for i in 0..segments.len() {
             let start = segments[i].range.start;
@@ -105,14 +104,9 @@ impl Outline {
                 }
             }
             segments[i].parent = stack.last().copied();
-            let r = segments[i].range.clone();
-            let seg = &mut segments[i].segment;
-            if seg.line == 0 {
-                seg.line = lines.line_of(r.start);
-                seg.end_line = lines.line_of(r.end.saturating_sub(1).max(r.start));
-            }
             stack.push(i);
         }
+        fill_lines(&mut segments, content);
         Self { segments }
     }
 
@@ -132,6 +126,35 @@ impl Outline {
         }
         chain.reverse();
         chain
+    }
+}
+
+/// Fills the `line` and `end_line` left at 0 from the ranges, counting line breaks only up to
+/// the last byte asked: memory grows with the Segments, never with the lines of the file (M3
+/// review r1, Codex #2).
+fn fill_lines(segments: &mut [OutlineSegment], content: &[u8]) {
+    // (byte, Segment index, whether it is the end) for every line to compute.
+    let mut asks: Vec<(usize, usize, bool)> = Vec::new();
+    for (i, s) in segments.iter().enumerate() {
+        if s.segment.line == 0 {
+            let r = &s.range;
+            asks.push((r.start, i, false));
+            asks.push((r.end.saturating_sub(1).max(r.start), i, true));
+        }
+    }
+    asks.sort_unstable();
+    let (mut at, mut line) = (0usize, 1u64);
+    for (byte, i, end) in asks {
+        let to = byte.min(content.len());
+        if to > at {
+            line += memchr::memchr_iter(b'\n', &content[at..to]).count() as u64;
+            at = to;
+        }
+        if end {
+            segments[i].segment.end_line = line;
+        } else {
+            segments[i].segment.line = line;
+        }
     }
 }
 
