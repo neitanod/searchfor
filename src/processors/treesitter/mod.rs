@@ -397,6 +397,23 @@ mod tests {
     }
 
     #[test]
+    fn object_methods_with_string_keys() {
+        // Review m2-code-r1, Fable #3: a quoted key names its method as a bare one does.
+        let src = b"const o = {\n  m() { return 1; },\n  n: function () { return 'needle'; },\n  \"quoted-key\": () => \"needle\",\n  'single': async () => 'needle',\n};\n";
+        for (format, file) in [
+            ("javascript", "x.js"),
+            ("typescript", "x.ts"),
+            ("tsx", "x.tsx"),
+        ] {
+            let got: Vec<String> = needles_in(format, file, src)
+                .into_iter()
+                .map(|(_, names, _)| names)
+                .collect();
+            assert_eq!(got, ["n", "quoted-key", "single"], "{format}");
+        }
+    }
+
+    #[test]
     fn typescript_and_tsx() {
         assert_eq!(
             needles("typescript", "shape.ts"),
