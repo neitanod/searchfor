@@ -75,12 +75,76 @@ impl Messages {
     }
 }
 
+/// The built-in Definitions, those of the installed Grammar Helpers and the user's (D26).
 fn load_registry(msgs: &Messages, user_dir: Option<&Path>) -> Registry {
-    let (registry, warnings) = Registry::load(user_dir, &processors::Processors::known);
+    let (registry, warnings) = Registry::load_all(
+        user_dir,
+        crate::grammars::grammars_dir().as_deref(),
+        &processors::Processors::known,
+    );
     for w in warnings {
         msgs.warn(w);
     }
     registry
+}
+
+/// The Processors of one run (design note 3), warning on stderr unless `--no-messages`.
+fn run_processors(args: &Args, threads: usize) -> processors::Processors {
+    let silent = args.no_messages;
+    let warn: crate::helper::Warn = std::sync::Arc::new(move |m: String| {
+        if !silent {
+            eprintln!("{m}");
+        }
+    });
+    processors::Processors::new(threads, warn).with_grammars(crate::grammars::grammars_dir())
+}
+
+/// `--list-grammars` (spec §7): the compiled-in and installed Grammars, and those the index
+/// offers for this system; an unreadable index is a warning, and the exit code stays 0 (D28).
+fn list_grammars(msgs: &Messages) -> i32 {
+    use crate::grammars::{self, index::Index, install};
+    let index = grammars::index::fetch(&grammars::index_url())
+        .and_then(|b| Index::parse(&b))
+        .map_err(|e| format!("{e:#}"));
+    if let Err(e) = &index {
+        msgs.warn(format_args!(
+            "sfor: the Grammar index is not available: {e}"
+        ));
+    }
+    let installed = grammars::grammars_dir()
+        .map(|d| grammars::installed(&d))
+        .unwrap_or_default();
+    print!(
+        "{}",
+        install::list(
+            processors::treesitter::grammars::COMPILED_IN,
+            &installed,
+            index.as_ref().map_err(String::as_str),
+        )
+    );
+    0
+}
+
+/// `--install-grammar <LANG>` (spec §7): exit 0 once installed, 2 on any error.
+fn install_grammar(lang: &str) -> i32 {
+    use crate::grammars::{self, index::Index, install};
+    let done = (|| {
+        let dir = grammars::grammars_dir().ok_or_else(|| {
+            anyhow::anyhow!("there is no Grammar directory (no data directory, and SFOR_GRAMMARS_DIR is not set)")
+        })?;
+        let index = Index::parse(&grammars::index::fetch(&grammars::index_url())?)?;
+        install::install(&index, lang, &dir)
+    })();
+    match done {
+        Ok(i) => {
+            println!("installed {} {} in {}", i.name, i.version, i.dir.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("sfor: {e:#}");
+            2
+        }
+    }
 }
 
 fn main(args: &Args) -> anyhow::Result<i32> {
@@ -89,11 +153,19 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         errored: AtomicBool::new(false),
     };
     // Actions (step 3).
+    if args.list_grammars {
+        return Ok(list_grammars(&msgs));
+    }
+    if let Some(lang) = &args.install_grammar {
+        return Ok(install_grammar(lang));
+    }
     if args.list_formats || args.export_formats.is_some() {
         let user_dir = formats::user_formats_dir();
         let registry = load_registry(&msgs, user_dir.as_deref());
         if args.list_formats {
-            print!("{}", registry.list());
+            // Built for the listing only: it reads the Grammar directory and starts nothing.
+            let procs = run_processors(args, 1);
+            print!("{}", registry.list_with(&|d| procs.available(d)));
             return Ok(0);
         }
         let dir = args.export_formats.as_deref().expect("checked above");
@@ -241,6 +313,14 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         sequential,
         line_separator,
         printed: AtomicBool::new(false),
+        processors: run_processors(
+            args,
+            if sequential {
+                1
+            } else {
+                search::walker_threads(args)
+            },
+        ),
     };
     match mode {
         Mode::Quiet => ctx.walk(
@@ -414,6 +494,9 @@ struct Ctx<'a> {
     line_separator: Option<Vec<u8>>,
     /// Something was printed: the flat layout's `line_separator` goes before the next file.
     printed: AtomicBool,
+    /// The run's Processors (design note 3), dropped with `Ctx`, which closes every helper's
+    /// stdin (spec §4.4, Lifetime).
+    processors: processors::Processors,
 }
 
 impl Ctx<'_> {
@@ -688,6 +771,7 @@ impl Ctx<'_> {
                 Some(None) => return self.plain_file(st, t, ro),
                 Some(Some(def)) if t.fs.as_deref().is_some_and(rewindable) => {
                     if let Some(p) = processors::by_name(&def.processor)
+                        && builds_outline(p)
                         && self.outlined_file(st, t, ro, def, p)
                     {
                         return;
@@ -1112,7 +1196,7 @@ impl Ctx<'_> {
         let partial = Source::from_bytes(t.path.clone(), head, t.explicit);
         detector
             .detect(&partial.path, partial.head())
-            .is_some_and(|d| processors::by_name(&d.processor).is_some())
+            .is_some_and(|d| self.processors.describes(d))
     }
 
     /// Steps 6 to 8 for one file: its search (or with --in-headings its names), the Source of a
@@ -1131,22 +1215,32 @@ impl Ctx<'_> {
         } else {
             self.search_first(st, t, detector)?.map(|(src, fm)| {
                 let def = detector.detect(&src.path, src.head());
-                let trails = match def.and_then(|d| Some((processors::by_name(&d.processor)?, d))) {
-                    // A binary file's coordinates follow NUL conversion: no Processor (step 7).
-                    Some((p, d)) if fm.stats.binary_offset.is_none() => {
+                // A binary file's coordinates follow NUL conversion: no Processor (step 7). A
+                // Format without a Processor, or whose Processor fails, is Plain (D33).
+                let described = def
+                    .filter(|_| fm.stats.binary_offset.is_none())
+                    .and_then(|d| {
+                        let p = self.processors.for_definition(d)?;
+                        let disk = disk_of(t, &src);
                         let input = Input {
                             bytes: src.bytes(),
                             path: &src.path,
                             format: &d.name,
-                            disk: None,
+                            disk: disk.as_deref(),
                         };
-                        self.trails(p, &input, &d.params, &fm)
+                        Some((d, self.trails(&*p, &input, &d.params, &fm)?))
+                    });
+                let (format, trails) = match described {
+                    Some((d, trails)) => (Some(d.name.clone()), trails),
+                    // A binary file keeps its Format's name, as M1.
+                    None if fm.stats.binary_offset.is_some() => {
+                        (def.map(|d| d.name.clone()), empty_trails(&fm))
                     }
-                    _ => empty_trails(&fm),
+                    None => (None, empty_trails(&fm)),
                 };
                 let d = Described {
                     file: fm,
-                    format: def.map(|d| d.name.clone()),
+                    format,
                     trails,
                     sections: Vec::new(),
                 };
@@ -1236,6 +1330,8 @@ impl Ctx<'_> {
             self.count_quiet_json(&stats, false);
             return Ok(None);
         }
+        // The bytes are the file's own until the binary data changes them.
+        let mut replaced = false;
         if let Some(b) = &binary {
             // The names of the bytes rg searches: up to the buffer it quits at, or with NUL
             // bytes turned into line breaks by a reader search.
@@ -1253,24 +1349,31 @@ impl Ctx<'_> {
             };
             if let Some(bytes) = bytes {
                 src = Source::from_bytes(src.path.clone(), bytes, src.explicit);
+                replaced = true;
             }
         }
         let def = detector.detect(&src.path, src.head());
-        let Some((p, def)) = def.and_then(|d| Some((processors::by_name(&d.processor)?, d))) else {
+        // A Format without a Processor is Plain: no names (D33).
+        let Some((p, def)) = def.and_then(|d| Some((self.processors.for_definition(d)?, d))) else {
             self.count_unnamed(st, binary.as_ref(), &src);
             return Ok(None);
         };
+        let disk = if replaced { None } else { disk_of(t, &src) };
         let input = Input {
             bytes: src.bytes(),
             path: &src.path,
             format: &def.name,
-            disk: None,
+            disk: disk.as_deref(),
         };
         let names = match p.names(&input, &def.params) {
             Ok(n) => n,
             Err(e) => {
-                self.msgs
-                    .warn(format_args!("sfor: {}: {e:#}", src.path.display()));
+                // A failing Processor skips the file with one warning; an unavailable one
+                // (a disabled helper) says nothing more (spec §4.4, Failures).
+                if e.downcast_ref::<crate::helper::Unavailable>().is_none() {
+                    self.msgs
+                        .warn(format_args!("sfor: {}: {e:#}", src.path.display()));
+                }
                 return Err(());
             }
         };
@@ -1541,36 +1644,40 @@ impl Ctx<'_> {
         Ok((src, binary))
     }
 
-    /// `trails[i][k]` from the Processor's one Trail per anchor; a failing Processor is a
-    /// warning and leaves the file without Trails.
+    /// `trails[i][k]` from the Processor's one Trail per anchor. None: the Processor failed,
+    /// and the file is Plain (D33), with a warning unless it is `helper::Unavailable`.
     fn trails(
         &self,
         p: &dyn Processor,
         input: &Input,
         params: &toml::Table,
         fm: &FileMatches,
-    ) -> Vec<Vec<Trail>> {
+    ) -> Option<Vec<Vec<Trail>>> {
         let anchors: Vec<Vec<usize>> = fm.matches().map(|m| m.anchors()).collect();
         let all: Vec<usize> = anchors.iter().flatten().copied().collect();
         match p.trails(input, params, &all) {
             Ok(flat) if flat.len() == all.len() => {
                 let mut it = flat.into_iter();
-                anchors
-                    .iter()
-                    .map(|a| it.by_ref().take(a.len()).collect())
-                    .collect()
+                Some(
+                    anchors
+                        .iter()
+                        .map(|a| it.by_ref().take(a.len()).collect())
+                        .collect(),
+                )
             }
             Ok(_) => {
                 self.msgs.warn(format_args!(
                     "sfor: {}: the Processor returned the wrong number of Trails",
                     input.path.display()
                 ));
-                empty_trails(fm)
+                None
             }
             Err(e) => {
-                self.msgs
-                    .warn(format_args!("sfor: {}: {e:#}", input.path.display()));
-                empty_trails(fm)
+                if e.downcast_ref::<crate::helper::Unavailable>().is_none() {
+                    self.msgs
+                        .warn(format_args!("sfor: {}: {e:#}", input.path.display()));
+                }
+                None
             }
         }
     }
@@ -1768,6 +1875,36 @@ fn if_matched<T>(
 }
 
 /// One empty Trail per submatch (one per inverted Match): Plain files and binary files.
+/// Whether the stateless built-in `p` builds Outlines (`Processor::outline_of`), asked on an
+/// empty Source: `outlined_file` would otherwise search and read a file with Matches whose
+/// Processor has none (keypath) only to hand it to `describe`, which does both again.
+fn builds_outline(p: &dyn Processor) -> bool {
+    let input = Input {
+        bytes: b"",
+        path: Path::new(""),
+        format: "",
+        disk: None,
+    };
+    p.outline_of(&input, &toml::Table::new()).is_some()
+}
+
+/// The canonical path of the file on disk whose bytes are exactly `src`'s: a regular file
+/// outside /dev and /proc, searched without a BOM or UTF-16 transcoding, whose length on disk
+/// is the Source's. The helper gets this resolved path, never the one typed: `stdin` typed in
+/// /dev, `/dev/stdin`, `/dev/fd/0` or a symlink to them name the helper's own protocol pipe
+/// in the helper's process (review r2, Fable #1; r3, Codex #2). Resolved here, a stream
+/// redirected from a file becomes that file (safe: same bytes), and a pipe or a FIFO does not
+/// resolve to a regular file. Anything else reaches the helper as a temporary copy (spec §4.4).
+/// Called only for files with Matches (D8, review r4, Codex #2).
+fn disk_of(t: &Target, src: &Source) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(t.fs.as_deref()?).ok()?;
+    if real.starts_with("/dev") || real.starts_with("/proc") {
+        return None;
+    }
+    let m = std::fs::metadata(&real).ok()?;
+    (m.is_file() && !src.had_bom && m.len() == src.bytes().len() as u64).then_some(real)
+}
+
 fn empty_trails(fm: &FileMatches) -> Vec<Vec<Trail>> {
     fm.matches()
         .map(|m| vec![Vec::new(); m.submatches.len().max(1)])
@@ -1955,6 +2092,12 @@ fn run_stats(s: &Stats) -> RunStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_outline_processors_take_the_streaming_path() {
+        assert!(builds_outline(processors::by_name("markdown").unwrap()));
+        assert!(!builds_outline(processors::by_name("keypath").unwrap()));
+    }
 
     fn searcher_for(argv: &[&str]) -> (Searcher, RegexMatcher, bool) {
         let mut v = vec!["sfor"];
