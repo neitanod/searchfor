@@ -417,12 +417,14 @@ enum Mode {
     Trail,
 }
 
-/// One file to search: its printed path, its path on disk (None for stdin), and whether it
-/// was named on the command line (design note 3).
+/// One file to search: its printed path, its path on disk (None for stdin), whether it was
+/// named on the command line (design note 3), and whether the path is a regular file, which
+/// can be opened again and read the same (not stdin, `/dev/stdin` or a FIFO).
 struct Target {
     path: PathBuf,
     fs: Option<PathBuf>,
     explicit: bool,
+    regular: bool,
 }
 
 /// What a Trail-mode thread keeps between files: a searcher for files and stdin (BOM sniffing
@@ -560,6 +562,7 @@ impl Ctx<'_> {
                 path: PathBuf::from("<stdin>"),
                 fs: None,
                 explicit: true,
+                regular: false,
             });
         }
         let is_dir = d.file_type().is_some_and(|t| t.is_dir());
@@ -573,10 +576,14 @@ impl Ctx<'_> {
         } else {
             p
         };
+        // The walker only yields regular files, and its file type costs no system call; a path
+        // named on the command line may be a link to anything, so it alone is looked up.
+        let regular = d.file_type().is_some_and(|t| t.is_file()) || (explicit && rewindable(p));
         Some(Target {
             path: shown.to_path_buf(),
             fs: Some(p.to_path_buf()),
             explicit,
+            regular,
         })
     }
 
@@ -769,7 +776,7 @@ impl Ctx<'_> {
         if !self.args.structural() && self.summary.is_none() && !self.args.quiet {
             match detector.detect_by_path(&t.path) {
                 Some(None) => return self.plain_file(st, t, ro),
-                Some(Some(def)) if t.fs.as_deref().is_some_and(rewindable) => {
+                Some(Some(def)) if t.regular => {
                     if let Some(p) = processors::by_name(&def.processor)
                         && builds_outline(p)
                         && self.outlined_file(st, t, ro, def, p)
@@ -1125,7 +1132,7 @@ impl Ctx<'_> {
         // review r2, Codex #1).
         let mut kept = None;
         let r = match &t.fs {
-            Some(p) if rewindable(p) => {
+            Some(p) if t.regular => {
                 File::open(p).and_then(|f| st.stream.search_reader(&self.matcher, f, &mut sink))
             }
             fs => {
@@ -1301,7 +1308,7 @@ impl Ctx<'_> {
             return Ok(None);
         }
         let (mut src, binary) = match &t.fs {
-            Some(p) if rewindable(p) => {
+            Some(p) if t.regular => {
                 let src = match Source::open(p, t.explicit) {
                     Ok(mut s) => {
                         s.path = t.path.clone();
