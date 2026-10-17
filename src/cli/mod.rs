@@ -58,6 +58,10 @@ pub struct Args {
     pub regexp: Vec<String>,
     #[arg(short = 'f', long = "file", action = ArgAction::Append)]
     pub pattern_files: Vec<PathBuf>,
+    /// `-e` and `-f` in command-line order (resolved in `parse`), as rg 14.1.1's
+    /// `PatternSource`s: the order of the alternatives decides what matches.
+    #[arg(skip)]
+    pub pattern_sources: Vec<PatternSource>,
     #[arg(short = 'i', long, overrides_with_all = ["case_sensitive", "smart_case"])]
     pub ignore_case: bool,
     #[arg(short = 's', long, overrides_with_all = ["ignore_case", "smart_case"])]
@@ -273,6 +277,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
     a.hidden_resolved = last_by_index(&m, &[("hidden", true), ("no_hidden", false)], u(1), true);
     a.binary_choice = binary_choice(&m);
     a.type_selections = type_selections(&m);
+    a.pattern_sources = pattern_sources(&m);
     // `-M0` turns the limit off, as in ripgrep 14.1.1 (code review r2, Codex #3).
     a.max_columns = a.max_columns.filter(|&n| n > 0);
     if let Some(s) = &a.sort
@@ -360,6 +365,35 @@ fn type_selections(m: &clap::ArgMatches) -> Vec<(bool, String)> {
     v.into_iter().map(|(_, s, t)| (s, t)).collect()
 }
 
+/// One `-e` or `-f`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatternSource {
+    Regexp(String),
+    File(PathBuf),
+}
+
+/// `-e` and `-f` sorted by their place on the command line (code review r7, Fable #2).
+fn pattern_sources(m: &clap::ArgMatches) -> Vec<PatternSource> {
+    let mut v: Vec<(usize, PatternSource)> = Vec::new();
+    if let (Some(vals), Some(idx)) = (m.get_many::<String>("regexp"), m.indices_of("regexp")) {
+        v.extend(
+            idx.zip(vals)
+                .map(|(i, p)| (i, PatternSource::Regexp(p.clone()))),
+        );
+    }
+    if let (Some(vals), Some(idx)) = (
+        m.get_many::<PathBuf>("pattern_files"),
+        m.indices_of("pattern_files"),
+    ) {
+        v.extend(
+            idx.zip(vals)
+                .map(|(i, f)| (i, PatternSource::File(f.clone()))),
+        );
+    }
+    v.sort_by_key(|e| e.0);
+    v.into_iter().map(|(_, s)| s).collect()
+}
+
 /// Where the patterns come from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Patterns {
@@ -374,18 +408,34 @@ impl Args {
     /// An empty pattern file is an empty pattern set: ripgrep 14.1.1 then searches nothing and
     /// exits 1 in every mode, `-v`, `-c` and `--json` included (no summary either); C9 does the
     /// same before walking.
+    ///
+    /// Stdin is read once, as in ripgrep 14.1.1: a second `-f -` and the path `-` after a
+    /// `-f -` are errors with rg's messages, the pattern files first in command-line order
+    /// (hiargs.rs:1016-1035), then the paths (hiargs.rs:1074-1080). The pattern files are read
+    /// with rg's grep-cli, so their errors carry the path or `<stdin>` as rg's.
     pub fn patterns(&self) -> std::io::Result<Patterns> {
         let mut paths = self.paths.clone();
-        let mut patterns = self.regexp.clone();
+        let mut patterns = Vec::new();
         let mut stdin_used = false;
-        for f in &self.pattern_files {
-            let text = if f.as_os_str() == "-" {
-                stdin_used = true;
-                std::io::read_to_string(std::io::stdin())?
-            } else {
-                std::fs::read_to_string(f)?
+        for source in &self.pattern_sources {
+            let f = match source {
+                PatternSource::Regexp(p) => {
+                    patterns.push(p.clone());
+                    continue;
+                }
+                PatternSource::File(f) => f,
             };
-            patterns.extend(text.lines().map(str::to_string));
+            if f.as_os_str() == "-" {
+                if stdin_used {
+                    return Err(std::io::Error::other(
+                        "error reading -f/--file from stdin: stdin has already been consumed",
+                    ));
+                }
+                patterns.extend(grep_cli::patterns_from_stdin()?);
+                stdin_used = true;
+            } else {
+                patterns.extend(grep_cli::patterns_from_path(f)?);
+            }
         }
         if self.regexp.is_empty() && self.pattern_files.is_empty() {
             if let Some(p) = &self.pattern {
@@ -393,6 +443,11 @@ impl Args {
             }
         } else if let Some(p) = &self.pattern {
             paths.insert(0, PathBuf::from(p));
+        }
+        if stdin_used && paths.iter().any(|p| p.as_os_str() == "-") {
+            return Err(std::io::Error::other(
+                "error: attempted to read patterns from stdin while also searching stdin",
+            ));
         }
         Ok(Patterns {
             patterns,

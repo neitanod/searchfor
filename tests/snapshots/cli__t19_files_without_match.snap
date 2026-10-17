@@ -4,12 +4,9 @@ expression: out
 ---
 md/twice.md
 misc/anchor.txt
-misc/bin.dat
-misc/bom-bin.dat
 misc/bom.md
 misc/crlf.txt
 misc/invalid.txt
-misc/late-nul.txt
 misc/min.json
 misc/noeol.txt
 misc/utf16.md

@@ -466,7 +466,9 @@ one line, wrapped here):
   a submatch whose Section differs from the line's also carries its own `section`. When all
   submatches share the line's Trail, these fields are absent.
 - The `stats` of `end` and `summary` count the Matches found by the search, before
-  `--within` and `--in-headings` filter them.
+  `--within` filters them. With `--in-headings` the search is the one in Segment names, which
+  reads the whole Source: `bytes_searched` is its size, even with `-m`, and `matched_lines` and
+  `matches` count the Matches in names (a deviation from ripgrep, in `docs/rg-compat.md`).
 - A document searched with `--docs` (M4) keeps the document in `path`; its structure appears
   as Segments of `trail`.
 - Added field names are stable from v0.1; new ones may appear, existing ones are never renamed.

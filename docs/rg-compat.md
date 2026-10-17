@@ -170,13 +170,30 @@ sfor --flat -B1 needle nul.txt
 printf 'needle first\nmore\0binary needle\nneedle again\n' | sfor --flat -v -C1 needle
 ```
 
-### The binary warning with `--within` and `-m`
+### The `--json` statistics with `--within` and `-m`
 
 With `--within`, `-m` counts the Matches the filter keeps, so the search cannot stop at the
-`-m`th Match and reads on. A walked file with a NUL after its first Match prints `WARNING:
-stopped searching binary file after match` with `--within '' -m1`, which rg 14.1.1 never
-reaches with `-m1`, as it stops before the NUL. The `end` and `summary` statistics of `--json`
-count that whole search (spec §6.4) (code review r3, Fable #5).
+`-m`th Match and reads on. The `end` and `summary` statistics of `--json` count that whole
+search (spec §6.4) (code review r3, Fable #5). Binary data found past the point where rg 14.1.1
+stops is not reported, as rg never reaches it: `--within '' -m1` on a walked file with a NUL
+after its first Match prints no `WARNING`, as `rg -m1` (code review r7).
+
+### The `--json` statistics with `--in-headings`
+
+`--in-headings` searches the Segment names the Processor reads from the whole Source, in place
+of ripgrep's search of the lines (spec §1, note 2). The `end` and `summary` statistics of
+`--json` count that search: `bytes_searched` is the size of the Source even when `-m` keeps only
+the first Match, where rg 14.1.1 stops reading at its `-m`th Match (a walked file with binary
+data is read as rg reads it, up to where rg stops), and `matched_lines` and `matches` count the
+Matches in names. Spec §6.4 says the statistics count the search before
+`--in-headings` filters it; with `--in-headings` there is no line search to count, as the names
+search finds Matches the line search does not (`^needle` matches `# needle`), so no rg command
+gives the same numbers:
+
+```sh
+printf '# needle\nneedle again\nmore text here\n' > h.md
+sfor --in-headings --json -m1 needle h.md    # bytes_searched 37; rg --json -m1: 9
+```
 
 ### Stdin or a FIFO read to the end with `-m`
 
@@ -187,6 +204,8 @@ that never ends (`yes`) never answer:
 - `--expand` and `--json` when the input's Format has an Outline (`--format markdown`): the
   Segment around a Match ends where the Outline says, which can be past the `-m`th Match.
 - `--within`, with any Format: `-m` counts the Matches the filter keeps (above).
+- `--in-headings`, with any Format: the names are read from the whole Source (code review
+  r9, Fable #1).
 
 A plain-text Format gets no Outline, so `--expand` and `--json` stop as rg does (code review
 r4, Fable #5):
@@ -194,3 +213,11 @@ r4, Fable #5):
 ```sh
 yes | sfor --format markdown --json -m1 y    # does not end; rg -m1 y does
 ```
+
+### `--in-headings` on UTF-16 with a NUL character and a context
+
+On a walked file with binary data, `--in-headings` keeps the names rg 14.1.1 would have
+searched before the read that brings the NUL. For UTF-16 that cut cannot follow rg's reads
+through the decoder, so it is the larger of the last reported line and `bytes_searched`: with a
+context (`-A`, `-B`, `-C`) on a UTF-16 file that holds U+0000, the names of the last lines of
+that buffer can be missing (fix after code review r9).

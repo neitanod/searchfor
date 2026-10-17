@@ -1,13 +1,44 @@
 //! Memory and time ceilings of the Trail pipeline (code review r1, Fable #1). Ignored by
 //! default because they write a 50 MB file and run the binary several times; run them with
 //! `cargo test --release --test perf -- --ignored --nocapture`. `SFOR_BIN` runs them against
-//! another build of sfor (to see them fail before a fix).
+//! another build of sfor (to see them fail before a fix). They measure wall time, so they run
+//! one at a time (`alone`): cargo's default of one thread per test made them load each other
+//! (code review r6, Fable #1).
 mod common;
 
 use common::Fixture;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+/// Taken by every perf test for its whole run.
+static LOCK: Mutex<()> = Mutex::new(());
+
+/// The perf tests measuring right now.
+static RUNNING: AtomicUsize = AtomicUsize::new(0);
+
+/// Held by a perf test while it measures; no other perf test measures meanwhile. `Drop` runs
+/// before the guard is released.
+struct Alone {
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl Drop for Alone {
+    fn drop(&mut self) {
+        RUNNING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Called first by every test: waits for the test measuring now to end.
+fn alone() -> Alone {
+    // A test that failed poisons the lock; the next one still runs alone.
+    let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let before = RUNNING.fetch_add(1, Ordering::SeqCst);
+    assert_eq!(before, 0, "another perf test is measuring at the same time");
+    Alone { _guard: guard }
+}
 
 const SIZE: usize = 50 * 1024 * 1024;
 
@@ -38,6 +69,16 @@ fn sfor_bin() -> std::path::PathBuf {
 /// Wall time and peak RSS in bytes of `bin args` (sfor or rg), stdout discarded, measured by
 /// `/usr/bin/time -v`. None when /usr/bin/time is missing.
 fn measure(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
+    measure_with(bin, fx, args, None)
+}
+
+/// `measure` with stdin read from `stdin`, a file in the fixture copy.
+fn measure_with(
+    bin: &Path,
+    fx: &Fixture,
+    args: &[&str],
+    stdin: Option<&str>,
+) -> Option<(Duration, u64)> {
     let time = Path::new("/usr/bin/time");
     if !time.exists() {
         return None;
@@ -49,7 +90,10 @@ fn measure(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
         .current_dir(fx.path())
         .env("SFOR_FORMATS_DIR", fx.formats.path())
         .env_remove("RIPGREP_CONFIG_PATH")
-        .stdin(Stdio::null())
+        .stdin(match stdin {
+            None => Stdio::null(),
+            Some(f) => Stdio::from(std::fs::File::open(fx.file(f)).unwrap()),
+        })
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     let started = Instant::now();
@@ -115,12 +159,14 @@ fn ceiling(name: &str, args: &[&str]) {
 #[test]
 #[ignore]
 fn inverted_search_on_a_big_plain_file_stays_under_the_ceilings() {
+    let _alone = alone();
     ceiling("big.txt", &["--flat", "-v", "zzz"]);
 }
 
 #[test]
 #[ignore]
 fn every_line_matching_in_a_big_plain_file_stays_under_the_ceilings() {
+    let _alone = alone();
     ceiling("big.txt", &["--flat", "text"]);
 }
 
@@ -158,12 +204,14 @@ fn markdown_ceiling(args: &[&str]) {
 #[test]
 #[ignore]
 fn inverted_search_on_a_big_markdown_file_stays_under_the_ceilings() {
+    let _alone = alone();
     markdown_ceiling(&["--flat", "-v", "zzz"]);
 }
 
 #[test]
 #[ignore]
 fn tree_output_of_a_big_markdown_file_stays_under_the_ceilings() {
+    let _alone = alone();
     markdown_ceiling(&["--tree", "text"]);
 }
 
@@ -172,6 +220,7 @@ fn tree_output_of_a_big_markdown_file_stays_under_the_ceilings() {
 #[test]
 #[ignore]
 fn walked_binary_files_are_not_read_before_the_search() {
+    let _alone = alone();
     let fx = Fixture::new();
     let dir = fx.file("bin");
     std::fs::create_dir(&dir).unwrap();
@@ -203,6 +252,7 @@ fn repeated(fx: &Fixture, name: &str, unit: &str, count: usize) -> String {
 #[test]
 #[ignore]
 fn an_explicit_markdown_file_without_matches_skips_the_processor() {
+    let _alone = alone();
     let fx = Fixture::new();
     let unit = "# Heading\n\nsome text\n";
     let file = repeated(&fx, "heads.md", unit, 20 * 1024 * 1024 / unit.len());
@@ -225,6 +275,7 @@ fn an_explicit_markdown_file_without_matches_skips_the_processor() {
 #[test]
 #[ignore]
 fn headings_inside_items_stay_under_the_ceiling() {
+    let _alone = alone();
     let fx = Fixture::new();
     let size = 2 * 1024 * 1024;
     let (unit, plain) = ("- # Head\n  text\n", "- Head\n  text\n");
@@ -250,6 +301,7 @@ fn headings_inside_items_stay_under_the_ceiling() {
 #[test]
 #[ignore]
 fn json_of_a_big_plain_file_stays_under_the_ceilings() {
+    let _alone = alone();
     ceiling("big.txt", &["--json", "-v", "zzz"]);
 }
 
@@ -259,6 +311,7 @@ fn json_of_a_big_plain_file_stays_under_the_ceilings() {
 #[test]
 #[ignore]
 fn json_of_a_big_markdown_file_stays_under_the_ceilings() {
+    let _alone = alone();
     let fx = Fixture::new();
     let p = big_file(fx.path(), "big.md");
     let file = p.file_name().unwrap().to_str().unwrap();
@@ -289,6 +342,7 @@ fn json_of_a_big_markdown_file_stays_under_the_ceilings() {
 #[test]
 #[ignore]
 fn json_without_trails_of_a_big_file_is_as_fast_as_ripgrep() {
+    let _alone = alone();
     let rg = Path::new("/usr/bin/rg");
     if !common::reference_rg() || !rg.exists() {
         return;
@@ -312,6 +366,74 @@ fn json_without_trails_of_a_big_file_is_as_fast_as_ripgrep() {
         assert!(
             t.as_secs_f64() <= base.as_secs_f64() * 1.25,
             "{t:?} is more than 1.25 × the {base:?} of rg --json"
+        );
+    }
+}
+
+/// Code review r7, Codex #4: `--in-headings` finds where ripgrep detects the binary data of
+/// stdin by searching it for every line, keeping no line: 8 MiB of Markdown on stdin with a NUL
+/// at its end costs at most 2 × its size more than without the NUL (the NUL-converted copy of
+/// the Source). Before the fix the search kept an empty submatch per line: 289 MiB against
+/// 97 MiB.
+#[test]
+#[ignore]
+fn the_binary_probe_of_in_headings_keeps_no_lines() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let body = "body text\n".repeat(8 * 1024 * 1024 / 10);
+    let size = body.len() as u64;
+    std::fs::write(fx.file("nul.in"), format!("# needle\n\n{body}\0\n")).unwrap();
+    std::fs::write(fx.file("text.in"), format!("# needle\n\n{body}\n")).unwrap();
+    let args = ["--in-headings", "--format", "markdown", "-c", "needle", "-"];
+    let Some((_, nul)) = measure_with(&sfor_bin(), &fx, &args, Some("nul.in")) else {
+        eprintln!("skipping: /usr/bin/time not found");
+        return;
+    };
+    let (_, text) = measure_with(&sfor_bin(), &fx, &args, Some("text.in")).unwrap();
+    eprintln!(
+        "8 MiB on stdin: RSS {} MiB with a NUL, {} MiB without",
+        nul / 1_048_576,
+        text / 1_048_576
+    );
+    assert!(
+        nul < text + 2 * size,
+        "RSS {nul} is not below {text} + 2 × {size}"
+    );
+}
+
+/// Code review r8, Fable #2: with `--in-headings`, a walked Plain file has no names, and rg's
+/// search of it shows only in `--files-without-match` (at its binary data) and in `-q --json`.
+/// It is searched with a reader, as `--within ''` searches it, without reading it whole: 50 MiB
+/// without a NUL cost 52 MiB more than `--within ''` before the fix.
+#[test]
+#[ignore]
+fn a_walked_plain_file_is_not_read_whole_with_in_headings() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let dir = fx.file("plain");
+    std::fs::create_dir(&dir).unwrap();
+    big_file(&dir, "big.log");
+    let Some((_, base)) = measure(
+        &sfor_bin(),
+        &fx,
+        &["--within", "", "--files-without-match", "zzz", "plain"],
+    ) else {
+        eprintln!("skipping: /usr/bin/time not found");
+        return;
+    };
+    for mode in [&["--files-without-match"][..], &["-q", "--json"]] {
+        let mut args = vec!["--in-headings"];
+        args.extend_from_slice(mode);
+        args.extend_from_slice(&["zzz", "plain"]);
+        let (_, rss) = measure(&sfor_bin(), &fx, &args).unwrap();
+        eprintln!(
+            "{args:?}: RSS {} MiB; --within '': {} MiB",
+            rss / 1_048_576,
+            base / 1_048_576
+        );
+        assert!(
+            rss < base + SIZE as u64 / 4,
+            "{args:?}: RSS {rss} is not below {base} + {SIZE} / 4"
         );
     }
 }
