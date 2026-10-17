@@ -1,38 +1,101 @@
 //! Processors served by a Helper Processor (spec §4.4): `HelperProcessor` over a Host (C9),
 //! and the run's temporary files.
 
-/// A Processor that asks a Helper Processor through a Host (spec §4.4). C9 fills it.
-pub struct HelperProcessor {}
+/// A Processor whose work is done by a Helper Processor (spec §4.4): built-in to sfor's
+/// pipeline, it only turns the contract into requests.
+pub struct HelperProcessor {
+    host: crate::helper::host::Host,
+    tmp: std::sync::Arc<RunTemp>,
+}
 
 impl HelperProcessor {
     pub fn new(
-        _cfg: crate::helper::HostConfig,
-        _launcher: Box<dyn crate::helper::Launcher>,
-        _tmp: std::sync::Arc<RunTemp>,
-        _warn: crate::helper::Warn,
+        cfg: crate::helper::HostConfig,
+        launcher: Box<dyn crate::helper::Launcher>,
+        tmp: std::sync::Arc<RunTemp>,
+        warn: crate::helper::Warn,
     ) -> Self {
-        unimplemented!("C9")
+        Self {
+            host: crate::helper::host::Host::new(cfg, launcher, warn),
+            tmp,
+        }
     }
 
-    pub fn shutdown(&self) {}
+    pub fn shutdown(&self) {
+        self.host.shutdown();
+    }
+
+    /// The path the helper reads, and the temporary file to keep alive until it answered: the
+    /// file itself when its bytes are the Source's and its path is UTF-8.
+    fn path_for(&self, input: &crate::model::Input) -> anyhow::Result<(String, Option<TempFile>)> {
+        if let Some(s) = input.disk.and_then(|p| p.to_str()) {
+            return Ok((s.to_string(), None));
+        }
+        let t = self.tmp.write(input.path, input.bytes)?;
+        let s = t
+            .path()
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("the temporary path is not UTF-8"))?
+            .to_string();
+        Ok((s, Some(t)))
+    }
 }
 
 impl super::Processor for HelperProcessor {
     fn trails(
         &self,
-        _: &crate::model::Input,
+        input: &crate::model::Input,
         _: &toml::Table,
-        _: &[usize],
+        anchors: &[usize],
     ) -> anyhow::Result<Vec<crate::model::Trail>> {
-        anyhow::bail!("Helper Processors are not implemented yet (C9)")
+        use crate::helper::{
+            HelperError,
+            protocol::{MatchPos, Request},
+        };
+        let (path, _tmp) = self.path_for(input)?;
+        let lines = crate::trail::LineIndex::new(input.bytes);
+        let matches = anchors
+            .iter()
+            .map(|&b| MatchPos {
+                line: lines.line_of(b),
+                byte: b as u64,
+            })
+            .collect();
+        let f = self.host.format();
+        match self
+            .host
+            .request(|id| Request::Trails { id, path, matches })
+        {
+            Ok(r) => match r.trails {
+                Some(t) if t.len() == anchors.len() => Ok(t),
+                Some(t) => anyhow::bail!(
+                    "{f}: the helper returned {} Trails for {} Matches",
+                    t.len(),
+                    anchors.len()
+                ),
+                None => anyhow::bail!("{f}: the helper's answer has no `trails`"),
+            },
+            Err(HelperError::Disabled) => Err(crate::helper::Unavailable.into()),
+            Err(e) => anyhow::bail!("{f}: {e}"),
+        }
     }
 
     fn names(
         &self,
-        _: &crate::model::Input,
+        input: &crate::model::Input,
         _: &toml::Table,
     ) -> anyhow::Result<Vec<crate::model::Name>> {
-        anyhow::bail!("Helper Processors are not implemented yet (C9)")
+        use crate::helper::{HelperError, protocol::Request};
+        let (path, _tmp) = self.path_for(input)?;
+        let f = self.host.format();
+        match self.host.request(|id| Request::Names { id, path }) {
+            Ok(r) => match r.names {
+                Some(n) => Ok(n.into_iter().map(|w| w.into_name()).collect()),
+                None => anyhow::bail!("{f}: the helper's answer has no `names`"),
+            },
+            Err(HelperError::Disabled) => Err(crate::helper::Unavailable.into()),
+            Err(e) => anyhow::bail!("{f}: {e}"),
+        }
     }
 }
 
@@ -103,5 +166,238 @@ impl RunTemp {
 impl Default for RunTemp {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::helper::host::testing::{Fake, helper};
+    use crate::helper::host::{Host, cancel};
+    use crate::helper::protocol::{Reply, Request, WireName};
+    use crate::helper::{Mode, Unavailable};
+    use crate::model::{Input, Segment};
+    use crate::processors::Processor;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    /// A HelperProcessor over a fake helper (`fail`: a command that cannot start), with a
+    /// Supervisor of its own, and the warnings it printed.
+    fn processor(
+        body: crate::helper::host::testing::Body,
+        fail: bool,
+    ) -> (HelperProcessor, Arc<Mutex<Vec<String>>>) {
+        let warnings = Arc::new(Mutex::new(Vec::new()));
+        let w = warnings.clone();
+        let fake = Fake {
+            body,
+            launches: Arc::new(AtomicUsize::new(0)),
+            reaps: Arc::new(AtomicUsize::new(0)),
+            fail,
+            hook: None,
+            slow_kill: Duration::ZERO,
+        };
+        let sup: &'static cancel::Supervisor = Box::leak(Box::new(cancel::Supervisor::new(false)));
+        let host = Host::with_supervisor(
+            crate::helper::host::testing::cfg(Mode::Pool, 2, 2000),
+            Box::new(fake),
+            Arc::new(move |m| w.lock().unwrap().push(m)),
+            sup,
+        );
+        let p = HelperProcessor {
+            host,
+            tmp: Arc::new(RunTemp::new()),
+        };
+        (p, warnings)
+    }
+
+    /// One Trail per Match, with one Segment named `name(request)`.
+    fn named(
+        name: impl Fn(&str, &[crate::helper::protocol::MatchPos]) -> String + Send + Sync + 'static,
+    ) -> crate::helper::host::testing::Body {
+        helper(move |r| {
+            let Request::Trails { id, path, matches } = r else {
+                return None;
+            };
+            let seg = Segment {
+                kind: "key".into(),
+                name: name(path, matches),
+                line: 1,
+                end_line: 1,
+                level: None,
+                signature: None,
+            };
+            Some(Reply {
+                id: *id,
+                trails: Some(vec![vec![seg]; matches.len()]),
+                ..Default::default()
+            })
+        })
+    }
+
+    fn input<'a>(bytes: &'a [u8], disk: Option<&'a Path>) -> Input<'a> {
+        Input {
+            bytes,
+            path: Path::new("dir/a.ini"),
+            format: "ini",
+            disk,
+        }
+    }
+
+    fn first_name(t: &[crate::model::Trail]) -> &str {
+        &t[0][0].name
+    }
+
+    #[test]
+    fn a_file_on_disk_is_sent_by_its_path() {
+        let (p, _) = processor(named(|path, _| path.to_string()), false);
+        let src = b"[s]\nk = needle\n";
+        let t = p
+            .trails(
+                &input(src, Some(Path::new("dir/a.ini"))),
+                &toml::Table::new(),
+                &[8],
+            )
+            .unwrap();
+        assert_eq!(first_name(&t), "dir/a.ini");
+        p.shutdown();
+    }
+
+    #[test]
+    fn bytes_that_differ_from_the_file_go_through_a_temporary_file() {
+        let seen: Arc<Mutex<Option<PathBuf>>> = Arc::default();
+        let s = seen.clone();
+        let (p, _) = processor(
+            named(move |path, _| {
+                *s.lock().unwrap() = Some(PathBuf::from(path));
+                String::from_utf8(std::fs::read(path).unwrap()).unwrap()
+            }),
+            false,
+        );
+        let src = b"[s]\nk = needle\n";
+        let t = p
+            .trails(&input(src, None), &toml::Table::new(), &[8])
+            .unwrap();
+        assert_eq!(first_name(&t).as_bytes(), src);
+        let tmp = seen.lock().unwrap().clone().unwrap();
+        assert!(
+            tmp.to_string_lossy().ends_with("-a.ini"),
+            "{}",
+            tmp.display()
+        );
+        assert!(!tmp.exists(), "{} still exists", tmp.display());
+        p.shutdown();
+    }
+
+    #[test]
+    fn lines_are_computed_from_the_bytes() {
+        let (p, _) = processor(
+            named(|_, m| {
+                m.iter()
+                    .map(|m| format!("{}@{}", m.line, m.byte))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            }),
+            false,
+        );
+        let src = b"[s]\nk=1\nneedle\n";
+        let t = p
+            .trails(
+                &input(src, Some(Path::new("dir/a.ini"))),
+                &toml::Table::new(),
+                &[0, 4, 9],
+            )
+            .unwrap();
+        assert_eq!(t.len(), 3);
+        assert_eq!(first_name(&t), "1@0,2@4,3@9");
+        p.shutdown();
+    }
+
+    #[test]
+    fn a_wrong_number_of_trails_is_an_error() {
+        let (p, _) = processor(
+            helper(|r| {
+                let Request::Trails { id, .. } = r else {
+                    return None;
+                };
+                Some(Reply {
+                    id: *id,
+                    trails: Some(vec![Vec::new()]),
+                    ..Default::default()
+                })
+            }),
+            false,
+        );
+        let e = p
+            .trails(
+                &input(b"a\nb\n", Some(Path::new("dir/a.ini"))),
+                &toml::Table::new(),
+                &[0, 2],
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("ini") && e.contains("2 Matches"), "{e}");
+        p.shutdown();
+    }
+
+    #[test]
+    fn a_disabled_helper_is_unavailable() {
+        let (p, warnings) = processor(helper(|_| None), true);
+        let i = input(b"a\n", Some(Path::new("dir/a.ini")));
+        for _ in 0..2 {
+            let e = p.trails(&i, &toml::Table::new(), &[0]).unwrap_err();
+            assert!(e.downcast_ref::<Unavailable>().is_some(), "{e}");
+            let e = p.names(&i, &toml::Table::new()).unwrap_err();
+            assert!(e.downcast_ref::<Unavailable>().is_some(), "{e}");
+        }
+        let w = warnings.lock().unwrap();
+        assert_eq!(w.len(), 1, "{w:?}");
+        p.shutdown();
+    }
+
+    #[test]
+    fn names_come_back_as_model_names() {
+        let seg = Segment {
+            kind: "section".into(),
+            name: "s".into(),
+            line: 1,
+            end_line: 2,
+            level: None,
+            signature: None,
+        };
+        let wire = WireName {
+            text: "s".into(),
+            pieces: vec![[0, 1, 1, 2]],
+            anchor: 1,
+            trail: vec![seg.clone()],
+        };
+        let w = wire.clone();
+        let (p, _) = processor(
+            helper(move |r| {
+                let Request::Names { id, .. } = r else {
+                    return None;
+                };
+                Some(Reply {
+                    id: *id,
+                    names: Some(vec![w.clone()]),
+                    ..Default::default()
+                })
+            }),
+            false,
+        );
+        let n = p
+            .names(
+                &input(b"[s]\nk=1\n", Some(Path::new("dir/a.ini"))),
+                &toml::Table::new(),
+            )
+            .unwrap();
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].text, "s");
+        assert_eq!(n[0].pieces, vec![(0..1, 1..2)]);
+        assert_eq!(n[0].anchor, 1);
+        assert_eq!(n[0].trail, vec![seg]);
+        p.shutdown();
     }
 }
