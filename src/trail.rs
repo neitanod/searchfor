@@ -223,13 +223,14 @@ pub fn trail_for(outline: &Outline, byte: usize) -> Trail {
         .collect()
 }
 
-/// Every visible Segment that has a name range, with its own Trail (it included, last).
+/// Every Segment that has a name range, hidden ones included (a key that holds an array, D35),
+/// with its own Trail (it included, last); hidden ancestors are left out of its Trail.
 pub fn names_of(outline: &Outline) -> Vec<Name> {
     outline
         .segments
         .iter()
         .enumerate()
-        .filter(|(_, s)| !s.hidden && s.name.is_some())
+        .filter(|(_, s)| s.name.is_some())
         .map(|(i, s)| Name {
             text: s.segment.name.clone(),
             pieces: s.name.clone().unwrap(),
@@ -237,16 +238,14 @@ pub fn names_of(outline: &Outline) -> Vec<Name> {
             trail: outline
                 .chain(i)
                 .into_iter()
-                .map(|j| &outline.segments[j])
-                .filter(|x| !x.hidden)
-                .map(|x| x.segment.clone())
+                .filter(|&j| !outline.segments[j].hidden || j == i)
+                .map(|j| outline.segments[j].segment.clone())
                 .collect(),
             labels: outline
                 .chain(i)
                 .into_iter()
-                .map(|j| &outline.segments[j])
-                .filter(|x| !x.hidden)
-                .map(|x| x.label.clone())
+                .filter(|&j| !outline.segments[j].hidden || j == i)
+                .map(|j| outline.segments[j].label.clone())
                 .collect(),
         })
         .collect()
@@ -376,6 +375,31 @@ mod tests {
         assert_eq!(&DOC[b.pieces[0].1.clone()], "B");
         assert_eq!(b.source_ranges(0..1), vec![13..14]);
         assert_eq!(names(&b.trail), ["A", "B"]);
+    }
+
+    #[test]
+    fn hidden_segments_are_names_only_when_named() {
+        // A Markdown table: hidden and without a name, so no Name (M1 unchanged).
+        let doc = b"| Plan | Price |\n|---|---|\n| Pro | 10 |\n";
+        let mut table = OutlineSegment::new("table", "table", 0..doc.len(), 0..0);
+        table.hidden = true;
+        let o = Outline::build(vec![table], doc);
+        assert!(names_of(&o).is_empty());
+        // A key that holds an array: hidden but named, so a Name; a named Segment under it
+        // leaves it out of its Trail (D35).
+        let mut ports = heading("P", 0..20, 0..4);
+        ports.hidden = true;
+        let o = Outline::build(vec![ports, heading("B", 10..20, 10..15)], DOC.as_bytes());
+        let n = names_of(&o);
+        let p = n
+            .iter()
+            .find(|x| x.text == "P")
+            .expect("a named hidden Segment is a Name");
+        assert_eq!(names(&p.trail), ["P"]);
+        assert_eq!((p.labels.len(), &p.labels[0]), (1, &(0..4)));
+        let b = n.iter().find(|x| x.text == "B").unwrap();
+        assert_eq!(names(&b.trail), ["B"]);
+        assert_eq!((b.labels.len(), &b.labels[0]), (1, &(10..15)));
     }
 
     #[test]

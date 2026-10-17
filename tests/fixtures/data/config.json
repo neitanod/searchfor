@@ -1,0 +1,16 @@
+{
+  // Deploy settings
+  "server": {
+    "host": "example.org",
+    "ports": [
+      {"host": "a.example", "port": 80},
+      {"host": "b.example", "port": 443},
+      {"host": "needle.example", "port": 8443},
+    ],
+    "matrix": [[1, 2], [3, "needle"]]
+  },
+  /* a block
+     comment with needle */
+  "caf\u00e9": "needle",
+  "needle_key": true
+}
