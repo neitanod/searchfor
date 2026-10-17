@@ -65,6 +65,14 @@ struct Frame {
     /// `counts`, 1-based ordinal).
     slot: usize,
     ordinal: u32,
+    /// Its children that may be Segments, from the first one on: a leaf, and every element
+    /// past MAX_DEPTH, costs only the Frame (M3 code review r1, Fable #4).
+    children: Option<Box<Children>>,
+}
+
+/// The children of an open element, counted for their `[n]`.
+#[derive(Default)]
+struct Children {
     /// Children seen so far, by tag name: (a name of that tag, count).
     counts: Vec<(Range<usize>, u32)>,
     /// Past `LINEAR` distinct tags, the slot in `counts` of each tag's key (`fill_key`), so a
@@ -87,9 +95,7 @@ impl Frame {
             seg: false,
             slot: 0,
             ordinal: 0,
-            counts: Vec::new(),
-            index: None,
-            pending: Vec::new(),
+            children: None,
         }
     }
 }
@@ -198,19 +204,21 @@ impl Walk<'_, '_, '_> {
         (text, pieces, has_id)
     }
 
-    /// Counts a child named `name` in the current element; returns its slot in `counts`.
-    fn slot(&mut self, name: &Range<usize>) -> usize {
+    /// Counts a child named `name` in the current element; returns its slot in `counts` and
+    /// its 1-based ordinal among its siblings of that tag.
+    fn slot(&mut self, name: &Range<usize>) -> (usize, u32) {
         let src = self.src;
         let syntax = self.p.syntax;
-        let indexed = self.stack.last().unwrap().counts.len() >= LINEAR;
+        let parent = self.stack.last_mut().unwrap();
+        let ch = parent.children.get_or_insert_with(Default::default);
+        let indexed = ch.counts.len() >= LINEAR;
         if indexed {
             fill_key(&mut self.buf, &src[name.clone()], syntax);
         }
         let buf = &self.buf;
-        let parent = self.stack.last_mut().unwrap();
-        let found = match (indexed, &parent.index) {
+        let found = match (indexed, &ch.index) {
             (true, Some(ix)) => ix.get(&buf[..]).copied(),
-            _ => parent.counts.iter().position(|(n, _)| {
+            _ => ch.counts.iter().position(|(n, _)| {
                 let (a, b) = (&src[n.clone()], &src[name.clone()]);
                 if syntax == Syntax::Html {
                     a.eq_ignore_ascii_case(b)
@@ -220,17 +228,18 @@ impl Walk<'_, '_, '_> {
             }),
         };
         if let Some(k) = found {
-            parent.counts[k].1 += 1;
-            return k;
+            ch.counts[k].1 += 1;
+            return (k, ch.counts[k].1);
         }
-        parent.counts.push((name.clone(), 1));
-        let k = parent.counts.len() - 1;
+        ch.counts.push((name.clone(), 1));
+        let k = ch.counts.len() - 1;
         if indexed {
-            let ix = parent.index.get_or_insert_with(|| {
+            let counts = &ch.counts;
+            let ix = ch.index.get_or_insert_with(|| {
                 // Index the tags counted so far, then this one.
                 let mut ix = Map::default();
                 let mut key = Vec::new();
-                for (j, (n, _)) in parent.counts[..k].iter().enumerate() {
+                for (j, (n, _)) in counts[..k].iter().enumerate() {
                     fill_key(&mut key, &src[n.clone()], syntax);
                     ix.insert(key.clone().into_boxed_slice(), j);
                 }
@@ -238,7 +247,7 @@ impl Walk<'_, '_, '_> {
             });
             ix.insert(buf.clone().into_boxed_slice(), k);
         }
-        k
+        (k, 1)
     }
 
     /// HTML: the id of the tag `name`, given one when it is new.
@@ -271,8 +280,10 @@ impl Walk<'_, '_, '_> {
             if has_id {
                 self.c.closed(s, end);
             } else {
+                // A Segment's parent counted it, so it has its children.
                 let parent = self.stack.last_mut().unwrap();
-                parent.pending.push((s, f.slot, f.ordinal));
+                let ch = parent.children.as_mut().expect("counted by `slot`");
+                ch.pending.push((s, f.slot, f.ordinal));
             }
         }
     }
@@ -280,8 +291,11 @@ impl Walk<'_, '_, '_> {
     /// Hands `f`'s pending children to the Collector, with `[n]` on those whose tag repeats
     /// among their siblings (spec §5.4).
     fn flush(&mut self, f: &mut Frame) {
-        for (mut s, slot, ordinal) in std::mem::take(&mut f.pending) {
-            if f.counts[slot].1 >= 2 {
+        let Some(ch) = f.children.as_mut() else {
+            return;
+        };
+        for (mut s, slot, ordinal) in std::mem::take(&mut ch.pending) {
+            if ch.counts[slot].1 >= 2 {
                 s.segment.name.push_str(&format!("[{ordinal}]"));
             }
             let end = s.range.end;
@@ -327,8 +341,9 @@ impl Walk<'_, '_, '_> {
                 self.close_implied(tag.start);
             }
         }
-        let slot = self.slot(&name);
-        let ordinal = self.stack.last().unwrap().counts[slot].1;
+        // Only a child that may be a Segment needs its place among its siblings.
+        let seg = self.stack.len() <= MAX_DEPTH;
+        let (slot, ordinal) = if seg { self.slot(&name) } else { (0, 0) };
         // An empty element (`<x/>`, a void element) holds nothing but its tag: no Segment, but
         // it counts among its siblings.
         if self_closing || info.void {
@@ -353,12 +368,10 @@ impl Walk<'_, '_, '_> {
             info,
             reach,
             id,
-            seg: self.stack.len() <= MAX_DEPTH,
+            seg,
             slot,
             ordinal,
-            counts: Vec::new(),
-            index: None,
-            pending: Vec::new(),
+            children: None,
         });
         if raw {
             sc.skip_raw_text(&self.src[name]);

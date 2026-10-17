@@ -1043,3 +1043,32 @@ fn a_huge_header_cell_costs_no_memory_per_escape() {
         }
     }
 }
+
+/// M3 code review r1, Fable #4: an open element costs its Frame, and only an element with
+/// children that can be Segments counts them. Before the fix a million nested elements (7 MB)
+/// cost 295 MiB, about 300 bytes each.
+#[test]
+#[ignore]
+fn a_million_nested_elements_cost_little_each() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let n = 1_000_000;
+    let body = ["<a>".repeat(n), "needle".into(), "</a>".repeat(n)].concat();
+    for file in ["nest.xml", "nest.html"] {
+        std::fs::write(fx.file(file), &body).unwrap();
+        let Some((_, base)) = measure(&sfor_bin(), &fx, &["--no-trail", "needle", file]) else {
+            eprintln!("skipping: /usr/bin/time not found");
+            return;
+        };
+        let (t, rss) = measure(&sfor_bin(), &fx, &["--flat", "needle", file]).unwrap();
+        eprintln!(
+            "{file}: {t:?}, RSS {} MiB; --no-trail: {} MiB",
+            rss / 1_048_576,
+            base / 1_048_576
+        );
+        assert!(
+            rss < base + 128 * n as u64,
+            "{file}: RSS {rss} is not below {base} + 128 × {n}"
+        );
+    }
+}
