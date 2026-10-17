@@ -1122,3 +1122,54 @@ fn a_million_nested_elements_cost_little_each() {
         );
     }
 }
+
+/// M3 code review r2, Codex #1: an HTML name and a cue identifier are cut at 40 characters, so
+/// their size must not cost memory per piece. Before the fix 4 million classes cost 160 MiB
+/// and an 8 MB identifier of Latin-1 bytes 297 MiB, against 21 and 22 MiB with `--no-trail`.
+#[test]
+#[ignore]
+fn a_huge_name_costs_no_memory_per_piece() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let size = 8 * 1024 * 1024;
+    let files = [
+        (
+            "classes.html",
+            [
+                &b"<div class=\""[..],
+                &b"a ".repeat(size / 2),
+                b"\">\nneedle\n</div>\n",
+            ]
+            .concat(),
+            format!("2: div{}… │ needle\n", ".a".repeat(18)),
+        ),
+        (
+            "latin1.srt",
+            [
+                &[0xe9u8].repeat(size)[..],
+                b"\n00:00:01,000 --> 00:00:02,000\nneedle\n",
+            ]
+            .concat(),
+            format!("3: cue {}… 00:00:01,000 │ needle\n", "\u{FFFD}".repeat(39)),
+        ),
+    ];
+    for (file, body, row) in &files {
+        std::fs::write(fx.file(file), body).unwrap();
+        let Some((_, base)) = measure(&sfor_bin(), &fx, &["--no-trail", "needle", file], 0) else {
+            eprintln!("skipping: /usr/bin/time not found");
+            return;
+        };
+        let args = ["--color", "never", "--flat", "needle", file];
+        let (t, rss, out) = measure_out(&sfor_bin(), &fx, &args, 0).unwrap();
+        assert_eq!(&out, row, "{file}");
+        eprintln!(
+            "{file}: {t:?}, RSS {} MiB; --no-trail: {} MiB",
+            rss / 1_048_576,
+            base / 1_048_576
+        );
+        assert!(
+            rss < base + 3 * size as u64,
+            "{file}: RSS {rss} is not below {base} + 3 × {size}"
+        );
+    }
+}

@@ -100,11 +100,6 @@ impl Frame {
     }
 }
 
-/// A name's text and pieces from the Source bytes `r` (`text::push_lossy`).
-fn push_piece(src: &[u8], r: Range<usize>, text: &mut String, pieces: &mut Pieces) {
-    crate::text::push_lossy(text, pieces, src, r);
-}
-
 /// The walk builds a Segment only when its element closes and holds an anchor (`keeps`), so
 /// the elements without Matches cost no allocation (M3 plan, design note 3).
 struct Walk<'s, 'c, 'a> {
@@ -173,19 +168,22 @@ impl Walk<'_, '_, '_> {
     /// its pieces (spec §5.4). Returns whether the element has an id.
     fn name_of(&self, f: &Frame) -> (String, Pieces, bool) {
         let src = self.src;
-        let mut text = String::new();
-        let mut pieces = Vec::new();
-        push_piece(src, f.name.clone(), &mut text, &mut pieces);
+        // Built only up to its cut (`text::CutName`): the words of a `class` past it are not
+        // even split (M3 code review r2, Codex #1).
+        let mut n = crate::text::CutName::new(self.p.name_chars);
+        n.push_lossy(src, f.name.clone());
         let mut has_id = false;
         if self.p.syntax == Syntax::Html {
             if let Some(id) = scan::attribute(src, &f.tag, f.name.end, b"id", false) {
                 has_id = true;
-                text.push('#');
-                push_piece(src, id, &mut text, &mut pieces);
+                n.push_str("#");
+                n.push_lossy(src, id);
             }
-            if let Some(cls) = scan::attribute(src, &f.tag, f.name.end, b"class", false) {
+            if !n.full()
+                && let Some(cls) = scan::attribute(src, &f.tag, f.name.end, b"class", false)
+            {
                 let mut i = cls.start;
-                while i < cls.end {
+                while i < cls.end && !n.full() {
                     while i < cls.end && src[i].is_ascii_whitespace() {
                         i += 1;
                     }
@@ -194,13 +192,13 @@ impl Walk<'_, '_, '_> {
                         i += 1;
                     }
                     if s < i {
-                        text.push('.');
-                        push_piece(src, s..i, &mut text, &mut pieces);
+                        n.push_str(".");
+                        n.push_lossy(src, s..i);
                     }
                 }
             }
         }
-        crate::text::cut_name(&mut text, &mut pieces, self.p.name_chars);
+        let (text, pieces) = n.finish();
         (text, pieces, has_id)
     }
 

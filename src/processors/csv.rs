@@ -301,22 +301,19 @@ fn header_name(
         }
         _ => (raw, None),
     };
-    // One character past the cut tells that there is a cut: nothing after it is kept, so a cell
-    // of megabytes costs no memory per escape or per invalid byte (M3 code review r1, Codex #1).
-    let budget = name_chars.saturating_add(1);
-    let mut text = String::new();
-    let mut pieces = Vec::new();
+    // Built only up to its cut (`text::CutName`): a cell of megabytes costs no memory per
+    // escape or per invalid byte (M3 code review r1, Codex #1).
+    let mut n = crate::text::CutName::new(name_chars);
     if !decodes_to(src, body.clone(), q, decoded) {
         let d = decoded.trim_ascii();
-        push_lossy_upto(&mut text, &mut pieces, d, 0..d.len(), budget);
-        pieces.clear();
+        n.push_lossy(d, 0..d.len());
+        let (text, _) = n.finish();
         if text.is_empty() {
             return None;
         }
-        crate::text::cut_name(&mut text, &mut pieces, name_chars);
         return Some(HeaderName {
             text,
-            pieces,
+            pieces: Vec::new(),
             searchable: false,
         });
     }
@@ -329,34 +326,23 @@ fn header_name(
     while b > a && space(src[b - 1]) {
         b -= 1;
     }
-    // Verbatim runs and `""` escapes, in order, until the budget is spent.
-    let mut chars = 0;
+    // Verbatim runs and `""` escapes, in order, until the cut is decided.
     let (mut i, mut run) = (a, a);
-    while i < b && chars < budget {
+    while i < b && !n.full() {
         if q.is_some_and(|q| src[i] == q && i + 1 < b && src[i + 1] == q) {
-            if run < i {
-                chars += push_lossy_upto(&mut text, &mut pieces, src, run..i, budget - chars);
-                if chars == budget {
-                    break;
-                }
-            }
-            let at = text.len();
-            text.push(src[i] as char);
-            pieces.push((at..text.len(), i..i + 2));
-            chars += 1;
+            n.push_lossy(src, run..i);
+            n.push_decoded(src[i] as char, i..i + 2);
             i += 2;
             run = i;
         } else {
             i += 1;
         }
     }
-    if run < i && chars < budget {
-        push_lossy_upto(&mut text, &mut pieces, src, run..i, budget - chars);
-    }
+    n.push_lossy(src, run..i);
+    let (text, pieces) = n.finish();
     if text.is_empty() {
         return None;
     }
-    crate::text::cut_name(&mut text, &mut pieces, name_chars);
     Some(HeaderName {
         text,
         pieces,
@@ -385,48 +371,6 @@ fn decodes_to(src: &[u8], body: Range<usize>, q: Option<u8>, decoded: &[u8]) -> 
         j += 1;
     }
     j == decoded.len()
-}
-
-/// `crate::text::push_lossy` of at most `max` characters of `src[r]`: the pieces are the same
-/// up to there. Returns how many characters it pushed.
-fn push_lossy_upto(
-    text: &mut String,
-    pieces: &mut Pieces,
-    src: &[u8],
-    r: Range<usize>,
-    max: usize,
-) -> usize {
-    let mut at = r.start;
-    let mut n = 0;
-    for chunk in src[r].utf8_chunks() {
-        let valid = chunk.valid();
-        if n == max {
-            return n;
-        }
-        if !valid.is_empty() {
-            let take = valid
-                .char_indices()
-                .nth(max - n)
-                .map_or(valid.len(), |(k, _)| k);
-            let t = text.len();
-            text.push_str(&valid[..take]);
-            n += valid[..take].chars().count();
-            pieces.push((t..text.len(), at..at + take));
-            if take < valid.len() {
-                return n;
-            }
-            at += take;
-        }
-        let invalid = chunk.invalid();
-        if !invalid.is_empty() && n < max {
-            let t = text.len();
-            text.push('\u{FFFD}');
-            pieces.push((t..text.len(), at..at + invalid.len()));
-            at += invalid.len();
-            n += 1;
-        }
-    }
-    n
 }
 
 impl Csv {

@@ -88,10 +88,11 @@ impl Cue {
         let lead = raw.len() - raw.trim_ascii_start().len();
         let trimmed = raw.trim_ascii();
         let s0 = r.start + lead;
-        let (mut text, mut pieces) = (String::new(), Vec::new());
-        crate::text::push_lossy(&mut text, &mut pieces, src, s0..s0 + trimmed.len());
-        crate::text::cut_name(&mut text, &mut pieces, ID_CHARS);
-        (text, pieces)
+        // Built only up to its cut: an identifier of megabytes costs no memory per invalid byte
+        // (M3 code review r2, Codex #1).
+        let mut n = crate::text::CutName::new(ID_CHARS);
+        n.push_lossy(src, s0..s0 + trimmed.len());
+        n.finish()
     }
 
     fn id_text(&self, src: &[u8]) -> String {

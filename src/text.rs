@@ -37,21 +37,114 @@ pub type Pieces = Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>;
 /// (verbatim) and one per invalid sequence (its U+FFFD over its bytes): a cut then keeps every
 /// visible run, a Latin-1 `é` before 40 `A`s included (M3 review r2, Codex #2).
 pub fn push_lossy(text: &mut String, pieces: &mut Pieces, src: &[u8], r: std::ops::Range<usize>) {
+    push_lossy_upto(text, pieces, src, r, usize::MAX);
+}
+
+/// `push_lossy` of at most `max` characters of `src[r]`: the pieces are the same up to there.
+/// Returns how many characters it pushed.
+fn push_lossy_upto(
+    text: &mut String,
+    pieces: &mut Pieces,
+    src: &[u8],
+    r: std::ops::Range<usize>,
+    max: usize,
+) -> usize {
     let mut at = r.start;
+    let mut n = 0;
     for chunk in src[r].utf8_chunks() {
-        for (part, replaced) in [(chunk.valid().as_bytes(), false), (chunk.invalid(), true)] {
-            if part.is_empty() {
-                continue;
-            }
-            let t = text.len();
-            if replaced {
-                text.push('\u{FFFD}');
-            } else {
-                text.push_str(chunk.valid());
-            }
-            pieces.push((t..text.len(), at..at + part.len()));
-            at += part.len();
+        let valid = chunk.valid();
+        if n == max {
+            return n;
         }
+        if !valid.is_empty() {
+            let take = valid
+                .char_indices()
+                .nth(max - n)
+                .map_or(valid.len(), |(k, _)| k);
+            let t = text.len();
+            text.push_str(&valid[..take]);
+            n += valid[..take].chars().count();
+            pieces.push((t..text.len(), at..at + take));
+            if take < valid.len() {
+                return n;
+            }
+            at += take;
+        }
+        let invalid = chunk.invalid();
+        if !invalid.is_empty() && n < max {
+            let t = text.len();
+            text.push('\u{FFFD}');
+            pieces.push((t..text.len(), at..at + invalid.len()));
+            at += invalid.len();
+            n += 1;
+        }
+    }
+    n
+}
+
+/// A name cut at `max` characters (`cut_name`), built only up to one character past its cut,
+/// which tells that there is one: what lies beyond adds no text and no pieces, so a `class` of
+/// millions of words, a cue identifier of megabytes of Latin-1 or a header cell of `""`s costs
+/// the characters it shows (M3 code review r1 and r2, Codex #1). `finish` gives what
+/// `push_lossy` and `cut_name` give for the whole name.
+pub struct CutName {
+    text: String,
+    pieces: Pieces,
+    /// Characters pushed so far, at most `budget`.
+    chars: usize,
+    budget: usize,
+    max: usize,
+}
+
+impl CutName {
+    /// `max` 0 cuts nothing, as `cut_name`.
+    pub fn new(max: usize) -> Self {
+        Self {
+            text: String::new(),
+            pieces: Pieces::new(),
+            chars: 0,
+            budget: if max == 0 { usize::MAX } else { max + 1 },
+            max,
+        }
+    }
+
+    /// Whether the cut is decided: nothing pushed from now on is kept.
+    pub fn full(&self) -> bool {
+        self.chars >= self.budget
+    }
+
+    /// `push_lossy` of `src[r]`, up to the budget.
+    pub fn push_lossy(&mut self, src: &[u8], r: std::ops::Range<usize>) {
+        let room = self.budget - self.chars;
+        self.chars += push_lossy_upto(&mut self.text, &mut self.pieces, src, r, room);
+    }
+
+    /// Text that maps to nothing in the Source, as the `#` and `.` of an HTML name.
+    pub fn push_str(&mut self, s: &str) {
+        for c in s.chars() {
+            if self.full() {
+                return;
+            }
+            self.text.push(c);
+            self.chars += 1;
+        }
+    }
+
+    /// One character decoded from the Source bytes `r`, as CSV's `""`.
+    pub fn push_decoded(&mut self, c: char, r: std::ops::Range<usize>) {
+        if self.full() {
+            return;
+        }
+        let at = self.text.len();
+        self.text.push(c);
+        self.pieces.push((at..self.text.len(), r));
+        self.chars += 1;
+    }
+
+    /// The name, cut, and its pieces.
+    pub fn finish(mut self) -> (String, Pieces) {
+        cut_name(&mut self.text, &mut self.pieces, self.max);
+        (self.text, self.pieces)
     }
 }
 
@@ -146,6 +239,61 @@ mod tests {
         let mut p: Pieces = vec![(0..5, 0..5)];
         cut_name(&mut t, &mut p, 40);
         assert_eq!((t.as_str(), p), ("short", vec![(0..5, 0..5)]));
+    }
+
+    #[test]
+    fn a_cut_name_keeps_nothing_past_its_cut() {
+        // M3 code review r2, Codex #1: past one character after the cut, pushes keep nothing,
+        // and the result is what `push_lossy` and `cut_name` give for the whole name.
+        let src = [
+            &b"div"[..],
+            &b" a".repeat(1000),
+            b"\xe9".repeat(100).as_slice(),
+        ]
+        .concat();
+        let mut n = CutName::new(10);
+        n.push_lossy(&src, 0..3);
+        for k in 0..1000 {
+            n.push_str(".");
+            n.push_lossy(&src, 4 + 2 * k..5 + 2 * k);
+        }
+        assert!(n.full());
+        assert!(n.pieces.len() <= 11, "{}", n.pieces.len());
+        let at = 2003;
+        n.push_lossy(&src, at..at + 100);
+        let (t, p) = n.finish();
+        let (mut whole, mut wp) = (String::new(), Pieces::new());
+        push_lossy(&mut whole, &mut wp, &src, 0..3);
+        for k in 0..1000 {
+            whole.push('.');
+            push_lossy(&mut whole, &mut wp, &src, 4 + 2 * k..5 + 2 * k);
+        }
+        cut_name(&mut whole, &mut wp, 10);
+        assert_eq!((t.as_str(), &p), (whole.as_str(), &wp));
+        assert_eq!(t, "div.a.a.a…");
+        // Latin-1: one character per invalid byte, before the cut or past it.
+        let mut n = CutName::new(4);
+        n.push_lossy(&src, at..at + 100);
+        assert_eq!(
+            n.finish(),
+            (
+                "\u{FFFD}\u{FFFD}\u{FFFD}…".to_string(),
+                vec![
+                    (0..3, at..at + 1),
+                    (3..6, at + 1..at + 2),
+                    (6..9, at + 2..at + 3)
+                ]
+            )
+        );
+        // A decoded character keeps its Source range; a short name is untouched.
+        let mut n = CutName::new(40);
+        n.push_decoded('"', 7..9);
+        n.push_lossy(b"ab", 0..2);
+        assert!(!n.full());
+        assert_eq!(
+            n.finish(),
+            ("\"ab".to_string(), vec![(0..1, 7..9), (1..3, 0..2)])
+        );
     }
 
     #[test]
