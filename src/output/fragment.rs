@@ -29,20 +29,76 @@ impl Fragment {
 
 pub const MIN_TEXT: usize = 10;
 
+/// Bytes per entry of `Chars`' index.
+const BLOCK: usize = 4096;
+
+/// Character and byte offsets of a line, converted through the number of characters before
+/// every `BLOCK`-th byte: a line of 50 MB costs an index of 100 KB, where one offset per
+/// character cost 400 MB (M2 plan, Task 11.4).
+struct Chars<'a> {
+    bytes: &'a [u8],
+    /// `before[k]`: the characters that start before byte `k * BLOCK`; the last entry is the
+    /// line's character count.
+    before: Vec<usize>,
+}
+
+/// The characters that start in `bytes`: the bytes that are not UTF-8 continuation bytes.
+fn starts(bytes: &[u8]) -> usize {
+    bytes.iter().filter(|&&b| (b as i8) >= -0x40).count()
+}
+
+impl<'a> Chars<'a> {
+    fn new(line: &'a str) -> Self {
+        let bytes = line.as_bytes();
+        let mut before = Vec::with_capacity(bytes.len() / BLOCK + 2);
+        let mut n = 0;
+        for block in bytes.chunks(BLOCK) {
+            before.push(n);
+            n += starts(block);
+        }
+        before.push(n);
+        Self { bytes, before }
+    }
+
+    fn total(&self) -> usize {
+        *self.before.last().expect("never empty")
+    }
+
+    /// The characters that start before byte `b` (`b` at most the line's length).
+    fn to_char(&self, b: usize) -> usize {
+        let k = b / BLOCK;
+        self.before[k] + starts(&self.bytes[k * BLOCK..b])
+    }
+
+    /// The byte where character `c` starts; the line's length for `c` at its end.
+    fn to_byte(&self, c: usize) -> usize {
+        if c >= self.total() {
+            return self.bytes.len();
+        }
+        // The block where character `c` starts: the last one with fewer characters before it.
+        let k = self.before.partition_point(|&n| n <= c) - 1;
+        let mut left = c - self.before[k];
+        for (i, &b) in self.bytes[k * BLOCK..].iter().enumerate() {
+            if (b as i8) >= -0x40 {
+                if left == 0 {
+                    return k * BLOCK + i;
+                }
+                left -= 1;
+            }
+        }
+        unreachable!("character {c} starts before the end of the line")
+    }
+}
+
 /// Splits `line` (valid UTF-8, without terminator) into Fragments around `subs` (byte ranges
 /// on char boundaries). Returns None when the line fits in `width` characters.
 pub fn fragments(line: &str, subs: &[(usize, usize)], width: usize) -> Option<Vec<Fragment>> {
-    let total = line.chars().count();
+    let chars = Chars::new(line);
+    let total = chars.total();
     if total <= width {
         return None;
     }
-    // Byte offset of every char, plus the end of the line.
-    let offs: Vec<usize> = line
-        .char_indices()
-        .map(|(i, _)| i)
-        .chain(std::iter::once(line.len()))
-        .collect();
-    let to_char = |b: usize| offs.partition_point(|&o| o < b);
+    let to_char = |b: usize| chars.to_char(b);
     // Both markers are reserved, so every Fragment of a line has the same text width.
     let marker = 5 + total.to_string().len();
     let inner = width.saturating_sub(2 * marker).max(MIN_TEXT);
@@ -85,7 +141,7 @@ pub fn fragments(line: &str, subs: &[(usize, usize)], width: usize) -> Option<Ve
                     let we = (s.saturating_sub(pad) + inner).min(total);
                     (we.saturating_sub(inner), we)
                 };
-                let (bs, be) = (offs[ws], offs[we]);
+                let (bs, be) = (chars.to_byte(ws), chars.to_byte(we));
                 Fragment {
                     text: line[bs..be].to_string(),
                     start: bs,
@@ -114,6 +170,35 @@ mod tests {
             s.replace_range(*i..*i + t.len(), t);
         }
         s
+    }
+
+    /// `Chars` agrees with an offset per character, across block boundaries and characters
+    /// cut by them.
+    #[test]
+    fn chars_convert_as_one_offset_per_character() {
+        let line: String = (0..3 * BLOCK)
+            .map(|i| ['a', 'ñ', '€', '😀'][i % 7 % 4])
+            .collect();
+        let offs: Vec<usize> = line
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(line.len()))
+            .collect();
+        let c = Chars::new(&line);
+        assert_eq!(c.total(), offs.len() - 1);
+        // Every byte near a block boundary, and some in between.
+        let near = |b: usize| b % BLOCK < 8 || b % BLOCK > BLOCK - 8 || b.is_multiple_of(61);
+        for b in (0..=line.len()).filter(|&b| near(b) || b == line.len()) {
+            assert_eq!(c.to_char(b), offs.partition_point(|&o| o < b), "byte {b}");
+        }
+        for (i, &o) in offs
+            .iter()
+            .enumerate()
+            .filter(|&(_, &o)| near(o) || o == line.len())
+        {
+            assert_eq!(c.to_byte(i), o, "char {i}");
+        }
+        assert_eq!(Chars::new("").total(), 0);
     }
 
     #[test]

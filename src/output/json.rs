@@ -369,18 +369,26 @@ fn base64(bytes: &[u8]) -> String {
 /// The line's first Fragment at `width`, or null when the line fits.
 fn fragment(bytes: &[u8], subs: &[Submatch], width: usize) -> Value {
     let raw = text::strip_terminator(bytes);
-    let (t, map) = text::lossy_with_map(raw);
-    let subs: Vec<(usize, usize)> = subs
-        .iter()
-        .map(|s| (map[s.start.min(raw.len())], map[s.end.min(raw.len())]))
-        .collect();
+    // Valid UTF-8 is its own text: no offset map, which costs a word per byte.
+    let (t, map) = match std::str::from_utf8(raw) {
+        Ok(t) => (std::borrow::Cow::Borrowed(t), None),
+        Err(_) => {
+            let (t, map) = text::lossy_with_map(raw);
+            (std::borrow::Cow::Owned(t), Some(map))
+        }
+    };
+    let at = |b: usize| {
+        let b = b.min(raw.len());
+        map.as_ref().map_or(b, |m| m[b])
+    };
+    let subs: Vec<(usize, usize)> = subs.iter().map(|s| (at(s.start), at(s.end))).collect();
     let Some(f) = fragments(&t, &subs, width).and_then(|f| f.into_iter().next()) else {
         return Value::Null;
     };
     json!({
         "text": f.text,
         // Back to a byte offset in the line, which differs from the text's after U+FFFD.
-        "start": map.partition_point(|&m| m < f.start),
+        "start": map.as_ref().map_or(f.start, |m| m.partition_point(|&m| m < f.start)),
         "omitted_before": f.omitted_before,
         "omitted_after": f.omitted_after,
     })

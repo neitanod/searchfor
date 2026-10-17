@@ -79,20 +79,25 @@ pub fn write_line(
         return w.write_all(b"\n");
     }
     let raw = crate::text::strip_terminator(bytes);
-    // The common case, without building the offset map: valid UTF-8 that fits (its bytes are
-    // at least as many as its characters, and Fragments start beyond `avail` characters).
-    if raw.len() <= avail
-        && let Ok(text) = std::str::from_utf8(raw)
-    {
-        prefix(w)?;
-        style::write_highlighted(w, text, subs)?;
-        return w.write_all(b"\n");
-    }
-    let (text, map) = crate::text::lossy_with_map(raw);
-    let subs: Vec<(usize, usize)> = subs
-        .iter()
-        .map(|&(s, e)| (map[s.min(raw.len())], map[e.min(raw.len())]))
-        .collect();
+    // Valid UTF-8 is its own text, without the offset map, which costs a word per byte.
+    let (text, subs) = match std::str::from_utf8(raw) {
+        // The common case: it fits (its bytes are at least as many as its characters, and
+        // Fragments start beyond `avail` characters).
+        Ok(text) if raw.len() <= avail => {
+            prefix(w)?;
+            style::write_highlighted(w, text, subs)?;
+            return w.write_all(b"\n");
+        }
+        Ok(text) => (std::borrow::Cow::Borrowed(text), subs.to_vec()),
+        Err(_) => {
+            let (text, map) = crate::text::lossy_with_map(raw);
+            let subs = subs
+                .iter()
+                .map(|&(s, e)| (map[s.min(raw.len())], map[e.min(raw.len())]))
+                .collect();
+            (std::borrow::Cow::Owned(text), subs)
+        }
+    };
     match fragment::fragments(&text, &subs, avail) {
         None => {
             prefix(w)?;
