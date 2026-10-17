@@ -1725,3 +1725,87 @@ fn summaries_of_walked_binary_files_equal_ripgrep() {
     }
     r.assert_empty();
 }
+
+/// What a binary-policy case prints, comparable between rg and sfor: for each line of rg's
+/// standard printer with `-n` (or of sfor's flat layout), its path and line number, or rg's
+/// binary message; for each `begin`, `match`, `context` and `end` of `--json`, its type, path
+/// and line number, and the `binary_offset` of `end`.
+fn binary_rows(o: &Output) -> Vec<String> {
+    stdout(o)
+        .lines()
+        .map(|l| {
+            if let Ok(v) = serde_json::from_str::<Value>(l) {
+                let d = &v["data"];
+                let n = if v["type"] == "end" {
+                    &d["binary_offset"]
+                } else {
+                    &d["line_number"]
+                };
+                return format!("{} {} {n}", v["type"], d["path"]["text"]);
+            }
+            if let Some(at) = l.find("WARNING").or_else(|| l.find("binary file")) {
+                return l[at..].to_string();
+            }
+            // rg -n: [path:]N:text; the flat layout: [path:]N: Trail │ text.
+            let parts: Vec<&str> = l.splitn(3, ':').collect();
+            match parts.as_slice() {
+                [n, ..] if n.parse::<u64>().is_ok() => n.to_string(),
+                [p, n, ..] if n.parse::<u64>().is_ok() => format!("{p}:{n}"),
+                _ => format!("? {l}"),
+            }
+        })
+        .collect()
+}
+
+/// A Markdown file whose NUL is past rg 14.1.1's first buffer of 64 KiB, after a heading.
+fn late_nul_markdown() -> String {
+    format!("# needle\n{}\0\n# needle late\n", "filler line\n".repeat(6000))
+}
+
+/// Code review r7, Codex #3: `--in-headings` reports the binary data rg's search detects, which
+/// `-m` and its after context stop before the NUL: stdin and a walked file with `-m1` stop in
+/// their first buffer. A file named on the command line is searched in memory, where rg looks
+/// for a NUL in the first 64 KiB and in the lines it reports, so a later NUL in a line without
+/// Matches goes unseen. The pattern matches only in headings, so rg's line Matches are the
+/// heading Matches.
+#[test]
+fn in_headings_detects_binary_data_where_ripgrep_does() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("ihm")).unwrap();
+    std::fs::write(fx.file("ihm/late.md"), late_nul_markdown()).unwrap();
+    let stdin = In::File("ihm/late.md");
+    let mut r = Report(Vec::new());
+    let cases: [(&[&str], In); 10] = [
+        (&["-m1", "needle", "-"], stdin),
+        (&["-m1", "-A2", "needle", "-"], stdin),
+        (&["needle", "-"], stdin),
+        (&["--json", "-m1", "needle", "-"], stdin),
+        (&["--json", "needle", "-"], stdin),
+        (&["--json", "-m1", "needle", "ihm"], In::Null),
+        (&["-m1", "needle", "ihm"], In::Null),
+        (&["needle", "ihm/late.md"], In::Null),
+        (&["--json", "needle", "ihm/late.md"], In::Null),
+        (&["--json", "-m1", "needle", "ihm/late.md"], In::Null),
+    ];
+    for (args, input) in cases {
+        let json = args.contains(&"--json");
+        let mut a = if json { vec![] } else { vec!["-n"] };
+        a.extend_from_slice(args);
+        let want = rg(&fx, &a, input);
+        let mut s = vec!["--in-headings", "--format", "markdown"];
+        if !json {
+            s.push("--flat");
+        }
+        s.extend_from_slice(args);
+        let got = sfor(&fx, &s, input);
+        r.check(
+            format!("{s:?}"),
+            (code(&want), binary_rows(&want).join("\n")),
+            (code(&got), binary_rows(&got).join("\n")),
+        );
+    }
+    r.assert_empty();
+}

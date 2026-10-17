@@ -767,11 +767,11 @@ impl Ctx<'_> {
         self.print(buf);
     }
 
-    /// The after context `-m` lets run after the last Match allowed: none for -c and
-    /// --count-matches, which stop at the limit as grep-printer 0.2.2's summary printer
+    /// The after context `-m` lets run after the last Match allowed: none for -c,
+    /// --count-matches and -q, which stop at the limit as grep-printer 0.2.2's summary printer
     /// (`MaxCount::summary`; code review r3, Codex #1).
     fn max_count_after(&self) -> usize {
-        if self.summary.is_some() {
+        if self.summary.is_some() || self.args.quiet {
             0
         } else {
             self.args.after()
@@ -1205,7 +1205,8 @@ impl Ctx<'_> {
             },
         };
         let binary = self.binary_probe(st, t, &src)?;
-        st.binary_quit = binary.as_ref().is_some_and(|b| b.quit);
+        // Without Matches, rg reads on to the binary data; `heading_matches` decides otherwise.
+        st.binary_quit = binary.as_ref().is_some_and(|b| b.quit && b.offset.is_some());
         if let Some(b) = &binary {
             if b.quit && b.cut == 0 {
                 // rg 14.1.1 skips a walked file whose first buffer has binary data.
@@ -1252,24 +1253,44 @@ impl Ctx<'_> {
             }
         };
         let mut found = self.heading_matches(&src, &names);
-        if let (Some(b), Some((file, ..))) = (&binary, found.as_mut()) {
+        // What rg detects: `-m` and its after context may stop its search first.
+        let detected = binary.as_ref().and_then(|b| {
+            let items = found.as_ref().map_or(&[][..], |f| &f.0.items[..]);
+            match b.offset {
+                Some(offset) => {
+                    let stopped = found
+                        .as_ref()
+                        .is_some_and(|f| self.stops_before(&f.0, b.cut));
+                    (!stopped).then_some((offset, b.cut))
+                }
+                // In memory: the first line rg reports with a NUL (`Core::detect_binary`).
+                None => items.iter().find_map(|i| {
+                    let l = item_line(i);
+                    let at = memchr::memchr(0, l.bytes(src.bytes()))?;
+                    Some((l.absolute_offset + at as u64, l.absolute_offset as usize))
+                }),
+            }
+        });
+        let quit = binary.as_ref().is_some_and(|b| b.quit);
+        st.binary_quit = quit && detected.is_some();
+        if let (Some((offset, cut)), Some((file, ..))) = (detected, found.as_mut()) {
             let s = &mut file.stats;
-            s.binary_offset = Some(b.offset);
+            s.binary_offset = Some(offset);
             // The items rg prints before it detects the binary data (design note 3).
             s.binary_cut = Some(
                 file.items
                     .iter()
-                    .take_while(|i| item_line(i).absolute_offset < b.cut as u64)
+                    .take_while(|i| item_line(i).absolute_offset < cut as u64)
                     .count(),
             );
-            if b.quit {
-                s.bytes_searched = b.bytes_searched;
+            if quit {
+                s.bytes_searched = binary.as_ref().map_or(0, |b| b.bytes_searched);
             }
         }
         let stats = found.as_ref().map_or_else(
             || FileStats {
                 bytes_searched: match &binary {
-                    Some(b) if b.quit => b.bytes_searched,
+                    Some(b) if st.binary_quit => b.bytes_searched,
                     _ => src.bytes().len() as u64,
                 },
                 ..FileStats::default()
@@ -1301,9 +1322,35 @@ impl Ctx<'_> {
                 .is_some()
     }
 
-    /// --in-headings: what ripgrep 14.1.1's search of `src` does with its binary data, found by
-    /// searching it for every line with the searcher, the binary policy and the search path of
-    /// `search_first`. None: no binary data, or `-a`.
+    /// `file`'s search stops at `-m` and its after context, as rg's (`search::MaxCount`), before
+    /// `cut`, where rg detects the binary data: the last line of the window ends there or
+    /// earlier. `file` holds the lines of the window; a window that runs past them runs past
+    /// the end of its Source, which for a Source cut at binary data is past `cut`.
+    fn stops_before(&self, file: &FileMatches, cut: usize) -> bool {
+        let Some(m) = self.args.max_count else {
+            return false;
+        };
+        let Some(mth) = usize::try_from(m)
+            .ok()
+            .and_then(|m| m.checked_sub(1))
+            .and_then(|i| file.matches().nth(i))
+        else {
+            return false;
+        };
+        let window_end = mth.line_number.saturating_add(self.max_count_after() as u64);
+        file.items.last().is_some_and(|i| {
+            let l = item_line(i);
+            l.line_number >= window_end && l.absolute_offset as usize + l.len <= cut
+        })
+    }
+
+    /// --in-headings: where ripgrep 14.1.1's search of `src` detects its binary data, found as
+    /// `search_first` would search it, with its searcher and binary policy. A reader search
+    /// detects it when it fills the buffer with the NUL, after the lines before that buffer,
+    /// which `search::binary_probe` finds keeping no line (code review r7, Codex #4). A search
+    /// in memory looks for a NUL in its first 64 KiB (grep-searcher 0.1.14's
+    /// `DEFAULT_BUFFER_CAPACITY`, `SliceByLine::run`) and then in each line it reports
+    /// (`offset` None; code review r7, Codex #3). None: no binary data, or `-a`.
     fn binary_probe(
         &self,
         st: &mut TrailState,
@@ -1316,13 +1363,18 @@ impl Ctx<'_> {
             return Ok(None);
         }
         let in_memory = t.fs.is_some() && self.in_memory && !src.had_bom;
-        let searcher = if in_memory {
-            &mut st.source
-        } else {
-            &mut st.stream
-        };
-        searcher.set_binary_detection(detection);
-        let probe = match search::binary_probe(searcher, src, in_memory) {
+        if in_memory {
+            let ahead = &src.bytes()[..src.bytes().len().min(64 * 1024)];
+            return Ok(Some(BinaryProbe {
+                offset: memchr::memchr(0, ahead).map(|i| i as u64),
+                cut: 0,
+                quit,
+                reader: false,
+                bytes_searched: 0,
+            }));
+        }
+        st.stream.set_binary_detection(detection);
+        let probe = match search::binary_probe(&mut st.stream, src) {
             Ok(p) => p,
             Err(e) => {
                 self.msgs
@@ -1336,10 +1388,10 @@ impl Ctx<'_> {
         // The end of the last line searched before the binary data was detected.
         let cut = usize::try_from(probe.cut).unwrap_or(usize::MAX);
         Ok(Some(BinaryProbe {
-            offset,
+            offset: Some(offset),
             cut: cut.min(src.bytes().len()),
             quit,
-            reader: !in_memory,
+            reader: true,
             bytes_searched: probe.bytes_searched,
         }))
     }
@@ -1505,15 +1557,16 @@ impl Ctx<'_> {
 
 /// What `binary_probe` finds about a Source with binary data.
 struct BinaryProbe {
-    /// rg's `binary_offset`.
-    offset: u64,
-    /// The byte where rg detected the binary data: the lines before it were searched first.
+    /// rg's `binary_offset` when its search detects the binary data at `cut`. None: a search in
+    /// memory, which detects it only in a line it reports.
+    offset: Option<u64>,
+    /// The byte where rg detects the binary data: the lines before it are searched first.
     cut: usize,
     /// Walked: rg stops at `cut` (`BinaryDetection::quit`). Otherwise it converts.
     quit: bool,
     /// A reader search, whose conversion turns NUL bytes into line breaks.
     reader: bool,
-    /// rg's `bytes_searched`.
+    /// rg's `bytes_searched` when it stops at `cut`.
     bytes_searched: u64,
 }
 
