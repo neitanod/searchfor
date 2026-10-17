@@ -211,6 +211,12 @@ pub struct Args {
     pub list_formats: bool,
     #[arg(long, value_name = "DIR")]
     pub export_formats: Option<PathBuf>,
+    /// List the compiled-in, installed and available Grammars (spec §7).
+    #[arg(long)]
+    pub list_grammars: bool,
+    /// Install a Grammar Helper from the Grammar index (spec §7).
+    #[arg(long, value_name = "LANG")]
+    pub install_grammar: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -518,6 +524,18 @@ mod tests {
         assert_eq!(p(&["sfor", "-M0", "x"]).max_columns, None);
         assert_eq!(p(&["sfor", "-M", "5", "x"]).max_columns, Some(5));
         assert_eq!(p(&["sfor", "x"]).max_columns, None);
+    }
+
+    #[test]
+    fn grammar_actions_need_no_pattern() {
+        let a = p(&["sfor", "--list-grammars"]);
+        assert!(a.list_grammars);
+        assert_eq!(a.pattern, None);
+        assert_eq!(a.install_grammar, None);
+        let a = p(&["sfor", "--install-grammar", "lua"]);
+        assert_eq!(a.install_grammar.as_deref(), Some("lua"));
+        assert!(!a.list_grammars);
+        assert_eq!(a.pattern, None);
     }
 
     #[test]
