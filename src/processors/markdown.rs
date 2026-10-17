@@ -90,6 +90,23 @@ impl OutlineProcessor for Markdown {
         let mut meta: Option<usize> = None;
 
         for (ev, r) in Parser::new_ext(text, opts).into_offset_iter() {
+            // A block that starts inside an item's first line (a tight item has no paragraph)
+            // is joined to its name by a space (code review r3, Fable #6).
+            if let Event::Start(
+                Tag::Heading { .. }
+                | Tag::BlockQuote(_)
+                | Tag::CodeBlock(_)
+                | Tag::Paragraph
+                | Tag::Table(_)
+                | Tag::HtmlBlock,
+            ) = ev
+                && let Some(it) = items.last_mut()
+                && !it.done
+                && !it.text.is_empty()
+                && !it.text.ends_with(' ')
+            {
+                it.text.push(' ');
+            }
             match ev {
                 Event::Start(Tag::MetadataBlock(MetadataBlockKind::YamlStyle)) => {
                     // The label is the whole block, the line break after the closing `---`
@@ -272,7 +289,14 @@ impl OutlineProcessor for Markdown {
                     if let Some(it) = items.last_mut()
                         && !it.done
                     {
-                        it.text.push_str(t);
+                        // A code block's text spans lines: the name keeps its first one.
+                        match t.find('\n') {
+                            Some(k) => {
+                                it.text.push_str(&t[..k]);
+                                it.done = true;
+                            }
+                            None => it.text.push_str(t),
+                        }
                     }
                 }
                 Event::SoftBreak | Event::HardBreak | Event::End(TagEnd::Paragraph) => {
@@ -466,6 +490,26 @@ mod tests {
             .trails(&input(b"- step one\n  more text\n"), &p, &[13])
             .unwrap();
         assert_eq!(kinds(&t[0]), ["item:step…"]);
+    }
+
+    /// Code review r3, Fable #6: the blocks of an item's name are joined by a space, and the
+    /// name stays on one line.
+    #[test]
+    fn item_names_separate_their_blocks() {
+        let name = |src: &[u8], needle: &[u8]| {
+            let at = src.windows(needle.len()).position(|w| w == needle).unwrap();
+            let t = Markdown
+                .trails(&input(src), &toml::Table::new(), &[at])
+                .unwrap();
+            kinds(&t[0])[0].clone()
+        };
+        let s = b"- item one\n  ## B in item\n  text b\n";
+        assert_eq!(name(s, b"text b"), "item:item one B in item");
+        let s = b"- item\n  > quoted\n  text b\n";
+        assert_eq!(name(s, b"text b"), "item:item quoted");
+        let s = b"- item\n  ```\n  code\n  more\n  ```\n  text b\n";
+        assert_eq!(name(s, b"text b"), "item:item code");
+        assert_eq!(name(b"- # Head\n  text b\n", b"text b"), "item:Head");
     }
 
     #[test]
