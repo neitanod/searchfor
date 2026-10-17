@@ -1,10 +1,10 @@
 //! The YAML walker of `keypath` (spec §5.2), over saphyr-parser's events. A scalar's span covers
 //! it (a literal block scalar through its last line); a block collection's end event sits at the
 //! next token, so a container closes at the end of its last scalar or alias. `Marker` counts
-//! characters, so bytes come from its line and column. On a syntax error the walk stops there,
+//! characters, so bytes come from its character index. On a syntax error the walk stops there,
 //! and the Segments still open close at the error (D3).
 use super::collect::Collector;
-use crate::trail::{LineIndex, OutlineSegment};
+use crate::trail::OutlineSegment;
 use saphyr_parser::{Event, Marker, Parser, ScalarStyle};
 use std::ops::Range;
 
@@ -33,36 +33,56 @@ enum Frame {
     Doc,
 }
 
-/// Byte offsets of saphyr's markers, from their line and character column. Markers mostly move
-/// forward, so the last position is reused within a line instead of counting from its start.
+/// Byte offsets of saphyr's markers. `Marker::index` counts characters, and its line breaks are
+/// CR, LF and CRLF where rg's are LF only, so bytes come from the character index alone (review
+/// m2-code-r1, Codex #1). Markers mostly move forward, so a cursor walks from the last one.
 struct Bytes<'t> {
     text: &'t str,
-    lines: LineIndex,
-    /// (line, column, byte) of the last marker converted.
-    last: (usize, usize, usize),
+    /// Every character is one byte: the index is the byte.
+    ascii: bool,
+    /// (character, byte) of the last marker converted.
+    at: (usize, usize),
 }
 
 impl Bytes<'_> {
     fn of(&mut self, m: &Marker) -> usize {
         let len = self.text.len();
-        let (line, col) = (m.line(), m.col());
-        let (from, skip) = if self.last.0 == line && self.last.1 <= col {
-            (self.last.2, col - self.last.1)
-        } else {
-            let start = self.lines.line_start(line as u64).unwrap_or(len).min(len);
-            (start, col)
-        };
-        let b = if skip == 0 {
-            from
-        } else {
-            from + self.text[from..]
-                .char_indices()
-                .nth(skip)
-                .map_or(len - from, |(b, _)| b)
-        };
-        self.last = (line, col, b);
-        b
+        let target = m.index();
+        if self.ascii {
+            return target.min(len);
+        }
+        let b = self.text.as_bytes();
+        let (mut ch, mut byte) = self.at;
+        while ch < target && byte < len {
+            byte += utf8_len(b[byte]);
+            ch += 1;
+        }
+        while ch > target {
+            byte -= 1;
+            while !self.text.is_char_boundary(byte) {
+                byte -= 1;
+            }
+            ch -= 1;
+        }
+        let byte = byte.min(len);
+        self.at = (ch, byte);
+        byte
     }
+}
+
+/// The length of the UTF-8 sequence that `lead` starts.
+fn utf8_len(lead: u8) -> usize {
+    match lead {
+        0xF0.. => 4,
+        0xE0.. => 3,
+        0xC0.. => 2,
+        _ => 1,
+    }
+}
+
+/// `text[r]`, or "" when `r` does not fall on character boundaries inside `text`.
+fn slice(text: &str, r: Range<usize>) -> &str {
+    text.get(r).unwrap_or("")
 }
 
 /// Walks `src`, reporting its Segments to `c`; returns where the walk ended (the end of the
@@ -73,8 +93,8 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
     };
     let mut bytes = Bytes {
         text,
-        lines: LineIndex::new(src),
-        last: (0, 0, 0),
+        ascii: text.is_ascii(),
+        at: (0, 0),
     };
     let mut frames: Vec<Frame> = Vec::new();
     let mut docs = 0;
@@ -102,7 +122,7 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
             if *depth == 0 {
                 let start = *start;
                 frames.pop();
-                let raw = &text[start..last_end.max(start)];
+                let raw = slice(text, start..last_end.max(start));
                 let first = raw.lines().next().unwrap_or("");
                 let name: String = first.chars().take(COMPLEX_KEY_CHARS).collect();
                 let mut k = OutlineSegment::new("key", name.clone(), start..start, start..last_end);
@@ -175,7 +195,7 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
             Event::Alias(_) if expecting_key(&frames) => {
                 // An alias used as a key (`*a : x`) is named by its source text.
                 last_end = e;
-                let name = text[s..e].to_string();
+                let name = slice(text, s..e).to_string();
                 let mut k = OutlineSegment::new("key", name.clone(), s..s, s..e);
                 k.name = Some(vec![(0..name.len(), s..e)]);
                 k.name_anchor = s;
@@ -238,22 +258,29 @@ fn end_value(frames: &mut [Frame], c: &mut Collector, end: usize) {
 /// does not give saphyr's `value`, one decoded piece over the whole span.
 fn name_pieces(text: &str, span: Range<usize>, value: &str, style: ScalarStyle) -> Pieces {
     let (s, e) = (span.start, span.end);
-    let raw = &text[s..e];
-    let quoted = matches!(style, ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted);
+    let raw = slice(text, s..e);
     if raw == value {
         return vec![(0..value.len(), s..e)];
     }
-    if quoted && raw.len() >= 2 && &raw[1..raw.len() - 1] == value {
-        return vec![(0..value.len(), s + 1..e - 1)];
+    // The quotes are checked before they are cut off: a span that does not start and end with
+    // its quote is decoded as one piece.
+    let quote = match style {
+        ScalarStyle::SingleQuoted => Some((b'\'', Quote::Single)),
+        ScalarStyle::DoubleQuoted => Some((b'"', Quote::Double)),
+        _ => None,
+    };
+    let inner = quote.and_then(|(q, kind)| {
+        let r = raw.as_bytes();
+        (r.len() >= 2 && r[0] == q && r[r.len() - 1] == q).then_some((s + 1..e - 1, kind))
+    });
+    if let Some((r, _)) = &inner
+        && slice(text, r.clone()) == value
+    {
+        return vec![(0..value.len(), r.clone())];
     }
-    let decoded = match style {
-        ScalarStyle::Plain => Some(by_lines(text, s..e, Quote::None)),
-        ScalarStyle::DoubleQuoted if raw.len() >= 2 => {
-            Some(by_lines(text, s + 1..e - 1, Quote::Double))
-        }
-        ScalarStyle::SingleQuoted if raw.len() >= 2 => {
-            Some(by_lines(text, s + 1..e - 1, Quote::Single))
-        }
+    let decoded = match (style, inner) {
+        (ScalarStyle::Plain, _) if !raw.is_empty() => Some(by_lines(text, s..e, Quote::None)),
+        (_, Some((r, kind))) => Some(by_lines(text, r, kind)),
         _ => None,
     };
     match decoded {
@@ -274,18 +301,14 @@ enum Quote {
 /// lines joined by one space, an empty line by a line break, and an escaped line break (a
 /// double-quoted line ending in `\`) by nothing. Returns the text and one piece per line.
 fn by_lines(text: &str, inner: Range<usize>, quote: Quote) -> (String, Pieces) {
-    let body = &text[inner.clone()];
+    let body = slice(text, inner.clone());
     let mut out = String::new();
     let mut pieces = Vec::new();
-    let mut offset = inner.start;
-    let parts: Vec<&str> = body.split('\n').collect();
+    let parts = break_lines(body, inner.start);
     let last = parts.len() - 1;
     let mut pending = 0;
     let mut glue = false;
-    for (i, line) in parts.iter().enumerate() {
-        let line_start = offset;
-        offset += line.len() + 1;
-        let line = line.strip_suffix('\r').unwrap_or(line);
+    for (i, &(line_start, line)) in parts.iter().enumerate() {
         let lead = if i == 0 {
             0
         } else {
@@ -329,6 +352,34 @@ fn by_lines(text: &str, inner: Range<usize>, quote: Quote) -> (String, Pieces) {
         out.push_str(&decoded);
     }
     (out, pieces)
+}
+
+/// `body`'s lines without their breaks, each with its offset (`body` starts at `at`). A line
+/// break is CR, LF or CRLF, as saphyr reads them.
+fn break_lines(body: &str, at: usize) -> Vec<(usize, &str)> {
+    let b = body.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\n' => {
+                out.push((at + start, &body[start..i]));
+                start = i + 1;
+            }
+            b'\r' => {
+                out.push((at + start, &body[start..i]));
+                if b.get(i + 1) == Some(&b'\n') {
+                    i += 1;
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out.push((at + start, &body[start..]));
+    out
 }
 
 /// A double-quoted line ends in an unescaped `\`: an odd run of backslashes.
@@ -420,6 +471,59 @@ mod tests {
         // "ñandú" is 5 characters and 7 bytes: a Trail after it must still be right.
         let src = "a: ñandú\nb:\n  c: needle\n".as_bytes();
         assert_eq!(needles(src, "yaml"), vec![vec!["b", "c"]]);
+    }
+
+    #[test]
+    fn a_lone_carriage_return_is_a_line_break() {
+        // saphyr breaks lines at CR, LF and CRLF; rg's lines are LF only (review m2-code-r1,
+        // Codex #1). The key after the CR must still be found, at its own bytes.
+        assert_eq!(
+            needles(b"a:\r  x: needle\nb: value\n", "yaml"),
+            vec![vec!["a", "x"]]
+        );
+        assert_eq!(
+            needles("a:\r  \"x\": needle\néééééééé: value\n".as_bytes(), "yaml"),
+            vec![vec!["a", "x"]]
+        );
+        assert_eq!(
+            needles("ñ: 1\r\nb:\r  c: needle\rd: 2\n".as_bytes(), "yaml"),
+            vec![vec!["b", "c"]]
+        );
+    }
+
+    #[test]
+    fn names_point_at_their_own_bytes_across_line_breaks() {
+        let src = "é: 1\r'ü': 2\r\n\"ñ x\": needle\r? multi\r  line\r: x\n".as_bytes();
+        let input = crate::model::Input {
+            bytes: src,
+            path: Path::new("x"),
+            format: "yaml",
+            disk: None,
+        };
+        let names = super::super::Keypath
+            .names(&input, &super::super::tests::params("yaml"))
+            .unwrap();
+        for n in &names {
+            let got: String = n
+                .pieces
+                .iter()
+                .map(|(_, r)| std::str::from_utf8(&src[r.clone()]).unwrap())
+                .collect();
+            assert_eq!(
+                got.replace("multiline", "multi line"),
+                n.text,
+                "{:?}",
+                n.pieces
+            );
+        }
+        let multi = names.iter().find(|n| n.text == "multi line").unwrap();
+        assert_eq!(
+            multi.pieces.len(),
+            2,
+            "one piece per line: {:?}",
+            multi.pieces
+        );
+        assert_eq!(names.len(), 4);
     }
 
     #[test]
