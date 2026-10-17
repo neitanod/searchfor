@@ -222,6 +222,26 @@ in two cases:
 Reproducing them takes the buffer handling of grep-searcher 0.1.14. An after context that
 crosses into later buffers, with `-m` stopping in one of them, is reproduced (code review r2,
 Codex #5, and r3, Codex #2).
+
+### Binary stdin with `-v` and a context, in the Trail layouts
+
+On stdin with a NUL, `-v` and a context (`-C1`), rg 14.1.1 prints nothing and exits 1: its
+standard printer gives up at the first context line once it has seen the NUL (grep-printer
+0.2.2, `standard.rs:867`), so no Match counts. `--no-trail` does the same. `--flat` and
+`--tree` print `binary file matches (found \"\\0\" byte around offset N)` and exit 0, as
+`rg --json` reports the Match (code review r3, Fable #4):
+
+```sh
+printf 'needle first\\nmore\\0binary needle\\nneedle again\\n' | sfor --flat -v -C1 needle
+```
+
+### The binary warning with `--within` and `-m`
+
+With `--within`, `-m` counts the Matches the filter keeps, so the search cannot stop at the
+`-m`th Match and reads on. A walked file with a NUL after its first Match prints `WARNING:
+stopped searching binary file after match` with `--within '' -m1`, which rg 14.1.1 never
+reaches with `-m1`, as it stops before the NUL. The `end` and `summary` statistics of `--json`
+count that whole search (spec §6.4) (code review r3, Fable #5).
 ";
 
 #[cfg(test)]
