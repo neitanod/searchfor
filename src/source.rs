@@ -6,6 +6,13 @@ use std::path::{Path, PathBuf};
 /// same risk.)
 pub const MMAP_THRESHOLD: u64 = 8 * 1024 * 1024;
 
+/// What `Source::head` gives the Detector.
+const HEAD: usize = 512;
+
+/// How much of a file's bytes as read decodes to its whole `head`: a BOM, then at most four
+/// bytes per byte of `head` (two UTF-16 code units, one of them maybe cut).
+pub const READ_HEAD: usize = 3 + 4 * HEAD;
+
 enum Data {
     Owned(Vec<u8>),
     Mapped(memmap2::Mmap),
@@ -111,10 +118,10 @@ impl Source {
         self.data.raw()
     }
 
-    /// The first 512 bytes, for the Detector.
+    /// The first `HEAD` bytes, for the Detector.
     pub fn head(&self) -> &[u8] {
         let b = self.bytes();
-        &b[..b.len().min(512)]
+        &b[..b.len().min(HEAD)]
     }
 }
 
@@ -127,6 +134,29 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
             .join(p)
+    }
+
+    /// Code review r4, Fable #6: the first `READ_HEAD` bytes as read give the whole head.
+    #[test]
+    fn the_head_of_the_read_head_is_the_head() {
+        let text = "é𝄞a".repeat(400);
+        let mut utf16le = b"\xFF\xFE".to_vec();
+        utf16le.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        let mut utf16be = b"\xFE\xFF".to_vec();
+        utf16be.extend(text.encode_utf16().flat_map(u16::to_be_bytes));
+        let mut bom = b"\xEF\xBB\xBF".to_vec();
+        bom.extend(text.as_bytes());
+        let ascii = b"\xFF\xFE"
+            .iter()
+            .copied()
+            .chain("a".repeat(3000).encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        for raw in [utf16le, utf16be, bom, text.clone().into_bytes(), ascii] {
+            let whole = Source::from_bytes(PathBuf::from("x"), raw.clone(), false);
+            let cut = Source::from_bytes(PathBuf::from("x"), raw[..READ_HEAD].to_vec(), false);
+            assert_eq!(cut.head(), whole.head());
+            assert_eq!(whole.head().len(), HEAD);
+        }
     }
 
     #[test]

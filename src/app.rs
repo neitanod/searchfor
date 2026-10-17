@@ -1043,7 +1043,8 @@ impl Ctx<'_> {
         if !(self.args.expand || self.args.json) {
             return false;
         }
-        let partial = Source::from_bytes(t.path.clone(), read.to_vec(), t.explicit);
+        let head = read[..read.len().min(crate::source::READ_HEAD)].to_vec();
+        let partial = Source::from_bytes(t.path.clone(), head, t.explicit);
         detector
             .detect(&partial.path, partial.head())
             .is_some_and(|d| processors::by_name(&d.processor).is_some())
