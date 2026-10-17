@@ -1963,6 +1963,95 @@ fn binary_data_in_a_later_read_of_a_pipe_as_ripgrep() {
     r.assert_empty();
 }
 
+/// Fable's file of code review r8: 30 000 lines of 49 bytes, `# needle N` every 97, and a NUL at
+/// `nul`.
+fn headings_every_97_lines(nul: usize) -> Vec<u8> {
+    let mut v = Vec::new();
+    for i in 0..30_000 {
+        if i % 97 == 0 {
+            v.extend_from_slice(format!("# needle {i}\n").as_bytes());
+        } else {
+            v.extend_from_slice(format!("{}\n", "x".repeat(48)).as_bytes());
+        }
+    }
+    v[nul] = 0;
+    v
+}
+
+/// The line numbers of `rg -n` and of `--flat -n`, Matches (`N:`) and context lines (`N-`) on
+/// one input, and the binary messages. The `--` that rg prints before the binary message of
+/// stdin is the NIT of code review r8, Fable #3: left out.
+fn numbered_rows(o: &Output) -> Vec<String> {
+    stdout(o)
+        .lines()
+        .filter(|l| *l != "--")
+        .map(
+            |l| match l.find("WARNING").or_else(|| l.find("binary file")) {
+                Some(at) => l[at..].to_string(),
+                None => l.chars().take_while(char::is_ascii_digit).collect(),
+            },
+        )
+        .collect()
+}
+
+/// Code review r8, Fable #1: with a context, grep-searcher's `Core::roll` keeps the last lines
+/// of each buffer for the next, so rg's buffers end where the search with the user's pattern
+/// and context leaves them. `--in-headings` detects the binary data of a walked file past its
+/// second buffer, and of stdin, where rg does: the same headings before the same `WARNING`, and
+/// in the `--json` of the walked file the same `bytes_searched`.
+#[test]
+fn binary_data_with_a_context_is_detected_where_ripgrep_does() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let mut r = Report(Vec::new());
+    // 327 336: rg prints a buffer more; 528 187: a heading less (boundary.py of Fable).
+    for nul in [327_336, 528_187] {
+        std::fs::create_dir_all(fx.file("ctx")).unwrap();
+        std::fs::write(fx.file("ctx/big.md"), headings_every_97_lines(nul)).unwrap();
+        let stdin = In::File("ctx/big.md");
+        let cases: [(&[&str], &str, In); 6] = [
+            (&["-A1"], "ctx", In::Null),
+            (&["-B2"], "ctx", In::Null),
+            (&["-C2"], "ctx", In::Null),
+            (&["--json", "-C1"], "ctx", In::Null),
+            (&["-C2"], "-", stdin),
+            (&["--json", "-C2"], "-", stdin),
+        ];
+        for (args, path, input) in cases {
+            let json = args.contains(&"--json");
+            let mut a = if json { vec![] } else { vec!["-n"] };
+            a.extend_from_slice(args);
+            a.extend_from_slice(&["needle", path]);
+            let want = rg(&fx, &a, input);
+            let mut s = vec!["--in-headings", "--format", "markdown"];
+            if !json {
+                s.push("--flat");
+            }
+            s.extend_from_slice(&a);
+            let got = sfor(&fx, &s, input);
+            let rows = |o: &Output| {
+                if !json {
+                    return numbered_rows(o).join("\n");
+                }
+                let mut v = binary_rows(o);
+                // On stdin, `bytes_searched` is the Source's (docs/rg-compat.md).
+                if path != "-" {
+                    v.push(format!("{:?}", bytes_searched(o)));
+                }
+                v.join("\n")
+            };
+            r.check(
+                format!("nul@{nul} {s:?}"),
+                (code(&want), rows(&want)),
+                (code(&got), rows(&got)),
+            );
+        }
+    }
+    r.assert_empty();
+}
+
 /// Code review r7, Codex #1: `-q --json` (grep-printer 0.2.2's summary printer with statistics,
 /// which reads past the first Match) drops the Matches of a walked file whose search quit at
 /// binary data, so a walk with only that file exits 1, as rg; with `-m1` the search stops

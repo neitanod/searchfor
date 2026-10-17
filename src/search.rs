@@ -477,12 +477,19 @@ impl Sink for BinarySink {
     }
 }
 
-/// Searches `reader` for every line with `BinarySink`: a Source's bytes, as `search_source`
-/// would, or the input itself when it cannot be read twice, so that its reads are rg's.
-pub fn binary_probe(searcher: &mut Searcher, reader: impl std::io::Read) -> Result<BinarySink> {
-    let every = RegexMatcher::new_line_matcher("").expect("the empty pattern compiles");
+/// Searches `reader` with `BinarySink`: a Source's bytes, as `search_source` would, or the
+/// input itself when it cannot be read twice, so that its reads are rg's. `matcher` and the
+/// searcher's context are rg's: grep-searcher's `Core::roll` keeps the context lines after the
+/// last line it reported for the next buffer, so the lines it reports decide where each buffer
+/// ends (code review r8, Fable #1). The lines of the last buffer before the binary data that
+/// come after `cut` hold no Match and are in no context.
+pub fn binary_probe(
+    searcher: &mut Searcher,
+    matcher: &RegexMatcher,
+    reader: impl std::io::Read,
+) -> Result<BinarySink> {
     let mut sink = BinarySink::default();
-    searcher.search_reader(&every, reader, &mut sink)?;
+    searcher.search_reader(matcher, reader, &mut sink)?;
     Ok(sink)
 }
 

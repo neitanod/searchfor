@@ -1438,8 +1438,11 @@ impl Ctx<'_> {
             }));
         }
         st.stream.set_binary_detection(detection);
-        let probe = match search::binary_probe(&mut st.stream, std::io::Cursor::new(src.as_read()))
-        {
+        let probe = match search::binary_probe(
+            &mut st.stream,
+            &self.matcher,
+            std::io::Cursor::new(src.as_read()),
+        ) {
             Ok(p) => p,
             Err(e) => {
                 self.msgs.error(format_args!("{}: {e:#}", t.path.display()));
@@ -1481,7 +1484,7 @@ impl Ctx<'_> {
         let mut probe = None;
         if quit || detection.convert_byte().is_some() {
             st.stream.set_binary_detection(detection);
-            match search::binary_probe(&mut st.stream, &mut tee) {
+            match search::binary_probe(&mut st.stream, &self.matcher, &mut tee) {
                 Ok(p) => probe = Some(p),
                 Err(e) => {
                     report(&format_args!("{e:#}"));
