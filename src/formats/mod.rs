@@ -154,7 +154,7 @@ fn resolve(p: &Path) -> std::io::Result<PathBuf> {
 mod tests {
     use super::*;
     fn known(p: &str) -> bool {
-        p == "markdown"
+        crate::processors::Processors::known(p)
     }
 
     #[test]
@@ -193,13 +193,20 @@ mod tests {
         let (r, _) = Registry::load(Some(d.path()), &known);
         let text = r.list();
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].starts_with("markdown "));
-        assert!(lines[0].contains("built-in"));
-        assert!(lines[0].ends_with("md,markdown,mdx,mkd,mdown"));
-        assert!(lines[1].starts_with("notes "));
-        assert!(lines[1].contains(&format!("user ({})", d.path().join("notes.toml").display())));
-        assert!(lines[1].ends_with("note,nt"));
+        let line = |name: &str| {
+            lines
+                .iter()
+                .find(|l| l.starts_with(&format!("{name} ")))
+                .copied()
+                .unwrap()
+        };
+        assert!(line("markdown").contains("built-in"));
+        assert!(line("markdown").ends_with("md,markdown,mdx,mkd,mdown"));
+        assert!(
+            line("notes").contains(&format!("user ({})", d.path().join("notes.toml").display()))
+        );
+        assert!(line("notes").ends_with("note,nt"));
+        assert_eq!(lines.len(), builtin::BUILTIN.len() + 1);
     }
 
     #[test]

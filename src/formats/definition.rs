@@ -87,7 +87,7 @@ impl FormatDefinition {
 mod tests {
     use super::*;
     fn known(p: &str) -> bool {
-        p == "markdown"
+        crate::processors::Processors::known(p)
     }
 
     #[test]
