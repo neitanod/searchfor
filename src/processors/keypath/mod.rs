@@ -197,6 +197,32 @@ mod tests {
     }
 
     #[test]
+    fn json_names_with_escapes_and_invalid_utf8_map_to_their_bytes() {
+        // `\u00e9` (6 bytes, 2 decoded) and two lone bytes (1 each, 3 decoded) sum to as many
+        // bytes as the text takes: one piece over the key would look verbatim and map a Match
+        // to other bytes (fuzz, review m2-code-r1).
+        let src = b"{\"\\u00e9\xc3\xef\xbb\xbf\xa9\": 1, \"a\\nb\xff\": 2}";
+        let input = Input {
+            bytes: src,
+            path: Path::new("x"),
+            format: "json",
+            disk: None,
+        };
+        let names = Keypath.names(&input, &params("json")).unwrap();
+        assert_eq!(names.len(), 2);
+        for n in &names {
+            let joined: String = n.pieces.iter().map(|(t, _)| &n.text[t.clone()]).collect();
+            assert_eq!(joined, n.text);
+            for (t, s) in &n.pieces {
+                if t.len() == s.len() {
+                    let got = String::from_utf8_lossy(&src[s.clone()]);
+                    assert_eq!(got, &n.text[t.clone()], "{:?}", n.pieces);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn anchors_in_any_order_get_their_own_trails() {
         let src = br#"{"a": "needle", "b": "needle"}"#;
         let first = memchr::memmem::find(src, b"needle").unwrap();

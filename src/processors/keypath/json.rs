@@ -8,6 +8,9 @@ use super::collect::Collector;
 use crate::trail::OutlineSegment;
 use std::ops::Range;
 
+/// `Name::pieces`: (range in the name's text, range in the Source).
+type Pieces = Vec<(Range<usize>, Range<usize>)>;
+
 pub const MAX_DEPTH: usize = 256;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -54,7 +57,7 @@ impl Member {
     /// The member's name: the decoded key, or `holder[n]`.
     fn name(&self, src: &[u8], holder: &str) -> String {
         match &self.name {
-            MemberName::Key(inner, escaped) => decode(&src[inner.clone()], *escaped),
+            MemberName::Key(inner, escaped) => decode(src, inner.clone(), *escaped).0,
             MemberName::Element(n) => format!("{holder}[{n}]"),
         }
     }
@@ -64,19 +67,18 @@ impl Member {
         if !c.keeps(self.start, end) {
             return;
         }
-        let name = self.name(src, holder);
         let mut seg = match &self.name {
-            MemberName::Key(inner, _) => {
+            MemberName::Key(inner, escaped) => {
+                let (name, pieces) = decode(src, inner.clone(), *escaped);
                 let label = inner.start - 1..inner.end + 1;
-                let mut seg =
-                    OutlineSegment::new("key", name.clone(), self.start..self.start, label);
-                seg.name = Some(vec![(0..name.len(), inner.clone())]);
+                let mut seg = OutlineSegment::new("key", name, self.start..self.start, label);
+                seg.name = Some(pieces);
                 seg.name_anchor = inner.start;
                 seg
             }
-            MemberName::Element(_) => OutlineSegment::new(
+            MemberName::Element(n) => OutlineSegment::new(
                 "element",
-                name,
+                format!("{holder}[{n}]"),
                 self.start..self.start,
                 self.start..self.start,
             ),
@@ -200,63 +202,114 @@ impl Scan<'_> {
     }
 }
 
-/// The text of a JSON string's contents, escapes decoded (lossy on invalid UTF-8). `string`
-/// already checked the escapes.
-pub(super) fn decode(raw: &[u8], escaped: bool) -> String {
-    if !escaped {
-        return String::from_utf8_lossy(raw).into_owned();
+/// The text of a JSON string's contents at `inner` in `src`, escapes decoded (lossy on invalid
+/// UTF-8), and its pieces (`Name::pieces`): one piece over the contents, verbatim or decoded (an
+/// escape always decodes to fewer bytes than it takes). With invalid UTF-8, whose U+FFFD takes
+/// more bytes, the pieces split at every escape and invalid run, so that the decoded text never
+/// sums to the contents' length in one piece that looks verbatim (fuzz, review m2-code-r1).
+/// `string` already checked the escapes.
+pub(super) fn decode(src: &[u8], inner: Range<usize>, escaped: bool) -> (String, Pieces) {
+    if !escaped && let Ok(text) = std::str::from_utf8(&src[inner.clone()]) {
+        return (text.to_string(), vec![(0..text.len(), inner)]);
     }
-    let mut out = String::new();
-    let mut bytes = Vec::new();
-    let mut i = 0;
-    let flush = |bytes: &mut Vec<u8>, out: &mut String| {
-        out.push_str(&String::from_utf8_lossy(bytes));
-        bytes.clear();
+    let raw = &src[inner.clone()];
+    let valid = std::str::from_utf8(raw).is_ok();
+    let mut name = Decoded {
+        base: inner.start,
+        text: String::new(),
+        pieces: Vec::new(),
     };
+    let mut run = 0;
+    let mut i = 0;
     while i < raw.len() {
         if raw[i] != b'\\' || i + 1 >= raw.len() {
-            bytes.push(raw[i]);
             i += 1;
             continue;
         }
-        flush(&mut bytes, &mut out);
+        name.raw(raw, run, i);
+        let esc = i;
         let c = raw[i + 1];
         i += 2;
-        match c {
-            b'n' => out.push('\n'),
-            b't' => out.push('\t'),
-            b'r' => out.push('\r'),
-            b'b' => out.push('\u{8}'),
-            b'f' => out.push('\u{c}'),
+        let decoded = match c {
+            b'n' => '\n',
+            b't' => '\t',
+            b'r' => '\r',
+            b'b' => '\u{8}',
+            b'f' => '\u{c}',
             b'u' => {
                 let hex = |at: usize| {
                     raw.get(at..at + 4)
                         .and_then(|h| std::str::from_utf8(h).ok())
                         .and_then(|h| u32::from_str_radix(h, 16).ok())
                 };
-                let Some(hi) = hex(i) else {
-                    out.push('\u{fffd}');
-                    continue;
-                };
-                i += 4;
-                let cp = if (0xD800..0xDC00).contains(&hi) && raw.get(i..i + 2) == Some(b"\\u") {
-                    match hex(i + 2) {
-                        Some(lo) if (0xDC00..0xE000).contains(&lo) => {
-                            i += 6;
-                            0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00)
-                        }
-                        _ => hi,
+                match hex(i) {
+                    None => '\u{fffd}',
+                    Some(hi) => {
+                        i += 4;
+                        let cp = if (0xD800..0xDC00).contains(&hi)
+                            && raw.get(i..i + 2) == Some(b"\\u")
+                        {
+                            match hex(i + 2) {
+                                Some(lo) if (0xDC00..0xE000).contains(&lo) => {
+                                    i += 6;
+                                    0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00)
+                                }
+                                _ => hi,
+                            }
+                        } else {
+                            hi
+                        };
+                        char::from_u32(cp).unwrap_or('\u{fffd}')
                     }
-                } else {
-                    hi
-                };
-                out.push(char::from_u32(cp).unwrap_or('\u{fffd}'));
+                }
             }
-            other => out.push(other as char),
+            other => other as char,
+        };
+        name.piece(decoded.encode_utf8(&mut [0; 4]), esc, i);
+        run = i;
+    }
+    name.raw(raw, run, raw.len());
+    if valid {
+        let len = name.text.len();
+        return (name.text, vec![(0..len, inner)]);
+    }
+    (name.text, name.pieces)
+}
+
+/// A JSON name being decoded, piece by piece; `base` is where its contents start.
+struct Decoded {
+    base: usize,
+    text: String,
+    pieces: Pieces,
+}
+
+impl Decoded {
+    /// `text` decodes `raw[from..to]`.
+    fn piece(&mut self, text: &str, from: usize, to: usize) {
+        if from < to || !text.is_empty() {
+            let t = self.text.len();
+            self.pieces
+                .push((t..t + text.len(), self.base + from..self.base + to));
+            self.text.push_str(text);
         }
     }
-    flush(&mut bytes, &mut out);
-    out
+
+    /// The raw bytes `raw[from..to]`: each valid run verbatim, each invalid one a U+FFFD.
+    fn raw(&mut self, raw: &[u8], from: usize, to: usize) {
+        let mut at = from;
+        for chunk in raw[from..to].utf8_chunks() {
+            let v = chunk.valid();
+            if !v.is_empty() {
+                self.piece(v, at, at + v.len());
+            }
+            at += v.len();
+            let bad = chunk.invalid();
+            if !bad.is_empty() {
+                self.piece("\u{fffd}", at, at + bad.len());
+                at += bad.len();
+            }
+        }
+    }
 }
 
 /// Starts the value at `sc.i`: pushes a Frame for a container, or reads a scalar whole.
