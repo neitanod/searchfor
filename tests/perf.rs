@@ -79,6 +79,22 @@ fn measure_with(
     args: &[&str],
     stdin: Option<&str>,
 ) -> Option<(Duration, u64)> {
+    measure_to(bin, fx, args, stdin, Stdio::null())
+}
+
+/// `measure` with stdout read and thrown away: ripgrep stops at the first Match when its
+/// stdout is /dev/null, as `-q` does, so a comparison with rg must not give it /dev/null.
+fn measure_drained(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
+    measure_to(bin, fx, args, None, Stdio::piped())
+}
+
+fn measure_to(
+    bin: &Path,
+    fx: &Fixture,
+    args: &[&str],
+    stdin: Option<&str>,
+    stdout: Stdio,
+) -> Option<(Duration, u64)> {
     let time = Path::new("/usr/bin/time");
     if !time.exists() {
         return None;
@@ -89,12 +105,14 @@ fn measure_with(
         .args(args)
         .current_dir(fx.path())
         .env("SFOR_FORMATS_DIR", fx.formats.path())
+        .env("SFOR_GRAMMARS_DIR", fx.grammars.path())
+        .env("SFOR_GRAMMAR_INDEX", fx.no_index())
         .env_remove("RIPGREP_CONFIG_PATH")
         .stdin(match stdin {
             None => Stdio::null(),
             Some(f) => Stdio::from(std::fs::File::open(fx.file(f)).unwrap()),
         })
-        .stdout(Stdio::null())
+        .stdout(stdout)
         .stderr(Stdio::piped());
     let started = Instant::now();
     let o = c.output().unwrap();
@@ -436,4 +454,229 @@ fn a_walked_plain_file_is_not_read_whole_with_in_headings() {
             "{args:?}: RSS {rss} is not below {base} + {SIZE} / 4"
         );
     }
+}
+
+/// The reference rg 14.1.1 on `PATH`, or None (with a note) when it is missing.
+fn rg_bin() -> Option<std::path::PathBuf> {
+    if !common::reference_rg() {
+        return None;
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|d| d.join("rg"))
+        .find(|p| p.is_file())
+}
+
+/// The fastest of three runs of `bin args` with their output read, and the largest RSS seen.
+fn best_of_three_drained(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
+    let mut best: Option<(Duration, u64)> = None;
+    for _ in 0..3 {
+        let (t, rss) = measure_drained(bin, fx, args)?;
+        best = Some(best.map_or((t, rss), |(bt, br)| (bt.min(t), br.max(rss))));
+    }
+    best
+}
+
+/// sfor's and rg's best wall time over three runs of `args` (rg's without `--flat`), with
+/// their output read, and their largest RSS; None when rg 14.1.1 or /usr/bin/time is missing.
+fn against_rg(fx: &Fixture, args: &[&str]) -> Option<((Duration, u64), (Duration, u64))> {
+    let rg = rg_bin()?;
+    let Some(sfor) = best_of_three_drained(&sfor_bin(), fx, args) else {
+        eprintln!("skipping: /usr/bin/time not found");
+        return None;
+    };
+    let rg_args: Vec<&str> = args.iter().copied().filter(|a| *a != "--flat").collect();
+    let rg = best_of_three_drained(&rg, fx, &rg_args)?;
+    Some((sfor, rg))
+}
+
+/// `sfor --color never args` (`SFOR_BIN` if set) in the fixture copy: stdout and stderr.
+fn sfor_output(fx: &Fixture, args: &[&str]) -> (String, String) {
+    let o = common::run(
+        Command::new(sfor_bin())
+            .arg("--color")
+            .arg("never")
+            .args(args)
+            .current_dir(fx.path())
+            .env("SFOR_FORMATS_DIR", fx.formats.path())
+            .env("SFOR_GRAMMARS_DIR", fx.grammars.path())
+            .env("SFOR_GRAMMAR_INDEX", fx.no_index())
+            .env_remove("RIPGREP_CONFIG_PATH")
+            .stdin(Stdio::null()),
+    );
+    assert_eq!(common::code(&o), 0, "{args:?}: {}", common::stderr(&o));
+    (common::stdout(&o), common::stderr(&o))
+}
+
+/// M2 plan, Task 11.4: keypath walks a 50 MB minified JSON at 50 MB/s at least, and its
+/// collector keeps the three Trails it needs, not the keys.
+#[test]
+#[ignore]
+fn keypath_json_scans_at_fifty_megabytes_a_second() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let mut v = String::with_capacity(SIZE + 1024);
+    v.push('[');
+    let mut i = 0usize;
+    while v.len() < SIZE {
+        if i > 0 {
+            v.push(',');
+        }
+        // Three needles: the first object, one in the middle, the last.
+        let name = if i == 0 || i == 400_000 {
+            "needle"
+        } else {
+            "item"
+        };
+        v.push_str(&format!(
+            r#"{{"id":{i},"name":"{name}","price":{}.5,"tags":["a","b"],"meta":{{"ok":true,"n":null}}}}"#,
+            i % 1000
+        ));
+        i += 1;
+    }
+    v.push_str(r#",{"id":-1,"name":"needle"}]"#);
+    assert_eq!(v.matches("needle").count(), 3, "{i} objects");
+    std::fs::write(fx.file("big.json"), &v).unwrap();
+    drop(v);
+    let args = ["--flat", "needle", "big.json"];
+    let (out, err) = sfor_output(&fx, &args);
+    assert_eq!(err, "");
+    // `--flat` prints the one line once per Trail.
+    let trails: Vec<_> = out
+        .lines()
+        .map(|l| l.split_once(" │ ").map_or(l, |(t, _)| t))
+        .collect();
+    let last = format!("1: [{i}] › name");
+    assert_eq!(
+        trails,
+        ["1: [0] › name", "1: [400000] › name", last.as_str()],
+        "{out:.300}"
+    );
+    let Some(((t, rss), (base, base_rss))) = against_rg(&fx, &args) else {
+        return;
+    };
+    eprintln!(
+        "50 MB JSON: sfor {t:?}, RSS {} MiB; rg {base:?}, RSS {} MiB",
+        rss / 1_048_576,
+        base_rss / 1_048_576
+    );
+    assert!(
+        t <= base + Duration::from_secs(1),
+        "{t:?} is more than rg's {base:?} + 1 s"
+    );
+    assert!(
+        rss <= base_rss + 32 * 1_048_576,
+        "RSS {rss} is more than rg's {base_rss} + 32 MiB"
+    );
+}
+
+/// D21: a code file over `max_bytes` (16 MiB by default) is not parsed: one warning naming
+/// `max_bytes`, Plain output, and at most 2 × rg's time.
+#[test]
+#[ignore]
+fn treesitter_skips_files_over_max_bytes() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let mut v = String::with_capacity(21_000_000);
+    let mut i = 0;
+    while v.len() < 20_000_000 {
+        v.push_str(&format!(
+            "function f{i}(a, b) {{\n  return a + b * {i};\n}}\n"
+        ));
+        if i == 200_000 {
+            v.push_str("// needle\n");
+        }
+        i += 1;
+    }
+    std::fs::write(fx.file("big.js"), &v).unwrap();
+    // The same bytes with no Format: what Plain prints.
+    std::fs::hard_link(fx.file("big.js"), fx.file("big.txt")).unwrap();
+    drop(v);
+    let (out, err) = sfor_output(&fx, &["--flat", "needle", "big.js"]);
+    assert_eq!(err.lines().count(), 1, "{err}");
+    assert!(err.contains("max_bytes"), "{err}");
+    let (plain, _) = sfor_output(&fx, &["--flat", "needle", "big.txt"]);
+    assert_eq!(out, plain);
+    let Some(((t, _), (base, _))) = against_rg(&fx, &["--flat", "needle", "big.js"]) else {
+        return;
+    };
+    eprintln!("20 MB JavaScript over max_bytes: sfor {t:?}, rg {base:?}");
+    assert!(t <= base * 2, "{t:?} is more than 2 × rg's {base:?}");
+}
+
+/// D3 and Task 3.2: a 1 MB Cargo.lock broken 300 lines before its end by an unclosed `"""`
+/// keeps the Trail of the `needle` just before the error, within rg's time + 2 s.
+#[test]
+#[ignore]
+fn broken_toml_recovers_in_bounded_time() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let mut lock =
+        String::from("# This file is automatically @generated by Cargo.\nversion = 4\n\n");
+    let mut i = 0;
+    while lock.len() < 1_000_000 {
+        i += 1;
+        lock.push_str(&format!(
+            "[[package]]\nname = \"crate-{i}\"\nversion = \"1.0.{i}\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"{:064x}\"\ndependencies = [\n \"crate-{}\",\n \"crate-{}\",\n]\n\n",
+            i * 7919,
+            i + 1,
+            i + 2
+        ));
+    }
+    let lines: Vec<&str> = lock.lines().collect();
+    // The `[[package]]` line nearest to 300 lines before the end, so the insertion falls
+    // between two tables, never inside a `dependencies` array.
+    let at = (0..lines.len() - 300)
+        .rev()
+        .find(|&k| lines[k] == "[[package]]")
+        .unwrap();
+    let mut broken = String::new();
+    for (k, l) in lines.iter().enumerate() {
+        if k == at {
+            broken.push_str("note = \"needle\"\n");
+            broken.push_str("description = \"\"\"\n");
+        }
+        broken.push_str(l);
+        broken.push('\n');
+    }
+    std::fs::write(fx.file("Cargo.lock"), &broken).unwrap();
+    let args = ["--flat", "needle", "Cargo.lock"];
+    let (out, _) = sfor_output(&fx, &args);
+    assert_eq!(out.lines().count(), 1, "{out}");
+    assert!(out.contains(" › note │ "), "{out}");
+    let Some(((t, _), (base, _))) = against_rg(&fx, &args) else {
+        return;
+    };
+    eprintln!("1 MB broken Cargo.lock: sfor {t:?}, rg {base:?}; {out}");
+    assert!(
+        t <= base + Duration::from_secs(2),
+        "{t:?} is more than rg's {base:?} + 2 s"
+    );
+}
+
+/// D2: tree-sitter-yaml breaks over 32 768 lines; keypath gives the Trail of a `needle` at the
+/// end of 40 000 lines, within rg's time + 1 s.
+#[test]
+#[ignore]
+fn yaml_beyond_the_tree_sitter_limit() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let mut v = String::from("# 40 000 lines\nitems:\n");
+    for i in 0..19_998 {
+        v.push_str(&format!("  - name: item {i}\n    size: {i}\n"));
+    }
+    v.push_str("last:\n  key: needle\n");
+    assert_eq!(v.lines().count(), 40_000);
+    std::fs::write(fx.file("big.yaml"), &v).unwrap();
+    let args = ["--flat", "needle", "big.yaml"];
+    let (out, err) = sfor_output(&fx, &args);
+    assert_eq!(err, "");
+    assert_eq!(out, "40000: last › key │   key: needle\n");
+    let Some(((t, _), (base, _))) = against_rg(&fx, &args) else {
+        return;
+    };
+    eprintln!("40 000-line YAML: sfor {t:?}, rg {base:?}");
+    assert!(
+        t <= base + Duration::from_secs(1),
+        "{t:?} is more than rg's {base:?} + 1 s"
+    );
 }

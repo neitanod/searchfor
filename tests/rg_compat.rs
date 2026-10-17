@@ -1895,19 +1895,69 @@ fn within_detects_binary_data_where_ripgrep_does() {
     r.assert_empty();
 }
 
-/// Runs `c` with its stdin from a pipe a child process writes `first` to, then, 200 ms later,
-/// `then`: the reader sees them in separate reads.
+/// The bytes of the printf format `fmt` (`\n`, `\000`), as `sh`'s printf writes them.
+fn printf(fmt: &str) -> Vec<u8> {
+    let o = Command::new("sh")
+        .args(["-c", &format!("printf '{fmt}'")])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "printf '{fmt}'");
+    o.stdout
+}
+
+/// FIONREAD: the bytes waiting in a pipe.
+#[cfg(target_os = "linux")]
+const FIONREAD: std::ffi::c_ulong = 0x541B;
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+const FIONREAD: std::ffi::c_ulong = 0x4004_667F;
+
+/// The bytes written to the pipe of `end` and not read yet.
+fn unread(end: &std::io::PipeReader) -> usize {
+    use std::os::fd::AsRawFd;
+    unsafe extern "C" {
+        fn ioctl(fd: std::ffi::c_int, request: std::ffi::c_ulong, ...) -> std::ffi::c_int;
+    }
+    let mut n: std::ffi::c_int = 0;
+    // SAFETY: FIONREAD writes one int to the pointer, which outlives the call.
+    let r = unsafe { ioctl(end.as_raw_fd(), FIONREAD, &mut n as *mut std::ffi::c_int) };
+    assert_eq!(r, 0, "ioctl(FIONREAD): {}", std::io::Error::last_os_error());
+    n as usize
+}
+
+/// Runs `c` with its stdin from a pipe that holds `first` (a printf format) and gets `then` once
+/// the reader has taken all of `first` out of it: the reader sees them in separate reads, however
+/// late it starts on a loaded machine. It used to sleep 200 ms between them, which a reader that
+/// started later than that saw as one read.
 fn through_a_slow_pipe(mut c: Command, first: &str, then: &str) -> Output {
-    let script = format!("printf '{first}'; sleep 0.2; printf '{then}'");
-    let mut producer = Command::new("sh")
-        .args(["-c", &script])
+    use std::io::Write;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (first, then) = (printf(first), printf(then));
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    // A copy of the read end that only asks how much is left; it never reads.
+    let probe = reader.try_clone().unwrap();
+    let child = c
+        .stdin(reader)
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    c.stdin(Stdio::from(producer.stdout.take().unwrap()));
-    let out = run(&mut c);
-    producer.wait().unwrap();
-    out
+    // The Command holds the parent's copy of the read end until dropped.
+    drop(c);
+    let exited = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            // A reader that exited, or stopped reading, gets EPIPE or nothing: both are fine.
+            let _ = writer.write_all(&first);
+            while unread(&probe) > 0 && !exited.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let _ = writer.write_all(&then);
+            drop(writer);
+        });
+        let out = child.wait_with_output().unwrap();
+        exited.store(true, Ordering::SeqCst);
+        out
+    })
 }
 
 /// Code review r8, Codex #1: on stdin through a pipe, rg detects binary data when it reads it,
