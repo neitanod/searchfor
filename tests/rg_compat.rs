@@ -1432,3 +1432,47 @@ fn a_binary_file_with_a_context_deviates_as_documented() {
     }
     r.assert_empty();
 }
+
+/// Code review r6, Codex #1: ripgrep 14.1.1 runs `-v --count-matches` as `-v --count`
+/// (hiargs.rs:129), so it counts the inverted lines, `-m` included; `--json` placed before
+/// `--count-matches` gives way to it. With and without `--no-trail`, and with `--within`, whose
+/// filter keeps every Match of `cnt/w.md`.
+#[test]
+fn inverted_count_matches_counts_lines_as_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("cnt")).unwrap();
+    std::fs::write(fx.file("cnt/w.md"), "# H\nneedle needle\nplain\nother\nneedle\n").unwrap();
+    std::fs::write(fx.file("cnt/in.txt"), "needle\na\nb\nneedle needle\n").unwrap();
+    let mut r = Report(Vec::new());
+    for variant in [&["--no-trail"][..], &[], &["--within", ""]] {
+        for count in [&["--count-matches"][..], &["--json", "--count-matches"]] {
+            for limit in [&[][..], &["-m1"], &["-m2"]] {
+                let tail: [(&[&str], In); 4] = [
+                    (&["needle", "-"], In::File("cnt/in.txt")),
+                    (&["needle", "cnt/in.txt"], In::Null),
+                    (&["needle", "cnt/w.md"], In::Null),
+                    (&["--sort", "path", "needle", "cnt"], In::Null),
+                ];
+                for (rest, input) in tail {
+                    let mut a = vec!["-v"];
+                    a.extend_from_slice(count);
+                    a.extend_from_slice(limit);
+                    a.extend_from_slice(rest);
+                    let want = rg(&fx, &a, input);
+                    let mut s = variant.to_vec();
+                    s.extend_from_slice(&a);
+                    let got = sfor(&fx, &s, input);
+                    r.check(
+                        format!("{s:?}"),
+                        (code(&want), stdout(&want)),
+                        (code(&got), stdout(&got)),
+                    );
+                }
+            }
+        }
+    }
+    r.assert_empty();
+}

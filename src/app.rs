@@ -158,7 +158,8 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         ColorWhen::Always => ColorChoice::Always,
         ColorWhen::Ansi => ColorChoice::AlwaysAnsi,
     };
-    let summary_mode = if args.count {
+    // ripgrep 14.1.1 runs `-v --count-matches` as `-v --count` (hiargs.rs:129).
+    let summary_mode = if args.count || (args.count_matches && args.invert_match) {
         Some(summary::Mode::Count)
     } else if args.count_matches {
         Some(summary::Mode::CountMatches)
