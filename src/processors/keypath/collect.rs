@@ -90,6 +90,20 @@ impl<'a> Collector<'a> {
         }
     }
 
+    /// Whether a Segment over `start..end` is kept, for a walker that builds a Segment only
+    /// when it closes, calling `closed` and never `open` or `close`: as `open` and `close`
+    /// keep it, when every position the walk passes comes after the previous one.
+    pub fn keeps(&self, start: usize, end: usize) -> bool {
+        let i = self.anchors.partition_point(|&a| a < start);
+        self.all || self.anchors.get(i).is_some_and(|&a| a < end)
+    }
+
+    /// A Segment `keeps` keeps, closed at `end` (exclusive).
+    pub fn closed(&mut self, mut seg: OutlineSegment, end: usize) {
+        seg.range.end = end.max(seg.range.start);
+        self.out.push(seg);
+    }
+
     /// Closes what is still open at `end` (the end of the file, or a syntax error) and builds
     /// the Outline.
     pub fn finish(mut self, end: usize, src: &[u8]) -> Outline {

@@ -27,11 +27,63 @@ struct Frame {
     n: usize,
     /// The name an array's elements extend: `ports` → `ports[0]`. Empty past MAX_DEPTH.
     holder: String,
-    /// The current member (key or element) opened a Segment.
-    member: bool,
-    /// The key read, waiting for its value: its decoded name, its range (quotes included),
-    /// and whether it had escapes.
-    key: Option<(String, Range<usize>, bool)>,
+    /// The current member (key or element), when it is a Segment.
+    member: Option<Member>,
+    /// The key read, waiting for its value: its range (quotes included), and whether it had
+    /// escapes.
+    key: Option<(Range<usize>, bool)>,
+}
+
+/// A member's Segment, built when it closes and only if the Collector keeps it: most members
+/// of a big file hold no anchor, and cost no allocation (M2 plan, Task 11.4).
+struct Member {
+    start: usize,
+    name: MemberName,
+    /// Its value is an array (spec §5.2).
+    hidden: bool,
+}
+
+enum MemberName {
+    /// The key's contents, without quotes, and whether they have escapes.
+    Key(Range<usize>, bool),
+    /// The element's index in its array.
+    Element(usize),
+}
+
+impl Member {
+    /// The member's name: the decoded key, or `holder[n]`.
+    fn name(&self, src: &[u8], holder: &str) -> String {
+        match &self.name {
+            MemberName::Key(inner, escaped) => decode(&src[inner.clone()], *escaped),
+            MemberName::Element(n) => format!("{holder}[{n}]"),
+        }
+    }
+
+    /// Closes the member at `end` (exclusive): its Segment, if the Collector keeps it.
+    fn close(self, c: &mut Collector, src: &[u8], holder: &str, end: usize) {
+        if !c.keeps(self.start, end) {
+            return;
+        }
+        let name = self.name(src, holder);
+        let mut seg = match &self.name {
+            MemberName::Key(inner, _) => {
+                let label = inner.start - 1..inner.end + 1;
+                let mut seg =
+                    OutlineSegment::new("key", name.clone(), self.start..self.start, label);
+                seg.name = Some(vec![(0..name.len(), inner.clone())]);
+                seg.name_anchor = inner.start;
+                seg
+            }
+            MemberName::Element(_) => OutlineSegment::new(
+                "element",
+                name,
+                self.start..self.start,
+                self.start..self.start,
+            ),
+        };
+        seg.hidden = self.hidden;
+        c.closed(seg, end);
+    }
 }
 
 struct Scan<'s> {
@@ -219,7 +271,7 @@ fn begin(
         want,
         n: 0,
         holder,
-        member: false,
+        member: None,
         key: None,
     };
     match sc.peek() {
@@ -244,11 +296,22 @@ fn begin(
     Ok(())
 }
 
-/// Walks `src`; returns where it stopped: `src.len()`, or the byte of the first syntax error.
+/// Walks `src`; returns where it stopped: `src.len()`, or the byte of the first syntax error,
+/// where the members still open close.
 pub fn walk(src: &[u8], c: &mut Collector) -> usize {
-    let mut sc = Scan { s: src, i: 0 };
     let mut stack: Vec<Frame> = Vec::new();
-    // Segments open in the collector: at most MAX_DEPTH.
+    let end = scan(src, c, &mut stack);
+    for f in stack.iter_mut().rev() {
+        if let Some(m) = f.member.take() {
+            m.close(c, src, &f.holder, end);
+        }
+    }
+    end
+}
+
+fn scan(src: &[u8], c: &mut Collector, stack: &mut Vec<Frame>) -> usize {
+    let mut sc = Scan { s: src, i: 0 };
+    // Members that are Segments, open: at most MAX_DEPTH.
     let mut open = 0usize;
     // End of the last complete value: where its member's Segment closes.
     let mut last_end = 0usize;
@@ -258,7 +321,7 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
             if sc.i >= src.len() {
                 return src.len();
             }
-            if let Err(at) = begin(&mut sc, &mut stack, String::new(), &mut last_end) {
+            if let Err(at) = begin(&mut sc, stack, String::new(), &mut last_end) {
                 return at.min(src.len());
             }
             continue;
@@ -276,8 +339,8 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
             (Want::CommaOrEnd, b',') => {
                 sc.i += 1;
                 let f = &mut stack[k];
-                if std::mem::take(&mut f.member) {
-                    c.close(last_end);
+                if let Some(m) = f.member.take() {
+                    m.close(c, src, &f.holder, last_end);
                     open -= 1;
                 }
                 f.want = if object {
@@ -288,20 +351,20 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
             }
             (Want::CommaOrEnd, b'}') if object => {
                 sc.i += 1;
-                if stack[k].member {
-                    c.close(last_end);
+                let f = stack.pop().expect("k is the top");
+                if let Some(m) = f.member {
+                    m.close(c, src, &f.holder, last_end);
                     open -= 1;
                 }
-                stack.pop();
                 last_end = sc.i;
             }
             (Want::CommaOrEnd, b']') if !object => {
                 sc.i += 1;
-                if stack[k].member {
-                    c.close(last_end);
+                let f = stack.pop().expect("k is the top");
+                if let Some(m) = f.member {
+                    m.close(c, src, &f.holder, last_end);
                     open -= 1;
                 }
-                stack.pop();
                 last_end = sc.i;
             }
             (Want::KeyOrEnd, b'"') => {
@@ -309,12 +372,7 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
                     Ok(x) => x,
                     Err(at) => return at.min(src.len()),
                 };
-                let name = if open < MAX_DEPTH {
-                    decode(&src[r.start + 1..r.end - 1], escaped)
-                } else {
-                    String::new()
-                };
-                stack[k].key = Some((name, r, escaped));
+                stack[k].key = Some((r, escaped));
                 stack[k].want = Want::Colon;
             }
             (Want::Colon, b':') => {
@@ -323,43 +381,36 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
             }
             (Want::Value | Want::ValueOrEnd, _) => {
                 let f = &mut stack[k];
-                let holder = if object {
-                    let (name, r, _) = f.key.take().expect("Want::Value follows a key");
-                    if open < MAX_DEPTH {
-                        let inner = r.start + 1..r.end - 1;
-                        let mut seg =
-                            OutlineSegment::new("key", name.clone(), r.start..r.start, r.clone());
-                        seg.name = Some(vec![(0..name.len(), inner.clone())]);
-                        seg.name_anchor = inner.start;
-                        c.open(seg);
-                        f.member = true;
-                        open += 1;
+                let member = if object {
+                    let (r, escaped) = f.key.take().expect("Want::Value follows a key");
+                    Member {
+                        start: r.start,
+                        name: MemberName::Key(r.start + 1..r.end - 1, escaped),
+                        hidden: false,
                     }
-                    name
                 } else {
-                    let name = if open < MAX_DEPTH {
-                        format!("{}[{}]", f.holder, f.n)
-                    } else {
-                        String::new()
-                    };
                     f.n += 1;
-                    if open < MAX_DEPTH {
-                        c.open(OutlineSegment::new(
-                            "element",
-                            name.clone(),
-                            sc.i..sc.i,
-                            sc.i..sc.i,
-                        ));
-                        f.member = true;
-                        open += 1;
+                    Member {
+                        start: sc.i,
+                        name: MemberName::Element(f.n - 1),
+                        hidden: false,
                     }
-                    name
                 };
-                if f.member && b == b'[' {
-                    c.hide_top();
+                // Only an array's elements extend the member's name.
+                let array = b == b'[';
+                let mut holder = String::new();
+                if open < MAX_DEPTH {
+                    if array {
+                        holder = member.name(src, &f.holder);
+                    }
+                    f.member = Some(Member {
+                        hidden: array,
+                        ..member
+                    });
+                    open += 1;
                 }
                 f.want = Want::CommaOrEnd;
-                if let Err(at) = begin(&mut sc, &mut stack, holder, &mut last_end) {
+                if let Err(at) = begin(&mut sc, stack, holder, &mut last_end) {
                     return at.min(src.len());
                 }
             }

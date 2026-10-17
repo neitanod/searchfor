@@ -213,6 +213,40 @@ mod tests {
         assert_eq!((t[0][0].name.as_str(), t[1][0].name.as_str()), ("b", "a"));
     }
 
+    /// The Outline kept for some anchors gives each of them the Trail the whole Outline gives
+    /// (kinds, names and lines),
+    /// at every offset of valid, broken, nested and escaped JSON.
+    #[test]
+    fn json_trails_of_kept_segments_are_those_of_the_whole_outline() {
+        let docs: Vec<Vec<u8>> = vec![
+            fixture("config.json"),
+            fixture("broken.json"),
+            fixture("lines.jsonl"),
+            br#"{"a": [[1, {"b\u00e9": [2, []]}], {}], "c": {"d": [ ]}, "e": "x"} [3]"#.to_vec(),
+            br#"{"a": {"b": [1, {"c": 2"#.to_vec(),
+        ];
+        for src in &docs {
+            let mut all = Collector::for_names();
+            let end = walk(Syntax::Json, src, &mut all);
+            let whole = all.finish(end, src);
+            for at in 0..=src.len() {
+                for anchors in [vec![at], vec![0, at], vec![at, src.len()]] {
+                    let mut anchors = anchors;
+                    anchors.sort();
+                    let kept = outline_for(src, Syntax::Json, &anchors);
+                    for &a in &anchors {
+                        assert_eq!(
+                            TrailCursor::new(&kept).trail(a),
+                            TrailCursor::new(&whole).trail(a),
+                            "offset {a} of {}",
+                            String::from_utf8_lossy(src)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_big_file_keeps_only_the_segments_of_its_anchors() {
         let mut src = String::from("{");
