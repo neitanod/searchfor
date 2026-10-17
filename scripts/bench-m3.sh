@@ -29,7 +29,8 @@ export SFOR_FORMATS_DIR="$iso/formats" SFOR_GRAMMARS_DIR="$iso/grammars" SFOR_GR
 unset RIPGREP_CONFIG_PATH
 threads=$(nproc); [ "$threads" -gt 12 ] && threads=12
 dir="${1:-$iso/corpus}"
-sparse='zqsparse'; none='zzqq-searchfor-bench-none'; dense='^.'
+# `none` is split in two, so no file holds it, this script included (M3 code review r1).
+sparse='zqsparse'; none='zzqq-sfor-bench-''absent'; dense='^.'
 fail=0
 
 # gen DIR: small files (every 200th holds the sparse word) and one big file (9–19 MB) per

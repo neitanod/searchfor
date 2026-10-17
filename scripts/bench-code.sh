@@ -12,7 +12,9 @@ export LC_ALL=C
 registry=$(ls -d "$HOME"/.cargo/registry/src/index.crates.io-*/ 2>/dev/null | head -1)
 dir_a="${1:-$registry}"; sparse_a="${2:-impl Drop for}"
 dir_b="${3:-$HOME/robotin/apps}"; sparse_b="${4:-TODO}"
-none='zzqq-searchfor-bench-none'
+# Built at run time, so no file holds it, this script included (M3 code review r1): split in
+# two, the corpus ~/robotin/apps never matches it.
+none='zzqq-sfor-bench-''absent'
 cargo build --release --quiet
 sfor="${SFOR_BIN:-./target/release/sfor}"
 export SFOR_BIN_PATH="$sfor"
