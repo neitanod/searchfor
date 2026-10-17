@@ -86,14 +86,14 @@ since (8390–8395, 8451–8459):
 | 1 | YAML, JSON and TOML key paths, and code through tree-sitter, in v1 | C2, C3, C6 |
 | 5 | Shebangs decide the Format of scripts | C1 (D15), C6 Definitions |
 | 6 | Embedded TOML Definitions, user directory, `--export-formats` (new built-ins export too) | C3, C6, C9 |
-| 7 | External Processors in any language | C4, C5, C11 |
+| 7 | External Processors in any language | C4, C5, C9, C11 |
 | 8 + comments | Every v1 Grammar in the default install; extra ones easy, with an install flag | C6, C7, C8, C9, C10 |
 | 10 | Names in the one-line output, signatures in the tree | C6, C10 |
 | 8361 | WebAssembly Grammars — superseded by 8454 | ADR 0005 |
 | 8375 | Everything in English | all chunks |
 | 8381 | Coloured output | C10 (Trails keep the cyan of M1) |
 | 8385 | Search as fast as ripgrep; the added cost only in presentation; no structure → ripgrep's output | C1 (D15), C6 (D24), C11 benchmark |
-| 8451 | Processors as separate executables, started once, many files over IPC | C4, C5 |
+| 8451 | Processors as separate executables, started once, many files over IPC | C4, C5, C9 |
 | 8453 + 8454 | v1 Grammars compiled in; extras (`--install-grammar`, External Processors) as helper binaries speaking JSON lines; WASM out | C1, C6, C7, C8, C9 |
 | 8455 | Once per search: start with the first file of the Format, exit on EOF, restart after a crash (that file is Plain); optional `mode = "oneshot"` | C4, C11 |
 | 8458 + 8459 | Release resources between files; process several in parallel: ids and any-order answers (`concurrent`), or a pool of copies up to the thread count (`pool`); the Definition names the mode; a memory test over thousands of files | C4, C5, C8, C11 |
@@ -109,12 +109,12 @@ ones it describes marked «M2 plan».
 |---|---|---|
 | D1 | `tree-sitter` 0.27.1, not 0.26 | The research's rustc 1.95 requirement comes from wasmtime 48 behind the `wasm` feature. Without it, tree-sitter 0.27.1 declares `rust-version = 1.90` and the probe built and ran the seven queries with rustc 1.90. 0.27 made `QueryMatch::captures` a method. 0.26.13 is the fallback if a Grammar crate refuses 0.27 |
 | D2 | `keypath` over native parsers: own JSON scanner, `saphyr-parser`, `toml_edit` | tree-sitter-yaml breaks over 32 768 lines; tree-sitter's TOML tree gives `products.variants[0]` instead of `products[1].variants[0]`; the JSON scanner is 27× faster (research §5) |
-| D3 | No tree-sitter-yaml fallback; a syntax error keeps the Trails before it, silently | One YAML implementation; Helm templates are often not valid YAML, and a warning per file would bury the output. saphyr-parser read `a: {{ .Values.x }}` without error (as flow mappings) in the probe |
+| D3 | No tree-sitter-yaml fallback; a syntax error keeps the Trails before it, silently (YAML: the events before the error; TOML: the longest prefix ending at a line start before the error that parses, at most 256 tries; JSON: the walk up to the error) | One YAML implementation; Helm templates are often not valid YAML, and a warning per file would bury the output. saphyr-parser read `a: {{ .Values.x }}` without error (as flow mappings) in the probe |
 | D4 | `pool` is the default mode | A helper that answers one line at a time is correct in `pool`; `concurrent` needs a helper that handles ids, so it is opt-in |
 | D5 | `timeout_ms` defaults to 5000; a timeout kills the process | A stuck helper cannot be trusted with the next request; killing it frees the pool slot |
 | D6 | Three crashes in a run disable the Definition; a command that cannot start disables it at once | A crash loop would cost a process start and a warning per file |
 | D7 | A `hello` line opens every process, with `params` and `threads` | The helper compiles its query once per process and sizes its worker pool; the protocol number is checked once |
-| D8 | `Input` gains `disk: Option<&Path>`, the file whose bytes are exactly `bytes`; otherwise the helper gets a temporary file | Offsets must count the bytes the helper reads (BOM, UTF-16, stdin); the `Processor` trait itself is unchanged |
+| D8 | `Input` gains `disk: Option<&Path>`: set only for a regular file (not `/dev/stdin`, not a FIFO) whose bytes sfor searched unchanged (no BOM, no UTF-16) and whose length on disk equals the Source's; anything else reaches the helper as a temporary file. Non-UTF-8 paths and stdin too | Offsets must count the bytes the helper reads; a helper must never reopen a stream (`/dev/stdin` is its own protocol channel); the `Processor` trait itself is unchanged |
 | D9 | Helper stderr lines are relayed as warnings `sfor: <format>: <line>` | Authors see their errors; `--no-messages` silences them like every other warning |
 | D10 | `processor = "external"` works from M2 | It is the same code as Grammar Helpers (8453: one mechanism), and the example helper needs it end to end; M5 keeps the guide and the publishing |
 | D11 | The example helper is a Rust workspace member, `helpers/example`, describing INI files (`[section] › key`), with test knobs in environment variables | Portable to M5's Windows CI with no Python or shell in the tests; its own crate tests run it through `CARGO_BIN_EXE_…`; INI is simple enough to read at a glance and absent from sfor's built-ins |
@@ -131,6 +131,17 @@ ones it describes marked «M2 plan».
 | D22 | Code benchmark criterion: no-match and `--no-trail` ≤ 1.1× rg; with < 5 % matching files, extra time ≤ matching bytes ÷ (2.5 MB/s × threads) | Measured 3.0 MB/s per thread for parse plus query on 404 real Rust files (11.5 MB, 3.8 s); a fixed 1.5× would be impossible for code, and the formula is exactly 8385's «cost only in files with Matches» |
 | D23 | Memory test: resident memory after 5 000 requests ≤ the value after 500 + 2 MiB, Linux only (`/proc/<pid>/status`) | Allocators keep some memory; growth per file would pass 2 MiB well before 5 000 files |
 | D24 | `treesitter` implements `Processor` directly and runs the query only over the bytes between the first and the last anchor | The query took 1.4 s of the 3.8 s measured; `QueryCursor::set_byte_range` keeps every ancestor of an anchor |
+| D31 | Each helper process has a writer thread: a request is queued to it, so the caller's deadline covers writing and answering, and a kill never waits for a lock the writer holds | A helper that stops reading would otherwise block sfor forever on a full pipe (review r1, Codex #1) |
+| D32 | One idempotent close per process: stdin closed, one second of grace, kill, then always reap; the pipe threads get at most one more second and are then left behind. Helpers stay in sfor's process group; sfor installs no signal handler | No zombies, and a descendant that inherited the pipes cannot keep sfor alive. In sfor's process group the terminal's Ctrl-C reaches the helpers as it reaches sfor, so sfor dies by SIGINT exactly as ripgrep does; a separate group would need a handler that changes that. A helper that starts processes must stop them when it exits (spec §4.4) |
+| D33 | A Processor that is unavailable (Grammar missing, helper disabled) or fails makes the file Plain: `format` `null` and empty Trails, which the printers already render as Plain (`path:line: text`, spec §6.2) | Empty Trails under a Format name were neither Plain nor structured (review r1, Codex #6) |
+| D34 | The JSON walker is iterative, with an explicit stack; past 256 nested containers it opens no more Segments, and it validates numbers, literals and strings (escapes, no control characters) | A deep file must not overflow the call stack, and `{"a": nope}` is a syntax error, not a key path |
+| D35 | A hidden Segment that has a name stays searchable by `--in-headings`: `names_of` keeps named hidden Segments and still leaves hidden ancestors out of the Trails it builds | `ports` holds an array, so it is hidden in Trails, but it is a key (spec §8); Markdown's hidden Segments (tables) have no name, so M1 is unchanged |
+| D36 | TOML Sections follow headers: a header's Section runs to the next header outside it, and an ancestor with no explicit table whose Section covers that header (`a` of `[a.b]`) gets a Segment per header, with that header's Section. Paths are lists of components, never dotted strings | A parent spanning first to last child would swallow `[x]` between `[a.b]` and `[a.c]`; `"a.b"` is one key |
+| D37 | `--install-grammar` checks the Definition in the index (`name`, `processor = "treesitter"`, `grammar` equal to the Grammar), stages in a unique directory, holds a lock per Grammar (`File::lock`, std ≥ 1.89) and restores the previous install when the final rename fails | An index must not install a Definition for another Format or an `external` command; two installs must not erase each other |
+| D38 | ureq runs with `https_only(true)` (checked on every redirect hop, ureq `run.rs:149`), a 10 s connect timeout and a 300 s global one | The first URL being `https://` does not stop a redirect to `http://`; offline listing must not hang |
+| D39 | The treesitter Processor's compiled queries and warnings live in a per-run instance owned by `Processors`, one `OnceLock` per Definition | A second run in one process (M5's MCP server) must see new `params`; concurrent first calls must compile and warn once |
+| D40 | `oneshot` writes `hello` and the request, closes stdin, and then reads both answers | A script that reads its stdin to EOF before answering is the point of `oneshot` (spec §4.4, review r1, Fable #1) |
+| D41 | A line from a helper that is not JSON or has no `id` breaks the process (killed, its requests fail, one failure counted); a JSON line with a known `id` whose fields do not fit the protocol fails that request only | Only a line with an id can be attributed to a request |
 | D25 | Benchmark corpora: the cargo registry sources (`~/.cargo/registry/src/index.crates.io-*`, 29 788 files on 2026-10-17) and `~/robotin/apps` (11 297 files) | The first exists wherever cargo does; the second mixes PHP, JS, Go, Python and Bash |
 | D26 | Installed Grammar Definitions load between the built-ins and the user directory, with origin `installed` | A user file still overrides everything (#6) |
 | D27 | TSX is its own Format (`tsx`, grammar `tsx`); `.jsx` is JavaScript | The TypeScript crate ships two Grammars; the JavaScript Grammar parses JSX |
@@ -172,6 +183,15 @@ Outputs in `/tmp/subtask/m2-plan/outputs/`; the probe crates in `/tmp/subtask/m2
   @segment` captures `Player:update` and `helper` on C8's fixture.
 - `toml::Value::try_from(serde_json::Map)` gives a `Table` (toml 1.1), and
   `body_mut().with_config().limit(…).read_to_vec()` compiles against ureq 3.4.2.
+- Review round 1 (`/tmp/subtask/m2-plan/kp`, `hp`, `probe027/src/bin/r1.rs`): the plan's
+  collector and iterative JSON walker compile with M1's `trail.rs` and pass their tests,
+  200 000-deep nesting included (`kp`); the plan's `protocol.rs`, `helper/mod.rs` and `host.rs`
+  compile without warnings and their 24 tests pass 20 runs in a row (`hp`); ureq's agent with
+  `https_only(true)` refuses `http://`; the TOML walk back recovers the 15-byte prefix of
+  `[a]\nb="needle"\nx=[\n[c]\nd="needle"\n` (error at byte 23) and of an unclosed `"""`;
+  toml_edit and saphyr-parser stop deep nesting with an error («max recursion depth met»,
+  «recursion limit exceeded at byte 258»); `File::lock` works on rustc 1.90; tempfile 3.27.0
+  has `TempDir::keep` and `Builder::tempdir_in`.
 - Native parse plus query of the 404 Rust files of the cargo registry matching `impl Drop for`:
   11.5 MB in 3.8 s on one thread (parse 2.45 s, query 1.4 s).
 
@@ -190,7 +210,9 @@ M2 is done when all of these hold; each names the test or script that measures i
    (`products[1] › variants[0] › sku`), and a YAML file of 40 000 lines with its Trail (C3).
 6. Spec §11 #11 and #15: the example helper gives the same Trails in `pool`, `concurrent` and
    `oneshot`; a pool never runs more copies than `-j`; a crash is Plain plus one warning, the
-   next file starts a new copy, the exit code is ripgrep's (C4 unit tests, C11 `h01`–`h08`).
+   next file starts a new copy, the exit code is ripgrep's (C4 unit tests, C11 `h01`–`h19`).
+   Every process sfor starts is reaped, a helper that stops reading cannot stall sfor, Ctrl-C
+   ends the helpers, and a helper's child cannot hold sfor (C4, C11 `h13`, `h16`, `h17`).
 7. Spec §11 #16: the example helper and the Lua Grammar Helper keep their resident memory
    within 2 MiB from request 500 to request 5 000 (C5, C8).
 8. Spec §11 #17: `--install-grammar lua` from a `file://` index installs a working Grammar
@@ -201,7 +223,8 @@ M2 is done when all of these hold; each names the test or script that measures i
 10. The C11 ceilings of `tests/perf.rs` pass in release.
 11. `target/release/sfor` is at most 20 MB (measured in C10 and reported; the probe with the
     Grammars, keypath, ureq and sha2 alone was 10.7 MB stripped).
-12. `--list-grammars` lists the eight compiled-in Grammars offline (C10 `m2_08`).
+12. `--list-grammars` lists the eight compiled-in Grammars offline (C10 `m2_08`), and a run
+    whose files have no Match starts no helper and prints no warning (C10 `m2_13`).
 13. No document in the repository presents WebAssembly Grammars as current (C12; the M1 plan
     and ADR 0003 stay as history).
 
@@ -211,9 +234,13 @@ M2 is done when all of these hold; each names the test or script that measures i
    `OutlineProcessor` keep their signatures. Two additive changes: `Input` gains
    `disk: Option<&'a Path>` (D8), and the pipeline asks a per-run `Processors` registry instead
    of `processors::by_name`, because a Helper Processor has state that lives for one run.
-   `by_name` stays for the stateless built-ins.
+   `by_name` stays for the stateless built-ins (`markdown`, `keypath`); `treesitter` keeps
+   per-run state (D39), so `Processors` owns its instance.
 2. **Search first, describe later**, as M1: a Helper Processor starts when the first file of its
-   Format with a Match needs Trails, never during the walk.
+   Format with a Match needs Trails, never during the walk. Before the search the pipeline only
+   asks side-effect-free questions (`by_name` for the streaming path, `Processors::describes`
+   for `complete_input`): no host is built, no warning is printed, and the installed Grammars
+   are read once per run (review r1, Codex #5).
 3. **`Processors`** (C1, completed in C9) owns, for one run: the thread count, the warning sink,
    one `HelperProcessor` per Definition that needs a helper (created on first use), the set of
    Definitions disabled for the run, and the run's temporary directory. Dropping it closes every
@@ -222,8 +249,9 @@ M2 is done when all of these hold; each names the test or script that measures i
    (`src/helper/host.rs`, C4) and by `serve` (`src/helper/serve.rs`, C5). Neither side builds
    JSON by hand.
 5. **Host.** A `Host` serves one Definition. It owns connections (`Conn`), each a launched
-   process with a writer (its stdin), a reader thread that parses each stdout line and hands the
-   reply to the request with the same id, and a stderr thread that relays lines as warnings. A
+   process with a writer thread that owns its stdin (D31), a reader thread that parses each
+   stdout line and hands the reply to the request with the same id (D41), and a stderr thread
+   that relays lines as warnings; one idempotent close stops, kills and reaps it (D32). A
    `Conn` has a capacity: 1 in `pool` and `oneshot`, `threads` in `concurrent`. The process is
    reached through a `Launcher` trait, so the host's tests run fake helpers in threads over
    `std::io::pipe` and the real launcher runs `std::process::Command`.
@@ -258,14 +286,15 @@ M2 is done when all of these hold; each names the test or script that measures i
 ## File structure
 
 ```
-Cargo.toml                                   deps + [workspace] (only C1 edits it)
+Cargo.toml                                   deps + [workspace] (only C1 edits it; C5 and C8 add one
+                                             dev-dependency to their members, which touches Cargo.lock)
 formats/{php,javascript,typescript,tsx,bash,go,rust,python}.toml   code Definitions (C6)
 formats/{json,yaml,toml}.toml                keypath Definitions (C3)
 grammars/index.json                          the Grammar index, empty list in M2 (C8)
 docs/grammar-index.schema.json               schema of the index (C8)
 src/model.rs                                 Input.disk (C1)
 src/processors/mod.rs                        by_name + Processors, ProcessorRef (C1, C9)
-src/processors/external.rs                   HelperProcessor: Processor over a Host (C4)
+src/processors/external.rs                   RunTemp (C1); HelperProcessor: Processor over a Host (C9)
 src/processors/keypath/{mod,collect,json}.rs keypath Processor, collector, JSON (C2)
 src/processors/keypath/{yaml,toml}.rs        YAML and TOML (C3)
 src/processors/treesitter/{mod,grammars}.rs  treesitter Processor, compiled-in Grammars (C6)
@@ -298,20 +327,20 @@ README.md, README.es.md, skills/searchfor/SKILL.md   (C12)
 | Chunk | Content | Depends on | Files and folders (exclusive within its tanda) | Tanda |
 |---|---|---|---|---|
 | C1 | Dependencies, workspace, stubs, wire types, `Processors`, `Input.disk`, Detector rule D15 | — | `Cargo.toml`, `Cargo.lock`, `src/lib.rs`, `src/model.rs`, `src/search.rs` (`walker_threads` public), `src/processors/mod.rs`, stubs of every new `src/**` file, `src/helper/{mod,protocol}.rs`, `src/formats/detector.rs`, the tests of `src/formats/{mod,definition}.rs`, the `Input` literals of `src/app.rs`, `src/output/stream.rs`, `src/filter.rs`, `helpers/example/{Cargo.toml,src/main.rs}` and `helpers/grammar/{Cargo.toml,src/main.rs}` stubs | 1 |
-| C2 | keypath Processor, collector, JSON scanner | C1 | `src/processors/keypath/{mod,collect,json}.rs`, `tests/fixtures/data/*.json` | 2 |
-| C4 | Host and `HelperProcessor` | C1 | `src/helper/host.rs`, `src/processors/external.rs` | 2 |
-| C5 | `serve` and the example helper with its memory test | C1 | `src/helper/serve.rs`, `helpers/example/**` | 2 |
+| C2 | keypath Processor, collector, JSON walker; named hidden Segments in `names_of` | C1 | `src/processors/keypath/{mod,collect,json}.rs`, `src/trail.rs` (`names_of`), `tests/fixtures/data/*.json` | 2 |
+| C4 | Host (with the fake launcher in `host.rs`'s `testing` module) | C1 | `src/helper/host.rs` | 2 |
+| C5 | `serve` and the example helper with its memory test | C1 | `src/helper/serve.rs`, `helpers/example/**`, `Cargo.lock` (the member's dev-dependency) | 2 |
 | C6 | treesitter Processor, compiled-in Grammars, code Definitions | C1 | `src/processors/treesitter/**`, `formats/{php,javascript,typescript,tsx,bash,go,rust,python}.toml`, `src/formats/builtin.rs`, `tests/fixtures/code/**` | 2 |
 | C7 | Grammar directory, index, install, list (library) | C1 | `src/grammars/**` | 2 |
 | C3 | YAML and TOML, keypath Definitions, the min.json test | C2 | `src/processors/keypath/{yaml,toml}.rs`, `formats/{json,yaml,toml}.toml`, `src/formats/builtin.rs`, `tests/fixtures/data/*.{yaml,yml,toml}`, `tests/cli.rs` (t08 only), `tests/snapshots/cli__t08_fragments.snap` | 3 |
-| C8 | Grammar Helper template (Lua), its memory test, build script, index schema | C5, C6 | `helpers/grammar/**`, `scripts/build-grammar-helper.sh`, `grammars/index.json`, `docs/grammar-index.schema.json` | 3 |
-| C9 | Grammar Helpers in `Processors`; installed Definitions; unavailable Formats | C4, C6, C7 | `src/processors/mod.rs`, `src/formats/{mod,definition}.rs` | 3 |
-| C10 | Pipeline: `Processors` per run, `Input.disk`, flags and actions, tree labels, end-to-end Format tests | C1–C9 | `src/app.rs`, `src/cli/mod.rs`, `src/output/tree.rs`, `tests/common/mod.rs` (Grammar isolation of `Fixture`), `tests/cli_m2.rs`, `tests/snapshots/cli_m2__*.snap` | 4 |
-| C11 | Helper and install end-to-end tests, code benchmark, perf ceilings | C10 | `tests/helpers.rs`, `tests/common/mod.rs` (`workspace_bin`), `tests/perf.rs`, `tests/fixtures/ini/**`, `scripts/bench-code.sh` | 5 |
+| C8 | Grammar Helper template (Lua), its memory test, build script, index schema | C5, C6 | `helpers/grammar/**`, `scripts/build-grammar-helper.sh`, `grammars/index.json`, `docs/grammar-index.schema.json`, `Cargo.lock` (the member's dev-dependency) | 3 |
+| C9 | `HelperProcessor`; Grammar Helpers in `Processors`; installed Definitions; unavailable Formats | C4, C6, C7 | `src/processors/external.rs`, `src/processors/mod.rs`, `src/formats/{mod,definition}.rs` | 3 |
+| C10 | Pipeline: `Processors` per run, `Input.disk`, Plain fallback, flags and actions, tree labels, end-to-end Format tests | C1–C9 | `src/app.rs`, `src/cli/mod.rs`, `src/output/tree.rs`, `tests/common/mod.rs` (Grammar isolation of `Fixture`), `tests/cli_m2.rs`, `tests/snapshots/cli_m2__*.snap` | 4 |
+| C11 | Helper and install end-to-end tests, code benchmark, perf ceilings | C10 | `tests/helpers.rs`, `tests/common/mod.rs` (`workspace_bin`), `tests/perf.rs`, `tests/fixtures/ini/**`, `scripts/bench-code.sh`, `scripts/fake-sfor-exit-2.sh` | 5 |
 | C12 | README, skill, spec reconciliation | C10 | `README.md`, `README.es.md`, `skills/searchfor/SKILL.md`, `docs/specs/2026-10-16-searchfor-design.md`, `docs/json-schema.json` | 5 |
 
-Twelve chunks in five tandas. C6 and C3 both edit `src/formats/builtin.rs`, in different
-tandas. C1 writes every `mod` declaration, every dependency and a stub for every new file, so
+Twelve chunks in five tandas. C6 and C3 both edit `src/formats/builtin.rs`, and C1, C5 and
+C8 `Cargo.lock`, always in different tandas (C5 and C8 only add a member's dev-dependency). C1 writes every `mod` declaration, every dependency and a stub for every new file, so
 later chunks only fill their own files; a chunk uses another chunk's API only through the
 signatures fixed in this plan, and C10 is where everything links.
 
@@ -419,7 +448,7 @@ tree-sitter-lua = { version = "0.5", optional = true }
 - [ ] Stubs, each a file whose first line is `//!` naming its chunk:
   - `src/helper/mod.rs` (filled in Task 1.3), `src/helper/protocol.rs` (Task 1.3),
     `src/helper/host.rs` (C4), `src/helper/serve.rs` (C5);
-  - `src/processors/external.rs` (C4; `RunTemp` in Task 1.5),
+  - `src/processors/external.rs` (C9; `RunTemp` in Task 1.5),
     `src/processors/keypath/{mod,collect,json,yaml,toml}.rs` (C2, C3),
     `src/processors/treesitter/{mod,grammars}.rs` (C6);
   - `src/grammars/{mod,index,install}.rs` (C7).
@@ -435,18 +464,30 @@ pub mod yaml;
 /// keypath: YAML, JSON and TOML key paths (spec §5.2).
 pub struct Keypath;
 impl super::Processor for Keypath {
-    fn trails(&self, _: &crate::model::Input, _: &toml::Table, _: &[usize]) -> anyhow::Result<Vec<crate::model::Trail>> {
+    // `toml` is the sibling module here: the crate is `::toml`.
+    fn trails(&self, _: &crate::model::Input, _: &::toml::Table, _: &[usize]) -> anyhow::Result<Vec<crate::model::Trail>> {
         anyhow::bail!("keypath is not implemented yet (C2)")
     }
-    fn names(&self, _: &crate::model::Input, _: &toml::Table) -> anyhow::Result<Vec<crate::model::Name>> {
+    fn names(&self, _: &crate::model::Input, _: &::toml::Table) -> anyhow::Result<Vec<crate::model::Name>> {
         anyhow::bail!("keypath is not implemented yet (C2)")
     }
 }
 
+// src/processors/keypath/yaml.rs (C3 fills)
+pub fn walk(_src: &[u8], _c: &mut super::collect::Collector) -> usize { 0 }
+
+// src/processors/keypath/toml.rs (C3 fills)
+pub fn outline(_src: &[u8]) -> crate::trail::Outline { crate::trail::Outline::default() }
+
+// src/processors/keypath/collect.rs (C2 fills; yaml.rs names it)
+pub struct Collector<'a> { _anchors: &'a [usize] }
+
 // src/processors/treesitter/mod.rs (C6 fills)
 pub mod grammars;
-/// treesitter: code Trails from a query (spec §5.3).
-pub struct TreeSitter;
+/// treesitter: code Trails from a query (spec §5.3). Per-run state (D39): `Processors` owns
+/// one instance per run.
+#[derive(Default)]
+pub struct TreeSitter { /* C6 */ }
 impl super::Processor for TreeSitter { /* the same two bails, naming C6 */ }
 
 // src/processors/treesitter/grammars.rs (C6 fills)
@@ -469,21 +510,23 @@ impl Host {
     pub fn shutdown(&self) {}
 }
 
-// src/processors/external.rs (C4 fills HelperProcessor; RunTemp is Task 1.5)
-pub struct HelperProcessor { /* C4 */ }
+// src/processors/external.rs (C9 fills HelperProcessor; RunTemp is Task 1.5)
+pub struct HelperProcessor { /* C9 */ }
 impl HelperProcessor {
-    pub fn new(_cfg: crate::helper::HostConfig, _launcher: Box<dyn crate::helper::Launcher>, _tmp: std::sync::Arc<RunTemp>, _warn: crate::helper::Warn) -> Self { unimplemented!("C4") }
+    pub fn new(_cfg: crate::helper::HostConfig, _launcher: Box<dyn crate::helper::Launcher>, _tmp: std::sync::Arc<RunTemp>, _warn: crate::helper::Warn) -> Self { unimplemented!("C9") }
     pub fn shutdown(&self) {}
 }
-impl super::Processor for HelperProcessor { /* the same two bails, naming C4 */ }
+impl super::Processor for HelperProcessor { /* the same two bails, naming C9 */ }
 ```
 
-  `src/helper/serve.rs`, `src/processors/keypath/{collect,json,yaml,toml}.rs` and
-  `src/grammars/*.rs` hold only their `//!` line.
+  `src/helper/serve.rs`, `src/processors/keypath/json.rs` and `src/grammars/*.rs` hold only
+  their `//!` line. `src/processors/external.rs` also gets `RunTemp` and `TempFile` now, with
+  the code of Task 1.5 (their test stays in Task 1.5).
 
-- [ ] `cargo build --workspace` compiles; `cargo test` passes (the stubs are unreachable: no
-  Definition names `keypath` or `treesitter` yet). Commit «Add M2's dependencies, workspace
-  members and module stubs» with `git add -- Cargo.toml Cargo.lock src helpers`.
+- [ ] **Do not build yet.** These stubs name the types Task 1.3 writes (`HostConfig`,
+  `Launcher`, `Proc`, `Warn`, `HelperError`, `Request`, `Reply`), so the crate compiles for the
+  first time at the end of Task 1.3, which commits this task's files with its own (review r1,
+  Codex #16, Fable #4).
 
 ### Task 1.3: the wire types (src/helper/protocol.rs) and the helper configuration (src/helper/mod.rs)
 
@@ -589,7 +632,8 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2:** `cargo test helper::` fails to compile (types missing). That is the RED.
+- [ ] **Step 2:** `cargo test helper::` fails to compile (the types are missing, and so are
+  the ones Task 1.2's stubs name). That is the RED.
 
 - [ ] **Step 3:** `src/model.rs`: `Segment` derives `Deserialize` too, with `#[serde(default)]`
   on `level` and `signature`. `src/helper/protocol.rs`:
@@ -781,12 +825,22 @@ pub trait Control: Send {
     fn kill(&mut self);
     /// Waits up to `within` for the process to exit; true when it did.
     fn wait(&mut self, within: Duration) -> bool;
+    /// Collects the exit status after an exit or a kill, so no zombie is left (D32). Blocks
+    /// until the process is gone; call it after `kill` or after `wait` returned true.
+    fn reap(&mut self);
 }
 
 /// Starts a helper process. The real one runs a command; tests run threads over pipes.
 pub trait Launcher: Send + Sync {
     fn launch(&self) -> std::io::Result<Proc>;
 }
+
+/// A Processor that cannot describe this file: the pipeline prints it as Plain, without a
+/// warning of its own (D33). Returned inside `anyhow::Error`; the pipeline finds it with
+/// `downcast_ref`.
+#[derive(Debug, thiserror::Error)]
+#[error("unavailable")]
+pub struct Unavailable;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum HelperError {
@@ -799,18 +853,23 @@ pub enum HelperError {
     Timeout(u128),
     #[error("{0}")]
     Crashed(String),
+    /// A JSON answer with a known id whose fields do not fit the protocol (D41).
     #[error("{0}")]
     Protocol(String),
 }
 ```
 
-- [ ] **Step 4:** `cargo test helper::` passes. Commit «Define protocol v1's wire types and the
-  helper configuration».
+- [ ] **Step 4:** `cargo build --workspace` compiles, `cargo test` passes (the stubs are
+  unreachable: no Definition names `keypath` or `treesitter` yet), and `cargo test helper::`
+  passes. Commit «Add M2's dependencies, module stubs and protocol v1's wire types» with
+  `git add -- Cargo.toml Cargo.lock src helpers`.
 
 ### Task 1.4: `Input.disk`
 
-**Files:** `src/model.rs`, the `Input { … }` literals in `src/app.rs` (three: `outlined_file`,
-`describe`, `names_of`), `src/output/stream.rs` and `src/filter.rs` (tests).
+**Files:** `src/model.rs` and every `Input { … }` literal, found with `rg -n 'Input \{' src
+tests`: at `46a4b74`, three in `src/app.rs` (`outlined_file`, `describe`, `names_of`) and four in
+tests, `src/processors/mod.rs:87`, `src/processors/markdown.rs:402`, `src/output/stream.rs:494`
+and `src/filter.rs:472`.
 
 - [ ] `Input` gains, documented:
 
@@ -893,35 +952,41 @@ pub enum HelperError {
         let p = f.path().to_path_buf();
         drop(f);
         assert!(!p.exists());
+        let s = t.write(std::path::Path::new("<stdin>"), b"x").unwrap();
+        assert!(s.path().to_string_lossy().ends_with("-_stdin_"), "{}", s.path().display());
     }
 ```
 
-  Replace `by_name_knows_markdown_only` with a test that `by_name` knows `markdown`, `keypath`
-  and `treesitter` and nothing else (`external` needs per-run state, so it is not in
-  `by_name`).
+  Replace `by_name_knows_markdown_only` with a test that `by_name` knows `markdown` and
+  `keypath` and nothing else (`treesitter` and `external` keep per-run state, so `Processors`
+  serves them), and add one that `describes` answers without warning: true for markdown and a
+  compiled-in Grammar (after C6; until then the test uses markdown and `external`), false for
+  a missing Grammar, and `seen` stays empty.
 
 - [ ] **Step 2:** RED: `cargo test processors::` fails to compile.
 
 - [ ] **Step 3:** implement. In `src/processors/mod.rs`:
 
 ```rust
-/// The stateless built-in Processors, by the name in a Format Definition's `processor`.
+/// The stateless built-in Processors, by the name in a Format Definition's `processor`. The
+/// pipeline uses it before the search, for the streaming path of Outline Processors; it has no
+/// side effects.
 pub fn by_name(name: &str) -> Option<&'static dyn Processor> {
     match name {
         "markdown" => Some(&markdown::Markdown),
         "keypath" => Some(&keypath::Keypath),
-        "treesitter" => Some(&treesitter::TreeSitter),
         _ => None,
     }
 }
 
-/// A Processor for one file: a built-in, or the Helper Processor of its Definition.
-pub enum ProcessorRef {
-    BuiltIn(&'static dyn Processor),
+/// A Processor for one file: a built-in, the run's treesitter, or the Helper Processor of its
+/// Definition.
+pub enum ProcessorRef<'a> {
+    BuiltIn(&'a dyn Processor),
     Helper(std::sync::Arc<external::HelperProcessor>),
 }
 
-impl std::ops::Deref for ProcessorRef {
+impl std::ops::Deref for ProcessorRef<'_> {
     type Target = dyn Processor;
     fn deref(&self) -> &Self::Target {
         match self {
@@ -940,6 +1005,8 @@ pub struct Processors {
     /// Definitions disabled for this run, already warned about.
     disabled: std::sync::Mutex<std::collections::HashSet<String>>,
     tmp: std::sync::Arc<external::RunTemp>,
+    /// The run's treesitter (D39).
+    treesitter: treesitter::TreeSitter,
 }
 
 impl Processors {
@@ -950,18 +1017,33 @@ impl Processors {
             helpers: Default::default(),
             disabled: Default::default(),
             tmp: std::sync::Arc::new(external::RunTemp::new()),
+            treesitter: treesitter::TreeSitter::default(),
         }
     }
 
     /// The Processor names a Format Definition may use (`Registry::load`).
     pub fn known(name: &str) -> bool {
-        by_name(name).is_some() || name == "external"
+        by_name(name).is_some() || matches!(name, "treesitter" | "external")
+    }
+
+    /// Whether files of `def` may get Trails, without building anything or warning: for
+    /// `complete_input`, which runs before the search (design note 2). C9 adds installed
+    /// Grammars.
+    pub fn describes(&self, def: &crate::formats::definition::FormatDefinition) -> bool {
+        match def.processor.as_str() {
+            "external" => !self.disabled.lock().unwrap().contains(&def.name),
+            "treesitter" => {
+                let grammar = def.params.get("grammar").and_then(|v| v.as_str()).unwrap_or("");
+                treesitter::grammars::language(grammar).is_some()
+            }
+            p => by_name(p).is_some(),
+        }
     }
 
     /// The Processor for files of `def`, or None (the file is Plain). Warns once per run for a
     /// Definition that cannot work: a Grammar not available, an `external` without a valid
     /// `command`.
-    pub fn for_definition(&self, def: &crate::formats::definition::FormatDefinition) -> Option<ProcessorRef> {
+    pub fn for_definition(&self, def: &crate::formats::definition::FormatDefinition) -> Option<ProcessorRef<'_>> {
         if self.disabled.lock().unwrap().contains(&def.name) {
             return None;
         }
@@ -972,7 +1054,7 @@ impl Processors {
             "treesitter" => {
                 let grammar = def.params.get("grammar").and_then(|v| v.as_str()).unwrap_or("");
                 if treesitter::grammars::language(grammar).is_some() {
-                    return by_name("treesitter").map(ProcessorRef::BuiltIn);
+                    return Some(ProcessorRef::BuiltIn(&self.treesitter));
                 }
                 // C9: an installed Grammar Helper serves it here.
                 self.disable(def, format!(
@@ -989,7 +1071,7 @@ impl Processors {
         &self,
         def: &crate::formats::definition::FormatDefinition,
         cfg: impl FnOnce() -> Result<crate::helper::HostConfig, String>,
-    ) -> Option<ProcessorRef> {
+    ) -> Option<ProcessorRef<'_>> {
         let mut map = self.helpers.lock().unwrap();
         if let Some(h) = map.get(&def.name) {
             return Some(ProcessorRef::Helper(h.clone()));
@@ -1070,7 +1152,14 @@ impl RunTemp {
             .as_ref()
             .map_err(|e| std::io::Error::other(e.clone()))?;
         let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let file = name.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "stdin".into());
+        // `<stdin>` and other names with characters Windows refuses become `_` (M5's Windows).
+        let file: String = name
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "stdin".into())
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+            .collect();
         let p = dir.path().join(format!("{n}-{file}"));
         std::fs::write(&p, bytes)?;
         Ok(TempFile(p))
@@ -1472,6 +1561,39 @@ mod tests {
     }
 
     #[test]
+    fn lexical_errors_end_the_walk() {
+        // JSONC allows comments and trailing commas, nothing else (D34, review r1, Codex #9).
+        for bad in [
+            r#"{"a": nope, "b": "needle"}"#,
+            r#"{"a": 01, "b": "needle"}"#,
+            r#"{"a": 1.e5, "b": "needle"}"#,
+            r#"{"a": "x\q", "b": "needle"}"#,
+            "{\"a\": \"tab\there\", \"b\": \"needle\"}",
+            r#"{"a": truex, "b": "needle"}"#,
+        ] {
+            assert_eq!(needles(bad.as_bytes(), "json"), vec![Vec::<String>::new()], "{bad}");
+        }
+        assert_eq!(needles(br#"{"a": -0.5e+3, "b": "needle"}"#, "json"), vec![vec!["b"]]);
+        assert_eq!(needles(br#"{"a": "\u00e9\n", "b": "needle"}"#, "json"), vec![vec!["b"]]);
+    }
+
+    #[test]
+    fn deep_nesting_does_not_touch_the_call_stack() {
+        // 200 000 nested objects, far past what recursion would survive on an 8 MiB stack:
+        // the walk is iterative, and Segments stop at MAX_DEPTH (D34).
+        let n = 200_000;
+        let mut src = "{\"a\":".repeat(n);
+        src.push_str("\"needle\"");
+        src.push_str(&"}".repeat(n));
+        let t = &needles(src.as_bytes(), "json")[0];
+        assert_eq!(t.len(), json::MAX_DEPTH);
+        let mut arrays = "[".repeat(n);
+        arrays.push_str("\"needle\"");
+        arrays.push_str(&"]".repeat(n));
+        assert_eq!(needles(arrays.as_bytes(), "json").len(), 1);
+    }
+
+    #[test]
     fn syntax_is_required() {
         let input = Input { bytes: b"{}", path: Path::new("x"), format: "json", disk: None };
         let e = Keypath.trails(&input, &::toml::Table::new(), &[0]).unwrap_err();
@@ -1482,13 +1604,44 @@ mod tests {
 
 - [ ] **Step 2:** RED.
 
-- [ ] **Step 3:** `json.rs`:
+- [ ] **Step 3:** `json.rs`, iterative (D34):
 
 ```rust
-//! The JSON walker of `keypath` (spec §5.2): one pass over the bytes. Comments (`//`, `/* */`)
-//! and trailing commas are accepted; several top-level values (JSON Lines) are read in turn.
+//! The JSON walker of `keypath` (spec §5.2): one iterative pass over the bytes with an explicit
+//! stack, so nesting never touches the call stack. Comments (`//`, `/* */`) and trailing commas
+//! are accepted (JSONC); everything else must be JSON: numbers, `true`, `false`, `null`, and
+//! strings with valid escapes and no control characters. Several top-level values (JSON Lines)
+//! are read in turn. Past `MAX_DEPTH` nested containers no more Segments open, so a deeper
+//! Match gets the Trail of the deepest one (M2 plan, D34).
 use super::collect::Collector;
 use crate::trail::OutlineSegment;
+use std::ops::Range;
+
+pub const MAX_DEPTH: usize = 256;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Want {
+    KeyOrEnd,
+    Colon,
+    Value,
+    ValueOrEnd,
+    CommaOrEnd,
+}
+
+/// One open object or array.
+struct Frame {
+    object: bool,
+    want: Want,
+    /// The next element's index (arrays).
+    n: usize,
+    /// The name an array's elements extend: `ports` → `ports[0]`. Empty past MAX_DEPTH.
+    holder: String,
+    /// The current member (key or element) opened a Segment.
+    member: bool,
+    /// The key read, waiting for its value: its decoded name, its range (quotes included),
+    /// and whether it had escapes.
+    key: Option<(String, Range<usize>, bool)>,
+}
 
 struct Scan<'s> {
     s: &'s [u8],
@@ -1518,40 +1671,87 @@ impl Scan<'_> {
     }
 
     /// A string at `i` (on its `"`): its range, quotes included, and whether it has escapes.
-    fn string(&mut self) -> Option<(std::ops::Range<usize>, bool)> {
+    fn string(&mut self) -> Result<(Range<usize>, bool), usize> {
         let start = self.i;
         self.i += 1;
         let mut escaped = false;
-        while let Some(b) = self.peek() {
-            match b {
-                b'"' => {
+        loop {
+            match self.peek() {
+                None => return Err(self.s.len()),
+                Some(b'"') => {
                     self.i += 1;
-                    return Some((start..self.i, escaped));
+                    return Ok((start..self.i, escaped));
                 }
-                b'\\' => {
+                Some(b'\\') => {
                     escaped = true;
-                    self.i += 2;
+                    match self.s.get(self.i + 1) {
+                        Some(b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') => self.i += 2,
+                        Some(b'u') if self.s.get(self.i + 2..self.i + 6).is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit)) => self.i += 6,
+                        _ => return Err(self.i),
+                    }
                 }
-                _ => self.i += 1,
+                Some(b) if b < 0x20 => return Err(self.i),
+                Some(_) => self.i += 1,
             }
         }
-        None
     }
 
-    /// A number, `true`, `false` or `null`: up to the next delimiter.
-    fn atom(&mut self) -> bool {
+    fn digits(&mut self) -> bool {
         let start = self.i;
-        while let Some(b) = self.peek() {
-            if matches!(b, b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r' | b'/' | b':') {
-                break;
-            }
+        while matches!(self.peek(), Some(b'0'..=b'9')) {
             self.i += 1;
         }
         self.i > start
     }
+
+    /// A scalar ends at a delimiter: `truex` and `01` are errors.
+    fn delimited(&self) -> Result<(), usize> {
+        match self.peek() {
+            None | Some(b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r' | b'/') => Ok(()),
+            _ => Err(self.i),
+        }
+    }
+
+    /// A number (RFC 8259 grammar), `true`, `false` or `null`.
+    fn scalar(&mut self) -> Result<(), usize> {
+        for lit in [&b"true"[..], b"false", b"null"] {
+            if self.s[self.i..].starts_with(lit) {
+                self.i += lit.len();
+                return self.delimited();
+            }
+        }
+        let start = self.i;
+        if self.peek() == Some(b'-') {
+            self.i += 1;
+        }
+        match self.peek() {
+            Some(b'0') => self.i += 1,
+            Some(b'1'..=b'9') => {
+                self.digits();
+            }
+            _ => return Err(start),
+        }
+        if self.peek() == Some(b'.') {
+            self.i += 1;
+            if !self.digits() {
+                return Err(self.i);
+            }
+        }
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            self.i += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.i += 1;
+            }
+            if !self.digits() {
+                return Err(self.i);
+            }
+        }
+        self.delimited()
+    }
 }
 
-/// The text of a JSON string's contents, escapes decoded (lossy on invalid UTF-8).
+/// The text of a JSON string's contents, escapes decoded (lossy on invalid UTF-8). `string`
+/// already checked the escapes.
 pub(super) fn decode(raw: &[u8], escaped: bool) -> String {
     if !escaped {
         return String::from_utf8_lossy(raw).into_owned();
@@ -1602,98 +1802,138 @@ pub(super) fn decode(raw: &[u8], escaped: bool) -> String {
     out
 }
 
-/// `holder` names the elements of an array: the key that holds it, or "" at the top level.
-fn value(sc: &mut Scan, c: &mut Collector, holder: &str) -> Result<(), usize> {
-    sc.ws();
+/// Starts the value at `sc.i`: pushes a Frame for a container, or reads a scalar whole.
+fn begin(sc: &mut Scan, stack: &mut Vec<Frame>, holder: String, last_end: &mut usize) -> Result<(), usize> {
+    let frame = |object, want, holder| Frame { object, want, n: 0, holder, member: false, key: None };
     match sc.peek() {
-        Some(b'{') => object(sc, c),
-        Some(b'[') => array(sc, c, holder),
-        Some(b'"') => sc.string().map(|_| ()).ok_or(sc.i),
-        Some(_) if sc.atom() => Ok(()),
-        _ => Err(sc.i),
-    }
-}
-
-fn object(sc: &mut Scan, c: &mut Collector) -> Result<(), usize> {
-    sc.i += 1;
-    loop {
-        sc.ws();
-        match sc.peek() {
-            Some(b'}') => {
-                sc.i += 1;
-                return Ok(());
-            }
-            Some(b'"') => {}
-            _ => return Err(sc.i),
-        }
-        let (key, escaped) = sc.string().ok_or(sc.i)?;
-        let inner = key.start + 1..key.end - 1;
-        let name = decode(&sc.s[inner.clone()], escaped);
-        let mut seg = OutlineSegment::new("key", name.clone(), key.start..key.start, key.clone());
-        seg.name = Some(vec![(0..name.len(), inner.clone())]);
-        seg.name_anchor = inner.start;
-        sc.ws();
-        if sc.peek() != Some(b':') {
-            return Err(sc.i);
-        }
-        sc.i += 1;
-        sc.ws();
-        c.open(seg);
-        if sc.peek() == Some(b'[') {
-            c.hide_top();
-        }
-        value(sc, c, &name)?;
-        c.close(sc.i);
-        sc.ws();
-        match sc.peek() {
-            Some(b',') => sc.i += 1,
-            Some(b'}') => {}
-            _ => return Err(sc.i),
-        }
-    }
-}
-
-fn array(sc: &mut Scan, c: &mut Collector, holder: &str) -> Result<(), usize> {
-    sc.i += 1;
-    let mut n = 0;
-    loop {
-        sc.ws();
-        if sc.peek() == Some(b']') {
+        Some(b'{') => {
             sc.i += 1;
-            return Ok(());
+            stack.push(frame(true, Want::KeyOrEnd, String::new()));
         }
-        let name = format!("{holder}[{n}]");
-        let start = sc.i;
-        c.open(OutlineSegment::new("element", name.clone(), start..start, start..start));
-        if sc.peek() == Some(b'[') {
-            c.hide_top();
+        Some(b'[') => {
+            sc.i += 1;
+            stack.push(frame(false, Want::ValueOrEnd, holder));
         }
-        value(sc, c, &name)?;
-        c.close(sc.i);
-        n += 1;
-        sc.ws();
-        match sc.peek() {
-            Some(b',') => sc.i += 1,
-            Some(b']') => {}
-            _ => return Err(sc.i),
+        Some(b'"') => {
+            sc.string()?;
+            *last_end = sc.i;
         }
+        Some(_) => {
+            sc.scalar()?;
+            *last_end = sc.i;
+        }
+        None => return Err(sc.i),
     }
+    Ok(())
 }
 
 /// Walks `src`; returns where it stopped: `src.len()`, or the byte of the first syntax error.
 pub fn walk(src: &[u8], c: &mut Collector) -> usize {
     let mut sc = Scan { s: src, i: 0 };
+    let mut stack: Vec<Frame> = Vec::new();
+    // Segments open in the collector: at most MAX_DEPTH.
+    let mut open = 0usize;
+    // End of the last complete value: where its member's Segment closes.
+    let mut last_end = 0usize;
     loop {
         sc.ws();
-        if sc.i >= src.len() {
-            return src.len();
-        }
-        if let Err(at) = value(&mut sc, c, "") {
-            return at.min(src.len());
+        let Some(k) = stack.len().checked_sub(1) else {
+            if sc.i >= src.len() {
+                return src.len();
+            }
+            if let Err(at) = begin(&mut sc, &mut stack, String::new(), &mut last_end) {
+                return at.min(src.len());
+            }
+            continue;
+        };
+        let (object, want) = (stack[k].object, stack[k].want);
+        let Some(b) = sc.peek() else { return src.len() };
+        match (want, b) {
+            (Want::KeyOrEnd, b'}') | (Want::ValueOrEnd, b']') => {
+                sc.i += 1;
+                last_end = sc.i;
+                stack.pop();
+            }
+            (Want::CommaOrEnd, b',') => {
+                sc.i += 1;
+                let f = &mut stack[k];
+                if std::mem::take(&mut f.member) {
+                    c.close(last_end);
+                    open -= 1;
+                }
+                f.want = if object { Want::KeyOrEnd } else { Want::ValueOrEnd };
+            }
+            (Want::CommaOrEnd, b'}') if object => {
+                sc.i += 1;
+                if stack[k].member {
+                    c.close(last_end);
+                    open -= 1;
+                }
+                stack.pop();
+                last_end = sc.i;
+            }
+            (Want::CommaOrEnd, b']') if !object => {
+                sc.i += 1;
+                if stack[k].member {
+                    c.close(last_end);
+                    open -= 1;
+                }
+                stack.pop();
+                last_end = sc.i;
+            }
+            (Want::KeyOrEnd, b'"') => {
+                let (r, escaped) = match sc.string() {
+                    Ok(x) => x,
+                    Err(at) => return at.min(src.len()),
+                };
+                let name = if open < MAX_DEPTH { decode(&src[r.start + 1..r.end - 1], escaped) } else { String::new() };
+                stack[k].key = Some((name, r, escaped));
+                stack[k].want = Want::Colon;
+            }
+            (Want::Colon, b':') => {
+                sc.i += 1;
+                stack[k].want = Want::Value;
+            }
+            (Want::Value | Want::ValueOrEnd, _) => {
+                let f = &mut stack[k];
+                let holder = if object {
+                    let (name, r, _) = f.key.take().expect("Want::Value follows a key");
+                    if open < MAX_DEPTH {
+                        let inner = r.start + 1..r.end - 1;
+                        let mut seg = OutlineSegment::new("key", name.clone(), r.start..r.start, r.clone());
+                        seg.name = Some(vec![(0..name.len(), inner.clone())]);
+                        seg.name_anchor = inner.start;
+                        c.open(seg);
+                        f.member = true;
+                        open += 1;
+                    }
+                    name
+                } else {
+                    let name = if open < MAX_DEPTH { format!("{}[{}]", f.holder, f.n) } else { String::new() };
+                    f.n += 1;
+                    if open < MAX_DEPTH {
+                        c.open(OutlineSegment::new("element", name.clone(), sc.i..sc.i, sc.i..sc.i));
+                        f.member = true;
+                        open += 1;
+                    }
+                    name
+                };
+                if f.member && b == b'[' {
+                    c.hide_top();
+                }
+                f.want = Want::CommaOrEnd;
+                if let Err(at) = begin(&mut sc, &mut stack, holder, &mut last_end) {
+                    return at.min(src.len());
+                }
+            }
+            _ => return sc.i,
         }
     }
 }
 ```
+
+  The match arms touch `stack[k]` through short borrows that end before `begin` takes the
+  whole stack; if the borrow checker wants it, copy the two fields first, as written.
 
   `mod.rs`:
 
@@ -1710,6 +1950,8 @@ use crate::trail::{names_of, Outline, TrailCursor};
 use collect::Collector;
 
 pub struct Keypath;
+// Tests of yaml.rs and toml.rs reach `outline_for`, `Syntax` and `tests::params` through
+// `super::super`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Syntax {
@@ -1776,13 +2018,41 @@ impl Processor for Keypath {
 }
 ```
 
-  Until C3, `yaml::walk` and `toml::outline` are stubs in their files: `pub fn walk(_: &[u8],
-  _: &mut super::collect::Collector) -> usize { 0 }` and `pub fn outline(_: &[u8]) ->
-  crate::trail::Outline { crate::trail::Outline::default() }`, each with a `// C3` comment.
-  `toml` the module shadows the `toml` crate inside `keypath`: refer to the crate as `::toml`.
+  Until C3, `yaml::walk` and `toml::outline` are the stubs C1 wrote (review r1, Fable #5: C2
+  does not touch those files). `toml` the module shadows the `toml` crate inside `keypath`:
+  refer to the crate as `::toml`.
 
 - [ ] **Step 4:** GREEN: `cargo test keypath`. Check by eye that `json_sections_and_kinds`
   gives `server` lines 3–11. Commit «Add the keypath Processor with JSON».
+
+### Task 2.3: named hidden Segments stay searchable (D35)
+
+**Files:** `src/trail.rs` (`names_of`), `src/processors/keypath/mod.rs` (test).
+
+- [ ] **Step 1: failing tests.** In `keypath/mod.rs`:
+
+```rust
+    #[test]
+    fn keys_that_hold_arrays_are_searchable_names() {
+        let src = br#"{"server": {"ports": [80, 443]}}"#;
+        let input = Input { bytes: src, path: Path::new("x"), format: "json", disk: None };
+        let names = Keypath.names(&input, &params("json")).unwrap();
+        let ports = names.iter().find(|n| n.text == "ports").expect("ports is a key");
+        // Its Trail is itself under `server`, as for any named Segment.
+        let t: Vec<&str> = ports.trail.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(t, ["server", "ports"]);
+    }
+```
+
+  and in `src/trail.rs`'s tests, that a hidden Segment *without* a name (a Markdown table)
+  still gives no Name, so M1's `--in-headings` output does not change.
+- [ ] **Step 2:** RED (`names_of` filters `!s.hidden`, `src/trail.rs:232` at `46a4b74`).
+- [ ] **Step 3:** in `names_of`, the filter becomes `s.name.is_some()`, and the chains that
+  build `trail` and `labels` keep a hidden Segment only when it is the named one itself
+  (`!x.hidden || j == i`). Update the doc comment («Every Segment that has a name range…;
+  hidden ancestors are left out of its Trail»).
+- [ ] **Step 4:** GREEN, and every M1 test still passes. Commit «Keep keys that hold arrays
+  searchable by --in-headings».
 
 ---
 
@@ -1882,6 +2152,35 @@ mod tests {
         }
         s.push_str("last:\n  deep: needle\n");
         assert_eq!(needles(s.as_bytes(), "yaml"), vec![vec!["last", "deep"]]);
+    }
+
+    #[test]
+    fn flow_collections_end_at_their_bracket() {
+        let src = b"a: {}\nb: needle\n";
+        let o = super::super::outline_for(src, super::super::Syntax::Yaml, &[3]);
+        let a = o.segments.iter().find(|s| s.segment.name == "a").unwrap();
+        assert_eq!(a.range, 0..5);
+    }
+
+    #[test]
+    fn a_multi_line_key_has_one_piece_per_line() {
+        let src = b"? multi\n  line key\n: needle\n";
+        let input = crate::model::Input { bytes: src, path: Path::new("x"), format: "yaml", disk: None };
+        let names = super::super::Keypath.names(&input, &super::super::tests::params("yaml")).unwrap();
+        let n = names.iter().find(|n| n.text == "multi line key").expect("the key");
+        let lines: Vec<&str> = n.pieces.iter().map(|(_, r)| std::str::from_utf8(&src[r.clone()]).unwrap()).collect();
+        assert_eq!(lines, ["multi", "line key"]);
+    }
+
+    #[test]
+    fn deep_flow_nesting_is_a_syntax_error_not_a_crash() {
+        // saphyr-parser stops at its recursion limit with an error (probe: "recursion limit
+        // exceeded at byte 258"); the Trails before it stay.
+        let mut s = String::from("a: needle\nb: ");
+        s.push_str(&"[".repeat(100_000));
+        s.push_str(&"]".repeat(100_000));
+        s.push('\n');
+        assert_eq!(needles(s.as_bytes(), "yaml"), vec![vec!["a"]]);
     }
 
     #[test]
@@ -1989,6 +2288,11 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
                 frames.push(Frame::Seq { holder, n: 0 });
             }
             Event::MappingEnd | Event::SequenceEnd => {
+                // A flow collection's end event spans its `]` or `}` (`a: {}` ends at byte 5); a
+                // block collection's is empty, at the next token, so it ends at its last scalar.
+                if e > s {
+                    last_end = last_end.max(e);
+                }
                 frames.pop();
                 end_value(&mut frames, c, last_end);
             }
@@ -2023,9 +2327,15 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
     holds the value); at the top of a document, returns `""`.
   - `end_value(&mut frames, c, end)`: when the top frame is a `Map` with an open key, closes
     the key at `end` and sets `key = false`; when it is a `Seq`, closes the element at `end`.
-  - `name_source(text, s..e, value, style)`: the source range of the name's text: `s..e` when
-    `text[s..e] == value` (plain), `s+1..e-1` when the scalar is quoted and the inside equals
-    `value`, else `s..e` as a decoded piece.
+  - `name_pieces(text, s..e, value, style) -> Vec<(Range, Range)>` (replacing the single
+    `name_source` piece of the sketch, which becomes `k.name = Some(name_pieces(…))`): one
+    verbatim piece `s..e` when `text[s..e] == value` (plain), one over `s+1..e-1` when the scalar
+    is quoted and the inside equals `value`. A key that spans several lines (only explicit `?`
+    keys can) gets one piece per source line, as M1 maps each piece to the line it starts on
+    (`app.rs` `heading_matches`): for a plain scalar, each line's trimmed text, joined by the
+    single spaces of the folded `value`; when the lines do not reproduce `value` (quoted or
+    escaped), one decoded piece per line, splitting `value` at its spaces in order. Otherwise
+    one decoded piece over `s..e`.
   - `ScanError::marker()` gives the error's position (verified in saphyr-parser 0.2.2's
     source, `scanner.rs`).
 
@@ -2058,6 +2368,36 @@ sku = "needle-sku"
 [database.replica]
 url = "postgres://needle"
 inline = { user = "needle" }
+```
+
+`tests/fixtures/data/interleaved.toml` (subtables between other tables, an explicit parent
+whose Section stops before its later subtable, and quoted keys holding `.` and `[`; its spans
+were printed by the probe, `toml-interleaved.txt`):
+
+```toml
+[a.b]
+k = "needle 1"
+
+[x]
+k = "needle 2"
+
+[a.c]
+k = "needle 3"
+
+["a.b"]
+k = "needle 4"
+
+[site."x[0]"]
+k = "needle 5"
+
+[p]
+k = "needle 6"
+
+[q]
+k = 1
+
+[p.r]
+k = "needle 7"
 ```
 
 - [ ] **Step 1: failing tests** in `toml.rs`:
@@ -2100,9 +2440,39 @@ mod tests {
     }
 
     #[test]
-    fn a_syntax_error_keeps_the_trails_before_its_line() {
-        let src = b"[a]\nb = \"needle\"\n[c\nd = \"needle\"\n";
-        assert_eq!(needles(src, "toml"), vec![vec!["a", "b"], vec![]]);
+    fn interleaved_tables_and_quoted_keys() {
+        let src = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/data/interleaved.toml")).unwrap();
+        assert_eq!(
+            needles(&src, "toml"),
+            vec![
+                vec!["a", "b", "k"],
+                vec!["x", "k"],          // never `a › x`: no Segment spans [a.b] to [a.c]
+                vec!["a", "c", "k"],
+                vec!["a.b", "k"],        // one key, quoted
+                vec!["site", "x[0]", "k"],
+                vec!["p", "k"],
+                vec!["p", "r", "k"],     // [p]'s Section ended at [q]; `p` is given again
+            ]
+        );
+    }
+
+    #[test]
+    fn dotted_keys_spread_over_a_table_do_not_wrap_their_neighbours() {
+        let src = b"a.x = \"needle\"\nb = \"needle\"\na.y = \"needle\"\n";
+        assert_eq!(needles(src, "toml"), vec![vec!["a", "x"], vec!["b"], vec!["a", "y"]]);
+    }
+
+    #[test]
+    fn a_syntax_error_keeps_the_trails_before_it() {
+        // toml_edit reports these at a later line than where the damage starts (review r1,
+        // Codex #10); the walk back line by line finds the last prefix that parses.
+        for src in [
+            &b"[a]\nb = \"needle\"\n[c\nd = \"needle\"\n"[..],
+            b"[a]\nb=\"needle\"\nx=[\n[c]\nd=\"needle\"\n",
+            b"[a]\nb = \"needle\"\ns = \"\"\"\nopen\n[c]\nd = \"needle\"\n",
+        ] {
+            assert_eq!(needles(src, "toml"), vec![vec!["a", "b"], vec![]], "{}", String::from_utf8_lossy(src));
+        }
     }
 }
 ```
@@ -2110,31 +2480,43 @@ mod tests {
 - [ ] **Step 2:** RED.
 
 - [ ] **Step 3:** implement `pub fn outline(src: &[u8]) -> Outline`, building every Segment
-  (TOML files are small; Cargo.lock at toml_edit's measured 150 ms/MB is the large case):
+  (TOML files are small; Cargo.lock at toml_edit's measured 150 ms/MB is the large case). No
+  Segment ever covers a union of discontiguous parts (D36):
 
   1. `std::str::from_utf8` or an empty Outline. Parse with
-     `text.parse::<toml_edit::Document<String>>()`. On an error, take the error's span
-     (`TomlError::span()`, verified in toml_edit 0.25.17's source), cut `text` at the start of the error's line,
-     and parse that prefix once more; if that fails too, return an empty Outline.
-  2. **Headers first.** Walk the document and collect every explicit header: a table that is
-     neither implicit nor dotted, and every element of an array of tables, with its header
-     span and its path as a string (`server`, `products[1]`, `products[1].variants[0]`,
-     `database.replica`). Sort by start. The Section of a header ends at the start of the next
-     header whose path does not start with this path followed by `.` or `[`, or at the end of
-     the file.
-  3. **Segments**, recursively over `(key, item)` of each table:
-     - a header table: kind `key`, name the key, range = its Section, label = its header span;
-     - an element `i` of an array of tables: kind `element`, name `key[i]`, range = its
-       Section, label = its header span;
-     - an implicit or dotted table (`database` of `[database.replica]`, `owner` of
-       `owner.name`): kind `key`, label = its key span, range = from its first child's start to
-       its last child's end (computed after its children);
-     - a key with a value: kind `key`, range = key start to value end, label = key span, name
-       piece = the key's text (verbatim when the key span's text equals the key, else one
-       decoded piece over the span); an array value hides the key and gives each element
-       (`Value::span()`) a Segment `key[i]`, recursively for nested arrays and inline tables;
-       an inline table value recurses into its keys.
-  4. `Outline::build(segments, src)`.
+     `text.parse::<toml_edit::Document<String>>()`. **On an error** (`TomlError::span()`,
+     verified in toml_edit 0.25.17's source), cut `text` at the start of the error's line and
+     parse the prefix; while that fails, cut one line earlier, at most 256 times; then use the
+     first prefix that parses, or an empty Outline. Verified in the probe (`r1-probe.txt`): for
+     `[a]\nb="needle"\nx=[\n[c]\nd="needle"\n` toml_edit reports byte 23 (line 5), and the
+     walk back reaches the 15-byte prefix `[a]\nb="needle"\n`; an unclosed `"""` string
+     recovers the same way. toml_edit's own recursion limit («max recursion depth met») is such
+     an error.
+  2. **Paths are components.** A path is `Vec<Step>`, `enum Step { Key(String), Index(usize) }`,
+     from the decoded keys: `["a.b"]` is one `Key("a.b")`, never two. A path is under another
+     when the other is a prefix of its steps.
+  3. **Headers.** Walk the document and collect every explicit header: a table that is neither
+     implicit nor dotted (`Table::span()` is its header), and every element of an array of
+     tables (its `[[…]]` header; `Index(i)` counts the elements of that array under the same
+     parent). Sort by start. A header's Section runs from its header to the start of the next
+     header whose path is not under it, or to the end of the file.
+  4. **Header Segments.** For each header, outermost first (`Outline::build` sorts stably, so
+     a parent pushed first stays before a child with the same range): for each proper prefix
+     of its path, if no explicit header with exactly that prefix has a Section that contains
+     this header, push a Segment for that step (kind `key`, or `element` named `key[i]` for an
+     index step) with this header's Section as range and this header's span as label; then the
+     header's own Segment (kind `key`, or `element` `key[i]`), with its Section and its header
+     span as label. So `[a.b]`, `[x]`, `[a.c]` give `a` twice, each over one header's Section,
+     and `[p.r]` after `[q]` gets its own `p`.
+  5. **Key-values**, inside each table's items: a key with a value gets a Segment from the key's
+     start to the value's end (`Item::span()` is the value only, quotes included), labelled by
+     its key span, with a name piece verbatim when the key span's text equals the key and one
+     decoded piece over the span otherwise. A dotted key (`a.x = 1`, a dotted table) gives each
+     component a Segment over that one key-value: from the first byte of its line after
+     indentation to the value's end. An array value hides its key and gives each element
+     (`Value::span()`) a Segment `key[i]`, recursively for nested arrays and inline tables; an
+     inline table value recurses into its keys.
+  6. `Outline::build(segments, src)`.
 
   `toml_edit` gives byte spans into `text`, which is `src`. Name pieces follow `Name`'s rules.
 
@@ -2195,7 +2577,7 @@ syntax = "toml"
 
 ---
 
-## Chunk 4: the Host and the HelperProcessor
+## Chunk 4: the Host
 
 Rules: spec §4.4 and design note 5. The host is the most concurrent code of searchfor: every
 test below runs fake helpers in threads over `std::io::pipe`, so the timing of each case is
@@ -2203,7 +2585,9 @@ under the test's control, and none of them needs a real process.
 
 ### Task 4.1: test harness and failing tests
 
-**Files:** `src/helper/host.rs` (tests module).
+**Files:** `src/helper/host.rs` (tests module). The harness below (`Body`, `Fake`,
+`FakeControl`, `req`, `helper`, `echo`) goes in `#[cfg(test)] pub(crate) mod testing`, and the
+tests module starts with `use super::testing::*;`: C9's `external.rs` tests reuse it.
 
 - [ ] **Step 1:** the fake launcher. A fake helper is a closure that gets the request lines,
   a writer for its answers and a `killed` flag it must check while it waits, so `Control::kill`
@@ -2226,12 +2610,14 @@ mod tests {
     struct Fake {
         body: Body,
         launches: Arc<AtomicUsize>,
+        reaps: Arc<AtomicUsize>,
         fail: bool,
     }
 
     struct FakeControl {
         killed: Arc<AtomicBool>,
         done: Arc<AtomicBool>,
+        reaps: Arc<AtomicUsize>,
     }
 
     impl Control for FakeControl {
@@ -2247,6 +2633,11 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(5));
             }
             true
+        }
+        fn reap(&mut self) {
+            // A fake "exits" when its body returns; reaping waits for that, as `waitpid` does.
+            assert!(self.wait(Duration::from_secs(10)), "reap of a fake that never ended");
+            self.reaps.fetch_add(1, SeqCst);
         }
     }
 
@@ -2265,7 +2656,8 @@ mod tests {
                 body(&mut lines, &mut out_w, &k);
                 d.store(true, SeqCst);
             });
-            Ok(Proc { stdin: Box::new(in_w), stdout: Box::new(out_r), stderr: None, control: Box::new(FakeControl { killed, done }) })
+            let reaps = self.reaps.clone();
+            Ok(Proc { stdin: Box::new(in_w), stdout: Box::new(out_r), stderr: None, control: Box::new(FakeControl { killed, done, reaps }) })
         }
     }
 
@@ -2303,16 +2695,18 @@ mod tests {
     struct Run {
         host: Arc<Host>,
         launches: Arc<AtomicUsize>,
+        reaps: Arc<AtomicUsize>,
         warnings: Arc<Mutex<Vec<String>>>,
     }
 
     fn run(mode: Mode, threads: usize, timeout_ms: u64, body: Body) -> Run {
         let launches = Arc::new(AtomicUsize::new(0));
+        let reaps = Arc::new(AtomicUsize::new(0));
         let warnings = Arc::new(Mutex::new(Vec::new()));
         let w = warnings.clone();
-        let fake = Fake { body, launches: launches.clone(), fail: false };
+        let fake = Fake { body, launches: launches.clone(), reaps: reaps.clone(), fail: false };
         let host = Arc::new(Host::new(cfg(mode, threads, timeout_ms), Box::new(fake), Arc::new(move |m| w.lock().unwrap().push(m))));
-        Run { host, launches, warnings }
+        Run { host, launches, reaps, warnings }
     }
 
     fn trails(h: &Host, path: &str) -> Result<Reply, crate::helper::HelperError> {
@@ -2478,7 +2872,7 @@ mod tests {
             }
         });
         let r = run(Mode::Pool, 1, 2000, body);
-        assert!(matches!(trails(&r.host, "garbage.ini"), Err(crate::helper::HelperError::Crashed(m)) if m.contains("not protocol JSON")));
+        assert!(matches!(trails(&r.host, "garbage.ini"), Err(crate::helper::HelperError::Crashed(m)) if m.contains("not JSON")));
         assert!(trails(&r.host, "fine.ini").is_ok());
     }
 
@@ -2486,7 +2880,7 @@ mod tests {
     fn a_command_that_cannot_start_disables_with_one_warning() {
         let warnings = Arc::new(Mutex::new(Vec::new()));
         let w = warnings.clone();
-        let fake = Fake { body: helper(echo), launches: Arc::new(AtomicUsize::new(0)), fail: true };
+        let fake = Fake { body: helper(echo), launches: Arc::new(AtomicUsize::new(0)), reaps: Arc::new(AtomicUsize::new(0)), fail: true };
         let host = Host::new(cfg(Mode::Pool, 4, 2000), Box::new(fake), Arc::new(move |m| w.lock().unwrap().push(m)));
         for _ in 0..5 {
             assert_eq!(trails(&host, "a.ini"), Err(crate::helper::HelperError::Disabled));
@@ -2513,8 +2907,161 @@ mod tests {
     }
 ```
 
-  plus one test for stderr relay: a `Launcher` whose `Proc.stderr` is the read end of a third
-  pipe the fake writes `oops\n` to; after a request, `warnings` contains `sfor: ini: oops`.
+```rust
+    /// Answers `hello` and then never reads again, until killed (review r1, Codex #1).
+    fn deaf() -> Body {
+        Arc::new(|lines, out, killed| {
+            let _ = lines.next();
+            out.write_all(line(&Reply { id: 0, protocol: Some(1), ..Default::default() }).as_bytes()).unwrap();
+            while !killed.load(SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        })
+    }
+
+    #[test]
+    fn a_request_larger_than_the_pipe_times_out_when_the_helper_does_not_read() {
+        let r = run(Mode::Pool, 1, 200, deaf());
+        let matches = vec![MatchPos { line: 1, byte: 0 }; 300_000]; // ~8 MB of JSON
+        let t = Instant::now();
+        let got = r.host.request(|id| Request::Trails { id, path: "big.ini".into(), matches });
+        assert_eq!(got, Err(crate::helper::HelperError::Timeout(200)));
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        r.host.shutdown();
+        assert_eq!(r.reaps.load(SeqCst), r.launches.load(SeqCst));
+    }
+
+    #[test]
+    fn every_process_is_reaped() {
+        let r = run(Mode::Pool, 1, 2000, helper(|r| match r {
+            Request::Trails { path, .. } if path == "crash.ini" => None,
+            other => echo(other),
+        }));
+        let _ = trails(&r.host, "crash.ini");
+        assert!(trails(&r.host, "a.ini").is_ok());
+        // The crashed copy was reaped when it failed, before the run ends (D32).
+        assert_eq!(r.reaps.load(SeqCst), 1);
+        r.host.shutdown();
+        assert_eq!(r.reaps.load(SeqCst), 2);
+    }
+
+    #[test]
+    fn a_descendant_holding_the_pipes_cannot_hold_the_run() {
+        // The helper hands a copy of its stdout to a "child" that outlives it (D32).
+        let inner = helper(echo);
+        let body: Body = Arc::new(move |lines, out, k| {
+            let child = out.try_clone().unwrap();
+            std::thread::spawn(move || {
+                let _keep = child;
+                std::thread::sleep(Duration::from_secs(10));
+            });
+            inner(lines, out, k);
+        });
+        let r = run(Mode::Pool, 1, 2000, body);
+        assert!(trails(&r.host, "a.ini").is_ok());
+        let t = Instant::now();
+        r.host.shutdown();
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn concurrent_never_exceeds_its_capacity() {
+        // Answers each request 50 ms after reading it, from its own thread.
+        let outstanding = Arc::new(AtomicUsize::new(0));
+        let max = Arc::new(AtomicUsize::new(0));
+        let (o, m) = (outstanding.clone(), max.clone());
+        let body: Body = Arc::new(move |lines, out, _| {
+            let _ = lines.next();
+            out.write_all(line(&Reply { id: 0, protocol: Some(1), ..Default::default() }).as_bytes()).unwrap();
+            let out = Arc::new(Mutex::new(out.try_clone().unwrap()));
+            std::thread::scope(|s| {
+                for l in lines.map_while(Result::ok) {
+                    let now = o.fetch_add(1, SeqCst) + 1;
+                    m.fetch_max(now, SeqCst);
+                    let (out, o) = (out.clone(), o.clone());
+                    s.spawn(move || {
+                        std::thread::sleep(Duration::from_millis(50));
+                        o.fetch_sub(1, SeqCst);
+                        out.lock().unwrap().write_all(line(&echo(&req(&l)).unwrap()).as_bytes()).unwrap();
+                    });
+                }
+            });
+        });
+        let r = run(Mode::Concurrent, 2, 2000, body);
+        std::thread::scope(|s| {
+            for i in 0..6 {
+                let h = r.host.clone();
+                s.spawn(move || assert!(trails(&h, &format!("{i}.ini")).is_ok()));
+            }
+        });
+        assert!(max.load(SeqCst) <= 2, "{} in flight", max.load(SeqCst));
+        r.host.shutdown();
+    }
+
+    #[test]
+    fn a_line_without_an_id_fails_every_pending_request() {
+        // D41: an unattributable line breaks the process.
+        let body: Body = Arc::new(|lines, out, _| {
+            let _ = lines.next();
+            out.write_all(line(&Reply { id: 0, protocol: Some(1), ..Default::default() }).as_bytes()).unwrap();
+            let mut n = 0;
+            for _ in lines.map_while(Result::ok) {
+                n += 1;
+                if n == 3 {
+                    out.write_all(b"{\"oops\":1}\n").unwrap();
+                }
+            }
+        });
+        let r = run(Mode::Concurrent, 3, 2000, body);
+        std::thread::scope(|s| {
+            for i in 0..3 {
+                let h = r.host.clone();
+                s.spawn(move || {
+                    let got = trails(&h, &format!("{i}.ini"));
+                    assert!(matches!(&got, Err(crate::helper::HelperError::Crashed(m)) if m.contains("without an id")), "{got:?}");
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn a_malformed_answer_with_its_id_fails_only_that_request() {
+        // D41: valid JSON with the right id, but `trails` is not a list of Trails.
+        let body: Body = Arc::new(|lines, out, _| {
+            let _ = lines.next();
+            out.write_all(line(&Reply { id: 0, protocol: Some(1), ..Default::default() }).as_bytes()).unwrap();
+            for l in lines.map_while(Result::ok) {
+                match req(&l) {
+                    Request::Trails { id, path, .. } if path == "odd.ini" => {
+                        out.write_all(format!("{{\"id\":{id},\"trails\":\"nope\"}}\n").as_bytes()).unwrap()
+                    }
+                    other => out.write_all(line(&echo(&other).unwrap()).as_bytes()).unwrap(),
+                }
+            }
+        });
+        let r = run(Mode::Pool, 1, 2000, body);
+        assert!(matches!(trails(&r.host, "odd.ini"), Err(crate::helper::HelperError::Protocol(_))));
+        assert!(trails(&r.host, "next.ini").is_ok());
+        assert_eq!(r.launches.load(SeqCst), 1);
+    }
+
+    #[test]
+    fn oneshot_works_with_a_helper_that_reads_to_eof_first() {
+        // Fable #1 / D40: hello and the request arrive before EOF; both answers come after it.
+        let body: Body = Arc::new(|lines, out, _| {
+            let all: Vec<Request> = lines.map_while(Result::ok).map(|l| req(&l)).collect();
+            assert_eq!(all.len(), 2);
+            out.write_all(line(&Reply { id: 0, protocol: Some(1), ..Default::default() }).as_bytes()).unwrap();
+            out.write_all(line(&echo(&all[1]).unwrap()).as_bytes()).unwrap();
+        });
+        let r = run(Mode::Oneshot, 1, 2000, body);
+        assert_eq!(name_of(&trails(&r.host, "a.ini").unwrap()), "a.ini");
+        assert_eq!(r.reaps.load(SeqCst), 1);
+    }
+```
+
+  Plus one test for stderr relay: a `Launcher` whose `Proc.stderr` is the read end of a third pipe the fake
+  writes `oops\n` to; after a request, `warnings` contains `sfor: ini: oops`.
 
 - [ ] **Step 3:** RED: `cargo test helper::host` fails (the stub's `unimplemented!`).
 
@@ -2526,21 +3073,32 @@ mod tests {
 
 ```rust
 //! The sfor side of protocol v1 (spec §4.4, design note 5): starting helpers, feeding them from
-//! many search threads, and what happens when they fail.
+//! many search threads, and what happens when they fail. Every process has a writer thread
+//! (D31), so no caller ever blocks on a pipe, and one idempotent close that kills when needed,
+//! always reaps, and waits for its pipe threads at most `PIPE_WAIT` (D32).
 use super::protocol::{line, Reply, Request, PROTOCOL};
 use super::{Control, HelperError, HostConfig, Launcher, Mode, Proc, Warn};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(1);
+const PIPE_WAIT: Duration = Duration::from_secs(1);
 const MAX_FAILURES: u32 = 3;
 
-type Waiter = mpsc::Sender<Result<Reply, String>>;
+/// Why a request got no answer.
+enum Fail {
+    /// The process is gone or broken: every request on it fails (counts as a failure).
+    Gone(String),
+    /// A JSON answer with this request's id that does not fit the protocol (D41).
+    Malformed(String),
+}
 
-/// Runs `argv` with its three pipes, in sfor's working directory.
+type Waiter = mpsc::Sender<Result<Reply, Fail>>;
+
+/// Runs `argv` with its three pipes, in sfor's working directory and process group (D32).
 pub struct CommandLauncher {
     pub argv: Vec<String>,
 }
@@ -2552,7 +3110,7 @@ impl Control for Child {
         let _ = self.0.kill();
     }
     fn wait(&mut self, within: Duration) -> bool {
-        let t = std::time::Instant::now();
+        let t = Instant::now();
         loop {
             match self.0.try_wait() {
                 Ok(Some(_)) | Err(_) => return true,
@@ -2560,6 +3118,9 @@ impl Control for Child {
                 Ok(None) => std::thread::sleep(Duration::from_millis(5)),
             }
         }
+    }
+    fn reap(&mut self) {
+        let _ = self.0.wait();
     }
 }
 
@@ -2577,30 +3138,56 @@ impl Launcher for CommandLauncher {
     }
 }
 
+fn fail_all(pending: &Mutex<HashMap<u64, Waiter>>, alive: &AtomicBool, why: &str) {
+    // `alive` first: a request registered after this sees it and fails at once.
+    alive.store(false, SeqCst);
+    for (_, w) in pending.lock().unwrap().drain() {
+        let _ = w.send(Err(Fail::Gone(why.to_string())));
+    }
+}
+
 /// One launched process.
 struct Conn {
-    writer: Mutex<Option<Box<dyn Write + Send>>>,
+    /// To the writer thread, which owns stdin; None once stdin is closed.
+    queue: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
     pending: Arc<Mutex<HashMap<u64, Waiter>>>,
     in_flight: AtomicUsize,
     alive: Arc<AtomicBool>,
     /// Its failure was counted (several requests in flight see the same crash).
     counted: AtomicBool,
+    closed: AtomicBool,
     control: Mutex<Box<dyn Control>>,
-    threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
-}
-
-enum CallError {
-    Timeout,
-    Gone(String),
+    /// One per pipe thread: a message when it ends.
+    ends: Mutex<Vec<mpsc::Receiver<()>>>,
 }
 
 impl Conn {
     fn spawn(p: Proc, format: &str, warn: &Warn) -> Arc<Conn> {
         let pending: Arc<Mutex<HashMap<u64, Waiter>>> = Default::default();
         let alive = Arc::new(AtomicBool::new(true));
-        let mut threads = Vec::new();
+        let mut ends = Vec::new();
+        let mut thread = |f: Box<dyn FnOnce() + Send>| {
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                f();
+                let _ = tx.send(());
+            });
+            ends.push(rx);
+        };
+        // Writer: owns stdin. A kill makes a blocked write fail; dropping the queue closes stdin.
+        let (qtx, qrx) = mpsc::channel::<Vec<u8>>();
+        let (pend, live, mut stdin) = (pending.clone(), alive.clone(), p.stdin);
+        thread(Box::new(move || {
+            for buf in qrx {
+                if stdin.write_all(&buf).and_then(|_| stdin.flush()).is_err() {
+                    fail_all(&pend, &live, "closed its input");
+                    return;
+                }
+            }
+        }));
+        // Reader (D41).
         let (pend, live, stdout) = (pending.clone(), alive.clone(), p.stdout);
-        threads.push(std::thread::spawn(move || {
+        thread(Box::new(move || {
             let mut why = "exited".to_string();
             for l in BufReader::new(stdout).lines() {
                 let Ok(l) = l else {
@@ -2610,41 +3197,42 @@ impl Conn {
                 if l.trim().is_empty() {
                     continue;
                 }
-                match serde_json::from_str::<Reply>(&l) {
-                    // An id nobody waits for (a request that timed out) is dropped.
-                    Ok(r) => {
-                        if let Some(w) = pend.lock().unwrap().remove(&r.id) {
-                            let _ = w.send(Ok(r));
-                        }
-                    }
+                let v: serde_json::Value = match serde_json::from_str(&l) {
+                    Ok(v) => v,
                     Err(e) => {
-                        why = format!("wrote a line that is not protocol JSON ({e})");
+                        why = format!("wrote a line that is not JSON ({e})");
                         break;
                     }
-                }
+                };
+                let Some(id) = v.get("id").and_then(serde_json::Value::as_u64) else {
+                    why = "wrote a line without an id".into();
+                    break;
+                };
+                // An id nobody waits for (an answer after its timeout) is dropped.
+                let Some(w) = pend.lock().unwrap().remove(&id) else { continue };
+                let r = serde_json::from_value::<Reply>(v)
+                    .map_err(|e| Fail::Malformed(format!("answered with fields that do not fit protocol v1 ({e})")));
+                let _ = w.send(r);
             }
-            // Set before draining: a request added after this sees `alive == false`.
-            live.store(false, SeqCst);
-            for (_, w) in pend.lock().unwrap().drain() {
-                let _ = w.send(Err(why.clone()));
-            }
+            fail_all(&pend, &live, &why);
         }));
         if let Some(err) = p.stderr {
             let (warn, format) = (warn.clone(), format.to_string());
-            threads.push(std::thread::spawn(move || {
+            thread(Box::new(move || {
                 for l in BufReader::new(err).lines().map_while(Result::ok) {
                     warn(format!("sfor: {format}: {l}"));
                 }
             }));
         }
         Arc::new(Conn {
-            writer: Mutex::new(Some(p.stdin)),
+            queue: Mutex::new(Some(qtx)),
             pending,
             in_flight: AtomicUsize::new(0),
             alive,
             counted: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
             control: Mutex::new(p.control),
-            threads: Mutex::new(threads),
+            ends: Mutex::new(ends),
         })
     }
 
@@ -2652,54 +3240,61 @@ impl Conn {
         self.alive.load(SeqCst)
     }
 
-    /// Sends `req` and waits up to `timeout`. `close` drops stdin after it (oneshot).
-    fn call(&self, req: &Request, timeout: Duration, close: bool) -> Result<Reply, CallError> {
+    /// Registers `req` and queues it for the writer. Never blocks (D31).
+    fn send(&self, req: &Request) -> mpsc::Receiver<Result<Reply, Fail>> {
         let (tx, rx) = mpsc::channel();
         let id = req.id();
         self.pending.lock().unwrap().insert(id, tx);
-        if !self.alive() {
-            self.pending.lock().unwrap().remove(&id);
-            return Err(CallError::Gone("exited".into()));
-        }
-        let sent = {
-            let mut w = self.writer.lock().unwrap();
-            let ok = w.as_mut().is_some_and(|w| w.write_all(line(req).as_bytes()).and_then(|_| w.flush()).is_ok());
-            if close {
-                *w = None;
+        let queued = self.alive() && self.queue.lock().unwrap().as_ref().is_some_and(|q| q.send(line(req).into_bytes()).is_ok());
+        if !queued {
+            if let Some(w) = self.pending.lock().unwrap().remove(&id) {
+                let _ = w.send(Err(Fail::Gone("exited".into())));
             }
-            ok
-        };
-        if !sent {
-            self.pending.lock().unwrap().remove(&id);
-            return Err(CallError::Gone("closed its input".into()));
         }
-        let r = rx.recv_timeout(timeout);
-        self.pending.lock().unwrap().remove(&id);
-        match r {
-            Ok(Ok(reply)) => Ok(reply),
-            Ok(Err(why)) => Err(CallError::Gone(why)),
-            Err(mpsc::RecvTimeoutError::Timeout) => Err(CallError::Timeout),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(CallError::Gone("exited".into())),
-        }
+        rx
     }
 
-    fn kill(&self) {
+    /// Closes stdin once the queued lines are written (oneshot; shutdown).
+    fn close_input(&self) {
+        self.queue.lock().unwrap().take();
+    }
+
+    /// The one way a process ends (D32): stdin closed, a second of grace unless `kill`, kill,
+    /// reap, then at most PIPE_WAIT for the pipe threads; a descendant that inherited a pipe
+    /// can keep one alive, and that thread is left behind. Idempotent.
+    fn close(&self, kill: bool) {
+        if self.closed.swap(true, SeqCst) {
+            return;
+        }
         self.alive.store(false, SeqCst);
-        self.control.lock().unwrap().kill();
-    }
-
-    /// Closes stdin, waits up to a second, kills if needed, and joins the pipe threads.
-    fn stop(&self) {
-        *self.writer.lock().unwrap() = None;
+        self.close_input();
         {
             let mut c = self.control.lock().unwrap();
-            if !c.wait(SHUTDOWN_WAIT) {
+            if kill || !c.wait(SHUTDOWN_WAIT) {
                 c.kill();
             }
+            c.reap();
         }
-        for t in self.threads.lock().unwrap().drain(..) {
-            let _ = t.join();
+        let deadline = Instant::now() + PIPE_WAIT;
+        for end in self.ends.lock().unwrap().drain(..) {
+            let _ = end.recv_timeout(deadline.saturating_duration_since(Instant::now()));
         }
+    }
+}
+
+enum CallError {
+    Timeout,
+    Gone(String),
+    Malformed(String),
+}
+
+fn wait(rx: mpsc::Receiver<Result<Reply, Fail>>, deadline: Instant) -> Result<Reply, CallError> {
+    match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(Ok(r)) => Ok(r),
+        Ok(Err(Fail::Gone(w))) => Err(CallError::Gone(w)),
+        Ok(Err(Fail::Malformed(m))) => Err(CallError::Malformed(m)),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(CallError::Timeout),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(CallError::Gone("exited".into())),
     }
 }
 
@@ -2731,49 +3326,99 @@ impl Host {
         &self.cfg.format
     }
 
-    /// Sends the request `make` builds with a fresh id, and returns its answer.
+    /// Sends the request `make` builds with a fresh id, and returns its answer. The deadline
+    /// covers queuing, writing and answering (D31).
     pub fn request(&self, make: impl FnOnce(u64) -> Request) -> Result<Reply, HelperError> {
         let req = make(self.next_id.fetch_add(1, SeqCst));
-        let conn = self.checkout()?;
-        let oneshot = self.cfg.mode == Mode::Oneshot;
-        let out = match conn.call(&req, self.cfg.timeout, oneshot) {
-            Ok(Reply { error: Some(e), .. }) => Err(HelperError::Answer(e)),
-            Ok(reply) => Ok(reply),
-            Err(CallError::Timeout) => {
-                self.failed(&conn);
-                Err(HelperError::Timeout(self.cfg.timeout.as_millis()))
-            }
-            Err(CallError::Gone(why)) => {
-                self.failed(&conn);
-                Err(HelperError::Crashed(format!("the helper {why}")))
-            }
-        };
-        if oneshot {
-            conn.stop();
+        if self.cfg.mode == Mode::Oneshot {
+            return self.oneshot(&req);
         }
+        let conn = self.checkout()?;
+        let deadline = Instant::now() + self.cfg.timeout;
+        let out = self.outcome(&conn, wait(conn.send(&req), deadline));
         conn.in_flight.fetch_sub(1, SeqCst);
         let _st = self.st.lock().unwrap();
         self.freed.notify_all();
         out
     }
 
+    fn outcome(&self, conn: &Conn, r: Result<Reply, CallError>) -> Result<Reply, HelperError> {
+        match r {
+            Ok(Reply { error: Some(e), .. }) => Err(HelperError::Answer(e)),
+            Ok(reply) => Ok(reply),
+            Err(CallError::Malformed(m)) => Err(HelperError::Protocol(m)),
+            Err(CallError::Timeout) => {
+                self.failed(conn);
+                Err(HelperError::Timeout(self.cfg.timeout.as_millis()))
+            }
+            Err(CallError::Gone(why)) => {
+                self.failed(conn);
+                Err(HelperError::Crashed(format!("the helper {why}")))
+            }
+        }
+    }
+
+    /// D40: `hello` and the request, stdin closed, then both answers, under one deadline.
+    fn oneshot(&self, req: &Request) -> Result<Reply, HelperError> {
+        if self.st.lock().unwrap().disabled {
+            return Err(HelperError::Disabled);
+        }
+        let conn = self.launch()?;
+        let deadline = Instant::now() + self.cfg.timeout;
+        let hello = conn.send(&Request::hello(&self.cfg.format, &self.cfg.params, 1));
+        let answer = conn.send(req);
+        conn.close_input();
+        let out = match wait(hello, deadline) {
+            Ok(r) if r.protocol == Some(PROTOCOL) && r.error.is_none() => self.outcome(&conn, wait(answer, deadline)),
+            Ok(r) => {
+                self.disable(refusal(&r));
+                Err(HelperError::Disabled)
+            }
+            Err(e) => self.outcome(&conn, Err(e)),
+        };
+        conn.close(false);
+        out
+    }
+
+    fn launch(&self) -> Result<Arc<Conn>, HelperError> {
+        match self.launcher.launch() {
+            Ok(p) => Ok(Conn::spawn(p, &self.cfg.format, &self.warn)),
+            Err(e) => {
+                self.disable(format!("cannot start `{}`: {e}", self.cfg.command.join(" ")));
+                Err(HelperError::Disabled)
+            }
+        }
+    }
+
     /// A connection with room for one more request, started if the mode allows it.
     fn checkout(&self) -> Result<Arc<Conn>, HelperError> {
         let limit = match self.cfg.mode {
             Mode::Pool => self.cfg.threads,
-            Mode::Concurrent => 1,
-            Mode::Oneshot => usize::MAX,
+            Mode::Concurrent | Mode::Oneshot => 1,
         };
         let mut st = self.st.lock().unwrap();
         loop {
             if st.disabled {
                 return Err(HelperError::Disabled);
             }
-            st.conns.retain(|c| c.alive());
+            // Dead copies leave the pool through `close`, which reaps them (D32).
+            let mut dead = Vec::new();
+            st.conns.retain(|c| c.alive() || {
+                dead.push(c.clone());
+                false
+            });
+            if !dead.is_empty() {
+                drop(st);
+                for c in dead {
+                    c.close(true);
+                }
+                st = self.st.lock().unwrap();
+                continue;
+            }
             let free = match self.cfg.mode {
-                Mode::Concurrent => st.conns.first().cloned(),
-                Mode::Pool => st.conns.iter().find(|c| c.in_flight.load(SeqCst) == 0).cloned(),
-                Mode::Oneshot => None,
+                // Codex #14: never more than `threads` requests in flight to the process.
+                Mode::Concurrent => st.conns.first().filter(|c| c.in_flight.load(SeqCst) < self.cfg.threads).cloned(),
+                _ => st.conns.iter().find(|c| c.in_flight.load(SeqCst) == 0).cloned(),
             };
             if let Some(c) = free {
                 c.in_flight.fetch_add(1, SeqCst);
@@ -2788,9 +3433,7 @@ impl Host {
                 self.freed.notify_all();
                 let c = started?;
                 c.in_flight.fetch_add(1, SeqCst);
-                if self.cfg.mode != Mode::Oneshot {
-                    st.conns.push(c.clone());
-                }
+                st.conns.push(c.clone());
                 return Ok(c);
             }
             st = self.freed.wait(st).unwrap();
@@ -2799,35 +3442,27 @@ impl Host {
 
     /// Launches a process and exchanges `hello` (spec §4.4, 1).
     fn start(&self) -> Result<Arc<Conn>, HelperError> {
-        let p = match self.launcher.launch() {
-            Ok(p) => p,
-            Err(e) => {
-                self.disable(format!("cannot start `{}`: {e}", self.cfg.command.join(" ")));
-                return Err(HelperError::Disabled);
-            }
-        };
-        let conn = Conn::spawn(p, &self.cfg.format, &self.warn);
+        let conn = self.launch()?;
         let threads = if self.cfg.mode == Mode::Concurrent { self.cfg.threads } else { 1 };
         let hello = Request::hello(&self.cfg.format, &self.cfg.params, threads);
-        let why = match conn.call(&hello, self.cfg.timeout, false) {
+        let why = match wait(conn.send(&hello), Instant::now() + self.cfg.timeout) {
             Ok(r) if r.protocol == Some(PROTOCOL) && r.error.is_none() => return Ok(conn),
-            Ok(Reply { error: Some(e), .. }) => format!("refused hello: {e}"),
-            Ok(r) => format!("speaks protocol {:?}; sfor speaks {PROTOCOL}", r.protocol),
+            Ok(r) => refusal(&r),
             Err(CallError::Timeout) => format!("did not answer hello within {} ms", self.cfg.timeout.as_millis()),
-            Err(CallError::Gone(w)) => format!("{w} before answering hello"),
+            Err(CallError::Gone(w)) | Err(CallError::Malformed(w)) => format!("{w} before answering hello"),
         };
-        conn.kill();
-        conn.stop();
+        conn.close(true);
         self.disable(why);
         Err(HelperError::Disabled)
     }
 
-    /// A crash, a timeout or a broken line: kill the copy and count it once (spec §4.4).
+    /// A crash, a timeout or an unattributable line: close (kill, reap) the copy and count it
+    /// once (spec §4.4).
     fn failed(&self, c: &Conn) {
         if c.counted.swap(true, SeqCst) {
             return;
         }
-        c.kill();
+        c.close(true);
         let disable = {
             let mut st = self.st.lock().unwrap();
             st.failures += 1;
@@ -2849,7 +3484,8 @@ impl Host {
         self.freed.notify_all();
     }
 
-    /// End of the run: no more requests; every process gets EOF (spec §4.4, Lifetime).
+    /// End of the run: no more requests; every process gets EOF, a second, then a kill, and is
+    /// reaped (spec §4.4, Lifetime). Not a warning: a shutdown is not a failure.
     pub fn shutdown(&self) {
         let conns = {
             let mut st = self.st.lock().unwrap();
@@ -2858,126 +3494,27 @@ impl Host {
         };
         self.freed.notify_all();
         for c in conns {
-            c.stop();
+            c.close(false);
         }
+    }
+}
+
+fn refusal(r: &Reply) -> String {
+    match &r.error {
+        Some(e) => format!("refused hello: {e}"),
+        None => format!("speaks protocol {:?}; sfor speaks {PROTOCOL}", r.protocol),
     }
 }
 ```
 
-  A shutdown sets `disabled` without warning: that is why `shutdown` does not go through
-  `disable`. The spec counts a timeout as one of the three failures; C12 states it in §4.4 if
-  the wording there still says «crashes» only.
+  `Conn::spawn`'s `thread` closure collects the `ends` receivers; if the borrow checker
+  objects to the closure borrowing `ends` mutably, push the receivers after each spawn instead.
+  sfor installs no signal handler, and helpers stay in its process group, so a terminal's
+  Ctrl-C ends them with sfor (D32); a sfor killed in another way leaves them an EOF on stdin.
 
 - [ ] **Step 2:** GREEN: `cargo test helper::host`, then the same 20 times in a row
   (`for i in $(seq 20); do cargo test -q helper::host || break; done`) to catch races. Commit
   «Add the Helper Processor host: pool, concurrent and oneshot modes».
-
-### Task 4.3: HelperProcessor (src/processors/external.rs)
-
-**Files:** `src/processors/external.rs`.
-
-- [ ] **Step 1: failing tests**, using a `Host` over the fake launcher of Task 4.1 (move
-  `Fake`, `helper` and `echo` into `pub(crate) mod testing` inside `host.rs`, under
-  `#[cfg(test)]`, so this file can use them):
-
-```rust
-    #[test]
-    fn a_file_on_disk_is_sent_by_its_path() { /* Input with disk: Some("dir/a.ini"): the request's path is "dir/a.ini" (the fake echoes the path as the Segment name). */ }
-
-    #[test]
-    fn bytes_that_differ_from_the_file_go_through_a_temporary_file() {
-        /* Input with disk: None and bytes b"[s]\nk = needle\n": the fake reads the file at the
-           request's path and answers its contents as the Segment name; the name equals the
-           bytes, and the temporary file no longer exists after `trails` returns. */
-    }
-
-    #[test]
-    fn lines_are_computed_from_the_bytes() { /* anchors [0, 4, 9] in "[s]\nk=1\nneedle\n" send lines 1, 2, 3. */ }
-
-    #[test]
-    fn a_wrong_number_of_trails_is_an_error() { /* the fake answers one Trail for two anchors: Err naming "ini" and "2 Matches". */ }
-
-    #[test]
-    fn a_disabled_helper_gives_empty_trails_without_error() { /* a Launcher that fails: Ok(vec![vec![]; n]) and one warning in total. */ }
-
-    #[test]
-    fn names_come_back_as_model_names() { /* the fake answers one WireName; `names` returns its Name with the same pieces. */ }
-```
-
-  Write each body in full from its comment.
-
-- [ ] **Step 2:** RED.
-
-- [ ] **Step 3:** implement:
-
-```rust
-/// A Processor whose work is done by a Helper Processor (spec §4.4): built-in to sfor's
-/// pipeline, it only turns the contract into requests.
-pub struct HelperProcessor {
-    host: crate::helper::host::Host,
-    tmp: std::sync::Arc<RunTemp>,
-}
-
-impl HelperProcessor {
-    pub fn new(cfg: crate::helper::HostConfig, launcher: Box<dyn crate::helper::Launcher>, tmp: std::sync::Arc<RunTemp>, warn: crate::helper::Warn) -> Self {
-        Self { host: crate::helper::host::Host::new(cfg, launcher, warn), tmp }
-    }
-
-    pub fn shutdown(&self) {
-        self.host.shutdown();
-    }
-
-    /// The path the helper reads, and the temporary file to keep alive until it answered: the
-    /// file itself when its bytes are the Source's and its path is UTF-8.
-    fn path_for(&self, input: &crate::model::Input) -> anyhow::Result<(String, Option<TempFile>)> {
-        if let Some(s) = input.disk.and_then(|p| p.to_str()) {
-            return Ok((s.to_string(), None));
-        }
-        let t = self.tmp.write(input.path, input.bytes)?;
-        let s = t.path().to_str().ok_or_else(|| anyhow::anyhow!("the temporary path is not UTF-8"))?.to_string();
-        Ok((s, Some(t)))
-    }
-}
-
-impl super::Processor for HelperProcessor {
-    fn trails(&self, input: &crate::model::Input, _: &toml::Table, anchors: &[usize]) -> anyhow::Result<Vec<crate::model::Trail>> {
-        use crate::helper::{protocol::{MatchPos, Request}, HelperError};
-        let (path, _tmp) = self.path_for(input)?;
-        let lines = crate::trail::LineIndex::new(input.bytes);
-        let matches = anchors.iter().map(|&b| MatchPos { line: lines.line_of(b), byte: b as u64 }).collect();
-        let f = self.host.format();
-        match self.host.request(|id| Request::Trails { id, path, matches }) {
-            Ok(r) => match r.trails {
-                Some(t) if t.len() == anchors.len() => Ok(t),
-                Some(t) => anyhow::bail!("{f}: the helper returned {} Trails for {} Matches", t.len(), anchors.len()),
-                None => anyhow::bail!("{f}: the helper's answer has no `trails`"),
-            },
-            Err(HelperError::Disabled) => Ok(vec![Vec::new(); anchors.len()]),
-            Err(e) => anyhow::bail!("{f}: {e}"),
-        }
-    }
-
-    fn names(&self, input: &crate::model::Input, _: &toml::Table) -> anyhow::Result<Vec<crate::model::Name>> {
-        use crate::helper::{protocol::Request, HelperError};
-        let (path, _tmp) = self.path_for(input)?;
-        let f = self.host.format();
-        match self.host.request(|id| Request::Names { id, path }) {
-            Ok(r) => match r.names {
-                Some(n) => Ok(n.into_iter().map(|w| w.into_name()).collect()),
-                None => anyhow::bail!("{f}: the helper's answer has no `names`"),
-            },
-            Err(HelperError::Disabled) => Ok(Vec::new()),
-            Err(e) => anyhow::bail!("{f}: {e}"),
-        }
-    }
-}
-```
-
-  The pipeline prints a Processor error as `sfor: <path>: <error>`, so a failed request's
-  warning names the file and, through the `{f}:` prefix, the Definition (spec §4.4).
-
-- [ ] **Step 4:** GREEN. Commit «Add the HelperProcessor: the Processor contract over protocol
-  v1».
 
 ---
 
@@ -3214,7 +3751,8 @@ pub fn serve<H: Handler>(
 
 ### Task 5.2: the example helper (INI)
 
-**Files:** `helpers/example/Cargo.toml` (adds `[dev-dependencies] serde_json = "1"`),
+**Files:** `helpers/example/Cargo.toml` (adds `[dev-dependencies] serde_json = "1"`, so
+`Cargo.lock` too),
 `helpers/example/src/main.rs`, `helpers/example/tests/protocol.rs`,
 `helpers/example/tests/fixtures/app.ini`.
 
@@ -3239,7 +3777,9 @@ request's path: `SFOR_EXAMPLE_SLOW` (sleep 300 ms), `SFOR_EXAMPLE_CRASH` (exit w
 `SFOR_EXAMPLE_HANG` (sleep until killed), `SFOR_EXAMPLE_GARBAGE` (write `not json` instead of
 an answer), `SFOR_EXAMPLE_ERROR` (answer an `error`); and `SFOR_EXAMPLE_LOG` (a file path: the
 helper appends `start <pid>` to it when it starts), `SFOR_EXAMPLE_STDERR` (a line it writes to
-stderr when it starts).
+stderr when it starts), and `SFOR_EXAMPLE_FORK` (when set, the helper starts `sleep 30` at
+start with its own stdout and stderr inherited, as a careless helper's child would: C11's
+`h17` checks that sfor still ends on time).
 
 - [ ] **Step 1: failing tests** in `helpers/example/tests/protocol.rs`:
 
@@ -3774,7 +4314,7 @@ mod tests {
         let anchors: Vec<usize> = memchr::memmem::find_iter(&src, b"needle").collect();
         let lines = crate::trail::LineIndex::new(&src);
         let input = Input { bytes: &src, path: Path::new(file), format, disk: None };
-        TreeSitter
+        TreeSitter::default()
             .trails(&input, &params(format), &anchors)
             .unwrap()
             .iter()
@@ -3859,7 +4399,7 @@ mod tests {
         let src = fixture("cart.php");
         let at = memchr::memmem::find(&src, b"needle: merge").unwrap();
         let input = Input { bytes: &src, path: Path::new("cart.php"), format: "php", disk: None };
-        let tr = &TreeSitter.trails(&input, &params("php"), &[at]).unwrap()[0];
+        let tr = &TreeSitter::default().trails(&input, &params("php"), &[at]).unwrap()[0];
         let kinds: Vec<&str> = tr.iter().map(|s| s.kind.as_str()).collect();
         assert_eq!(kinds, ["class", "method"]);
         assert_eq!((tr[1].line, tr[1].end_line), (8, 12));
@@ -3870,7 +4410,7 @@ mod tests {
         // D24: the query runs only between the first and the last anchor.
         for (format, file) in [("php", "cart.php"), ("rust", "thing.rs"), ("python", "outer.py")] {
             let src = fixture(file);
-            let c = compiled(format, &params(format)).unwrap().unwrap();
+            let c = TreeSitter::default().compiled(format, &params(format)).unwrap().unwrap();
             let tree = parse(&c, &src).unwrap();
             let full = outline(&c, &tree, &src, None);
             for a in memchr::memmem::find_iter(&src, b"needle") {
@@ -3884,7 +4424,7 @@ mod tests {
     fn names_for_in_headings() {
         let src = fixture("server.go");
         let input = Input { bytes: &src, path: Path::new("server.go"), format: "go", disk: None };
-        let names = TreeSitter.names(&input, &params("go")).unwrap();
+        let names = TreeSitter::default().names(&input, &params("go")).unwrap();
         let texts: Vec<&str> = names.iter().map(|n| n.text.as_str()).collect();
         assert_eq!(texts, ["Server", "Server.Start", "helper"]);
         // "Server.Start": the receiver and the name are two pieces; the dot is not in the file.
@@ -3897,10 +4437,50 @@ mod tests {
         let mut p = params("php");
         p.insert("query".into(), toml::Value::String("(no_such_node) @segment".into()));
         let src = fixture("cart.php");
-        let input = Input { bytes: &src, path: Path::new("cart.php"), format: "php-broken-query", disk: None };
-        let e = TreeSitter.trails(&input, &p, &[0]).unwrap_err();
-        assert!(e.to_string().contains("php-broken-query"), "{e}");
-        assert_eq!(TreeSitter.trails(&input, &p, &[0]).unwrap(), vec![Vec::new()]);
+        let input = Input { bytes: &src, path: Path::new("cart.php"), format: "php", disk: None };
+        let ts = TreeSitter::default();
+        let e = ts.trails(&input, &p, &[0]).unwrap_err();
+        assert!(e.to_string().contains("php"), "{e}");
+        // Afterwards the Format is unavailable: Plain, without another warning (D33).
+        let again = ts.trails(&input, &p, &[0]).unwrap_err();
+        assert!(again.downcast_ref::<crate::helper::Unavailable>().is_some(), "{again}");
+    }
+
+    #[test]
+    fn concurrent_first_calls_compile_and_fail_once() {
+        // D39: one OnceLock per Definition.
+        let mut p = params("php");
+        p.insert("query".into(), toml::Value::String("(no_such_node) @segment".into()));
+        let src = fixture("cart.php");
+        let ts = TreeSitter::default();
+        let errors = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| {
+                    let input = Input { bytes: &src, path: Path::new("cart.php"), format: "php", disk: None };
+                    if let Err(e) = ts.trails(&input, &p, &[0]) {
+                        if e.downcast_ref::<crate::helper::Unavailable>().is_none() {
+                            errors.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(errors.into_inner(), 1);
+    }
+
+    #[test]
+    fn each_run_compiles_its_own_params() {
+        // A second run (M5's MCP server runs many in one process) sees the new query.
+        let src = fixture("cart.php");
+        let at = memchr::memmem::find(&src, b"needle: merge").unwrap();
+        let input = Input { bytes: &src, path: Path::new("cart.php"), format: "php", disk: None };
+        let full = TreeSitter::default().trails(&input, &params("php"), &[at]).unwrap();
+        let mut only_classes = params("php");
+        only_classes.insert("query".into(), toml::Value::String("(class_declaration name: (name) @name) @segment".into()));
+        let classes = TreeSitter::default().trails(&input, &only_classes, &[at]).unwrap();
+        assert_eq!(full[0].len(), 2);
+        assert_eq!(classes[0].len(), 1);
     }
 
     #[test]
@@ -3908,9 +4488,11 @@ mod tests {
         let mut p = params("php");
         p.insert("max_bytes".into(), toml::Value::Integer(10));
         let src = fixture("cart.php");
-        let input = Input { bytes: &src, path: Path::new("cart.php"), format: "php-small", disk: None };
-        assert!(TreeSitter.trails(&input, &p, &[0]).unwrap_err().to_string().contains("max_bytes"));
-        assert_eq!(TreeSitter.trails(&input, &p, &[0]).unwrap(), vec![Vec::new()]);
+        let input = Input { bytes: &src, path: Path::new("cart.php"), format: "php", disk: None };
+        let ts = TreeSitter::default();
+        assert!(ts.trails(&input, &p, &[0]).unwrap_err().to_string().contains("max_bytes"));
+        let again = ts.trails(&input, &p, &[0]).unwrap_err();
+        assert!(again.downcast_ref::<crate::helper::Unavailable>().is_some());
     }
 
     #[test]
@@ -3969,6 +4551,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, OnceLock};
 use streaming_iterator::StreamingIterator;
+// `trail_for` serves anchors out of order; `TrailCursor` the sorted ones.
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor, Tree};
 
 pub const DEFAULT_MAX_BYTES: i64 = 16 * 1024 * 1024;
@@ -4066,52 +4649,64 @@ pub fn outline(c: &Compiled, tree: &Tree, src: &[u8], range: Option<Range<usize>
     Outline::build(segs, src)
 }
 
-/// One compiled query per Format Definition for the run; `None` once it failed (reported once).
-fn compiled(format: &str, params: &toml::Table) -> anyhow::Result<Option<Arc<Compiled>>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Option<Arc<Compiled>>>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(Default::default);
-    if let Some(c) = cache.lock().unwrap().get(format) {
-        return Ok(c.clone());
-    }
-    let grammar = params.get("grammar").and_then(|v| v.as_str()).unwrap_or("");
-    let built = grammars::language(grammar)
-        .ok_or_else(|| anyhow::anyhow!("grammar `{grammar}` is not compiled in"))
-        .and_then(|l| compile(grammar, &l, params));
-    let mut cache = cache.lock().unwrap();
-    match built {
-        Ok(c) => {
-            let c = Arc::new(c);
-            cache.insert(format.into(), Some(c.clone()));
-            Ok(Some(c))
-        }
-        Err(e) => {
-            cache.insert(format.into(), None);
-            Err(e.context(format!("Format `{format}`")))
-        }
-    }
+/// The run's treesitter (D39): compiled queries and warnings per Format Definition, for one
+/// run. `Processors` owns it.
+#[derive(Default)]
+pub struct TreeSitter {
+    /// One slot per Definition, initialized once even under concurrent first calls: the
+    /// compiled query, or None after a failure, which only the initializing call reports.
+    queries: Mutex<HashMap<String, Arc<OnceLock<Option<Arc<Compiled>>>>>>,
+    /// Formats already warned about a file over `max_bytes`.
+    big: Mutex<HashSet<String>>,
 }
 
-/// D21: true when the file is over `max_bytes`; the first time per Format it is an error.
-fn too_big(input: &Input, params: &toml::Table) -> anyhow::Result<bool> {
-    static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    let max = params.get("max_bytes").and_then(|v| v.as_integer()).unwrap_or(DEFAULT_MAX_BYTES);
-    if (input.bytes.len() as i64) <= max {
-        return Ok(false);
+impl TreeSitter {
+    pub(crate) fn compiled(&self, format: &str, params: &toml::Table) -> anyhow::Result<Option<Arc<Compiled>>> {
+        let slot = self.queries.lock().unwrap().entry(format.to_string()).or_default().clone();
+        let mut failure = None;
+        let c = slot.get_or_init(|| {
+            let grammar = params.get("grammar").and_then(|v| v.as_str()).unwrap_or("");
+            let built = grammars::language(grammar)
+                .ok_or_else(|| anyhow::anyhow!("grammar `{grammar}` is not compiled in"))
+                .and_then(|l| compile(grammar, &l, params));
+            match built {
+                Ok(c) => Some(Arc::new(c)),
+                Err(e) => {
+                    failure = Some(e);
+                    None
+                }
+            }
+        });
+        if let Some(e) = failure {
+            return Err(e.context(format!("Format `{format}`")));
+        }
+        Ok(c.clone())
     }
-    if WARNED.get_or_init(Default::default).lock().unwrap().insert(input.format.to_string()) {
-        anyhow::bail!("larger than `max_bytes` ({max}); files this large are not parsed (this warning is shown once)");
-    }
-    Ok(true)
-}
 
-pub struct TreeSitter;
+    /// D21: true when the file is over `max_bytes`; the first time per Format it is an error.
+    fn too_big(&self, input: &Input, params: &toml::Table) -> anyhow::Result<bool> {
+        let max = params.get("max_bytes").and_then(|v| v.as_integer()).unwrap_or(DEFAULT_MAX_BYTES);
+        if (input.bytes.len() as i64) <= max {
+            return Ok(false);
+        }
+        if self.big.lock().unwrap().insert(input.format.to_string()) {
+            anyhow::bail!("larger than `max_bytes` ({max}); files this large are not parsed (this warning is shown once)");
+        }
+        Ok(true)
+    }
+}
 
 impl Processor for TreeSitter {
+    /// A failed query or a file over `max_bytes` is an error the first time and `Unavailable`
+    /// afterwards: the file is Plain either way (D33).
     fn trails(&self, input: &Input, params: &toml::Table, anchors: &[usize]) -> anyhow::Result<Vec<Trail>> {
         let empty = || vec![Vec::new(); anchors.len()];
-        let Some(c) = compiled(input.format, params)? else { return Ok(empty()) };
-        if anchors.is_empty() || too_big(input, params)? {
+        let Some(c) = self.compiled(input.format, params)? else { return Err(crate::helper::Unavailable.into()) };
+        if anchors.is_empty() {
             return Ok(empty());
+        }
+        if self.too_big(input, params)? {
+            return Err(crate::helper::Unavailable.into());
         }
         let Some(tree) = parse(&c, input.bytes) else { return Ok(empty()) };
         let lo = *anchors.iter().min().unwrap();
@@ -4125,9 +4720,9 @@ impl Processor for TreeSitter {
     }
 
     fn names(&self, input: &Input, params: &toml::Table) -> anyhow::Result<Vec<Name>> {
-        let Some(c) = compiled(input.format, params)? else { return Ok(Vec::new()) };
-        if too_big(input, params)? {
-            return Ok(Vec::new());
+        let Some(c) = self.compiled(input.format, params)? else { return Err(crate::helper::Unavailable.into()) };
+        if self.too_big(input, params)? {
+            return Err(crate::helper::Unavailable.into());
         }
         let Some(tree) = parse(&c, input.bytes) else { return Ok(Vec::new()) };
         Ok(names_of(&outline(&c, &tree, input.bytes, None)))
@@ -4135,10 +4730,8 @@ impl Processor for TreeSitter {
 }
 ```
 
-  The `compiled` and `too_big` caches are per process, which is per run for sfor; tests use a
-  distinct Format name per case (`php-broken-query`, `php-small`) so they do not share state.
-  The test `the_byte_range_changes_nothing` calls `compiled`, `parse` and `outline` directly
-  (they are in scope in the tests module).
+  The caches live in the instance, so each test builds its own `TreeSitter::default()`; the
+  test `the_byte_range_changes_nothing` calls `compiled`, `parse` and `outline` directly.
 
 - [ ] **Step 3:** GREEN: `cargo test treesitter`. If a fixture's Trail differs from the table,
   the probe's output (`/tmp/subtask/m2-plan/outputs/fixture-trails.txt`) is the reference;
@@ -4206,8 +4799,24 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     fn the_system_key_is_os_dash_arch() {
-        assert_eq!(system(), format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH));
+        assert_eq!(system(), "linux-x86_64");
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn the_system_key_on_apple_silicon() {
+        assert_eq!(system(), "macos-aarch64");
+    }
+
+    #[test]
+    fn the_agent_refuses_http_even_after_a_redirect() {
+        // D38: `https_only` is checked on every hop (ureq 3.4.2, run.rs:149), before any
+        // connection, so this needs no network. A redirect from https:// to http:// reaches
+        // the same check; a test against a live redirect is out of reach without a TLS server.
+        let e = agent().get("http://127.0.0.1:9/index.json").call().unwrap_err();
+        assert!(e.to_string().contains("https only"), "{e}");
     }
 
     #[test]
@@ -4296,7 +4905,19 @@ impl Index {
     }
 }
 
-/// The bytes at `url`: `https://` through ureq, `file://` from disk; anything else is refused.
+/// The HTTP client of `--install-grammar` and `--list-grammars` (D38): HTTPS on every hop,
+/// redirects included, a 10 s connect timeout and a 300 s ceiling for the whole download.
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .https_only(true)
+        .timeout_connect(Some(std::time::Duration::from_secs(10)))
+        .timeout_global(Some(std::time::Duration::from_secs(300)))
+        .build()
+        .into()
+}
+
+/// The bytes at `url`: `https://` through `agent()`, `file://` from disk; anything else is
+/// refused.
 pub fn fetch(url: &str) -> anyhow::Result<Vec<u8>> {
     if let Some(path) = url.strip_prefix("file://") {
         return std::fs::read(path).map_err(|e| anyhow::anyhow!("{url}: {e}"));
@@ -4304,13 +4925,15 @@ pub fn fetch(url: &str) -> anyhow::Result<Vec<u8>> {
     if !url.starts_with("https://") {
         anyhow::bail!("{url}: only https:// and file:// URLs are accepted");
     }
-    let mut r = ureq::get(url).call().map_err(|e| anyhow::anyhow!("{url}: {e}"))?;
+    let mut r = agent().get(url).call().map_err(|e| anyhow::anyhow!("{url}: {e}"))?;
     Ok(r.body_mut().with_config().limit(256 * 1024 * 1024).read_to_vec()?)
 }
 ```
 
   (`with_config().limit(…)` raises ureq's default body limit, since a Grammar Helper may be
-  larger; the call compiled against ureq 3.4.2 in the probe.)
+  larger; that call, `https_only`, `timeout_connect` and `timeout_global` compiled against
+  ureq 3.4.2 in the probe, and the agent refused `http://example.org/` with «configured for
+  https only», `r1-probe.txt`.)
 
   `mod.rs`:
 
@@ -4454,6 +5077,54 @@ mod tests {
     }
 
     #[test]
+    fn a_definition_for_another_format_is_refused() {
+        // D37: the index cannot install a Definition for `php`, or an `external` command.
+        let src = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        for bad in [
+            "name = 'php'\nprocessor = 'treesitter'\n[params]\ngrammar = 'lua'\nquery = '(x) @segment'\n",
+            "name = 'lua'\nprocessor = 'external'\n[params]\ncommand = ['sh']\n",
+            "name = 'lua'\nprocessor = 'treesitter'\n[params]\ngrammar = 'php'\nquery = '(x) @segment'\n",
+        ] {
+            let mut i = index(src.path(), b"x", None);
+            i.grammars[0].definition = bad.into();
+            let e = install(&i, "lua", dir.path()).unwrap_err();
+            assert!(e.to_string().contains("Definition"), "{e}");
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().filter_map(Result::ok).filter(|e| !e.file_name().to_string_lossy().starts_with('.')).count(), 0);
+        }
+    }
+
+    #[test]
+    fn a_failed_reinstall_keeps_the_previous_one() {
+        let src = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        install(&index(src.path(), b"one", None), "lua", dir.path()).unwrap();
+        assert!(install(&index(src.path(), b"two", Some("deadbeef")), "lua", dir.path()).is_err());
+        assert_eq!(std::fs::read(installed(dir.path())[0].binary.clone()).unwrap(), b"one");
+    }
+
+    #[test]
+    fn two_installs_at_once_leave_one_complete_install() {
+        let src = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let i = index(src.path(), b"same", None);
+        std::thread::scope(|s| {
+            for _ in 0..2 {
+                s.spawn(|| install(&i, "lua", dir.path()).unwrap());
+            }
+        });
+        let got = installed(dir.path());
+        assert_eq!(got.len(), 1);
+        assert_eq!(std::fs::read(&got[0].binary).unwrap(), b"same");
+        // No staging or backup directory is left behind.
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "lua" && !n.ends_with(".lock"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+    }
+
+    #[test]
     fn list_shows_compiled_installed_and_available() {
         let src = tempfile::tempdir().unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -4498,28 +5169,48 @@ pub fn install(index: &Index, lang: &str, dir: &Path) -> anyhow::Result<Installe
     if !got.eq_ignore_ascii_case(&b.sha256) {
         anyhow::bail!("{}: SHA-256 is {got}, the index says {}; nothing was installed", b.url, b.sha256);
     }
+    // D37: the Definition must describe this Grammar and nothing else.
+    let def = crate::formats::definition::FormatDefinition::parse(&e.definition, crate::processors::Processors::known)
+        .map_err(|err| anyhow::anyhow!("the index's Definition for `{lang}` is invalid: {err}"))?;
+    let grammar = def.params.get("grammar").and_then(|v| v.as_str());
+    if def.name != lang || def.processor != "treesitter" || grammar != Some(lang) {
+        anyhow::bail!("the index's Definition for `{lang}` must have name, grammar = \"{lang}\" and processor = \"treesitter\"; nothing was installed");
+    }
     std::fs::create_dir_all(dir)?;
-    let part = dir.join(format!(".{lang}.part"));
-    let _ = std::fs::remove_dir_all(&part);
-    std::fs::create_dir(&part)?;
-    let binary = part.join(binary_name(lang));
+    // One install of a Grammar at a time (std's File::lock, Rust ≥ 1.89; verified on 1.90).
+    let lock = std::fs::File::create(dir.join(format!(".{lang}.lock")))?;
+    lock.lock()?;
+    // A staging directory of its own, in the same filesystem so the renames are atomic.
+    let part = tempfile::Builder::new().prefix(&format!(".{lang}.part-")).tempdir_in(dir)?;
+    let binary = part.path().join(binary_name(lang));
     std::fs::write(&binary, &bytes)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))?;
     }
-    std::fs::write(part.join(format!("{lang}.toml")), &e.definition)?;
+    std::fs::write(part.path().join(format!("{lang}.toml")), &e.definition)?;
     let meta = serde_json::json!({"name": lang, "version": e.version, "sha256": got, "source": e.source, "license": e.license});
-    std::fs::write(part.join("installed.json"), meta.to_string())?;
+    std::fs::write(part.path().join("installed.json"), meta.to_string())?;
     let target = dir.join(lang);
-    let old = dir.join(format!(".{lang}.old"));
-    let _ = std::fs::remove_dir_all(&old);
-    if target.exists() {
+    let old = tempfile::Builder::new().prefix(&format!(".{lang}.old-")).tempdir_in(dir)?.keep();
+    std::fs::remove_dir(&old)?;
+    let had_old = target.exists();
+    if had_old {
         std::fs::rename(&target, &old)?;
     }
-    std::fs::rename(&part, &target)?;
-    let _ = std::fs::remove_dir_all(&old);
+    if let Err(err) = std::fs::rename(part.path(), &target) {
+        // Put the previous install back before reporting.
+        if had_old {
+            let _ = std::fs::rename(&old, &target);
+        }
+        return Err(anyhow::anyhow!("{}: {err}; the previous install was kept", target.display()));
+    }
+    let _ = part.keep(); // already renamed: nothing for TempDir to delete
+    if had_old {
+        let _ = std::fs::remove_dir_all(&old);
+    }
+    drop(lock);
     super::installed(dir).into_iter().find(|i| i.name == lang).ok_or_else(|| anyhow::anyhow!("{}: the install is incomplete", target.display()))
 }
 
@@ -4546,7 +5237,10 @@ pub fn list(compiled_in: &[&str], installed: &[Installed], index: Result<&Index,
 ```
 
   The tests module imports `hex` with `use super::hex;`. The warning for an unreadable index is
-  the caller's (C10), which passes `Err(reason)`.
+  the caller's (C10), which passes `Err(reason)`. `installed` skips names starting with `.`
+  (`valid_name` already refuses them), so locks, staging and backups never list.
+  `TempDir::keep` gives up the deletion (tempfile 3.27.0, `src/dir/mod.rs:418`, the version in
+  `Cargo.lock`), and `Builder::tempdir_in` creates the unique staging directory (`lib.rs:621`).
 
 - [ ] **Step 4:** GREEN. Commit «Add --install-grammar and --list-grammars as a library».
 
@@ -4560,7 +5254,7 @@ Rules: spec §7, D12, D13, D23.
 
 **Files:** `helpers/grammar/src/main.rs`, `helpers/grammar/definitions/lua.toml`,
 `helpers/grammar/tests/{protocol.rs,fixtures/player.lua}`, `helpers/grammar/Cargo.toml`
-(`[dev-dependencies] serde_json = "1"`).
+(`[dev-dependencies] serde_json = "1"`) and so `Cargo.lock`.
 
 `helpers/grammar/tests/fixtures/player.lua`:
 
@@ -4723,9 +5417,117 @@ jq -n --arg name "$lang" --arg version "$version" --arg system "$system" \
 
 ---
 
-## Chunk 9: Grammar Helpers in the registry, and installed Definitions
+## Chunk 9: the HelperProcessor, Grammar Helpers in the registry, and installed Definitions
 
 Rules: spec §4.2, §7, design note 8, D26.
+
+### Task 9.0: HelperProcessor (src/processors/external.rs)
+
+**Files:** `src/processors/external.rs`.
+
+- [ ] **Step 1: failing tests**, using a `Host` over the fake launcher of Task 4.1 (C4 leaves
+  `Fake`, `helper` and `echo` in `pub(crate) mod testing` inside `host.rs`, under
+  `#[cfg(test)]`, so this file can use them; moved here from C4 to keep C4 under 1000 lines):
+
+```rust
+    #[test]
+    fn a_file_on_disk_is_sent_by_its_path() { /* Input with disk: Some("dir/a.ini"): the request's path is "dir/a.ini" (the fake echoes the path as the Segment name). */ }
+
+    #[test]
+    fn bytes_that_differ_from_the_file_go_through_a_temporary_file() {
+        /* Input with disk: None and bytes b"[s]\nk = needle\n": the fake reads the file at the
+           request's path and answers its contents as the Segment name; the name equals the
+           bytes, and the temporary file no longer exists after `trails` returns. */
+    }
+
+    #[test]
+    fn lines_are_computed_from_the_bytes() { /* anchors [0, 4, 9] in "[s]\nk=1\nneedle\n" send lines 1, 2, 3. */ }
+
+    #[test]
+    fn a_wrong_number_of_trails_is_an_error() { /* the fake answers one Trail for two anchors: Err naming "ini" and "2 Matches". */ }
+
+    #[test]
+    fn a_disabled_helper_is_unavailable() { /* a Launcher that fails: every call returns an error that `downcast_ref::<crate::helper::Unavailable>()` finds, and one warning in total (D33). */ }
+
+    #[test]
+    fn names_come_back_as_model_names() { /* the fake answers one WireName; `names` returns its Name with the same pieces. */ }
+```
+
+  Write each body in full from its comment.
+
+- [ ] **Step 2:** RED.
+
+- [ ] **Step 3:** implement:
+
+```rust
+/// A Processor whose work is done by a Helper Processor (spec §4.4): built-in to sfor's
+/// pipeline, it only turns the contract into requests.
+pub struct HelperProcessor {
+    host: crate::helper::host::Host,
+    tmp: std::sync::Arc<RunTemp>,
+}
+
+impl HelperProcessor {
+    pub fn new(cfg: crate::helper::HostConfig, launcher: Box<dyn crate::helper::Launcher>, tmp: std::sync::Arc<RunTemp>, warn: crate::helper::Warn) -> Self {
+        Self { host: crate::helper::host::Host::new(cfg, launcher, warn), tmp }
+    }
+
+    pub fn shutdown(&self) {
+        self.host.shutdown();
+    }
+
+    /// The path the helper reads, and the temporary file to keep alive until it answered: the
+    /// file itself when its bytes are the Source's and its path is UTF-8.
+    fn path_for(&self, input: &crate::model::Input) -> anyhow::Result<(String, Option<TempFile>)> {
+        if let Some(s) = input.disk.and_then(|p| p.to_str()) {
+            return Ok((s.to_string(), None));
+        }
+        let t = self.tmp.write(input.path, input.bytes)?;
+        let s = t.path().to_str().ok_or_else(|| anyhow::anyhow!("the temporary path is not UTF-8"))?.to_string();
+        Ok((s, Some(t)))
+    }
+}
+
+impl super::Processor for HelperProcessor {
+    fn trails(&self, input: &crate::model::Input, _: &toml::Table, anchors: &[usize]) -> anyhow::Result<Vec<crate::model::Trail>> {
+        use crate::helper::{protocol::{MatchPos, Request}, HelperError};
+        let (path, _tmp) = self.path_for(input)?;
+        let lines = crate::trail::LineIndex::new(input.bytes);
+        let matches = anchors.iter().map(|&b| MatchPos { line: lines.line_of(b), byte: b as u64 }).collect();
+        let f = self.host.format();
+        match self.host.request(|id| Request::Trails { id, path, matches }) {
+            Ok(r) => match r.trails {
+                Some(t) if t.len() == anchors.len() => Ok(t),
+                Some(t) => anyhow::bail!("{f}: the helper returned {} Trails for {} Matches", t.len(), anchors.len()),
+                None => anyhow::bail!("{f}: the helper's answer has no `trails`"),
+            },
+            Err(HelperError::Disabled) => Err(crate::helper::Unavailable.into()),
+            Err(e) => anyhow::bail!("{f}: {e}"),
+        }
+    }
+
+    fn names(&self, input: &crate::model::Input, _: &toml::Table) -> anyhow::Result<Vec<crate::model::Name>> {
+        use crate::helper::{protocol::Request, HelperError};
+        let (path, _tmp) = self.path_for(input)?;
+        let f = self.host.format();
+        match self.host.request(|id| Request::Names { id, path }) {
+            Ok(r) => match r.names {
+                Some(n) => Ok(n.into_iter().map(|w| w.into_name()).collect()),
+                None => anyhow::bail!("{f}: the helper's answer has no `names`"),
+            },
+            Err(HelperError::Disabled) => Err(crate::helper::Unavailable.into()),
+            Err(e) => anyhow::bail!("{f}: {e}"),
+        }
+    }
+}
+```
+
+  The pipeline (C10) prints a Processor error as `sfor: <path>: <error>`, so a failed request's
+  warning names the file and, through the `{f}:` prefix, the Definition (spec §4.4); for
+  `Unavailable` it prints nothing. Either way the file is Plain (D33).
+
+- [ ] **Step 4:** GREEN. Commit «Add the HelperProcessor: the Processor contract over protocol
+  v1».
 
 ### Task 9.1: installed Definitions and unavailable Formats
 
@@ -4746,11 +5548,13 @@ Rules: spec §4.2, §7, design note 8, D26.
         let (r, w) = Registry::load_all(Some(user.path()), Some(grammars.path()), &crate::processors::Processors::known);
         assert!(w.is_empty(), "{w:?}");
         assert!(matches!(r.get("lua").unwrap().origin, Origin::Installed(_)));
+        assert!(r.list().contains("installed ("));
         // A user file still wins (#6).
         std::fs::write(user.path().join("lua.toml"), "name='lua'\nextensions=['luau']\nprocessor='treesitter'\n[params]\ngrammar='lua'\nquery='(x) @segment'").unwrap();
         let (r, _) = Registry::load_all(Some(user.path()), Some(grammars.path()), &crate::processors::Processors::known);
         assert_eq!(r.get("lua").unwrap().extensions, ["luau"]);
-        assert!(r.list().contains("installed ("));
+        assert!(matches!(r.get("lua").unwrap().origin, Origin::Overridden(_)));
+        assert!(r.list().contains("overridden ("));
     }
 
     #[test]
@@ -4796,6 +5600,7 @@ Rules: spec §4.2, §7, design note 8, D26.
         let d = def("name='lua'\nprocessor='treesitter'\n[params]\ngrammar='lua'\nquery=''");
         assert!(matches!(ps.for_definition(&d), Some(ProcessorRef::Helper(_))));
         assert!(ps.available(&d));
+        assert!(ps.describes(&d));
         assert!(seen.lock().unwrap().is_empty());
         let missing = def("name='cobol'\nprocessor='treesitter'\n[params]\ngrammar='cobol'\nquery=''");
         assert!(!ps.available(&missing));
@@ -4831,9 +5636,11 @@ Rules: spec §4.2, §7, design note 8, D26.
 ```
 
   and `pub fn available(&self, def: &FormatDefinition) -> bool`: false only for a `treesitter`
-  Definition whose Grammar is neither compiled in nor installed (it does not warn).
-  `installed_binary` reads the directory on every call; cache it in a
-  `OnceLock<Vec<Installed>>` inside `Processors` if the C11 benchmark shows it.
+  Definition whose Grammar is neither compiled in nor installed (it does not warn); `describes`
+  (C1) answers true for an installed Grammar too. The installed Grammars are read once per run
+  into a `OnceLock<Vec<Installed>>` inside `Processors`, and `for_definition`, `describes` and
+  `available` look the binary up there, never on disk again (review r1, Codex #5). The
+  `treesitter` branch above uses that list instead of calling `installed_binary`.
 - [ ] **Step 4:** GREEN. Commit «Serve Grammars that are not compiled in through their Grammar
   Helper».
 
@@ -4889,13 +5696,39 @@ Everything links here. Locate the code by name: `load_registry`, `main` (actions
   prints with `eprintln!` unless `--no-messages`, and `.with_grammars(grammars::grammars_dir())`.
   It is dropped with `Ctx` at the end of `run`, which closes every helper's stdin (spec §4.4,
   Lifetime); `-q` stopping early drops it too.
-- [ ] **Step 5:** every `processors::by_name(&def.processor)` in `app.rs` becomes
-  `self.processors.for_definition(def)` (five places at `46a4b74`: `trail_file`,
-  `complete_input`, `describe`, `names_of`, and the registry load already changed in C1);
-  where a `&dyn Processor` is passed on, pass `&*p`.
-- [ ] **Step 6:** every `Input` literal sets `disk: t.fs.as_deref().filter(|_| !src.had_bom)`:
-  the file on disk only when its bytes are the Source's (D8). stdin has `t.fs == None`.
-- [ ] **Step 7:** `cargo test --workspace` passes, M1's tests included. Commit «Run the
+- [ ] **Step 5: resolve after the search** (design note 2, review r1, Codex #5). The
+  `processors::by_name` calls in `app.rs` (`46a4b74`: `trail_file` 686, `complete_input` 1093,
+  `describe` 1111, `names_of` 1182) change like this:
+  - `trail_file` keeps `processors::by_name(&def.processor)`: it runs before the search and only
+    picks M1's streaming path for stateless Outline Processors (Markdown); it builds nothing and
+    warns about nothing.
+  - `complete_input` asks `self.processors.describes(def)`, which has no side effects.
+  - `describe` and `names_of`, which run after the search found a Match (or, for
+    `--in-headings`, on the file being read anyway), call `self.processors.for_definition(def)`;
+    where a `&dyn Processor` is passed on, pass `&*p`.
+- [ ] **Step 6: Plain when there is no Processor (D33, Codex #6).** In `describe` and
+  `names_of`, when `for_definition` gives `None`, or the Processor returns an error, the file is
+  Plain: `Described.format` is `None` and its Trails are empty, exactly as for a file no
+  Definition claims, so every printer renders it as Plain (flat: `path:line: text`, spec §6.2 —
+  verified with M1's `sfor` on `misc/anchor.txt`; JSON: `"format": null`). An error is printed as
+  M1 does, `sfor: <path>: <error>`, unless it is `crate::helper::Unavailable`
+  (`e.downcast_ref`), which prints nothing. `trails()` (`app.rs:1223`) returns that decision with
+  the Trails, so `describe` can clear `format`.
+- [ ] **Step 7: `Input.disk` (D8, Codex #4).** One helper, used by every `Input` literal:
+
+```rust
+/// The file on disk whose bytes are exactly `src`'s: a regular file (not `/dev/stdin`, not a
+/// FIFO), searched without a BOM or UTF-16 transcoding, whose length on disk is the Source's.
+/// Anything else reaches a Helper Processor as a temporary copy (spec §4.4, Paths).
+fn disk_of<'a>(t: &'a Target, src: &Source) -> Option<&'a Path> {
+    let p = t.fs.as_deref()?;
+    let m = std::fs::metadata(p).ok()?;
+    (m.is_file() && !src.had_bom && m.len() == src.bytes().len() as u64).then_some(p)
+}
+```
+
+  It costs one `stat` per file with Matches, never on files without them.
+- [ ] **Step 8:** `cargo test --workspace` passes, M1's tests included. Commit «Run the
   Processors of each search through a per-run registry».
 
 ### Task 10.3: tree labels of key and element Segments
@@ -4996,6 +5829,15 @@ fn m2_05_in_headings_on_names_and_keys() {
     assert_eq!(o, "code/cart.php:8: Cart │     public function addItem(Item $item, int $qty = 1): void\n");
     let o = stdout(&run(&mut fx.sfor(["--in-headings", "^host$", "data/config.yaml", "--flat"])));
     assert_eq!(o.lines().count(), 3, "{o}");
+    // D35: keys that hold arrays are names too, in the three syntaxes, and --expand prints
+    // their Section (review r1, Codex #11, Fable #3).
+    for (file, key, line) in [("data/config.json", "^ports$", 5), ("data/config.yaml", "^ports$", 4), ("data/shop.toml", "^tags$", 13)] {
+        let o = stdout(&run(&mut fx.sfor(["--in-headings", key, file, "--flat"])));
+        assert_eq!(o.lines().count(), 1, "{file}: {o}");
+        assert!(o.starts_with(&format!("{line}:")), "{file}: {o}");
+    }
+    let o = stdout(&run(&mut fx.sfor(["--in-headings", "^ports$", "data/config.yaml", "--expand", "--flat"])));
+    assert!(o.contains("host: needle.example"), "{o}");
 }
 
 #[test]
@@ -5057,10 +5899,44 @@ fn m2_10_a_missing_grammar_is_one_warning() {
     let o = run(&mut fx.sfor(["needle", "a.lua", "b.lua", "--flat"]));
     assert_eq!(code(&o), 0);
     assert_eq!(stderr(&o).lines().count(), 1, "{}", stderr(&o));
-    assert_eq!(stdout(&o).lines().count(), 2, "{}", stdout(&o));
-    assert!(!stdout(&o).contains('›'), "{}", stdout(&o));
+    // Plain exactly as a file no Definition claims (D33): the same bytes as a `.txt` copy.
+    std::fs::copy(fx.file("a.lua"), fx.file("a.txt")).unwrap();
+    std::fs::copy(fx.file("b.lua"), fx.file("b.txt")).unwrap();
+    let plain = stdout(&run(&mut fx.sfor(["needle", "a.txt", "b.txt", "--flat"])));
+    assert_eq!(stdout(&o).replace(".lua", ".txt"), plain);
+    let json = stdout(&run(&mut fx.sfor(["needle", "a.lua", "--json"])));
+    let m: serde_json::Value = json.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).find(|v| v["type"] == "match").unwrap();
+    assert!(m["data"]["format"].is_null(), "{m}");
     let list = stdout(&run(&mut fx.sfor(["--list-formats"])));
     assert!(list.lines().any(|l| l.starts_with("lua ") && l.ends_with("(unavailable)")), "{list}");
+}
+
+#[test]
+fn m2_12_deep_json_is_not_a_crash() {
+    // D34, Codex #8: a million nested arrays, in a separate process: no stack overflow.
+    let fx = Fixture::new();
+    let n = 1_000_000;
+    let mut s = "[".repeat(n);
+    s.push_str("\"needle\"");
+    s.push_str(&"]".repeat(n));
+    std::fs::write(fx.file("deep.json"), s).unwrap();
+    let o = run(&mut fx.sfor(["needle", "deep.json", "--flat", "--fragment-width", "60"]));
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(stdout(&o).lines().count(), 1);
+}
+
+#[test]
+fn m2_13_files_without_matches_cost_nothing() {
+    // Design note 2, Codex #5: a missing Grammar and an `external` helper whose command does not
+    // exist give no warning when none of their files has a Match.
+    let fx = Fixture::new();
+    std::fs::write(fx.formats.path().join("lua.toml"), "name='lua'\nextensions=['lua']\nprocessor='treesitter'\n[params]\ngrammar='lua'\nquery='(x) @segment'\n").unwrap();
+    std::fs::write(fx.formats.path().join("ini.toml"), "name='ini'\nextensions=['ini']\nprocessor='external'\n[params]\ncommand=['/no/such/helper']\n").unwrap();
+    std::fs::write(fx.file("a.lua"), "-- nothing\n").unwrap();
+    std::fs::write(fx.file("a.ini"), "[s]\nk = v\n").unwrap();
+    let o = run(&mut fx.sfor(["zzqq-absent", "."]));
+    assert_eq!(code(&o), 1);
+    assert_eq!(stderr(&o), "");
 }
 
 #[test]
@@ -5138,7 +6014,7 @@ fn starts(log: &std::path::Path) -> usize {
 }
 ```
 
-- [ ] **Step 1: the tests**, each RED until its behaviour works end to end (C4, C5 and C10 make
+- [ ] **Step 1: the tests**, each RED until its behaviour works end to end (C4, C5, C9 and C10 make
   them pass; a test that is green on first run is checked by breaking the behaviour on
   purpose once, then restoring it):
   1. `h01_every_mode_gives_the_same_trails` (spec §11 #15): for `pool`, `concurrent`,
@@ -5152,8 +6028,9 @@ fn starts(log: &std::path::Path) -> usize {
   3. `h03_out_of_order_answers_reach_their_files`: `concurrent`, `-j 4`, `SFOR_EXAMPLE_SLOW=app`:
      every line still carries its own file's Trail.
   4. `h04_a_crash_is_plain_with_a_warning_and_a_restart` (spec §11 #11): `pool`, `-j 1`,
-     `--sort path`, `SFOR_EXAMPLE_CRASH=db`: `ini/db.ini`'s line prints as Plain
-     (`ini/db.ini:2:url = postgres://needle`), stderr has one line naming `ini` and
+     `--sort path`, `SFOR_EXAMPLE_CRASH=db`: `ini/db.ini`'s line prints as Plain, in the
+     layout of spec §6.2 (`ini/db.ini:2: url = postgres://needle`, as M1 prints a Plain file;
+     review r1, Codex #6), stderr has one line naming `ini` and
      `ini/db.ini`, `ini/web.ini` (after it) still has its Trail, the exit code is 0 and
      `starts(log) == 2`.
   5. `h05_three_failures_disable_the_definition`: six generated files, all crashing,
@@ -5170,8 +6047,9 @@ fn starts(log: &std::path::Path) -> usize {
      `ini/app.ini` on stdin: the Trails of `app.ini`, and no `sfor-*` directory is left in the
      system's temporary directory afterwards (compare its listing before and after).
   10. `h10_a_bom_file_keeps_its_offsets`: `ini/bom.ini` gives the same Trails as `app.ini`.
-  11. `h11_in_headings_asks_for_names`: `--in-headings '^host$' ini --flat` prints the `host`
-      line of `app.ini` only.
+  11. `h11_in_headings_asks_for_names`: `--in-headings '^host$' ini --flat --sort path`
+      prints the `host` lines of `app.ini` and `bom.ini` (both hold it; review r1, Codex #17),
+      and nothing from `db.ini` or `web.ini`.
   12. `h12_helper_stderr_is_relayed`: `SFOR_EXAMPLE_STDERR=hello from the helper`: stderr has
       `sfor: ini: hello from the helper`; with `--no-messages`, stderr is empty.
   13. `h13_helpers_exit_with_the_run` (Linux): after sfor exits, none of the pids in the log
@@ -5186,10 +6064,26 @@ fn starts(log: &std::path::Path) -> usize {
       `helpers/grammar/tests/fixtures/player.lua` copied into the fixture,
       `sfor needle player.lua --flat` prints `Player:update` and `helper` Trails.
   15. `h15_a_wrong_checksum_installs_nothing`: the same index with a wrong `sha256`: exit 2,
-      stderr contains `SHA-256`, the Grammar directory is empty.
+      stderr contains `SHA-256`, the Grammar directory has no `lua`.
+  16. `h16_ctrl_c_ends_the_helpers` (Linux, D32): start sfor in a new process group
+      (`std::os::unix::process::CommandExt::process_group(0)`) with `SFOR_EXAMPLE_HANG=web` and
+      `SFOR_EXAMPLE_LOG`, wait until the log has a `start` line, then send SIGINT to the whole
+      group as a terminal's Ctrl-C does (`kill -INT -- -<pgid>`); within 2 s sfor has exited by
+      that signal and no pid of the log exists under `/proc`.
+  17. `h17_a_helpers_child_cannot_hold_sfor` (Linux, D32): `SFOR_EXAMPLE_FORK=1`: the helper
+      leaves a `sleep 30` holding its stdout and stderr; sfor still finishes in under 4 s, with
+      its normal output.
+  18. `h18_streams_named_on_the_command_line_go_through_a_temporary_file` (Linux, D8, Codex
+      #4): `sfor --format ini needle /dev/stdin` with `app.ini` on stdin, and the same through
+      a FIFO (`mkfifo`, a writer thread writing `app.ini` into it): both give `app.ini`'s Trails,
+      and the helper never blocks (the run takes under 4 s).
+  19. `h19_a_failing_helper_is_plain_like_rg` (D33, Codex #6): with `SFOR_EXAMPLE_CRASH=long`, a
+      file `long.ini` with a 5 000-character line holding `needle` prints exactly what a `.txt`
+      copy of it prints (Fragments included), and `--json` gives `"format": null` for it.
 - [ ] **Step 2:** GREEN: `cargo test --test helpers`, then 10 runs in a row
   (`for i in $(seq 10); do cargo test -q --test helpers || break; done`) to catch races.
   Commit «Test Helper Processors and Grammar installs end to end».
+  `h14`–`h15` run with the index in a temporary directory and never touch the network.
 
 ### Task 11.3: the code benchmark — scripts/bench-code.sh
 
@@ -5202,13 +6096,24 @@ fn starts(log: &std::path::Path) -> usize {
 #   - a pattern matching under 5 % of the files: sfor − rg ≤ matching bytes ÷ (2.5 MB/s × threads);
 #   - a dense pattern: reported only.
 # Usage: scripts/bench-code.sh [DIR_A [SPARSE_A [DIR_B [SPARSE_B]]]]
-# Needs hyperfine, jq and GNU stat; exit code 1 (no Match) is not a failure.
+# Needs hyperfine, jq and GNU stat. SFOR_BIN replaces the sfor under test (to check that a
+# broken one fails the script: SFOR_BIN=scripts/fake-sfor-exit-2.sh must make it exit 1).
 set -euo pipefail
 registry=$(ls -d "$HOME"/.cargo/registry/src/index.crates.io-*/ 2>/dev/null | head -1)
 dir_a="${1:-$registry}"; sparse_a="${2:-impl Drop for}"
 dir_b="${3:-$HOME/robotin/apps}"; sparse_b="${4:-TODO}"
 none='zzqq-searchfor-bench-none'
 cargo build --release --quiet
+sfor="${SFOR_BIN:-./target/release/sfor}"
+export SFOR_BIN_PATH="$sfor"
+# Isolation (review r1, Codex #12): no user Definitions or Grammars, no network, no rg config.
+iso=$(mktemp -d)
+trap 'rm -rf "$iso"' EXIT
+mkdir -p "$iso/formats" "$iso/grammars"
+export SFOR_FORMATS_DIR="$iso/formats" SFOR_GRAMMARS_DIR="$iso/grammars" SFOR_GRAMMAR_INDEX="file://$iso/none.json"
+unset RIPGREP_CONFIG_PATH
+# The code Formats of M2, for the parsing budget (Fable #7): rg's types for them.
+code_types=(-t php -t js -t ts -t sh -t go -t rust -t py -t json -t yaml -t toml)
 # ripgrep 14.1.1's default: the available parallelism, at most 12 (search.rs, walker_threads).
 threads=$(nproc); [ "$threads" -gt 12 ] && threads=12
 fail=0
@@ -5221,23 +6126,47 @@ median() {
   awk -v a="$SFOR_S" -v b="$RG_S" -v n="$1" 'BEGIN { printf "%-22s rg %.3f s  sfor %.3f s  ratio %.2f\n", n, b, a, a / b }'
 }
 
+# check NAME EXPECTED_CODE SFOR_FLAG RG_ARGS…: sfor must exit EXPECTED_CODE with nothing on
+# stderr (no fallback warning), and print at least as many lines as rg (`--flat` prints a line
+# once per Trail, so a table row can print twice; `--no-trail` must print exactly rg's).
+check() {
+  local name="$1" want="$2" flag="$3"; shift 3
+  local code=0 err
+  err=$("$sfor" --color never "$flag" "$@" 2>&1 >/tmp/sfor-bench-check.out) || code=$?
+  if [ "$code" != "$want" ] || [ -n "$err" ]; then
+    echo "  FAIL $name: sfor exited $code (want $want); stderr: ${err:0:300}"; fail=1; return
+  fi
+  local ours rgs
+  ours=$(wc -l </tmp/sfor-bench-check.out)
+  rgs=$( (rg --color never "$@" 2>/dev/null || true) | wc -l)
+  if [ "$ours" -lt "$rgs" ] || { [ "$flag" = --no-trail ] && [ "$ours" != "$rgs" ]; }; then
+    echo "  FAIL $name: $ours lines, rg printed $rgs"; fail=1
+  fi
+}
+
 corpus() {
   local name="$1" dir="$2" sparse="$3"
   export SFOR_BENCH_DIR="$dir" SFOR_BENCH_PATTERN="$sparse" SFOR_BENCH_NONE="$none"
   local total hits bytes
   total=$(rg --files -- "$dir" | wc -l)
-  hits=$(rg -l -e "$sparse" -- "$dir" | wc -l || true)
-  bytes=$(rg -l -0 -e "$sparse" -- "$dir" | xargs -0 stat -c %s | awk '{ s += $1 } END { print s + 0 }')
-  echo "== $name: $dir, files $total, matching $hits ($bytes bytes), threads $threads"
+  hits=$( (rg -l -e "$sparse" -- "$dir" || true) | wc -l)
+  bytes=$( (rg -l -0 "${code_types[@]}" -e "$sparse" -- "$dir" || true) | xargs -0 -r stat -c %s | awk '{ s += $1 } END { print s + 0 }')
+  echo "== $name: $dir, files $total, matching $hits ($bytes bytes of code and data), threads $threads"
   awk -v h="$hits" -v t="$total" 'BEGIN { if (h * 20 >= t) { print "the sparse pattern matches 5% or more of the files"; exit 1 } }'
+  if rg -q -e "$none" -- "$dir"; then echo "  FAIL: '$none' matches in $dir"; fail=1; return; fi
+  # Before timing: every command does what it is timed for.
+  check none 1 --flat -e "$none" -- "$dir"
+  check sparse 0 --flat -e "$sparse" -- "$dir"
+  check no-trail 0 --no-trail -e "$sparse" -- "$dir"
+  [ "$fail" = 0 ] || return
   median "$name-none" 'rg --color never -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR"' \
-    './target/release/sfor --color never --flat -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR"'
+    '"$SFOR_BIN_PATH" --color never --flat -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR"'
   awk -v a="$SFOR_S" -v b="$RG_S" 'BEGIN { exit !(a <= 1.1 * b) }' || { echo "  FAIL: over 1.1 × rg"; fail=1; }
   median "$name-no-trail" 'rg --color never -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"' \
-    './target/release/sfor --color never --no-trail -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'
+    '"$SFOR_BIN_PATH" --color never --no-trail -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'
   awk -v a="$SFOR_S" -v b="$RG_S" 'BEGIN { exit !(a <= 1.1 * b) }' || { echo "  FAIL: over 1.1 × rg"; fail=1; }
   median "$name-sparse" 'rg --color never -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"' \
-    './target/release/sfor --color never --flat -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'
+    '"$SFOR_BIN_PATH" --color never --flat -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'
   awk -v a="$SFOR_S" -v b="$RG_S" -v by="$bytes" -v t="$threads" \
     'BEGIN { budget = by / (2.5e6 * t); printf "  extra %.3f s, budget %.3f s\n", a - b, budget; exit !(a - b <= budget) }' \
     || { echo "  FAIL: over the parsing budget"; fail=1; }
@@ -5247,11 +6176,18 @@ corpus registry "$dir_a" "$sparse_a"
 corpus apps "$dir_b" "$sparse_b"
 export SFOR_BENCH_DIR="$dir_a" SFOR_BENCH_PATTERN='fn new\('
 median registry-dense 'rg --color never -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"' \
-  './target/release/sfor --color never --flat -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'
+  '"$SFOR_BIN_PATH" --color never --flat -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'
 exit "$fail"
 ```
 
-- [ ] Run it, and `scripts/bench.sh` (M1's, which must still pass). M2 is not done until both
+  `--ignore-failure` stays in `median` only because rg exits 1 for the «none» pattern; `check`
+  has already required the exact exit codes, an empty stderr (no fallback warning) and rg's
+  line count, so a run that fails cannot pass on time alone. `scripts/fake-sfor-exit-2.sh`
+  (`#!/bin/sh` + `exit 2`) is committed with the script for that self-check.
+
+- [ ] Run `SFOR_BIN=scripts/fake-sfor-exit-2.sh scripts/bench-code.sh` once and see it exit 1
+  (RED for the script itself). Then run it for real, and `scripts/bench.sh` (M1's, which must
+  still pass). M2 is not done until both
   exit 0. If one fails, profile (`perf record` / `cargo flamegraph`) and fix the top cost; a
   ceiling changes only with Sebastián's OK. Report every line both scripts print. Commit «Add
   the code benchmark».
@@ -5291,7 +6227,7 @@ exit "$fail"
    function or key each match belongs to — before running rg and opening whole files»); the
    recipes add code and key paths; the «only Markdown has Trails» line goes.
 3. **Spec**: bring it in line with what was built: §4.4's failure rules match C4's host
-   (timeouts and broken lines count among the three failures); §5.2 and §5.3 match the fixtures' real outputs; §11
+   (D41, the three failures, D32's close); §5.2 and §5.3 match the fixtures' real outputs; §11
    #13 quotes the benchmark's numbers; mark «M2 plan» decisions that changed during
    implementation, with the reason.
 4. **docs/json-schema.json**: Segment `kind` stays a free string (new kinds: `key`, `element`,

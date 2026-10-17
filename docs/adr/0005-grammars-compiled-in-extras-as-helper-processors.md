@@ -39,7 +39,9 @@ tree-sitter 0.27 with the `wasm` feature also requires rustc 1.95; without it, t
 - A downloaded helper runs outside any sandbox, with the user's permissions; the checksum in the
   index and, from M5, signed releases are the mitigation.
 - sfor gains the code that starts helpers, restarts the ones that crash (that file prints as
-  Plain), kills the ones that time out, and spreads requests from many search threads.
+  Plain), kills the ones that time out, reaps every process it started, and spreads requests
+  from many search threads. Helpers share sfor's process group, so a terminal's Ctrl-C reaches
+  them as it reaches sfor, which keeps sfor's own reaction to Ctrl-C identical to ripgrep's.
 - A helper must free everything between requests; searchfor's own helpers are tested to keep
   their memory flat over thousands of files.
 - The binary grows by the compiled-in Grammars: a stripped probe with only them and the keypath

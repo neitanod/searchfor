@@ -191,7 +191,12 @@ timeout_ms = 5000                           # per request; 5000 when absent
 **Lifetime: once per search (8455).** sfor starts a Helper Processor when the first file of its
 Format needs Trails — after the search found a Match in that file (§3) — sends it every other
 file of that Format in the same run, and closes its stdin when the run ends. The helper exits on
-that EOF; sfor waits up to one second and then kills it. The next run starts it again.
+that EOF; sfor waits up to one second and then kills it. The next run starts it again. Every
+process sfor starts is also reaped: a copy that crashed, timed out or was killed is collected at
+once, never left as a zombie until sfor exits (M2 plan, D32). Helpers run in sfor's process
+group, so a terminal's Ctrl-C ends them with sfor, and a sfor ended any other way leaves them an
+EOF on stdin. A helper that starts processes of its own must stop them when it exits; sfor waits
+at most one more second for pipes such a child keeps open, and then exits anyway.
 
 **Modes (8458, 8459)**, chosen by `mode` in the Definition:
 
@@ -203,8 +208,9 @@ that EOF; sfor waits up to one second and then kills it. The next run starts it 
   without waiting for answers and may answer them in any order: each answer carries the `id` of
   its request.
 - **`oneshot`** (8455): one process per request. sfor writes `hello` and the request, closes
-  stdin and reads one answer. Meant for helpers written as small scripts; each file pays the
-  start of a process (1.5–3 ms, measured in 8452).
+  stdin, and then reads the two answers, to `hello` and to the request, so a script may read its
+  whole stdin before writing anything. Meant for helpers written as small scripts; each file
+  pays the start of a process (1.5–3 ms, measured in 8452).
 
 **Wire format.** UTF-8 JSON, one object per line, ended by `\n`, in both directions. Both sides
 ignore fields they do not know, so later versions can add fields. Every line the helper writes to
@@ -235,10 +241,12 @@ stderr is relayed as a warning, `sfor: <format>: <line>`, silenced by `--no-mess
 
 **Paths.** sfor sends the path and the Match positions, never the content (8452); the helper reads
 the file. `path` is relative to sfor's working directory, which the helper inherits, or absolute.
-When the bytes sfor searched differ from the file on disk — stdin, a file whose BOM sfor removed
-or whose UTF-16 it transcoded, a document's extracted text with `--docs` (M4) — sfor writes those
-bytes to a temporary file of the run and sends its path, so `byte` always counts the bytes at
-`path`.
+sfor sends a file's own path only when it is a regular file whose bytes sfor searched unchanged.
+For anything else — stdin, `/dev/stdin` or a FIFO named on the command line (a helper must never
+reopen a stream), a file whose BOM sfor removed or whose UTF-16 it transcoded, a path that is not
+UTF-8, a document's extracted text with `--docs` (M4) — sfor writes the bytes it searched to a
+temporary file of the run, removed after the answer, and sends that path, so `byte` always
+counts the bytes at `path`.
 
 **Releasing resources (8458).** Requests are independent: a helper keeps nothing from one file
 for the next, and frees the file, its tree and its answer before reading the next request. Only
@@ -249,16 +257,23 @@ what belongs to the Format stays loaded: the Grammar, the compiled query, the `p
 **Failures.** A broken Helper Processor never aborts the search and never changes the exit code.
 The thresholds below are M2 plan decisions.
 
-- An `error` answer, a wrong number of Trails, or a line that is not valid JSON fails that
-  request: the Matches of that file print with an empty Trail, with one warning naming the
-  Definition and the file. For `names`, `--in-headings` skips that file, with one warning.
-- No answer within `timeout_ms`: the request fails as above, and the process is killed, which
-  fails the other requests it had in flight.
+- A file whose request fails prints as Plain — `format` `null` in `--json`, empty Trails, the
+  layout of §6.2 — with one warning naming the Definition and the file. For `names`,
+  `--in-headings` skips that file, with one warning.
+- An `error` answer, a wrong number of Trails, or a JSON line with the request's `id` whose
+  fields do not fit the protocol fails that request only; the process goes on.
+- A line that is not JSON, or that has no `id`, cannot be attributed to a request: the process
+  is killed and every request it had in flight fails.
+- No answer within `timeout_ms` (counted from when sfor queues the request, so a helper that
+  stops reading cannot stall sfor): the request fails, and the process is killed, which fails
+  the other requests it had in flight.
 - A process that exits, or closes its stdout, with requests in flight fails them as above; the
   next request starts a new process (8455). After three failures in one run — crashes,
   timeouts or lines that are not valid JSON — the Definition is disabled for the rest of the
   run, with one warning, and its files print as Plain.
 - A command that cannot be started disables the Definition for the run, with one warning.
+- While a Definition is disabled, and for a `treesitter` Definition whose Grammar is not
+  available, its files print as Plain without further warnings.
 
 ## 5. Trails
 
@@ -294,10 +309,23 @@ headings, and an optional `signature` that tree output may show.
   (`kind = "document"`, 1-based, as `row 128` and `page 42`). Merge keys are keys named `<<`;
   an alias is text of the key it sits in; a complex key (`? [a, b]`) is named by its first 40
   characters.
-- JSON accepts comments and trailing commas (`tsconfig.json`, editor settings).
+- JSON accepts comments and trailing commas (`tsconfig.json`, editor settings) and nothing
+  else outside JSON: a malformed number, literal, escape or control character is a syntax
+  error. Past 256 nested containers no more Segments open; deeper Matches get the Trail of the
+  deepest one, and nesting of any depth never crashes sfor (M2 plan).
+- TOML: a table's Section runs from its header to the next header that is not inside it. When a
+  header's parent has no table of its own whose Section holds that header (`a` of `[a.b]`, or
+  `[p]` whose Section ended before a later `[p.r]`), the parent is repeated over that header's
+  Section, so `[a.b]`, `[x]`, `[a.c]` give `a › b`, `x`, `a › c`, never `a › x`. A quoted key
+  holding a dot (`["a.b"]`) is one key. Dotted keys spread over a table give the parent per
+  key-value.
+- A key that holds an array is hidden in the Trail but remains a name for `--in-headings`:
+  `--in-headings '^ports$'` finds `ports:`.
 - On a syntax error the Trails of the Matches before it are kept, and the Matches after it print
   with an empty Trail, without a warning: Helm templates are often not valid YAML, and a warning
-  per file would bury the output (M2 plan).
+  per file would bury the output (M2 plan). For TOML, «before it» is the longest prefix ending at
+  a line start before the reported error that still parses (up to 256 lines back), since
+  toml_edit can report an error lines after an unclosed array or string.
 
 ### 5.3 Code (#10)
 
@@ -457,8 +485,12 @@ ones easy to add, and a flag that installs them. 8454 replaced the WebAssembly G
   binary for the running system, verifies the checksum, and only then writes the binary, the
   Definition and `installed.json` (version and checksum) to the Grammar directory. A checksum
   mismatch, or no binary for the system, is an error (exit 2) that leaves the directory as it
-  was. Installing a Grammar again replaces it. Only `https://` and `file://` URLs are accepted;
-  `SFOR_GRAMMAR_INDEX` replaces the index URL (tests and mirrors).
+  was. The Definition in the index must be for that Grammar (`name` and `grammar` equal to it,
+  `processor = "treesitter"`), or nothing is installed. Installing a Grammar again replaces it,
+  under a lock per Grammar, and a failed replacement keeps the previous install. Only `https://`
+  and `file://` URLs are accepted, and HTTPS is required on every redirect too; downloads have a
+  10 s connect timeout and a 300 s ceiling. `SFOR_GRAMMAR_INDEX` replaces the index URL (tests
+  and mirrors).
 - **`sfor --list-grammars`** lists the compiled-in Grammars, the installed ones with their
   version and directory, and the ones the index offers for this system; when the index cannot
   be read it lists the first two and warns.
