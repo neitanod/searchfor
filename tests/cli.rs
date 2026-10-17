@@ -152,7 +152,7 @@ fn t08_long_line_becomes_fragments_with_counts() {
     for l in out.lines() {
         assert!(l.chars().count() <= 120, "{} chars: {l}", l.chars().count());
         let text = l
-            .strip_prefix("1: ")
+            .strip_prefix("1: [0] │ ")
             .unwrap_or_else(|| panic!("prefix: {l}"));
         let c = marker.captures(text).unwrap();
         let n = |i| c.get(i).map_or(0, |m| m.as_str().parse::<usize>().unwrap());
