@@ -159,7 +159,7 @@ pub fn one_thread(args: &Args, one_file: bool) -> bool {
 
 /// The walker's threads: `-j N`, or ripgrep 14.1.1's default when `-j` is absent or 0, the
 /// available parallelism up to 12; ignore 0.4.23 alone would use 2.
-fn walker_threads(args: &Args) -> usize {
+pub fn walker_threads(args: &Args) -> usize {
     match args.threads {
         Some(j) if j > 0 => j,
         _ => std::thread::available_parallelism()

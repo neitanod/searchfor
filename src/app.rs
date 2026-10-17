@@ -76,7 +76,7 @@ impl Messages {
 }
 
 fn load_registry(msgs: &Messages, user_dir: Option<&Path>) -> Registry {
-    let (registry, warnings) = Registry::load(user_dir, &|p| processors::by_name(p).is_some());
+    let (registry, warnings) = Registry::load(user_dir, &processors::Processors::known);
     for w in warnings {
         msgs.warn(w);
     }
