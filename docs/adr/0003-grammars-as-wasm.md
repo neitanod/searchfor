@@ -1,5 +1,8 @@
 # tree-sitter Grammars are WebAssembly modules
 
+Status: superseded by [ADR 0005](0005-grammars-compiled-in-extras-as-helper-processors.md)
+(Hilo 8451–8454, 2026-10-17). WebAssembly is out; this record stays as the history of 8361.
+
 searchfor loads tree-sitter Grammars as `.wasm` files through tree-sitter's `wasm` feature
 (wasmtime), the way the Zed editor does, instead of native shared libraries. One `.wasm` file
 works on every operating system and architecture, so installing an extra Grammar is a single
