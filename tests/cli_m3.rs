@@ -333,3 +333,21 @@ fn m3_15_a_name_match_across_a_replaced_byte_is_one_match() {
     );
     assert!(out.contains(r#""matches":1,"#), "{out}");
 }
+
+#[test]
+fn m3_16_a_quoted_header_cell_with_commas_keeps_its_semicolons() {
+    // M3 code review r2, Codex #2: the commas inside a quoted field after a `;` are not
+    // delimiters, so the sniff picks `;`.
+    let fx = Fixture::new();
+    std::fs::write(
+        fx.file("people.csv"),
+        "ID;\"Family, Given, Middle, Suffix\";Plan\n1;\"Doe, John, Paul, Jr\";needle\n",
+    )
+    .unwrap();
+    assert_eq!(
+        flat(&fx, &["--format", "csv", "needle", "people.csv"]),
+        "2: row 1 › Plan │ 1;\"Doe, John, Paul, Jr\";needle\n"
+    );
+    let o = run(&mut fx.sfor(["--flat", "--within", "Suffix", "needle", "people.csv"]));
+    assert_eq!(code(&o), 1, "{}", stdout(&o));
+}

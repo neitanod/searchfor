@@ -58,33 +58,16 @@ fn params(t: &toml::Table) -> anyhow::Result<Params> {
 }
 
 /// The delimiter of a CSV file (D4): of `,`, `;`, tab and `|`, the one that appears most often
-/// in its first line outside quotes; `,` on a tie or when none appears. Each candidate is
-/// counted as csv-core reads the line with it as the delimiter (M3 code review r1, Codex #2).
-/// A candidate that is the quote is never picked (Fable #7): then the first other one is the
+/// in its first line outside quotes; `,` on a tie or when none appears. The line is read once,
+/// with csv-core's quoting rules (csv-core 0.1.13, `reader.rs`) and every candidate ending a
+/// field: a quote opens a quoted field only as the field's first byte, whichever candidate is
+/// before it; inside it `""` is a quote and a lone one closes it; a quote anywhere else, after
+/// a closing quote included, is text. What a quoted field holds counts for no candidate (M3 code
+/// review r1 and r2, Codex #2: `ID;"Family, Given";Plan` is `;`, and `Size";Plan;Note` too). A
+/// candidate that is the quote is never picked (Fable #7): then the first other one is the
 /// default.
 pub fn sniff(src: &[u8], quote: Option<u8>) -> u8 {
     const CANDIDATES: [u8; 4] = [b',', b';', b'\t', b'|'];
-    let line = &src[..memchr::memchr(b'\n', src).unwrap_or(src.len())];
-    let counts = CANDIDATES.map(|d| {
-        if Some(d) == quote {
-            0
-        } else {
-            delimiters(line, d, quote)
-        }
-    });
-    let mut best = usize::from(Some(CANDIDATES[0]) == quote);
-    for k in best + 1..4 {
-        if counts[k] > counts[best] {
-            best = k;
-        }
-    }
-    CANDIDATES[best]
-}
-
-/// How many delimiters `d` csv-core reads in `line` (csv-core 0.1.13, `reader.rs`): a quote
-/// opens a quoted field only as the field's first byte; inside it `""` is a quote and a lone
-/// one closes it; a quote anywhere else, after a closing quote included, is text.
-fn delimiters(line: &[u8], d: u8, quote: Option<u8>) -> usize {
     #[derive(Clone, Copy)]
     enum State {
         Start,
@@ -92,23 +75,35 @@ fn delimiters(line: &[u8], d: u8, quote: Option<u8>) -> usize {
         Quoted,
         AfterQuote,
     }
-    let mut n = 0;
+    let line = &src[..memchr::memchr(b'\n', src).unwrap_or(src.len())];
+    let mut counts = [0usize; 4];
     let mut state = State::Start;
     for &b in line {
         let q = Some(b) == quote;
-        state = match state {
-            State::Quoted if q => State::AfterQuote,
-            State::Quoted => State::Quoted,
-            State::AfterQuote if q => State::Quoted,
-            _ if b == d => {
-                n += 1;
+        let candidate = if q {
+            None
+        } else {
+            CANDIDATES.iter().position(|&c| c == b)
+        };
+        state = match (state, candidate) {
+            (State::Quoted, _) if q => State::AfterQuote,
+            (State::Quoted, _) => State::Quoted,
+            (State::AfterQuote, _) if q => State::Quoted,
+            (_, Some(k)) => {
+                counts[k] += 1;
                 State::Start
             }
-            State::Start if q => State::Quoted,
+            (State::Start, _) if q => State::Quoted,
             _ => State::Unquoted,
         };
     }
-    n
+    let mut best = usize::from(Some(CANDIDATES[0]) == quote);
+    for k in best + 1..4 {
+        if counts[k] > counts[best] {
+            best = k;
+        }
+    }
+    CANDIDATES[best]
 }
 
 /// Whether csv-core would still be inside the quotes of `field` at its end (M3 review r1,
@@ -583,8 +578,26 @@ mod tests {
         // (M3 code review r1, Codex #2): they open no quotes.
         assert_eq!(sniff(b"Size\";Plan;Note\n1;needle;ok\n", Some(b'"')), b';');
         assert_eq!(sniff(b"\"a\"b\";c;d,e\n", Some(b'"')), b';');
-        // Each candidate is read as csv-core reads it with that delimiter.
         assert_eq!(sniff(b"\"a\";b,c,d\n", Some(b'"')), b',');
+        // A quoted field is recognized whichever candidate is before it, and what it holds is
+        // counted for none (M3 code review r2, Codex #2).
+        assert_eq!(
+            sniff(
+                b"ID;\"Family, Given, Middle, Suffix\";Plan\n1;\"Doe, John, Paul, Jr\";needle\n",
+                Some(b'"')
+            ),
+            b';'
+        );
+        assert_eq!(sniff(b"\"a, b\"|\"c, d\"|e\n", Some(b'"')), b'|');
+        assert_eq!(sniff(b"x\t\"a;b;c\"\ty\n", Some(b'"')), b'\t');
+        assert_eq!(sniff(b"\"q \"\"x, y\"\" z\";a;b\n", Some(b'"')), b';');
+        assert_eq!(sniff(b"a|\"b;c;d\"|\"e,f,g\"\n", Some(b'"')), b'|');
+        // A closing quote followed by text: the rest of the field is text up to a candidate.
+        assert_eq!(sniff(b"\"x\"y,z;w;v\n", Some(b'"')), b';');
+        // A quote that never closes holds the rest of the line.
+        assert_eq!(sniff(b"a;b;\"c,d,e,f\n", Some(b'"')), b';');
+        // Another quote character.
+        assert_eq!(sniff(b"ID;'a, b, c';x\n", Some(b'\'')), b';');
     }
 
     #[test]
