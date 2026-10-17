@@ -253,6 +253,8 @@ that never ends (`yes`) never answer:
 - `--expand` and `--json` when the input's Format has an Outline (`--format markdown`): the
   Segment around a Match ends where the Outline says, which can be past the `-m`th Match.
 - `--within`, with any Format: `-m` counts the Matches the filter keeps (above).
+- `--in-headings`, with any Format: the names are read from the whole Source (code review
+  r9, Fable #1).
 
 A plain-text Format gets no Outline, so `--expand` and `--json` stop as rg does (code review
 r4, Fable #5):
