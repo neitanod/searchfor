@@ -174,24 +174,85 @@ pub fn rg_types() -> anyhow::Result<TypesBuilder> {
     Ok(tb)
 }
 
-/// Whether a sink stopped its search, shared with the reader the search reads from.
+/// Whether a sink stopped its search, shared with the reader the search reads from, and how
+/// far that reader got (`UntilStopped`).
 #[derive(Debug, Clone, Default)]
-pub struct Stop(Rc<Cell<bool>>);
+pub struct Stop(Rc<StopState>);
+
+#[derive(Debug, Default)]
+struct StopState {
+    stopped: Cell<bool>,
+    /// The searcher's binary bytes: its quit byte and its convert byte (`MaxCount::begin`).
+    quit: Cell<Option<u8>>,
+    convert: Cell<Option<u8>>,
+    /// The bytes read so far.
+    read: Cell<u64>,
+    /// The absolute end of the searcher's buffer after its last fill, as grep-searcher's
+    /// `LineBuffer::fill` sets `last_lineterm`; None before the first read.
+    buffer_end: Cell<Option<u64>>,
+    /// The quit byte was read: the buffers end there.
+    quit_seen: Cell<bool>,
+}
 
 impl Stop {
     pub fn is_set(&self) -> bool {
-        self.0.get()
+        self.0.stopped.get()
     }
 
     fn set(&self, stopped: bool) {
-        self.0.set(stopped);
+        self.0.stopped.set(stopped);
+    }
+
+    /// A new search with `binary`: nothing read yet.
+    fn reset(&self, binary: &BinaryDetection) {
+        let s = &self.0;
+        s.stopped.set(false);
+        s.quit.set(binary.quit_byte());
+        s.convert.set(binary.convert_byte());
+        s.read.set(0);
+        s.buffer_end.set(None);
+        s.quit_seen.set(false);
+    }
+
+    /// The end of the buffer the searcher filled last, when it reads through `UntilStopped`.
+    fn buffer_end(&self) -> Option<u64> {
+        self.0.buffer_end.get()
+    }
+
+    /// `bytes` were read (none: the end of the input). Follows `LineBuffer::fill`: the buffer
+    /// ends after the last line terminator read (a converted binary byte is one), at the quit
+    /// byte, or at the end of the input.
+    fn read(&self, bytes: &[u8]) {
+        let s = &self.0;
+        let start = s.read.get();
+        s.read.set(start + bytes.len() as u64);
+        if s.quit_seen.get() {
+            return;
+        }
+        if bytes.is_empty() {
+            s.buffer_end.set(Some(start));
+            return;
+        }
+        if let Some(i) = s.quit.get().and_then(|q| memchr::memchr(q, bytes)) {
+            s.quit_seen.set(true);
+            s.buffer_end.set(Some(start + i as u64));
+            return;
+        }
+        let last = match s.convert.get() {
+            Some(c) => memchr::memrchr2(b'\n', c, bytes),
+            None => memchr::memrchr(b'\n', bytes),
+        };
+        if let Some(i) = last {
+            s.buffer_end.set(Some(start + i as u64 + 1));
+        }
     }
 }
 
 /// A reader that ends once its sink stopped the search. grep-searcher 0.1.17 goes on after a
 /// sink stops it on an inverted Match (`match_by_line_fast` leaves its loop with `break` and
 /// carries on with the next buffer, core.rs:396), which reads the rest of the input; its sinks
-/// drop what comes after the stop (`MaxCount`), and this reader ends the input there.
+/// drop what comes after the stop (`MaxCount`), and this reader ends the input there. It also
+/// tells the sink where the searcher's buffers end (`Stop::buffer_end`).
 pub struct UntilStopped<R> {
     inner: R,
     stop: Stop,
@@ -208,7 +269,9 @@ impl<R: Read> Read for UntilStopped<R> {
         if self.stop.is_set() {
             return Ok(0);
         }
-        self.inner.read(buf)
+        let n = self.inner.read(buf)?;
+        self.stop.read(&buf[..n]);
+        Ok(n)
     }
 }
 
@@ -226,10 +289,11 @@ impl<R: Read> Read for UntilStopped<R> {
 /// rolled-out bytes of a Match's buffer are its absolute offset minus its offset in the buffer.
 /// An after-context line past the end of that buffer is the first line of the next one: the
 /// buffer of the last Match ended with the after context running, so all of it was rolled out
-/// (code review r2, Codex #5). A search in memory reports its position in both versions, so
-/// it is left alone, except with -v (`slice_stop`). Not reproduced, see docs/rg-compat.md: an
-/// after context that crosses a second buffer, and the binary quit with an after context longer
-/// than the before context.
+/// (code review r2, Codex #5); that next buffer ends where the reader says (`Stop::buffer_end`),
+/// and so on through every buffer the after context crosses (code review r3, Codex #2). A
+/// search in memory reports its position in both versions, so it is left alone, except with
+/// -v (`slice_stop`). Not reproduced, see docs/rg-compat.md: buffers rolled with an after
+/// context longer than the before context.
 #[derive(Debug, Clone, Default)]
 pub struct MaxCount {
     limit: Option<u64>,
@@ -298,7 +362,7 @@ impl MaxCount {
             stop: self.stop.clone(),
             ..Self::default()
         };
-        self.stop.set(false);
+        self.stop.reset(s.binary_detection());
     }
 
     /// A Match line. False: it comes after the stop, and is dropped.
@@ -333,12 +397,15 @@ impl MaxCount {
         }
         if *c.kind() == SinkContextKind::After {
             self.after_left = self.after_left.saturating_sub(1);
+            // The first line of a later buffer: the after context rolled out every line
+            // before it (grep-searcher's `Core::roll` consumes the lines it visited), and that
+            // buffer ends where the reader's last fill left it (code review r3, Codex #2).
             if self
                 .buffer_end
                 .is_some_and(|e| c.absolute_byte_offset() >= e)
             {
                 self.rolled = c.absolute_byte_offset();
-                self.buffer_end = None;
+                self.buffer_end = self.stop.buffer_end();
             }
         }
         self.check();

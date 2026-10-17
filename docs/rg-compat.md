@@ -171,5 +171,5 @@ in two cases:
   65313 in sfor; with `-A1`, 65313 and 65413.
 
 Reproducing them takes the buffer handling of grep-searcher 0.1.14. An after context that
-crosses into the next buffer, with `-m` stopping in it, is reproduced (code review r2, Codex
-#5); one that crosses more than one buffer boundary counts from the first of them.
+crosses into later buffers, with `-m` stopping in one of them, is reproduced (code review r2,
+Codex #5, and r3, Codex #2).

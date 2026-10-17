@@ -957,3 +957,59 @@ fn filtered_counts_stop_at_max_count() {
     }
     r.assert_empty();
 }
+
+/// Code review r3, Codex #2: an after context that runs through several buffers, with a
+/// before context as long (`-C`), so that both searchers roll their buffers alike: rg 14.1.1
+/// reports the start of the buffer `-m` stopped in, however many it crossed.
+#[test]
+fn bytes_searched_when_the_context_crosses_several_buffers() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("several")).unwrap();
+    let long = format!("{}\n", "x".repeat(9000));
+    let first = format!("needle\n{}tail\n", long.repeat(30));
+    std::fs::write(fx.file("several/first.txt"), &first).unwrap();
+    std::fs::write(fx.file("several/first.md"), &first).unwrap();
+    // The Match in the second buffer, its context through the fourth.
+    let later = format!("{}needle\n{}tail\n", long.repeat(10), long.repeat(30));
+    std::fs::write(fx.file("several/later.txt"), &later).unwrap();
+    let mut r = Report(Vec::new());
+    let mut cases: Vec<(Vec<&str>, In)> = Vec::new();
+    for flags in [
+        &["-m1", "-C20"][..],
+        &["-m1", "-A20", "-B20"],
+        &["-m1", "-C16"],
+    ] {
+        for input in ["several/first.txt", "several/first.md", "several/later.txt"] {
+            let mut a = flags.to_vec();
+            a.push("needle");
+            cases.push((a, In::File(input)));
+        }
+        let mut a = flags.to_vec();
+        a.extend(["needle", "several"]);
+        cases.push((a, In::Null));
+    }
+    for (args, input) in &cases {
+        let mut a = vec!["--sort", "path", "--json"];
+        a.extend_from_slice(args);
+        let want = rg(&fx, &a, *input);
+        assert!(
+            bytes_searched(&want).iter().all(|&b| b > 65536),
+            "{args:?} {}",
+            stdout(&want)
+        );
+        for mode in [&["--no-trail"][..], &[], &["--format", "markdown"]] {
+            let mut s = mode.to_vec();
+            s.extend_from_slice(&a);
+            let got = sfor(&fx, &s, *input);
+            r.check(
+                format!("{s:?}"),
+                (code(&want), format!("{:?}", bytes_searched(&want))),
+                (code(&got), format!("{:?}", bytes_searched(&got))),
+            );
+        }
+    }
+    r.assert_empty();
+}
