@@ -331,14 +331,15 @@ fn m2_14_a_quoted_key_with_escapes_is_one_segment() {
             .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
             .find(|v| v["type"] == "match")
             .unwrap_or_else(|| panic!("{ext}: no match in {o}"));
-        // One submatch per piece, as Markdown's entities: `a`, the escape, `c`.
+        // One Match is one submatch over its contiguous pieces (`a`, the escape, `c`): M3 review
+        // r3, Codex #1, which joined them for every Format, Markdown's entities included.
         let subs: Vec<(u64, u64)> = m["data"]["submatches"]
             .as_array()
             .unwrap()
             .iter()
             .map(|s| (s["start"].as_u64().unwrap(), s["end"].as_u64().unwrap()))
             .collect();
-        assert_eq!(subs, [(13, 14), (14, 20), (20, 21)], "{ext}: {o}");
+        assert_eq!(subs, [(13, 21)], "{ext}: {o}");
     }
 }
 

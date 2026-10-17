@@ -1730,7 +1730,17 @@ impl Ctx<'_> {
             let section = n.trail.last().map(|s| (s.line, s.end_line));
             // RegexMatcher's error type is NoError: the search cannot fail.
             let _ = self.matcher.find_iter(n.text.as_bytes(), |m| {
+                // One Match over contiguous pieces (`a&lt;b`, a replaced byte between letters)
+                // is one hit: its Source ranges are joined where they touch, never across two
+                // Matches (M3 review r3, Codex #1).
+                let mut joined: Vec<std::ops::Range<usize>> = Vec::new();
                 for r in n.source_ranges(m.start()..m.end()) {
+                    match joined.last_mut() {
+                        Some(last) if last.end == r.start && !r.is_empty() => last.end = r.end,
+                        _ => joined.push(r),
+                    }
+                }
+                for r in joined {
                     hits.push((r.start, r.end, n.trail_at(r.start), section));
                 }
                 true

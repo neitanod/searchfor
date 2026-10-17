@@ -1080,3 +1080,22 @@ fn t36_sections_of_stdin_with_max_count_span_the_whole_input() {
         assert_eq!(got, matches(&want), "{dash:?}");
     }
 }
+
+#[test]
+fn t38_a_heading_match_across_decoded_pieces_is_one_match() {
+    // M3 review r3, Codex #1: `a&lt;b` decodes to `a<b` in three pieces; one Match of `a.b` is
+    // one submatch over bytes 2..8 and counts once.
+    let fx = Fixture::new();
+    std::fs::write(fx.file("ent.md"), "# a&lt;b\n\ntext\n").unwrap();
+    let out = stdout(&run(&mut fx.sfor([
+        "--json",
+        "--in-headings",
+        "a.b",
+        "ent.md",
+    ])));
+    assert!(
+        out.contains(r#""submatches":[{"match":{"text":"a&lt;b"},"start":2,"end":8}]"#),
+        "{out}"
+    );
+    assert!(out.contains(r#""matches":1,"#), "{out}");
+}
