@@ -1098,12 +1098,17 @@ fn a_closed_pipe_exits_as_ripgrep() {
         (child.wait().unwrap().code().unwrap_or(-1), line.is_empty())
     };
     let mut r = Report(Vec::new());
+    // With a context, a separator goes between files; one file has none, and prints as it
+    // grows too (code review r4 replay). The tree, which rg does not have, also stops at the
+    // closed pipe and exits 1.
     for args in [
         &["text", "big100k.txt"][..],
         &["--json", "text", "big100k.txt"],
+        &["-C1", "text", "big100k.txt"],
+        &["--json", "-C1", "text", "big100k.txt"],
     ] {
         let want = first_line(fx.rg(args));
-        for mode in [&["--no-trail"][..], &["--flat"]] {
+        for mode in [&["--no-trail"][..], &["--flat"], &["--tree"]] {
             let mut s = mode.to_vec();
             s.extend_from_slice(args);
             let got = first_line(fx.sfor(&s));
@@ -1115,38 +1120,6 @@ fn a_closed_pipe_exits_as_ripgrep() {
         }
     }
     r.assert_empty();
-}
-
-/// The deviation docs/rg-compat.md documents («A closed pipe in the tree layout»), as
-/// measured: the tree holds a file's output until the file ends, so a reader that closes the
-/// pipe after the first line finds the search already done and the file matched (exit 0),
-/// where rg 14.1.1 stops printing and exits 1. When it changes, this fails and the page too.
-#[test]
-fn documented_closed_pipe_in_the_tree() {
-    if !reference_rg() {
-        return;
-    }
-    let fx = Fixture::new();
-    std::fs::write(
-        fx.file("many.txt"),
-        (0..300_000)
-            .map(|i| format!("needle line {i}\n"))
-            .collect::<String>(),
-    )
-    .unwrap();
-    let first_line = |mut c: Command| {
-        c.stdout(Stdio::piped());
-        let mut child = c.spawn().unwrap();
-        let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
-        let mut line = String::new();
-        std::io::BufRead::read_line(&mut out, &mut line).unwrap();
-        drop(out);
-        (child.wait().unwrap().code().unwrap_or(-1), line)
-    };
-    let (rg_code, rg_line) = first_line(fx.rg(["needle", "many.txt"]));
-    assert_eq!((rg_code, rg_line.as_str()), (1, "needle line 0\n"));
-    let (code, line) = first_line(fx.sfor(["--tree", "needle", "many.txt"]));
-    assert_eq!((code, line.as_str()), (0, "many.txt\n"));
 }
 
 /// Code review r4, Codex #2: `bytes_searched` with a BOM (UTF-8 and UTF-16LE), on stdin and on

@@ -191,8 +191,11 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         Layout::Flat
     };
     let heading = tty;
-    // The separator BufferWriter prints between two non-empty file outputs, as ripgrep's.
+    // The separator BufferWriter prints between two non-empty file outputs, as ripgrep's. One
+    // file needs none, so its output is printed as it grows (`Ctx::spill`), and a closed pipe
+    // stops the search as rg's (code review r4 replay).
     let separator = match mode {
+        _ if one_file => None,
         Mode::Passthrough if args.json || summary_mode.is_some() => None,
         Mode::Passthrough if heading => Some(Vec::new()),
         Mode::Passthrough if context => Some(b"--".to_vec()),
