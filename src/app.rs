@@ -1041,6 +1041,7 @@ impl Ctx<'_> {
         let src = match (kept, &t.fs) {
             (Some(mut tee), _) => {
                 if stop.is_set()
+                    && stats.binary_offset.is_none()
                     && self.complete_input(t, &tee.read, detector)
                     && let Err(e) = std::io::copy(&mut tee, &mut std::io::sink())
                 {
@@ -1064,7 +1065,8 @@ impl Ctx<'_> {
     /// Whether an input the search stopped reading at `-m` (`read` so far) is read to its end
     /// before its Source is built: when it has an Outline and the output shows where its
     /// Segments end (`--expand`'s Sections, `--json`'s `end_line`), which the rest of the input
-    /// decides (code review r3, Fable #1). Otherwise the answer comes at the limit, as rg's.
+    /// decides (code review r3, Fable #1). Otherwise the answer comes at the limit, as rg's:
+    /// also for an input with binary data, which gets no Processor (code review r4, Codex #1).
     fn complete_input(&self, t: &Target, read: &[u8], detector: &Detector) -> bool {
         if !(self.args.expand || self.args.json) {
             return false;

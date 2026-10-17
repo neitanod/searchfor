@@ -519,6 +519,53 @@ fn t23_max_count_on_stdin_stops_before_eof() {
     }
 }
 
+/// Code review r4, Codex #1: binary data leaves stdin without an Outline, so `-m` answers at
+/// the limit with the writer still open, also where the output shows where Segments end.
+#[test]
+fn t23_binary_stdin_with_max_count_stops_before_eof() {
+    let fx = Fixture::new();
+    for (args, want) in [
+        (
+            &["--format", "markdown", "--json", "-m1", "needle", "-"][..],
+            "\"trail\":[]",
+        ),
+        (
+            &["--format", "markdown", "--expand", "-m1", "needle", "-"],
+            "binary file matches",
+        ),
+    ] {
+        let mut c = fx.sfor(args);
+        c.stdin(Stdio::piped()).stdout(Stdio::piped());
+        let mut child = c.spawn().unwrap();
+        let mut writer = child.stdin.take().unwrap();
+        writer.write_all(b"# Top\nneedle\0binary\n").unwrap();
+        writer.flush().unwrap();
+        let started = Instant::now();
+        let status = loop {
+            if let Some(s) = child.try_wait().unwrap() {
+                break Some(s);
+            }
+            if started.elapsed() > Duration::from_secs(2) {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let elapsed = started.elapsed();
+        if status.is_none() {
+            child.kill().unwrap();
+        }
+        drop(writer);
+        let o = child.wait_with_output().unwrap();
+        assert_eq!(
+            status.and_then(|s| s.code()),
+            Some(0),
+            "{args:?}: still running after {elapsed:?}"
+        );
+        assert!(elapsed < Duration::from_secs(2), "{args:?}");
+        assert!(stdout(&o).contains(want), "{args:?}: {}", stdout(&o));
+    }
+}
+
 /// Code review r1, Codex #2 and #12: -m0 and an empty pattern file exit 1 without printing in
 /// every layout, after validating the file types and globs.
 #[test]
