@@ -327,10 +327,13 @@ headings, and an optional `signature` that tree output may show.
   `--in-headings '^ports$'` finds `ports:`.
 - On a syntax error the Trails of the Matches before it are kept, and the Matches after it print
   with an empty Trail, without a warning: Helm templates are often not valid YAML, and a warning
-  per file would bury the output (M2 plan). For TOML, «before it» is a prefix ending at a line
-  start before the reported error that still parses: stepping back 1, 2, 4… lines finds a
-  candidate, and then the skipped cuts above it are tried from the highest down, within 32 MiB of
-  parsing, since toml_edit can report an error lines after an unclosed array or string.
+  per file would bury the output (M2 plan). For TOML, toml_edit can report an error many lines
+  after the unclosed string or array that caused it, so «before it» is the longest prefix sfor
+  finds that parses and ends at the start of a statement (a line beginning with `[`, or with a
+  key and containing `=`) at or before the reported error's line. sfor looks for it by stepping
+  back 1, 2, 4… statements from the error, then bisecting, then trying the statement starts it
+  skipped, from the one nearest the error towards the start of the file, and stops when it has
+  parsed 64 times the file's size, or 32 MiB, with the best prefix found (M2 plan, Task 3.2).
 
 ### 5.3 Code (#10)
 

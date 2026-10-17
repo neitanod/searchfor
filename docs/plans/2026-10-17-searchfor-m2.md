@@ -112,7 +112,7 @@ ones it describes marked «M2 plan».
 |---|---|---|
 | D1 | `tree-sitter` =0.24.7 with ABI 14 Grammar crates (php 0.23.11, javascript 0.23.1, typescript 0.23.2, bash 0.23.3, go 0.23.4, rust 0.23.3, python 0.23.6; lua 0.2.0 for the Grammar Helper), all pinned with `=` | M1 pins `regex-automata =0.4.7` and `regex-syntax =0.8.4`, ripgrep 14.1.1's, for rg's Unicode tables (ADR 0001). tree-sitter needs the `regex` crate: 0.27 asks `regex ^1.12.3` (→ regex-automata ^0.4.12), 0.26 `regex-syntax ^0.8.6`, 0.25 `^0.8.5`; 0.24.7 asks `regex ^1.10.6` and `regex-syntax ^0.8.4`, and regex 1.10.6 accepts automata 0.4.7 and syntax 0.8.4 (cargo index cache, review r2, Codex #1). With M1's whole Cargo.toml and lock, adding these crates resolves `regex` 1.10.6 and leaves every M1 version where it was, and M1's 265 tests pass (`realtree` probe). tree-sitter 0.24 loads ABI 13–14 only, so the Grammars are their last ABI 14 releases; the eight queries give the same Trails as with 0.27 (`ts024` probe). API differences from 0.27: `QueryMatch::captures` is a field, `Language::version()` instead of `abi_version()`. Moving to a newer tree-sitter moves with the ripgrep baseline of ADR 0001; the `=` pins keep `cargo install searchfor` (which resolves without our lock) on the same versions |
 | D2 | `keypath` over native parsers: own JSON scanner, `saphyr-parser`, `toml_edit` | tree-sitter-yaml breaks over 32 768 lines; tree-sitter's TOML tree gives `products.variants[0]` instead of `products[1].variants[0]`; the JSON scanner is 27× faster (research §5) |
-| D3 | No tree-sitter-yaml fallback; a syntax error keeps the Trails before it, silently (YAML: the events before the error; TOML: the longest prefix ending at a line start before the error that parses, at most 256 tries; JSON: the walk up to the error) | One YAML implementation; Helm templates are often not valid YAML, and a warning per file would bury the output. saphyr-parser read `a: {{ .Values.x }}` without error (as flow mappings) in the probe |
+| D3 | No tree-sitter-yaml fallback; a syntax error keeps the Trails before it, silently (YAML: the events before the error; TOML: a prefix that parses, ending at a statement start before the error, found within a parsing budget of 64 × the file's size, at most 32 MiB (Task 3.2); JSON: the walk up to the error) | One YAML implementation; Helm templates are often not valid YAML, and a warning per file would bury the output. saphyr-parser read `a: {{ .Values.x }}` without error (as flow mappings) in the probe |
 | D4 | `pool` is the default mode | A helper that answers one line at a time is correct in `pool`; `concurrent` needs a helper that handles ids, so it is opt-in |
 | D5 | `timeout_ms` defaults to 5000; a timeout kills the process | A stuck helper cannot be trusted with the next request; killing it frees the pool slot |
 | D6 | Three crashes in a run disable the Definition; a command that cannot start disables it at once | A crash loop would cost a process start and a warning per file |
@@ -2543,6 +2543,34 @@ mod tests {
         }
         assert_eq!(needles(src.as_bytes(), "toml"), vec![vec!["k"]]);
     }
+
+    #[test]
+    fn an_open_string_deep_in_a_lock_file_keeps_the_line_before_it() {
+        // Review r4, Fable #1: 5 000 lines shaped like a Cargo.lock, a `"""` left open in the
+        // middle, and the `needle` on the line just before it.
+        let mut src = String::new();
+        let mut i = 0;
+        while src.lines().count() < 5_000 {
+            i += 1;
+            src.push_str(&format!("[[package]]\nname = \"crate-{i}\"\nversion = \"1.0.{i}\"\ndependencies = [\n \"crate-{}\",\n]\n\n", i + 1));
+        }
+        let lines: Vec<&str> = src.lines().collect();
+        // A `[[package]]` line near the middle, so the insertion is between two tables, never
+        // inside a `dependencies` array.
+        let open = (lines.len() / 2..lines.len()).find(|&k| lines[k] == "[[package]]").unwrap();
+        let mut broken = String::new();
+        for (k, l) in lines.iter().enumerate() {
+            if k == open {
+                broken.push_str("note = \"needle\"\n");
+                broken.push_str("description = \"\"\"\n");
+            }
+            broken.push_str(l);
+            broken.push('\n');
+        }
+        let t = needles(broken.as_bytes(), "toml");
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].last().map(String::as_str), Some("note"), "{t:?}");
+    }
 }
 ```
 
@@ -2555,20 +2583,34 @@ mod tests {
   1. `std::str::from_utf8` or an empty Outline. Parse with
      `text.parse::<toml_edit::Document<String>>()`. **On an error** (`TomlError::span()`,
      verified in toml_edit 0.25.17's source; `None` counts as the end of the file), cut `text`
-     at the start of the error's line and parse the prefix; while that fails, step back 1, 2,
-     4, 8… lines until a prefix parses (the candidate) or the start of the file. Valid prefixes
-     are not monotone — a cut inside a multi-line string fails though a later one parses — so
-     no interval is ruled out: next, every cut skipped above the candidate is tried from the
-     highest down, and the first that parses wins; otherwise the candidate does (review r3,
-     Codex #3). The whole recovery stops when the bytes it parsed pass 32 MiB (review r2,
-     Fable #4: one parse costs 44–54 ms on a 1 MB Cargo.lock), keeping the best prefix found
-     so far, or an empty Outline. Verified on Codex's counterexample in the probe
-     (`tomlrec.txt`): a valid multi-line string on lines 1–13, `k = "needle"` on 14 and one left
-     open on 15–19 recover the prefix that ends at line 15, which keeps `k`. Verified in the probe (`r1-probe.txt`): for
-     `[a]\nb="needle"\nx=[\n[c]\nd="needle"\n` toml_edit reports byte 23 (line 5), and the
-     walk back reaches the 15-byte prefix `[a]\nb="needle"\n` (cuts at lines 5, 4 and 3); an
-     unclosed `"""` string recovers the same way. toml_edit's own recursion limit («max recursion depth met») is such
-     an error.
+     at a **statement start** — a line that begins in column 0 with `[`, or with a key character
+     (alphanumeric, `"`, `'`, `_`, `-`) and contains `=`; line 1 always counts — and try only
+     such cuts: every proposed cut moves up to the nearest statement start at or before it. A
+     cut inside an open string or array (`dependencies = [ … ]`, an unclosed `"""`) is then
+     never tried, and those are most of the cuts in a Cargo.lock (review r4, Fable #1). In
+     order, within one budget of bytes parsed — 64 times the file's size, and never more than
+     32 MiB (review r2, Fable #4; without the size bound a 60 KB file would spend the whole
+     32 MiB in step c, 628 parses):
+     a. **back off:** from the error's line, step back 1, 2, 4, 8… lines (snapped) until a
+        prefix parses — the candidate — or line 1 is reached;
+     b. **bisect** between the candidate and the nearest cut that failed, over snapped cuts,
+        keeping the longest prefix that parsed;
+     c. **sweep:** with the budget that is left, try every statement start between the best
+        prefix and the error's line that a and b did not try, starting from the one nearest the
+        error and going towards the start of the file; the first that parses wins (valid
+        prefixes are not monotone — review r3, Codex #3).
+     The best prefix found is used; if none parses, an empty Outline. Verified with Fable's
+     probe (`/tmp/subtask/m2-plan-r4-fable/tomlrec`, rerun with the size-bounded budget in
+     `/tmp/subtask/m2-plan/snap`, output `r4-snapped-size-budget.txt`): the 5 000-line fixture
+     of `an_open_string_deep_in_a_lock_file_keeps_the_line_before_it` recovers exactly to its
+     open string's line in 72 parses (0.14 s in release); on a 1 MB Cargo.lock-shaped file
+     with a `"""` left open 300 lines before the end, the prefix ends exactly at the open
+     string's line (34 parses, 0.96 s); with it in the middle of the file, again exactly at its
+     line (43 parses, 0.80 s); and Codex's counterexample (a valid multi-line string on lines
+     1–13, `k = "needle"` on 14, one left open on 15–19) recovers the cut at line 15, which
+     keeps `k`, in 2 parses. For `[a]\nb="needle"\nx=[\n[c]\nd="needle"\n` toml_edit reports
+     byte 23 (line 5), and the recovery reaches the 15-byte prefix `[a]\nb="needle"\n`.
+     toml_edit's own recursion limit («max recursion depth met») is such an error too.
   2. **Paths are components.** A path is `Vec<Step>`, `enum Step { Key(String), Index(usize) }`,
      from the decoded keys: `["a.b"]` is one `Key("a.b")`, never two. A path is under another
      when the other is a prefix of its steps.
@@ -2994,7 +3036,10 @@ mod tests {
         let warnings = Arc::new(Mutex::new(Vec::new()));
         let w = warnings.clone();
         let fake = Fake { body: helper(echo), launches: Arc::new(AtomicUsize::new(0)), reaps: Arc::new(AtomicUsize::new(0)), fail: true, hook: None, slow_kill: Duration::ZERO };
-        let host = Host::new(cfg(Mode::Pool, 4, 2000), Box::new(fake), Arc::new(move |m| w.lock().unwrap().push(m)));
+        // A Supervisor of its own: `Host::new` would use GLOBAL, which installs the signal
+        // watcher in the test binary (Fable r4 #5).
+        let sup: &'static cancel::Supervisor = Box::leak(Box::new(cancel::Supervisor::new(false)));
+        let host = Host::with_supervisor(cfg(Mode::Pool, 4, 2000), Box::new(fake), Arc::new(move |m| w.lock().unwrap().push(m)), sup);
         for _ in 0..5 {
             assert_eq!(trails(&host, "a.ini"), Err(crate::helper::HelperError::Disabled));
         }
@@ -3203,7 +3248,8 @@ mod tests {
             for i in 0..2 {
                 let h = r.host.clone();
                 s.spawn(move || {
-                    let _ = h.request(|id| Request::Trails { id, path: format!("{i}.ini"), matches: vec![] });
+                    let got = h.request(|id| Request::Trails { id, path: format!("{i}.ini"), matches: vec![] });
+                    assert_eq!(got, Err(crate::helper::HelperError::Disabled));
                 });
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -3213,6 +3259,8 @@ mod tests {
         let before = r.launches.load(SeqCst);
         assert_eq!(trails(&r.host, "late.ini"), Err(crate::helper::HelperError::Disabled));
         assert_eq!(r.launches.load(SeqCst), before);
+        // Nothing is printed while sfor is about to die by the signal (Fable r4 #3).
+        assert!(r.warnings.lock().unwrap().is_empty(), "{:?}", r.warnings.lock().unwrap());
     }
 
     #[test]
@@ -3265,7 +3313,8 @@ mod tests {
             let sup = r.sup;
             s.spawn(move || sup.cancel()); // its kill takes 300 ms
             std::thread::sleep(Duration::from_millis(100));
-            // Copy 1 is busy, so this request would start copy 2: refused.
+            // `abort` marked copy 1 dead before its slow kill, so `checkout` closes it (waiting
+            // for the kill) and asks for a new copy, which the cancelled Supervisor refuses.
             assert_eq!(trails(&r.host, "second.ini"), Err(crate::helper::HelperError::Disabled));
         });
         assert_eq!(r.launches.load(SeqCst), 1);
@@ -3599,6 +3648,9 @@ impl Host {
             let out = sent.map(|rx| self.outcome(&conn, wait(rx, deadline)));
             self.release(&conn);
             match out {
+                // Once cancelled, every failure is `Disabled`: the file is Plain, and the
+                // pipeline prints no warning for it (D33, review r4, Fable #3).
+                Some(Err(_)) if self.sup.cancelled() => return Err(HelperError::Disabled),
                 Some(out) => return out,
                 None if attempt == 0 => continue,
                 None => break,
@@ -3655,6 +3707,9 @@ impl Host {
             Err(e) => self.outcome(&conn, Err(e)),
         };
         conn.close(false);
+        if out.is_err() && self.sup.cancelled() {
+            return Err(HelperError::Disabled);
+        }
         out
     }
 
@@ -3760,7 +3815,7 @@ impl Host {
             let mut st = self.st.lock().unwrap();
             !std::mem::replace(&mut st.disabled, true)
         };
-        if first {
+        if first && !self.sup.cancelled() {
             (self.warn)(format!("sfor: {}: {why}; its files print without Trails for the rest of this run", self.cfg.format));
         }
         self.freed.notify_all();
@@ -3791,7 +3846,7 @@ impl Host {
 /// launches no helper installs nothing.
 pub(crate) mod cancel {
     use super::Conn;
-    use std::sync::{Arc, Mutex, OnceLock, Weak};
+    use std::sync::{Arc, Mutex, Weak};
 
     pub(crate) struct Supervisor {
         state: Mutex<Lifecycle>,
@@ -3835,6 +3890,12 @@ pub(crate) mod cancel {
         /// Marks the lifecycle cancelled — every later `launch` is refused — and kills and reaps
         /// every registered process, in parallel. Processes being started hold the lock, so
         /// they finish registering first and are in the list.
+        /// The run was cancelled: hosts stop warning, since sfor is about to die by the signal
+        /// and ripgrep prints nothing on Ctrl-C (review r4, Fable #3).
+        pub(crate) fn cancelled(&self) -> bool {
+            self.state.lock().unwrap().cancelled
+        }
+
         pub(crate) fn cancel(&self) {
             let live: Vec<Arc<Conn>> = {
                 let mut st = self.state.lock().unwrap();
@@ -3851,6 +3912,8 @@ pub(crate) mod cancel {
 
     #[cfg(unix)]
     fn watch() {
+        // Here, not at the top: Windows builds have no watcher and would warn (Fable r4 #6).
+        use std::sync::OnceLock;
         static WATCHER: OnceLock<()> = OnceLock::new();
         WATCHER.get_or_init(|| {
             use signal_hook::consts::{SIGINT, SIGTERM};
@@ -6120,9 +6183,12 @@ fn disk_of(t: &Target, src: &Source) -> Option<PathBuf> {
 }
 ```
 
-  Each caller keeps the `PathBuf` alive for the Processor call:
-  `let disk = disk_of(t, &src); let input = Input { disk: disk.as_deref(), … };`. It costs one
-  `canonicalize` and one `stat` per file with Matches, never on files without them.
+  `describe` and `names_of` keep the `PathBuf` alive for the Processor call:
+  `let disk = disk_of(t, &src); let input = Input { disk: disk.as_deref(), … };`, after the
+  search found a Match. `outlined_file` keeps `disk: None`: it builds its `Input` before
+  `if_matched` (`app.rs:838` and 850 at `46a4b74`), and only the built-in Outline Processors
+  (Markdown) take that path, which never read `disk` (helpers have no `outline_of`). So the
+  `canonicalize` and the `stat` happen only for files with Matches (review r4, Codex #2).
 - [ ] **Step 8:** `cargo test --workspace` passes, M1's tests included. Commit «Run the
   Processors of each search through a per-run registry».
 
@@ -6533,31 +6599,30 @@ median() {
   awk -v a="$SFOR_S" -v b="$RG_S" -v n="$1" 'BEGIN { printf "%-22s rg %.3f s  sfor %.3f s  ratio %.2f\n", n, b, a, a / b }'
 }
 
-# check NAME EXPECTED_CODE SFOR_FLAG RG_ARGS…: sfor must exit EXPECTED_CODE, write to stderr
-# only what rg writes (an unreadable file warns in both; any other line is a fallback
-# warning and fails — review r2, Fable #6), and print at least as many lines as rg (`--flat`
-# prints a line once per Trail, so a table row can print twice; `--no-trail` exactly rg's).
+# check NAME EXPECTED SFOR_FLAG RG_ARGS…: one run of each program, outputs in $iso (review r4,
+# Codex #4, Fable #4). sfor must exit as rg does and write to stderr only what rg writes (an
+# unreadable file warns in both, and both may exit 2 — Codex r3 #4); it prints at least as
+# many lines as rg (`--flat` prints a line once per Trail; `--no-trail` exactly rg's). The
+# pattern must behave as the benchmark assumes, on rg's own output: EXPECTED=found means rg
+# printed Matches, EXPECTED=none means it printed none (rg's exit code is not proof: with an
+# unreadable file it is 2 either way — Codex r4 #1).
 check() {
-  local name="$1" want="$2" flag="$3"; shift 3
-  local code=0 rgcode=0 err rgerr
-  err=$("$sfor" --color never "$flag" "$@" 2>&1 >/tmp/sfor-bench-check.out | sed 's/^sfor: //' | sort) || true
-  "$sfor" --color never "$flag" "$@" >/dev/null 2>&1 || code=$?
-  rgerr=$( (rg --color never "$@" 2>&1 >/dev/null || true) | sed 's/^rg: //' | sort)
-  rg --color never "$@" >/dev/null 2>&1 || rgcode=$?
-  # sfor exits as rg does (2 for both when a file cannot be read is fine), and the pattern
-  # behaves as the benchmark assumes: rg itself found (sparse) or did not find (none) Matches,
-  # which `-q` below checks apart from the errors (review r3, Codex #4).
+  local name="$1" expected="$2" flag="$3"; shift 3
+  local code=0 rgcode=0
+  "$sfor" --color never "$flag" "$@" >"$iso/sfor.out" 2>"$iso/sfor.err" || code=$?
+  rg --color never "$@" >"$iso/rg.out" 2>"$iso/rg.err" || rgcode=$?
+  local err rgerr
+  err=$(sed 's/^sfor: //' "$iso/sfor.err" | sort)
+  rgerr=$(sed 's/^rg: //' "$iso/rg.err" | sort)
   if [ "$code" != "$rgcode" ] || [ "$err" != "$rgerr" ]; then
     echo "  FAIL $name: sfor exited $code, rg $rgcode; or stderr differs from rg's: ${err:0:300}"; fail=1; return
   fi
-  local found=0
-  rg -q --no-messages "$@" || found=$?
-  if { [ "$want" = 0 ] && [ "$found" = 1 ]; } || { [ "$want" = 1 ] && [ "$found" = 0 ]; }; then
-    echo "  FAIL $name: the pattern does not behave as the benchmark assumes"; fail=1; return
+  if { [ "$expected" = found ] && [ ! -s "$iso/rg.out" ]; } || { [ "$expected" = none ] && [ -s "$iso/rg.out" ]; }; then
+    echo "  FAIL $name: rg's output says the pattern does not behave as assumed ($expected)"; fail=1; return
   fi
   local ours rgs
-  ours=$(wc -l </tmp/sfor-bench-check.out)
-  rgs=$( (rg --color never "$@" 2>/dev/null || true) | wc -l)
+  ours=$(wc -l <"$iso/sfor.out")
+  rgs=$(wc -l <"$iso/rg.out")
   if [ "$ours" -lt "$rgs" ] || { [ "$flag" = --no-trail ] && [ "$ours" != "$rgs" ]; }; then
     echo "  FAIL $name: $ours lines, rg printed $rgs"; fail=1
   fi
@@ -6574,9 +6639,9 @@ corpus() {
   awk -v h="$hits" -v t="$total" 'BEGIN { if (h * 20 >= t) { print "the sparse pattern matches 5% or more of the files"; exit 1 } }'
   if rg -q -e "$none" -- "$dir"; then echo "  FAIL: '$none' matches in $dir"; fail=1; return; fi
   # Before timing: every command does what it is timed for.
-  check none 1 --flat -e "$none" -- "$dir"
-  check sparse 0 --flat -e "$sparse" -- "$dir"
-  check no-trail 0 --no-trail -e "$sparse" -- "$dir"
+  check none none --flat -e "$none" -- "$dir"
+  check sparse found --flat -e "$sparse" -- "$dir"
+  check no-trail found --no-trail -e "$sparse" -- "$dir"
   [ "$fail" = 0 ] || return
   median "$name-none" 'rg --color never -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR"' \
     '"$SFOR_BIN_PATH" --color never --flat -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR"'
@@ -6621,9 +6686,11 @@ exit "$fail"
   RSS is at most rg's plus 32 MiB (the collector keeps three stacks, not the keys).
 - [ ] `treesitter_skips_files_over_max_bytes`: a 20 MB generated JavaScript file with one
   `needle`: one warning naming `max_bytes`, Plain output, and at most 2 × rg's wall time.
-- [ ] `broken_toml_recovers_in_bounded_time`: a 1 MB TOML shaped like a Cargo.lock with a
-  `"""` left open 300 lines before its end and a `needle` before it: the `needle`'s Trail
-  survives, and sfor's wall time is at most rg's plus 2 s (review r2, Fable #4).
+- [ ] `broken_toml_recovers_in_bounded_time`: a 1 MB TOML shaped like a Cargo.lock (Fable's
+  generator in `/tmp/subtask/m2-plan-r4-fable/tomlrec/src/main.rs`) with a `"""` left open
+  300 lines before its end, and the `needle` on the line just before the open `"""` (where
+  the round 3 algorithm lost it, 209 lines short): the `needle`'s Trail survives, and sfor's
+  wall time is at most rg's plus 2 s (review r2, Fable #4; r4, Fable #1).
 - [ ] `yaml_beyond_the_tree_sitter_limit`: a 40 000-line YAML with a `needle` at the end gets
   its Trail end to end, in at most rg's time plus 1 s.
 - [ ] Commit «Add the M2 performance ceilings».
