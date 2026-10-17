@@ -269,6 +269,25 @@ mod tests {
     }
 
     #[test]
+    fn keys_that_hold_arrays_are_searchable_names() {
+        let src = br#"{"server": {"ports": [80, 443]}}"#;
+        let input = Input {
+            bytes: src,
+            path: Path::new("x"),
+            format: "json",
+            disk: None,
+        };
+        let names = Keypath.names(&input, &params("json")).unwrap();
+        let ports = names
+            .iter()
+            .find(|n| n.text == "ports")
+            .expect("ports is a key");
+        // Its Trail is itself under `server`, as for any named Segment.
+        let t: Vec<&str> = ports.trail.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(t, ["server", "ports"]);
+    }
+
+    #[test]
     fn syntax_is_required() {
         let input = Input {
             bytes: b"{}",
