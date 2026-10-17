@@ -67,9 +67,11 @@ fn sfor_bin() -> std::path::PathBuf {
 }
 
 /// Wall time and peak RSS in bytes of `bin args` (sfor or rg), stdout discarded, measured by
-/// `/usr/bin/time -v`. None when /usr/bin/time is missing.
-fn measure(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
-    measure_with(bin, fx, args, None)
+/// `/usr/bin/time -v`; the run must exit with `code` (M3 code review r2, Codex #6: a binary
+/// that fails before searching would otherwise pass every ceiling). None when /usr/bin/time is
+/// missing.
+fn measure(bin: &Path, fx: &Fixture, args: &[&str], code: i32) -> Option<(Duration, u64)> {
+    measure_with(bin, fx, args, None, code)
 }
 
 /// `measure` with stdin read from `stdin`, a file in the fixture copy.
@@ -78,14 +80,25 @@ fn measure_with(
     fx: &Fixture,
     args: &[&str],
     stdin: Option<&str>,
+    code: i32,
 ) -> Option<(Duration, u64)> {
-    measure_to(bin, fx, args, stdin, Stdio::null())
+    measure_to(bin, fx, args, stdin, Stdio::null(), code).map(|(t, rss, _)| (t, rss))
 }
 
 /// `measure` with stdout read and thrown away: ripgrep stops at the first Match when its
 /// stdout is /dev/null, as `-q` does, so a comparison with rg must not give it /dev/null.
-fn measure_drained(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
-    measure_to(bin, fx, args, None, Stdio::piped())
+fn measure_drained(bin: &Path, fx: &Fixture, args: &[&str], code: i32) -> Option<(Duration, u64)> {
+    measure_out(bin, fx, args, code).map(|(t, rss, _)| (t, rss))
+}
+
+/// `measure` with stdout read and returned, for the Trails of a positive search.
+fn measure_out(
+    bin: &Path,
+    fx: &Fixture,
+    args: &[&str],
+    code: i32,
+) -> Option<(Duration, u64, String)> {
+    measure_to(bin, fx, args, None, Stdio::piped(), code)
 }
 
 fn measure_to(
@@ -94,7 +107,8 @@ fn measure_to(
     args: &[&str],
     stdin: Option<&str>,
     stdout: Stdio,
-) -> Option<(Duration, u64)> {
+    code: i32,
+) -> Option<(Duration, u64, String)> {
     let time = Path::new("/usr/bin/time");
     if !time.exists() {
         common::missing_reference("/usr/bin/time");
@@ -119,6 +133,14 @@ fn measure_to(
     let o = c.output().unwrap();
     let elapsed = started.elapsed();
     let err = String::from_utf8_lossy(&o.stderr);
+    // /usr/bin/time exits with the command's code.
+    assert_eq!(
+        o.status.code(),
+        Some(code),
+        "{} {args:?} exited with {:?}, not {code}: {err}",
+        bin.display(),
+        o.status
+    );
     let kb: u64 = err
         .lines()
         .find_map(|l| {
@@ -128,18 +150,27 @@ fn measure_to(
         .unwrap_or_else(|| panic!("no RSS in: {err}"))
         .parse()
         .unwrap();
-    Some((elapsed, kb * 1024))
+    Some((
+        elapsed,
+        kb * 1024,
+        String::from_utf8_lossy(&o.stdout).into_owned(),
+    ))
 }
 
-/// The fastest of three runs and the largest RSS seen.
-fn best_of_three(fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
-    best_of_three_bin(&sfor_bin(), fx, args)
+/// The fastest of three runs, each exiting with `code`, and the largest RSS seen.
+fn best_of_three(fx: &Fixture, args: &[&str], code: i32) -> Option<(Duration, u64)> {
+    best_of_three_bin(&sfor_bin(), fx, args, code)
 }
 
-fn best_of_three_bin(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
+fn best_of_three_bin(
+    bin: &Path,
+    fx: &Fixture,
+    args: &[&str],
+    code: i32,
+) -> Option<(Duration, u64)> {
     let mut best: Option<(Duration, u64)> = None;
     for _ in 0..3 {
-        let (t, rss) = measure(bin, fx, args)?;
+        let (t, rss) = measure(bin, fx, args, code)?;
         best = Some(match best {
             None => (t, rss),
             Some((bt, br)) => (bt.min(t), br.max(rss)),
@@ -154,14 +185,14 @@ fn ceiling(name: &str, args: &[&str]) {
     let file = p.file_name().unwrap().to_str().unwrap();
     let mut trail = args.to_vec();
     trail.push(file);
-    let Some((t, rss)) = best_of_three(&fx, &trail) else {
+    let Some((t, rss)) = best_of_three(&fx, &trail, 0) else {
         eprintln!("skipping: /usr/bin/time not found");
         return;
     };
     let mut plain = vec!["--no-trail"];
     plain.extend(args.iter().filter(|a| **a != "--flat"));
     plain.push(file);
-    let (base, base_rss) = best_of_three(&fx, &plain).unwrap();
+    let (base, base_rss) = best_of_three(&fx, &plain, 0).unwrap();
     eprintln!(
         "{trail:?}: {t:?}, RSS {} MB; --no-trail: {base:?}, RSS {} MB; file {} MB",
         rss / 1_048_576,
@@ -199,12 +230,12 @@ fn markdown_ceiling(args: &[&str]) {
     let file = p.file_name().unwrap().to_str().unwrap();
     let mut trail = args.to_vec();
     trail.push(file);
-    let Some((t, rss)) = best_of_three(&fx, &trail) else {
+    let Some((t, rss)) = best_of_three(&fx, &trail, 0) else {
         eprintln!("skipping: /usr/bin/time not found");
         return;
     };
-    let (parse, parse_rss) = best_of_three(&fx, &["--in-headings", "zzz", file]).unwrap();
-    let (base, _) = best_of_three(&fx, &["--no-trail", "-v", "zzz", file]).unwrap();
+    let (parse, parse_rss) = best_of_three(&fx, &["--in-headings", "zzz", file], 1).unwrap();
+    let (base, _) = best_of_three(&fx, &["--no-trail", "-v", "zzz", file], 0).unwrap();
     eprintln!(
         "{trail:?}: {t:?}, RSS {} MB; Processor alone: {parse:?}, RSS {} MB; --no-trail: {base:?}",
         rss / 1_048_576,
@@ -248,11 +279,11 @@ fn walked_binary_files_are_not_read_before_the_search() {
     for i in 0..40 {
         std::fs::write(dir.join(format!("lib{i}.so")), &body).unwrap();
     }
-    let Some((t, _)) = best_of_three(&fx, &["--flat", "zzqq", "bin"]) else {
+    let Some((t, _)) = best_of_three(&fx, &["--flat", "zzqq", "bin"], 1) else {
         eprintln!("skipping: /usr/bin/time not found");
         return;
     };
-    let (base, _) = best_of_three(&fx, &["--no-trail", "zzqq", "bin"]).unwrap();
+    let (base, _) = best_of_three(&fx, &["--no-trail", "zzqq", "bin"], 1).unwrap();
     eprintln!("40 walked binaries of 7 MiB: --flat {t:?}, --no-trail {base:?}");
     assert!(
         t.as_secs_f64() <= base.as_secs_f64() * 1.5,
@@ -275,11 +306,11 @@ fn an_explicit_markdown_file_without_matches_skips_the_processor() {
     let fx = Fixture::new();
     let unit = "# Heading\n\nsome text\n";
     let file = repeated(&fx, "heads.md", unit, 20 * 1024 * 1024 / unit.len());
-    let Some((t, _)) = best_of_three(&fx, &["--flat", "zzqq", &file]) else {
+    let Some((t, _)) = best_of_three(&fx, &["--flat", "zzqq", &file], 1) else {
         eprintln!("skipping: /usr/bin/time not found");
         return;
     };
-    let (base, _) = best_of_three(&fx, &["--no-trail", "zzqq", &file]).unwrap();
+    let (base, _) = best_of_three(&fx, &["--no-trail", "zzqq", &file], 1).unwrap();
     eprintln!("20 MB explicit Markdown, no Match: --flat {t:?}, --no-trail {base:?}");
     assert!(
         t <= base * 3,
@@ -300,12 +331,12 @@ fn headings_inside_items_stay_under_the_ceiling() {
     let (unit, plain) = ("- # Head\n  text\n", "- Head\n  text\n");
     let file = repeated(&fx, "items.md", unit, size / unit.len());
     let reference = repeated(&fx, "plain-items.md", plain, size / plain.len());
-    let Some((t, _)) = best_of_three(&fx, &["--flat", "text", &file]) else {
+    let Some((t, _)) = best_of_three(&fx, &["--flat", "text", &file], 0) else {
         eprintln!("skipping: /usr/bin/time not found");
         return;
     };
-    let (base, _) = best_of_three(&fx, &["--flat", "text", &reference]).unwrap();
-    let (raw, _) = best_of_three(&fx, &["--no-trail", "text", &file]).unwrap();
+    let (base, _) = best_of_three(&fx, &["--flat", "text", &reference], 0).unwrap();
+    let (raw, _) = best_of_three(&fx, &["--no-trail", "text", &file], 0).unwrap();
     eprintln!(
         "2 MB of headings in items: {t:?}; items without headings: {base:?}; --no-trail: {raw:?}"
     );
@@ -334,12 +365,12 @@ fn json_of_a_big_markdown_file_stays_under_the_ceilings() {
     let fx = Fixture::new();
     let p = big_file(fx.path(), "big.md");
     let file = p.file_name().unwrap().to_str().unwrap();
-    let Some((t, rss)) = best_of_three(&fx, &["--json", "text", file]) else {
+    let Some((t, rss)) = best_of_three(&fx, &["--json", "text", file], 0) else {
         eprintln!("skipping: /usr/bin/time not found");
         return;
     };
-    let (parse, parse_rss) = best_of_three(&fx, &["--in-headings", "zzz", file]).unwrap();
-    let (raw, _) = best_of_three(&fx, &["--no-trail", "--json", "text", file]).unwrap();
+    let (parse, parse_rss) = best_of_three(&fx, &["--in-headings", "zzz", file], 1).unwrap();
+    let (raw, _) = best_of_three(&fx, &["--no-trail", "--json", "text", file], 0).unwrap();
     eprintln!(
         "--json text: {t:?}, RSS {} MB; Processor alone: {parse:?}; --no-trail --json: {raw:?}",
         rss / 1_048_576
@@ -373,12 +404,12 @@ fn json_without_trails_of_a_big_file_is_as_fast_as_ripgrep() {
         let mut args = vec!["--json"];
         args.extend(pattern);
         args.push(&file);
-        let Some((base, _)) = best_of_three_bin(rg, &fx, &args) else {
+        let Some((base, _)) = best_of_three_bin(rg, &fx, &args, 0) else {
             eprintln!("skipping: /usr/bin/time not found");
             return;
         };
         args.insert(1, "--no-trail");
-        let (t, _) = best_of_three(&fx, &args).unwrap();
+        let (t, _) = best_of_three(&fx, &args, 0).unwrap();
         eprintln!("10 MB {pattern:?}: --json --no-trail {t:?}, rg --json {base:?}");
         // It runs in about rg's time; the margin is for a loaded machine, and the bug it
         // guards against was 1.36 × (code review r5, Fable #5).
@@ -404,11 +435,11 @@ fn the_binary_probe_of_in_headings_keeps_no_lines() {
     std::fs::write(fx.file("nul.in"), format!("# needle\n\n{body}\0\n")).unwrap();
     std::fs::write(fx.file("text.in"), format!("# needle\n\n{body}\n")).unwrap();
     let args = ["--in-headings", "--format", "markdown", "-c", "needle", "-"];
-    let Some((_, nul)) = measure_with(&sfor_bin(), &fx, &args, Some("nul.in")) else {
+    let Some((_, nul)) = measure_with(&sfor_bin(), &fx, &args, Some("nul.in"), 0) else {
         eprintln!("skipping: /usr/bin/time not found");
         return;
     };
-    let (_, text) = measure_with(&sfor_bin(), &fx, &args, Some("text.in")).unwrap();
+    let (_, text) = measure_with(&sfor_bin(), &fx, &args, Some("text.in"), 0).unwrap();
     eprintln!(
         "8 MiB on stdin: RSS {} MiB with a NUL, {} MiB without",
         nul / 1_048_576,
@@ -436,15 +467,17 @@ fn a_walked_plain_file_is_not_read_whole_with_in_headings() {
         &sfor_bin(),
         &fx,
         &["--within", "", "--files-without-match", "zzz", "plain"],
+        0,
     ) else {
         eprintln!("skipping: /usr/bin/time not found");
         return;
     };
-    for mode in [&["--files-without-match"][..], &["-q", "--json"]] {
+    // `--files-without-match` prints the file and exits 0, as rg 14.1.1; `-q` finds nothing.
+    for (mode, code) in [(&["--files-without-match"][..], 0), (&["-q", "--json"], 1)] {
         let mut args = vec!["--in-headings"];
         args.extend_from_slice(mode);
         args.extend_from_slice(&["zzz", "plain"]);
-        let (_, rss) = measure(&sfor_bin(), &fx, &args).unwrap();
+        let (_, rss) = measure(&sfor_bin(), &fx, &args, code).unwrap();
         eprintln!(
             "{args:?}: RSS {} MiB; --within '': {} MiB",
             rss / 1_048_576,
@@ -463,11 +496,17 @@ fn rg_bin() -> Option<std::path::PathBuf> {
     common::reference_rg().then(common::rg_path)
 }
 
-/// The fastest of three runs of `bin args` with their output read, and the largest RSS seen.
-fn best_of_three_drained(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
+/// The fastest of three runs of `bin args` with their output read, each exiting with `code`,
+/// and the largest RSS seen.
+fn best_of_three_drained(
+    bin: &Path,
+    fx: &Fixture,
+    args: &[&str],
+    code: i32,
+) -> Option<(Duration, u64)> {
     let mut best: Option<(Duration, u64)> = None;
     for _ in 0..3 {
-        let (t, rss) = measure_drained(bin, fx, args)?;
+        let (t, rss) = measure_drained(bin, fx, args, code)?;
         best = Some(best.map_or((t, rss), |(bt, br)| (bt.min(t), br.max(rss))));
     }
     best
@@ -475,14 +514,15 @@ fn best_of_three_drained(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Dur
 
 /// sfor's and rg's best wall time over three runs of `args` (rg's without `--flat`), with
 /// their output read, and their largest RSS; None when rg 14.1.1 or /usr/bin/time is missing.
+/// Every caller searches for a pattern that is there: both must exit 0.
 fn against_rg(fx: &Fixture, args: &[&str]) -> Option<((Duration, u64), (Duration, u64))> {
     let rg = rg_bin()?;
-    let Some(sfor) = best_of_three_drained(&sfor_bin(), fx, args) else {
+    let Some(sfor) = best_of_three_drained(&sfor_bin(), fx, args, 0) else {
         eprintln!("skipping: /usr/bin/time not found");
         return None;
     };
     let rg_args: Vec<&str> = args.iter().copied().filter(|a| *a != "--flat").collect();
-    let rg = best_of_three_drained(&rg, fx, &rg_args)?;
+    let rg = best_of_three_drained(&rg, fx, &rg_args, 0)?;
     Some((sfor, rg))
 }
 
@@ -1008,29 +1048,35 @@ fn a_huge_header_cell_costs_no_memory_per_escape() {
     let _alone = alone();
     let fx = Fixture::new();
     let size = 8 * 1024 * 1024;
+    // The Trail of the Match: the column named by its cell, cut at 40 characters.
     let cells = [
         (
             "escapes.csv",
             [&b"\""[..], &b"\"\"".repeat(size / 2), b"\"\nneedle\n"].concat(),
+            "\"",
         ),
         (
             "latin1.csv",
             [&[0xe9u8].repeat(size)[..], b"\nneedle\n"].concat(),
+            "\u{FFFD}",
         ),
     ];
-    for (file, body) in &cells {
+    for (file, body, unit) in &cells {
         std::fs::write(fx.file(file), body).unwrap();
-        let Some((_, base)) = measure(&sfor_bin(), &fx, &["--no-trail", "needle", file]) else {
+        let Some((_, base)) = measure(&sfor_bin(), &fx, &["--no-trail", "needle", file], 0) else {
             eprintln!("skipping: /usr/bin/time not found");
             return;
         };
-        for mode in [&["--flat"][..], &["--in-headings", "zzz"]] {
+        let row = format!("2: row 1 › {}… │ needle\n", unit.repeat(39));
+        // `--in-headings zzz` reads the header and finds nothing: exit 1.
+        for (mode, code) in [(&["--flat"][..], 0), (&["--in-headings", "zzz"], 1)] {
             let mut args = mode.to_vec();
-            if mode.len() == 1 {
-                args.push("needle");
+            if code == 0 {
+                args.extend(["--color", "never", "needle"]);
             }
             args.push(file);
-            let (t, rss) = measure(&sfor_bin(), &fx, &args).unwrap();
+            let (t, rss, out) = measure_out(&sfor_bin(), &fx, &args, code).unwrap();
+            assert_eq!(out, if code == 0 { row.as_str() } else { "" }, "{file}");
             eprintln!(
                 "{file} {args:?}: {t:?}, RSS {} MiB; --no-trail: {} MiB",
                 rss / 1_048_576,
@@ -1056,11 +1102,15 @@ fn a_million_nested_elements_cost_little_each() {
     let body = ["<a>".repeat(n), "needle".into(), "</a>".repeat(n)].concat();
     for file in ["nest.xml", "nest.html"] {
         std::fs::write(fx.file(file), &body).unwrap();
-        let Some((_, base)) = measure(&sfor_bin(), &fx, &["--no-trail", "needle", file]) else {
+        let Some((_, base)) = measure(&sfor_bin(), &fx, &["--no-trail", "needle", file], 0) else {
             eprintln!("skipping: /usr/bin/time not found");
             return;
         };
-        let (t, rss) = measure(&sfor_bin(), &fx, &["--flat", "needle", file]).unwrap();
+        let args = ["--color", "never", "--flat", "needle", file];
+        let (t, rss, out) = measure_out(&sfor_bin(), &fx, &args, 0).unwrap();
+        // 256 Segments (D25), which a flat Trail shows as its ends.
+        assert!(out.starts_with("1: a › … › a │ "), "{file}: {out:.100}");
+        assert_eq!(out.lines().count(), 1, "{file}");
         eprintln!(
             "{file}: {t:?}, RSS {} MiB; --no-trail: {} MiB",
             rss / 1_048_576,
