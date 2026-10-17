@@ -88,11 +88,11 @@ pub fn fetch(url: &str) -> anyhow::Result<Vec<u8>> {
         .call()
         .map_err(|e| anyhow::anyhow!("{url}: {e}"))?;
     // ureq's default body limit is 10 MB; a Grammar Helper may be larger.
-    Ok(r.body_mut()
+    r.body_mut()
         .with_config()
         .limit(256 * 1024 * 1024)
         .read_to_vec()
-        .map_err(|e| anyhow::anyhow!("{url}: {e}"))?)
+        .map_err(|e| anyhow::anyhow!("{url}: {e}"))
 }
 
 #[cfg(test)]
