@@ -114,16 +114,43 @@ pub fn retain(d: &mut Described, keep: &[Vec<bool>], before: usize, after: usize
     d.file.stats.binary_cut = new_cut;
 }
 
-/// -m after a filter: keeps the first `max` Match lines; the ones after them are dropped, or
-/// become context lines within `before`/`after` lines of a kept one (as `retain`).
+/// -m after a filter, as ripgrep 14.1.1 counts it (see `search::MaxCount`): the first `max`
+/// Match lines, then the `after` lines after the last of them, where a Match stays a Match
+/// without extending the window (code review r2, Fable #5). Later Matches are dropped, or become
+/// context lines within `before`/`after` lines of a kept one (as `retain`).
 pub fn limit(d: &mut Described, max: u64, before: usize, after: usize) {
+    let lines: Vec<u64> = d.file.matches().map(|m| m.line_number).collect();
+    let Some(&last) = usize::try_from(max)
+        .ok()
+        .and_then(|m| m.checked_sub(1))
+        .and_then(|i| lines.get(i))
+    else {
+        return;
+    };
+    let end = last.saturating_add(after as u64);
     let keep: Vec<Vec<bool>> = d
         .file
         .matches()
         .enumerate()
-        .map(|(i, m)| vec![(i as u64) < max; m.submatches.len().max(1)])
+        .map(|(i, m)| vec![(i as u64) < max || m.line_number <= end; m.submatches.len().max(1)])
         .collect();
     retain(d, &keep, before, after);
+    // Nothing after the window: the search stopped there.
+    let cut = d
+        .file
+        .items
+        .iter()
+        .position(|i| match i {
+            Item::Match(l) | Item::Context(l) => l.line_number > end,
+        })
+        .unwrap_or(d.file.items.len());
+    d.file.items.truncate(cut);
+    let matches = d.file.matches().count();
+    d.trails.truncate(matches);
+    d.sections.truncate(matches);
+    if let Some(c) = d.file.stats.binary_cut.as_mut() {
+        *c = (*c).min(cut);
+    }
 }
 
 /// --expand: per submatch, the Section of the last Segment of its Trail, or None for an
@@ -365,8 +392,22 @@ mod tests {
             m(9, &[]),
         ]);
         limit(&mut d, 2, 0, 1);
-        assert_eq!(shape(&d), vec!["m1", "m2", "c3"]);
-        assert_eq!(trail_names(&d), vec![vec!["L1#0"], vec!["L2#0", "L2#1"]]);
+        // Line 3 is in the after context of line 2: a Match, as rg 14.1.1 prints it.
+        assert_eq!(shape(&d), vec!["m1", "m2", "m3"]);
+        assert_eq!(
+            trail_names(&d),
+            vec![vec!["L1#0"], vec!["L2#0", "L2#1"], vec!["L3#0"]]
+        );
+    }
+
+    #[test]
+    fn a_match_in_the_window_does_not_extend_it() {
+        let mut d = described(vec![m(1, &[]), m(2, &[]), m(3, &[]), m(4, &[]), c(5)]);
+        limit(&mut d, 1, 0, 2);
+        assert_eq!(shape(&d), vec!["m1", "m2", "m3"]);
+        let mut d = described(vec![m(1, &[]), c(2), m(4, &[])]);
+        limit(&mut d, 1, 0, 1);
+        assert_eq!(shape(&d), vec!["m1", "c2"]);
     }
 
     #[test]

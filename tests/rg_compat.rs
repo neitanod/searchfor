@@ -584,3 +584,113 @@ fn within_keeps_the_search_stats_in_json() {
         }
     }
 }
+
+/// JSON messages of the given types, normalized as `json_lines` does.
+fn json_of(o: &Output, trail_mode: bool, types: &[&str]) -> Vec<String> {
+    stdout(o)
+        .lines()
+        .filter_map(|l| {
+            let mut v: Value = serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}"));
+            if !types.iter().any(|t| v["type"] == *t) {
+                return None;
+            }
+            normalize(&mut v, trail_mode);
+            Some(v.to_string())
+        })
+        .collect()
+}
+
+/// Code review r2, Codex #2 and Fable #5: with `-m` and an after context, rg 14.1.1 (whose
+/// printers count `-m`) prints a line that matches inside the after context of the last
+/// Match allowed as a Match, and with `-v` a line that does not; the search stops when that
+/// context ends. Patterns with `\A` and `$` take grep-searcher's slow path. With `--within ''`
+/// (every Match kept), `-m` counts after the filter and gives the same lines.
+#[test]
+fn max_count_with_after_context_equals_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("mc")).unwrap();
+    std::fs::write(fx.file("mc/m.txt"), "a\nneedle\nb\nneedle\nc\nd\n").unwrap();
+    std::fs::write(fx.file("mc/n.txt"), "needle\nneedle\n").unwrap();
+    let mut r = Report(Vec::new());
+    let flags: Vec<Vec<&str>> = vec![
+        vec!["-m1", "-A1", "\\Aneedle|needle"],
+        vec!["-m1", "-A2", "\\Aneedle|needle"],
+        vec!["-m1", "-A1", "\\Aneedle"],
+        vec!["-m2", "-A1", "$"],
+        vec!["-m1", "-B1", "-A1", "needle"],
+        vec!["-v", "-m1", "-A2", "needle"],
+        vec!["-v", "-m1", "-A2", "\\Aneedle|needle"],
+        vec!["-v", "-m2", "-A1", "\\Aneedle|needle"],
+        vec!["-v", "-m1", "-A2", "x$"],
+        vec!["-v", "-m1", "-C1", "^needle"],
+        vec!["-v", "-m1", "needle"],
+    ];
+    let inputs: [(Option<&str>, In); 5] = [
+        (None, In::File("mc/m.txt")),
+        (None, In::File("mc/n.txt")),
+        (Some("mc/m.txt"), In::Null),
+        (Some("mc/n.txt"), In::Null),
+        (Some("mc"), In::Null),
+    ];
+    for f in &flags {
+        for (path, input) in inputs {
+            let mut a = vec!["--sort", "path", "-n", "-I"];
+            a.extend_from_slice(f);
+            a.extend(path);
+            let case = format!("{a:?} {}", if path.is_none() { "stdin" } else { "" });
+            let want = rg(&fx, &a, input);
+            let mut nt = vec!["--no-trail"];
+            nt.extend_from_slice(&a);
+            let got = sfor(&fx, &nt, input);
+            r.check(
+                format!("text --no-trail {case}"),
+                (code(&want), stdout(&want)),
+                (code(&got), stdout(&got)),
+            );
+            let w = format!("{:?}", by_line(&stdout(&want), false));
+            for within in [&[][..], &["--within", ""]] {
+                let mut fl = vec!["--flat"];
+                fl.extend_from_slice(within);
+                fl.extend_from_slice(&a);
+                let got = sfor(&fx, &fl, input);
+                let g = format!("{:?}", by_line(&stdout(&got), true));
+                r.check(
+                    format!("text {within:?} {case}"),
+                    (code(&want), w.clone()),
+                    (code(&got), g),
+                );
+            }
+            let mut ja = vec!["--json"];
+            ja.extend_from_slice(&a);
+            let want = rg(&fx, &ja, input);
+            let mut nt = vec!["--no-trail"];
+            nt.extend_from_slice(&ja);
+            let got = sfor(&fx, &nt, input);
+            r.check(
+                format!("json --no-trail {case}"),
+                (code(&want), json_lines(&want, false)),
+                (code(&got), json_lines(&got, false)),
+            );
+            let got = sfor(&fx, &ja, input);
+            r.check(
+                format!("json {case}"),
+                (code(&want), json_lines(&want, true)),
+                (code(&got), json_lines(&got, true)),
+            );
+            // With --within, `end` and `summary` count the whole search (spec §6.4).
+            let lines = ["begin", "match", "context"];
+            let mut wa = vec!["--within", ""];
+            wa.extend_from_slice(&ja);
+            let got = sfor(&fx, &wa, input);
+            r.check(
+                format!("json --within '' {case}"),
+                (code(&want), json_of(&want, true, &lines).join("\n")),
+                (code(&got), json_of(&got, true, &lines).join("\n")),
+            );
+        }
+    }
+    r.assert_empty();
+}

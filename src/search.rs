@@ -10,8 +10,11 @@ use grep_searcher::{
     SinkFinish, SinkMatch,
 };
 use ignore::{WalkBuilder, overrides::OverrideBuilder, types::TypesBuilder};
+use std::cell::Cell;
+use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 pub fn matcher(args: &Args, patterns: &[String]) -> Result<RegexMatcher> {
     let mut b = RegexMatcherBuilder::new();
@@ -89,11 +92,16 @@ fn searcher_builder(args: &Args, explicit: bool, decoded: bool) -> SearcherBuild
         .before_context(args.before())
         .after_context(args.after())
         .invert_match(args.invert_match)
-        // With --within, -m counts the lines the filter keeps: C9 cuts after it.
-        .max_matches(args.max_count.filter(|_| args.within.is_none()))
+        // -m is counted by the sinks, as ripgrep 14.1.1's printers count it (`MaxCount`).
         .binary_detection(binary)
         .bom_sniffing(!decoded);
     b
+}
+
+/// The `-m` the sinks count. With --within, -m counts the lines the filter keeps: C9 cuts after
+/// it (`filter::limit`).
+pub fn max_count(args: &Args) -> Option<u64> {
+    args.max_count.filter(|_| args.within.is_none())
 }
 
 /// `cwd` anchors the globs, as ripgrep does (`-g 'docs/*.md' x docs` works).
@@ -166,57 +174,180 @@ pub fn rg_types() -> anyhow::Result<TypesBuilder> {
     Ok(tb)
 }
 
-/// ripgrep 14.1.1's `bytes_searched` when `-m` stops a search. Its printer (grep-printer
-/// 0.2.2) stops the search, and its searcher (grep-searcher 0.1.14) then reports, for a reader
-/// search, only the bytes of the buffers rolled out before the one it stopped in, not the
-/// position it reached; our grep-searcher 0.1.17 adds that position (`consume_remaining` in
-/// glue.rs). `matched`/`context` replay grep-printer 0.2.2's `should_quit` (json.rs:651) to find
-/// where ripgrep stops, and remember the rolled-out bytes of that buffer: the absolute offset of
-/// a Match minus its offset in the buffer. A stop on an after-context line takes the buffer of
-/// the last Match, which is the same one unless that context crosses a buffer boundary (64 KiB).
-/// A search in memory reports its position in both versions, so it is left alone.
+/// Whether a sink stopped its search, shared with the reader the search reads from.
 #[derive(Debug, Clone, Default)]
-pub struct MaxCountBytes {
+pub struct Stop(Rc<Cell<bool>>);
+
+impl Stop {
+    pub fn is_set(&self) -> bool {
+        self.0.get()
+    }
+
+    fn set(&self, stopped: bool) {
+        self.0.set(stopped);
+    }
+}
+
+/// A reader that ends once its sink stopped the search. grep-searcher 0.1.17 goes on after a
+/// sink stops it on an inverted Match (`match_by_line_fast` leaves its loop with `break` and
+/// carries on with the next buffer, core.rs:396), which reads the rest of the input; its sinks
+/// drop what comes after the stop (`MaxCount`), and this reader ends the input there.
+pub struct UntilStopped<R> {
+    inner: R,
+    stop: Stop,
+}
+
+impl<R> UntilStopped<R> {
+    pub fn new(inner: R, stop: Stop) -> Self {
+        Self { inner, stop }
+    }
+}
+
+impl<R: Read> Read for UntilStopped<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.stop.is_set() {
+            return Ok(0);
+        }
+        self.inner.read(buf)
+    }
+}
+
+/// ripgrep 14.1.1's `-m`, counted by its printers (grep-printer 0.2.2, standard.rs:785 and
+/// json.rs:651) and so by our sinks: the searcher (grep-searcher 0.1.17) gets no limit, because
+/// its own reports a line that matches inside the after context of the last Match allowed as
+/// context on its slow path (patterns like `\A` or `$`), and gets `-v` wrong (code review r2,
+/// Codex #2). After the limit the after context goes on; a line that matches inside it is a
+/// Match that does not extend it, and the search stops where it ends. Summary printers stop at
+/// the limit (summary.rs:552). Lines that come after the stop are dropped (see `UntilStopped`).
+///
+/// Also ripgrep's `bytes_searched` at that stop: its searcher (grep-searcher 0.1.14) reports,
+/// for a reader search, only the bytes of the buffers rolled out before the one it stopped in;
+/// grep-searcher 0.1.17 adds the position it reached (`consume_remaining` in glue.rs). The
+/// rolled-out bytes of a Match's buffer are its absolute offset minus its offset in the buffer.
+/// An after-context line past the end of that buffer is the first line of the next one: the
+/// buffer of the last Match ended with the after context running, so all of it was rolled out
+/// (code review r2, Codex #5). A search in memory reports its position in both versions, so
+/// it is left alone, except with -v (`slice_stop`). Not reproduced, see docs/rg-compat.md: an
+/// after context that crosses a second buffer, and the binary quit with an after context longer
+/// than the before context.
+#[derive(Debug, Clone, Default)]
+pub struct MaxCount {
     limit: Option<u64>,
+    /// The search runs over a slice in memory, with this matcher (for `slice_stop`).
+    slice: Option<RegexMatcher>,
+    invert: bool,
+    /// Where grep-searcher 0.1.14 stops an inverted search in memory (`slice_stop`).
+    slice_stop: Option<u64>,
+    /// A summary printer's -m: no after context.
+    summary: bool,
     after: u64,
     count: u64,
     after_left: u64,
     rolled: u64,
+    /// The absolute end of the lines of the last Match's buffer, until a line past it.
+    buffer_end: Option<u64>,
     stopped: Option<u64>,
+    stop: Stop,
 }
 
-impl MaxCountBytes {
-    pub fn new(limit: Option<u64>, after: usize) -> Self {
+impl MaxCount {
+    pub fn new(limit: Option<u64>) -> Self {
         Self {
             limit,
-            after: after as u64,
             ..Self::default()
         }
     }
 
-    /// For a sink's `begin`: the searcher's `-m` and `-A`.
-    pub fn for_searcher(s: &Searcher) -> Self {
-        Self::new(s.max_matches(), s.after_context())
+    /// The -m of grep-printer 0.2.2's summary printer: it stops at the limit.
+    pub fn summary(limit: Option<u64>) -> Self {
+        Self {
+            summary: true,
+            ..Self::new(limit)
+        }
     }
 
-    pub fn matched(&mut self, m: &SinkMatch<'_>) {
+    /// The search runs over a slice in memory: `-v`'s stop is computed with `matcher`.
+    pub fn in_slice(self, matcher: &RegexMatcher) -> Self {
+        Self {
+            slice: Some(matcher.clone()),
+            ..self
+        }
+    }
+
+    pub fn stop(&self) -> Stop {
+        self.stop.clone()
+    }
+
+    /// For a sink's `begin`: a new search with the searcher's after context.
+    pub fn begin(&mut self, s: &Searcher) {
+        *self = Self {
+            limit: self.limit,
+            slice: self.slice.take(),
+            invert: s.invert_match(),
+            summary: self.summary,
+            after: if self.summary {
+                0
+            } else {
+                s.after_context() as u64
+            },
+            stop: self.stop.clone(),
+            ..Self::default()
+        };
+        self.stop.set(false);
+    }
+
+    /// A Match line. False: it comes after the stop, and is dropped.
+    pub fn matched(&mut self, m: &SinkMatch<'_>) -> bool {
+        if self.stop.is_set() {
+            return false;
+        }
         self.rolled = m
             .absolute_byte_offset()
             .saturating_sub(m.bytes_range_in_buffer().start as u64);
+        self.buffer_end = Some(self.rolled + m.buffer().len() as u64);
         self.count += 1;
         if self.limit.is_some_and(|l| self.count > l) {
             self.after_left = self.after_left.saturating_sub(1);
         } else {
             self.after_left = self.after;
         }
-        self.check();
-    }
-
-    pub fn context(&mut self, c: &SinkContext<'_>) {
-        if *c.kind() == SinkContextKind::After {
-            self.after_left = self.after_left.saturating_sub(1);
+        if let Some(matcher) = self.slice.as_ref().filter(|_| self.invert)
+            && self.limit == Some(self.count)
+        {
+            let line = m.bytes_range_in_buffer();
+            self.slice_stop = slice_stop(matcher, m.buffer(), line.start, self.after);
         }
         self.check();
+        true
+    }
+
+    /// A context line. False: it comes after the stop, and is dropped.
+    pub fn context(&mut self, c: &SinkContext<'_>) -> bool {
+        if self.stop.is_set() {
+            return false;
+        }
+        if *c.kind() == SinkContextKind::After {
+            self.after_left = self.after_left.saturating_sub(1);
+            if self
+                .buffer_end
+                .is_some_and(|e| c.absolute_byte_offset() >= e)
+            {
+                self.rolled = c.absolute_byte_offset();
+                self.buffer_end = None;
+            }
+        }
+        self.check();
+        true
+    }
+
+    /// The sink stops the search for its own reason (-q's first Match, -l).
+    pub fn stop_now(&self) {
+        self.stop.set(true);
+    }
+
+    /// What the sink answers the searcher.
+    pub fn go_on(&self) -> bool {
+        !self.stop.is_set()
     }
 
     fn check(&mut self) {
@@ -225,6 +356,7 @@ impl MaxCountBytes {
             && self.after_left == 0
         {
             self.stopped = Some(self.rolled);
+            self.stop.set(true);
         }
     }
 
@@ -233,9 +365,67 @@ impl MaxCountBytes {
     pub fn bytes_searched(&self, byte_count: u64, reader: bool) -> u64 {
         match self.stopped {
             Some(rolled) if reader => rolled,
-            _ => byte_count,
+            Some(_) => self.slice_stop.unwrap_or(byte_count),
+            None => byte_count,
         }
     }
+}
+
+/// grep-searcher 0.1.14's position when `-v` stops a search over `slice`, the whole file in
+/// memory, `after` lines after the last Match allowed, which starts at `start`; None when the
+/// file ends before. Its fast path finds the line that matches the pattern after an inverted
+/// run before it reports the run, and the position is that line's end (or the file's): after
+/// an inverted line, the next line that matches; after a context line (one that matches), the
+/// line that ends the next inverted run. grep-searcher 0.1.17 goes on to the end of the buffer
+/// instead (see `UntilStopped`). Measured with rg 14.1.1: `-v -m1 needle` on
+/// `a\nneedle\nb\nneedle\nc\nd\n` reports 9. On the slow path (`line_by_line_fast`) both
+/// versions stop at the end of the line they stopped on: None, the searcher's count.
+fn slice_stop(matcher: &RegexMatcher, slice: &[u8], start: usize, after: u64) -> Option<u64> {
+    if !line_by_line_fast(matcher) {
+        return None;
+    }
+    let line_at = |at: usize| {
+        let end = memchr::memchr(b'\n', &slice[at..]).map_or(slice.len(), |i| at + i + 1);
+        at..end
+    };
+    let matching = |r: &Range<usize>| {
+        let line = &slice[r.clone()];
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        matcher.is_match(line).unwrap_or(false)
+    };
+    let mut stop = line_at(start);
+    for _ in 0..after {
+        if stop.end >= slice.len() {
+            return None;
+        }
+        stop = line_at(stop.end);
+    }
+    let mut at = stop.end;
+    let mut want_match = !matching(&stop);
+    loop {
+        if at >= slice.len() {
+            return Some(slice.len() as u64);
+        }
+        let line = line_at(at);
+        if matching(&line) == want_match {
+            if want_match {
+                return Some(line.end as u64);
+            }
+            want_match = true;
+        }
+        at = line.end;
+    }
+}
+
+/// grep-searcher's choice of its fast line-by-line path (core.rs `is_line_by_line_fast`, the
+/// same in 0.1.14 and 0.1.17) for our matcher: a pattern with `\A` or `\z` has no line
+/// terminator (grep-regex config.rs:296) and takes the slow path.
+fn line_by_line_fast(matcher: &RegexMatcher) -> bool {
+    let lf = grep_matcher::LineTerminator::byte(b'\n');
+    matcher.line_terminator() == Some(lf)
+        || matcher
+            .non_matching_bytes()
+            .is_some_and(|b| b.contains(b'\n'))
 }
 
 /// Builds the model of one file (design note 4) and its stats. Lines are not copied (they are
@@ -248,7 +438,7 @@ pub struct CollectSink<'m> {
     quiet: bool,
     /// The search reads through a reader (not a slice in memory).
     reader: bool,
-    max_count: MaxCountBytes,
+    max_count: MaxCount,
     pub items: Vec<Item>,
     pub stats: FileStats,
 }
@@ -260,15 +450,28 @@ impl<'m> CollectSink<'m> {
             invert,
             quiet,
             reader: true,
-            max_count: MaxCountBytes::default(),
+            max_count: MaxCount::default(),
             items: Vec::new(),
             stats: FileStats::default(),
         }
     }
 
+    /// `-m` (see `MaxCount`).
+    pub fn limit(mut self, limit: Option<u64>) -> Self {
+        self.max_count = MaxCount::new(limit);
+        self.reader = true;
+        self
+    }
+
+    /// What ends the reader of its search (see `UntilStopped`).
+    pub fn stop(&self) -> Stop {
+        self.max_count.stop()
+    }
+
     /// The search runs in memory: lines always equal the Source's bytes.
     pub fn in_memory(mut self) -> Self {
         self.reader = false;
+        self.max_count = std::mem::take(&mut self.max_count).in_slice(self.matcher);
         self
     }
 
@@ -338,12 +541,14 @@ impl Sink for CollectSink<'_> {
     type Error = std::io::Error;
 
     fn begin(&mut self, s: &Searcher) -> Result<bool, Self::Error> {
-        self.max_count = MaxCountBytes::for_searcher(s);
+        self.max_count.begin(s);
         Ok(true)
     }
 
     fn matched(&mut self, _s: &Searcher, m: &SinkMatch<'_>) -> Result<bool, Self::Error> {
-        self.max_count.matched(m);
+        if !self.max_count.matched(m) {
+            return Ok(false);
+        }
         let subs = match_submatches(self.matcher, self.invert, m);
         self.stats.matched_lines += m.lines().count() as u64;
         self.stats.matches += subs.len() as u64;
@@ -354,11 +559,16 @@ impl Sink for CollectSink<'_> {
             owned: self.copy(m.bytes()),
             submatches: subs,
         }));
-        Ok(!self.quiet)
+        if self.quiet {
+            self.max_count.stop_now();
+        }
+        Ok(self.max_count.go_on())
     }
 
     fn context(&mut self, _s: &Searcher, c: &SinkContext<'_>) -> Result<bool, Self::Error> {
-        self.max_count.context(c);
+        if !self.max_count.context(c) {
+            return Ok(false);
+        }
         self.items.push(Item::Context(Line {
             line_number: c.line_number().unwrap_or(0),
             absolute_offset: c.absolute_byte_offset(),
@@ -366,7 +576,7 @@ impl Sink for CollectSink<'_> {
             owned: self.copy(c.bytes()),
             submatches: context_submatches(self.matcher, self.invert, c.bytes()),
         }));
-        Ok(true)
+        Ok(self.max_count.go_on())
     }
 
     fn binary_data(&mut self, _s: &Searcher, _offset: u64) -> Result<bool, Self::Error> {
@@ -398,14 +608,16 @@ pub fn search_source(
     src: &Source,
     in_memory: bool,
     quiet: bool,
+    limit: Option<u64>,
 ) -> Result<Option<FileMatches>> {
     let started = std::time::Instant::now();
-    let mut sink = CollectSink::new(matcher, searcher.invert_match(), quiet);
+    let mut sink = CollectSink::new(matcher, searcher.invert_match(), quiet).limit(limit);
     if in_memory {
         sink = sink.in_memory();
         searcher.search_slice(matcher, src.bytes(), &mut sink)?;
     } else {
-        searcher.search_reader(matcher, std::io::Cursor::new(src.bytes()), &mut sink)?;
+        let rdr = UntilStopped::new(std::io::Cursor::new(src.bytes()), sink.stop());
+        searcher.search_reader(matcher, rdr, &mut sink)?;
     }
     if !sink.items.iter().any(|i| matches!(i, Item::Match(_))) {
         return Ok(None);
@@ -459,6 +671,7 @@ mod tests {
             src,
             false,
             false,
+            max_count(a),
         )
         .unwrap()
     }
@@ -471,6 +684,7 @@ mod tests {
             src,
             true,
             false,
+            max_count(a),
         )
         .unwrap()
     }
@@ -611,6 +825,7 @@ mod tests {
                 &src,
                 in_memory,
                 false,
+                None,
             )
             .unwrap()
             .unwrap();
@@ -640,6 +855,7 @@ mod tests {
             &src,
             true,
             false,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -697,6 +913,7 @@ mod tests {
             &src,
             false,
             true,
+            None,
         )
         .unwrap()
         .unwrap();

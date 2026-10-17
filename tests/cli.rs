@@ -476,6 +476,11 @@ fn t23_max_count_on_stdin_stops_before_eof() {
         &["-m1", "--format", "markdown", "needle", "-"],
         &["-m1", "--json", "needle", "-"],
         &["-m1", "--tree", "needle", "-"],
+        // Code review r2, Codex #2: -m is counted by the sinks, which end the input when they
+        // stop, also with -v (grep-searcher 0.1.17 would read on, see `UntilStopped`).
+        &["-v", "-m1", "needle", "-"],
+        &["-v", "-m1", "--no-trail", "needle", "-"],
+        &["-v", "-m1", "--json", "needle", "-"],
     ] {
         let mut c = fx.sfor(args);
         c.stdin(Stdio::piped()).stdout(Stdio::piped());
@@ -505,7 +510,8 @@ fn t23_max_count_on_stdin_stops_before_eof() {
             "{args:?}: still running after {elapsed:?}"
         );
         assert!(elapsed < Duration::from_secs(2), "{args:?}");
-        assert!(stdout(&o).contains("needle"), "{args:?}: {}", stdout(&o));
+        let want = if args.contains(&"-v") { "# T" } else { "needle" };
+        assert!(stdout(&o).contains(want), "{args:?}: {}", stdout(&o));
     }
 }
 

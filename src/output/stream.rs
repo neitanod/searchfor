@@ -6,7 +6,7 @@
 use super::json::{JsonFile, JsonOptions, RunStats};
 use super::{Layout, RenderOptions, Row, flat, tree};
 use crate::model::{FileStats, Line, Segment, Submatch};
-use crate::search::{MaxCountBytes, context_submatches, match_submatches};
+use crate::search::{MaxCount, Stop, context_submatches, match_submatches};
 use crate::trail::{Outline, TrailCursor};
 use grep_regex::RegexMatcher;
 use grep_searcher::{Searcher, Sink, SinkContext, SinkFinish, SinkMatch};
@@ -25,8 +25,10 @@ pub struct StreamFile<'a> {
     /// a Match are kept as ranges of it).
     pub src: Option<&'a [u8]>,
     pub outline: Option<&'a Outline>,
-    /// The search reads through a reader (for `-m`'s byte count, see `MaxCountBytes`).
+    /// The search reads through a reader (for `-m`'s byte count, see `MaxCount`).
     pub reader: bool,
+    /// `-m`, counted here (see `MaxCount`).
+    pub max_count: Option<u64>,
 }
 
 /// A row of a Match line: its Trail and the submatches under it.
@@ -48,7 +50,7 @@ pub struct StreamSink<'a, W: WriteColor> {
     head: flat::FileHead,
     json: Option<JsonFile<'a>>,
     tree: tree::TreeState,
-    max_count: MaxCountBytes,
+    max_count: MaxCount,
     /// Line number of the last row, for the `--` between groups.
     prev: Option<u64>,
     /// The tree's path line is written.
@@ -92,7 +94,11 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             head: flat::FileHead::new(file.path, o),
             json: (o.layout == Layout::Json).then(|| JsonFile::new(file.path, file.format, jo)),
             tree: tree::TreeState::default(),
-            max_count: MaxCountBytes::default(),
+            max_count: if file.reader {
+                MaxCount::new(file.max_count)
+            } else {
+                MaxCount::new(file.max_count).in_slice(matcher)
+            },
             prev: None,
             header: false,
             binary: false,
@@ -114,6 +120,11 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             has_match: false,
             file,
         }
+    }
+
+    /// What ends the reader of its search (see `UntilStopped`).
+    pub fn stop(&self) -> Stop {
+        self.max_count.stop()
     }
 
     /// The Trail of a Match at byte `at`, shared with the rows before it when it is the same.
@@ -384,13 +395,15 @@ impl<W: WriteColor> Sink for StreamSink<'_, W> {
     type Error = std::io::Error;
 
     fn begin(&mut self, s: &Searcher) -> Result<bool, Self::Error> {
-        self.max_count = MaxCountBytes::for_searcher(s);
+        self.max_count.begin(s);
         self.started = Instant::now();
         Ok(true)
     }
 
     fn matched(&mut self, _s: &Searcher, m: &SinkMatch<'_>) -> Result<bool, Self::Error> {
-        self.max_count.matched(m);
+        if !self.max_count.matched(m) {
+            return Ok(false);
+        }
         self.stats.matched_lines += m.lines().count() as u64;
         self.has_match = true;
         let (matcher, invert) = (self.matcher, self.invert);
@@ -403,11 +416,13 @@ impl<W: WriteColor> Sink for StreamSink<'_, W> {
             submatches: Vec::new(),
         };
         self.matched_line(line, m.bytes(), &subs)?;
-        Ok(true)
+        Ok(self.max_count.go_on())
     }
 
     fn context(&mut self, _s: &Searcher, c: &SinkContext<'_>) -> Result<bool, Self::Error> {
-        self.max_count.context(c);
+        if !self.max_count.context(c) {
+            return Ok(false);
+        }
         let (matcher, invert) = (self.matcher, self.invert);
         let subs = || context_submatches(matcher, invert, c.bytes());
         let line = Line {
@@ -418,7 +433,7 @@ impl<W: WriteColor> Sink for StreamSink<'_, W> {
             submatches: Vec::new(),
         };
         self.context_line(line, c.bytes(), &subs)?;
-        Ok(true)
+        Ok(self.max_count.go_on())
     }
 
     fn binary_data(&mut self, _s: &Searcher, _offset: u64) -> Result<bool, Self::Error> {
@@ -507,13 +522,16 @@ mod tests {
             src: Some(src.bytes()),
             outline: outline.as_ref(),
             reader: true,
+            max_count: crate::search::max_count(&a),
         };
         let mut sink = StreamSink::new(&mut streamed, &m, a.invert_match, &ro, &jo, file);
-        s.search_reader(&m, std::io::Cursor::new(src.bytes()), &mut sink)
-            .unwrap();
+        let rdr = crate::search::UntilStopped::new(std::io::Cursor::new(src.bytes()), sink.stop());
+        s.search_reader(&m, rdr, &mut sink).unwrap();
         sink.close().unwrap();
         let mut modelled = new_buf();
-        if let Some(fm) = search_source(&mut s, &m, &src, false, false).unwrap() {
+        if let Some(fm) =
+            search_source(&mut s, &m, &src, false, false, crate::search::max_count(&a)).unwrap()
+        {
             let trails = if markdown {
                 let anchors: Vec<Vec<usize>> = fm.matches().map(|m| m.anchors()).collect();
                 let all: Vec<usize> = anchors.iter().flatten().copied().collect();
