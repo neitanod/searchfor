@@ -91,6 +91,21 @@ fn first_line(src: &[u8], n: Node) -> String {
     line.chars().take(200).collect()
 }
 
+/// The first line of a node's text, decoded lossily, and the Source bytes it comes from. The
+/// bytes are counted in the Source: invalid UTF-8 decodes to more bytes than it takes, and the
+/// piece must not reach past the name (fuzz, review m2-code-r1).
+fn first_line_of(src: &[u8], n: Node) -> (String, Range<usize>) {
+    let r = n.start_byte().min(src.len())..n.end_byte().min(src.len());
+    let bytes = &src[r.clone()];
+    let len = match memchr::memchr(b'\n', bytes) {
+        Some(k) if k > 0 && bytes[k - 1] == b'\r' => k - 1,
+        Some(k) => k,
+        None => bytes.len(),
+    };
+    let text = String::from_utf8_lossy(&bytes[..len]).into_owned();
+    (text, r.start..r.start + len)
+}
+
 /// Every `@segment` of the query, or only those that touch `range` (D24).
 pub fn outline(c: &Compiled, tree: &Tree, src: &[u8], range: Option<Range<usize>>) -> Outline {
     let mut cursor = QueryCursor::new();
@@ -114,36 +129,17 @@ pub fn outline(c: &Compiled, tree: &Tree, src: &[u8], range: Option<Range<usize>
         let (Some(node), Some(name)) = (seg, name) else {
             continue;
         };
-        let text = |n: Node| {
-            String::from_utf8_lossy(&src[n.byte_range()])
-                .lines()
-                .next()
-                .unwrap_or("")
-                .to_string()
-        };
-        let own = text(name);
+        let (own, own_src) = first_line_of(src, name);
         let (label, pieces) = match prefix {
             Some(p) => {
-                let pt = text(p);
+                let (pt, pt_src) = first_line_of(src, p);
                 let at = pt.len() + 1;
                 (
                     format!("{pt}.{own}"),
-                    vec![
-                        (0..pt.len(), p.start_byte()..p.start_byte() + pt.len()),
-                        (
-                            at..at + own.len(),
-                            name.start_byte()..name.start_byte() + own.len(),
-                        ),
-                    ],
+                    vec![(0..pt.len(), pt_src), (at..at + own.len(), own_src)],
                 )
             }
-            None => (
-                own.clone(),
-                vec![(
-                    0..own.len(),
-                    name.start_byte()..name.start_byte() + own.len(),
-                )],
-            ),
+            None => (own.clone(), vec![(0..own.len(), own_src)]),
         };
         let kind = c
             .kinds
@@ -498,6 +494,43 @@ mod tests {
         // "Server.Start": the receiver and the name are two pieces; the dot is not in the file.
         assert_eq!(names[1].pieces.len(), 2);
         assert_eq!(names[1].pieces[1].0, 7..12);
+    }
+
+    #[test]
+    fn a_name_with_invalid_utf8_points_at_its_own_bytes() {
+        // The name is decoded lossily: its pieces must still cover the name's bytes, not as
+        // many bytes as the decoded text takes (fuzz, review m2-code-r1).
+        for (src, format) in [
+            (&b"function \xba() {\n  echo needle\n}\n"[..], "bash"),
+            (b"function a\xc3() {\n  echo needle\n}\n", "bash"),
+            (b"fn x\xf0\x9f\x98() {}", "rust"),
+            (b"package p\nfunc (s *S\xc3) M\xc3() {}\n", "go"),
+        ] {
+            let input = Input {
+                bytes: src,
+                path: Path::new("x"),
+                format,
+                disk: None,
+            };
+            let names = TreeSitter::default()
+                .names(&input, &params(format))
+                .unwrap();
+            assert!(!names.is_empty(), "{format}");
+            for n in &names {
+                for (t, s) in &n.pieces {
+                    assert!(s.end <= src.len(), "{:?} past the end", n.pieces);
+                    let got = String::from_utf8_lossy(&src[s.clone()]);
+                    if t.len() == s.len() {
+                        assert_eq!(got, &n.text[t.clone()], "{:?}", n.pieces);
+                    }
+                    assert!(
+                        !got.contains(['(', ')', ' ']),
+                        "{:?} reaches past the name: {got:?}",
+                        n.pieces
+                    );
+                }
+            }
+        }
     }
 
     #[test]
