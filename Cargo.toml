@@ -18,6 +18,8 @@ path = "src/main.rs"
 anyhow = "1"
 clap = { version = "4.6", features = ["derive", "string", "wrap_help"] }
 dirs = "6"
+# The `=` versions are ripgrep 14.1.1's: later grep-searcher and grep-printer change
+# bytes_searched and -m, and later regex crates the Unicode tables. Keep them on a cargo update.
 encoding_rs = "=0.8.34"
 globset = "=0.4.15"
 grep-cli = "=0.1.11"
