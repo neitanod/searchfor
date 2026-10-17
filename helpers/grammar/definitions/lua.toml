@@ -1,0 +1,12 @@
+# Lua: functions and methods (spec §5.3), through the Lua Grammar Helper (spec §7).
+name       = "lua"
+extensions = ["lua"]
+shebangs   = ["lua", "luajit"]
+processor  = "treesitter"
+
+[params]
+grammar = "lua"
+query = '''
+(function_declaration name: (_) @name) @segment
+'''
+kinds = { function_declaration = "function" }

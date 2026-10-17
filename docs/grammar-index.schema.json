@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/neitanod/searchfor/blob/main/docs/grammar-index.schema.json",
+  "title": "searchfor Grammar index",
+  "description": "grammars/index.json: the Grammar Helpers that `sfor --install-grammar` can install (spec §7). Readers ignore fields they do not know, so later versions may add fields.",
+  "type": "object",
+  "required": ["version", "grammars"],
+  "properties": {
+    "version": {
+      "description": "Version of this format; sfor reads version 1.",
+      "const": 1
+    },
+    "grammars": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/grammar" }
+    }
+  },
+  "$defs": {
+    "grammar": {
+      "type": "object",
+      "required": ["name", "version", "source", "license", "definition", "binaries"],
+      "properties": {
+        "name": {
+          "description": "The Grammar's name, as in `--install-grammar <name>` and the Definition's `grammar`. It becomes a directory and a file name (M2 plan, D30).",
+          "type": "string",
+          "pattern": "^[a-z0-9_]+$"
+        },
+        "version": {
+          "description": "Version of the Grammar the helper carries.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Where the Grammar comes from: its crate or repository.",
+          "type": "string"
+        },
+        "license": {
+          "description": "The Grammar's license (SPDX expression).",
+          "type": "string"
+        },
+        "definition": {
+          "description": "The Format Definition installed with the helper, as TOML text: `processor = \"treesitter\"` and `grammar` equal to `name`.",
+          "type": "string"
+        },
+        "binaries": {
+          "description": "The helper binary per system, `<os>-<arch>` as Rust's std::env::consts names them (`linux-x86_64`, `macos-aarch64`, `windows-x86_64`; M2 plan, D14).",
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z0-9]+-[a-z0-9_]+$" },
+          "additionalProperties": { "$ref": "#/$defs/binary" }
+        }
+      }
+    },
+    "binary": {
+      "type": "object",
+      "required": ["url", "sha256"],
+      "properties": {
+        "url": {
+          "description": "Where to download the binary; only https:// and file:// are accepted.",
+          "type": "string",
+          "pattern": "^(https|file)://"
+        },
+        "sha256": {
+          "description": "SHA-256 of the binary, lower-case hex.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}
