@@ -4,12 +4,12 @@ use crate::model::{Described, Segment};
 use std::collections::VecDeque;
 use termcolor::WriteColor;
 
-/// How a Segment is shown in the tree.
+/// How a Segment is shown in the tree, its control characters escaped (M3 plan, D14).
 pub fn label(s: &Segment) -> String {
     if let Some(sig) = &s.signature {
-        return sig.clone();
+        return crate::text::visible(sig).into_owned();
     }
-    let name = &s.name;
+    let name = crate::text::visible(&s.name);
     match s.kind.as_str() {
         "heading" => format!(
             "{} {name}",
@@ -18,7 +18,8 @@ pub fn label(s: &Segment) -> String {
         "code" => format!("```{name}"),
         "item" => format!("• {name}"),
         "column" => format!("column «{name}»"),
-        "document" | "key" | "element" => name.clone(),
+        // M3: markup elements (`tag`) and CSV rows (`row 12`) show their name alone.
+        "document" | "key" | "element" | "tag" | "row" => name.into_owned(),
         kind => format!("{kind} {name}"),
     }
 }
@@ -213,6 +214,21 @@ mod tests {
     use crate::output::fixture::*;
     use crate::output::tests::opts;
     use termcolor::{Ansi, NoColor};
+
+    #[test]
+    fn labels_of_the_m3_kinds_and_escaped_names() {
+        assert_eq!(label(&seg("tag", "li[3]", 1, 1)), "li[3]");
+        assert_eq!(label(&seg("row", "row 2", 1, 1)), "row 2");
+        assert_eq!(label(&seg("column", "Plan", 1, 1)), "column «Plan»");
+        let mut cue = seg("cue", "cue 1 00:00:01,000", 1, 3);
+        cue.signature = Some("cue 1 00:00:01,000 --> 00:00:02,000".into());
+        assert_eq!(label(&cue), "cue 1 00:00:01,000 --> 00:00:02,000");
+        // M3 plan, D14.
+        assert_eq!(label(&seg("key", "a\nb", 1, 1)), "a\\nb");
+        let mut sig = seg("method", "m", 1, 1);
+        sig.signature = Some("fn m(\u{1b})".into());
+        assert_eq!(label(&sig), "fn m(\\u{1b})");
+    }
 
     fn plain(d: &Described, src: &[u8], o: &RenderOptions) -> String {
         let mut w = NoColor::new(Vec::new());

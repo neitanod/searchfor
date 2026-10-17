@@ -12,18 +12,21 @@ fn width(s: &str) -> usize {
 /// each run of `item` Segments as `…`; else first › … › last; else cut with `…` at the end.
 fn fit_trail(trail: &[Segment], room: usize) -> String {
     let fits = |s: &str| width(s) <= room;
-    let full = trail
+    // Names print with their control characters escaped (M3 plan, D14).
+    let names: Vec<std::borrow::Cow<'_, str>> =
+        trail.iter().map(|s| text::visible(&s.name)).collect();
+    let full = names
         .iter()
-        .map(|s| s.name.as_str())
+        .map(|n| n.as_ref())
         .collect::<Vec<_>>()
         .join(" › ");
     if fits(&full) {
         return full;
     }
     let mut parts: Vec<&str> = Vec::new();
-    for s in trail {
+    for (s, n) in trail.iter().zip(&names) {
         if s.kind != "item" {
-            parts.push(&s.name);
+            parts.push(n);
         } else if parts.last() != Some(&"…") {
             parts.push("…");
         }
@@ -33,7 +36,7 @@ fn fit_trail(trail: &[Segment], room: usize) -> String {
         return shortest;
     }
     if trail.len() > 2 {
-        let ends = format!("{} › … › {}", trail[0].name, trail[trail.len() - 1].name);
+        let ends = format!("{} › … › {}", names[0], names[names.len() - 1]);
         if width(&ends) < width(&shortest) {
             shortest = ends;
         }
@@ -283,6 +286,16 @@ mod tests {
             layout: Layout::Flat,
             ..opts()
         }
+    }
+
+    #[test]
+    fn control_characters_in_names_print_escaped() {
+        // M3 plan, D14: a decoded line break or ESC stays on the row and drives nothing.
+        let t = [seg("key", "a\nb", 1, 1), seg("key", "\u{1b}[31m", 1, 1)];
+        assert_eq!(fit_trail(&t, 80), "a\\nb › \\u{1b}[31m");
+        // The width counts the escapes: 4 + 3 + 10 characters.
+        assert_eq!(fit_trail(&t, 17), "a\\nb › \\u{1b}[31m");
+        assert_eq!(fit_trail(&t, 16), "a\\nb › \\u{1b}[3…");
     }
 
     fn plain(d: &Described, src: &[u8], o: &RenderOptions) -> String {
