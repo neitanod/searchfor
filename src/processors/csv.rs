@@ -54,19 +54,12 @@ fn params(t: &toml::Table) -> anyhow::Result<Params> {
 }
 
 /// The delimiter of a CSV file (D4): of `,`, `;`, tab and `|`, the one that appears most often
-/// in its first line outside quotes; `,` on a tie or when none appears.
+/// in its first line outside quotes; `,` on a tie or when none appears. Each candidate is
+/// counted as csv-core reads the line with it as the delimiter (M3 code review r1, Codex #2).
 pub fn sniff(src: &[u8], quote: Option<u8>) -> u8 {
     const CANDIDATES: [u8; 4] = [b',', b';', b'\t', b'|'];
     let line = &src[..memchr::memchr(b'\n', src).unwrap_or(src.len())];
-    let mut counts = [0usize; 4];
-    let mut quoted = false;
-    for &b in line {
-        if Some(b) == quote {
-            quoted = !quoted;
-        } else if !quoted && let Some(k) = CANDIDATES.iter().position(|&c| c == b) {
-            counts[k] += 1;
-        }
-    }
+    let counts = CANDIDATES.map(|d| delimiters(line, d, quote));
     let mut best = 0;
     for k in 1..4 {
         if counts[k] > counts[best] {
@@ -74,6 +67,36 @@ pub fn sniff(src: &[u8], quote: Option<u8>) -> u8 {
         }
     }
     CANDIDATES[best]
+}
+
+/// How many delimiters `d` csv-core reads in `line` (csv-core 0.1.13, `reader.rs`): a quote
+/// opens a quoted field only as the field's first byte; inside it `""` is a quote and a lone
+/// one closes it; a quote anywhere else, after a closing quote included, is text.
+fn delimiters(line: &[u8], d: u8, quote: Option<u8>) -> usize {
+    #[derive(Clone, Copy)]
+    enum State {
+        Start,
+        Unquoted,
+        Quoted,
+        AfterQuote,
+    }
+    let mut n = 0;
+    let mut state = State::Start;
+    for &b in line {
+        let q = Some(b) == quote;
+        state = match state {
+            State::Quoted if q => State::AfterQuote,
+            State::Quoted => State::Quoted,
+            State::AfterQuote if q => State::Quoted,
+            _ if b == d => {
+                n += 1;
+                State::Start
+            }
+            State::Start if q => State::Quoted,
+            _ => State::Unquoted,
+        };
+    }
+    n
 }
 
 /// Whether csv-core would still be inside the quotes of `field` at its end (M3 review r1,
@@ -580,6 +603,12 @@ mod tests {
         assert_eq!(sniff(b"\"a;b\",c\n", Some(b'"')), b',');
         assert_eq!(sniff(b"a\tb|c\n", Some(b'"')), b'\t');
         assert_eq!(sniff(b"plain\n", Some(b'"')), b',');
+        // A quote inside an unquoted field is text, and so is one after a closing quote
+        // (M3 code review r1, Codex #2): they open no quotes.
+        assert_eq!(sniff(b"Size\";Plan;Note\n1;needle;ok\n", Some(b'"')), b';');
+        assert_eq!(sniff(b"\"a\"b\";c;d,e\n", Some(b'"')), b';');
+        // Each candidate is read as csv-core reads it with that delimiter.
+        assert_eq!(sniff(b"\"a\";b,c,d\n", Some(b'"')), b',');
     }
 
     #[test]
@@ -644,6 +673,15 @@ mod tests {
         assert_eq!(
             needles(b"a,b\n1,\"needle\"\"x\n", ""),
             [Vec::<String>::new()]
+        );
+    }
+
+    #[test]
+    fn a_quote_inside_an_unquoted_header_cell_is_text() {
+        // M3 code review r1, Codex #2: the `;` file is read with `;`.
+        assert_eq!(
+            needles(b"Size\";Plan;Note\n1;needle;ok\n", ""),
+            [vec!["row 1:2-2", "Plan:2-2"]]
         );
     }
 
