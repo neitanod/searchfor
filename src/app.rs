@@ -241,15 +241,8 @@ fn main(args: &Args) -> anyhow::Result<i32> {
             ctx.print_summary();
         }
         Mode::Passthrough => {
-            let line_number = if args.line_number {
-                true
-            } else if args.no_line_number {
-                false
-            } else if args.json {
-                true
-            } else {
-                summary_mode.is_none() && tty
-            };
+            let line_number =
+                passthrough_line_number(args, summary_mode.is_some(), tty, &ctx.paths);
             ctx.walk(
                 || {
                     let searcher =
@@ -298,6 +291,22 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     } else {
         1
     })
+}
+
+/// ripgrep 14.1.1's default for line numbers in passthrough (hiargs.rs:200-221): `-n` and `-N`
+/// first, always with `--json`, never with a summary, and else on a tty unless stdin, implicit
+/// or `-`, is all that is searched (hiargs.rs:214 and 1128), so a pipe reads as a pipe.
+fn passthrough_line_number(args: &Args, summary: bool, tty: bool, paths: &[PathBuf]) -> bool {
+    let only_stdin = paths.len() == 1 && paths[0] == Path::new("-");
+    if args.line_number {
+        true
+    } else if args.no_line_number {
+        false
+    } else if args.json {
+        true
+    } else {
+        !summary && tty && !only_stdin
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1557,6 +1566,48 @@ mod tests {
         let a = cli::parse(v.iter().map(Into::into).collect()).unwrap();
         let m = search::matcher(&a, &a.patterns().unwrap().patterns).unwrap();
         (search::searcher(&a, true, true), m, a.invert_match)
+    }
+
+    /// Code review r5, Fable #1: on a tty, ripgrep 14.1.1 numbers the lines unless stdin is
+    /// all it searches, implicit or `-` (hiargs.rs:214 and 1128), so `cat x | rg foo` reads as
+    /// a pipe.
+    #[test]
+    fn stdin_alone_has_no_line_numbers_on_a_tty() {
+        let a = |argv: &[&str]| {
+            let mut v = vec!["sfor", "--no-trail"];
+            v.extend_from_slice(argv);
+            cli::parse(v.iter().map(Into::into).collect()).unwrap()
+        };
+        let stdin = [PathBuf::from("-")];
+        let two = [PathBuf::from("-"), PathBuf::from("a.md")];
+        let file = [PathBuf::from("a.md")];
+        let dev = [PathBuf::from("/dev/stdin")];
+        let plain = a(&["x"]);
+        assert!(!passthrough_line_number(&plain, false, true, &stdin));
+        assert!(passthrough_line_number(&plain, false, true, &two));
+        assert!(passthrough_line_number(&plain, false, true, &file));
+        assert!(passthrough_line_number(&plain, false, true, &dev));
+        assert!(!passthrough_line_number(&plain, false, false, &file));
+        assert!(!passthrough_line_number(&plain, true, true, &file));
+        // -n, --json and -N decide before the tty does.
+        assert!(passthrough_line_number(
+            &a(&["-n", "x"]),
+            false,
+            true,
+            &stdin
+        ));
+        assert!(passthrough_line_number(
+            &a(&["--json", "x"]),
+            false,
+            true,
+            &stdin
+        ));
+        assert!(!passthrough_line_number(
+            &a(&["-N", "x"]),
+            false,
+            true,
+            &file
+        ));
     }
 
     /// Code review r2, Fable #2 and Codex #4: an explicit file searched in memory runs its

@@ -1257,3 +1257,49 @@ fn unicode_classes_equal_ripgrep() {
     }
     r.assert_empty();
 }
+
+/// Runs `cmd` in `sh` on a pseudo-terminal from util-linux `script`, in the fixture copy, with
+/// `rg` and `sfor` naming the reference and our binary. None, with a note, without `script`.
+fn on_a_tty(fx: &Fixture, cmd: &str) -> Option<String> {
+    if Command::new("script").arg("--version").output().is_err() {
+        eprintln!("skipping: util-linux script not found");
+        return None;
+    }
+    let sfor = assert_cmd::cargo::cargo_bin("sfor");
+    let cmd = cmd.replace("sfor ", &format!("{} --no-trail ", sfor.display()));
+    let o = Command::new("script")
+        .args(["-qec", &cmd, "/dev/null"])
+        .current_dir(fx.path())
+        .env("SFOR_FORMATS_DIR", fx.formats.path())
+        .env_remove("RIPGREP_CONFIG_PATH")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    Some(format!("exit {}\n{}", code(&o), stdout(&o)))
+}
+
+/// Code review r5, Fable #1: on a tty, stdin alone (piped, or `-`) is printed without line
+/// numbers, as rg 14.1.1; `/dev/stdin`, stdin with a file and `-c` as rg too.
+#[test]
+fn stdin_alone_on_a_tty_equals_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::write(fx.file("tty.txt"), "first\nneedle 1\nthird\nneedle 2\n").unwrap();
+    let mut r = Report(Vec::new());
+    for args in [
+        "cat tty.txt | {} --color never needle",
+        "{} --color never needle - < tty.txt",
+        "{} --color never needle /dev/stdin < tty.txt",
+        "{} --color never needle - tty.txt < tty.txt",
+        "{} --color never -c needle - < tty.txt",
+    ] {
+        let Some(want) = on_a_tty(&fx, &args.replace("{}", "rg")) else {
+            return;
+        };
+        let got = on_a_tty(&fx, &args.replace("{}", "sfor")).unwrap();
+        r.check(args.to_string(), (0, want), (0, got));
+    }
+    r.assert_empty();
+}
