@@ -35,7 +35,8 @@ leading magic bytes, or an explicit `--format` override.
 _Avoid_: sniffer, classifier
 
 **Grammar**:
-A tree-sitter parser for one programming language, installed separately from the binary.
+A tree-sitter parser for one programming language. The Grammars of the v1 code Formats are
+compiled into sfor; any other one comes as a **Grammar Helper**.
 _Avoid_: parser, language pack
 
 ### Describing where a match is
@@ -45,10 +46,23 @@ The component that reads a file of a given **Format** and produces the **Trail**
 **Match** in it.
 _Avoid_: parser, handler, plugin
 
+**Helper Processor**:
+A **Processor** that runs as a separate program and talks to sfor over protocol v1, JSON lines
+on its stdin and stdout. It is started once per search, when the first file of its **Format**
+needs a **Trail**, and runs in one of three modes its **Format Definition** names: `pool`
+(several copies, one file each at a time), `concurrent` (one process, several files at once,
+answers matched by id) or `oneshot` (one process per file).
+_Avoid_: plugin, sidecar, daemon, "helper" for anything else
+
 **External Processor**:
-A **Processor** implemented as a separate program, in any language, that searchfor talks to
-over a documented protocol.
+A **Helper Processor** written by anyone, in any language, and named by a **Format
+Definition** with `processor = "external"`.
 _Avoid_: plugin, extension
+
+**Grammar Helper**:
+A **Helper Processor** built by searchfor that carries one **Grammar** not compiled into sfor,
+installed with `--install-grammar` together with its **Format Definition**.
+_Avoid_: grammar plugin, grammar module
 
 **Trail**:
 The ordered list of **Segments** leading from the root of a file down to a **Match**.
@@ -79,6 +93,9 @@ _Avoid_: converter, preprocessor (ripgrep's `--pre` is the external variant)
 - Every **Segment** delimits one **Section**
 - An **Extractor** gives the text it extracts a **Trail** of its own (page, sheet, slide,
   table, row, column)
+- A **Helper Processor** serves the files of one **Format** during one search
+- A **Grammar Helper** carries exactly one **Grammar**; the `treesitter` **Processor** uses it
+  when its Grammar is not compiled in
 - A **Fragment** shows one or more **Matches** from the same line
 
 ## Example dialogue
@@ -91,6 +108,11 @@ _Avoid_: converter, preprocessor (ripgrep's `--pre` is the external variant)
 > **Dev:** "And `--expand` prints what, exactly?"
 > **Domain expert:** "The **Section** of the last **Segment** in the Trail: the whole bash
 > block, not the whole Install chapter."
+>
+> **Dev:** "And a match inside a Lua file?"
+> **Domain expert:** "Lua's **Grammar** is not compiled in. Once `--install-grammar lua` put
+> its **Grammar Helper** in place, the `treesitter` **Processor** hands the file to that helper
+> and gets back `Player › update`; without it, the file is Plain."
 >
 > **Dev:** "And a match inside a PDF?"
 > **Domain expert:** "Only with `--docs`: the PDF **Extractor** turns it into text and gives
@@ -105,3 +127,6 @@ _Avoid_: converter, preprocessor (ripgrep's `--pre` is the external variant)
   Trails — resolved: a **Processor** may use a **Grammar**, and they are distinct.
 - "context" collides with ripgrep's context lines (`-A`/`-B`/`-C`) — resolved: never used for
   the **Trail**.
+- "helper" named both the install flag of grill #8 («un subcomando de sfor ayuda en la
+  instalación») and the separate programs of 8451–8459 — resolved: a **Helper Processor** is the
+  program; `--install-grammar` is the install flag.

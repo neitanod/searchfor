@@ -1,7 +1,10 @@
 # searchfor — v1 design
 
-Status: draft · 2026-10-16, aligned with the M1 implementation · Task 768 · source of truth
-for decisions: [grill-respuestas.md](grill-respuestas.md) (numbers below, like **#6**, refer to its questions)
+Status: draft · 2026-10-17, aligned with the M1 implementation and the M2 decisions of the Hilo
+(8449–8459) · Task 768 · source of truth for decisions:
+[grill-respuestas.md](grill-respuestas.md) (numbers below, like **#6**, refer to its questions;
+four-digit numbers are Hilo messages; «M2 plan» marks a decision taken in
+[the M2 plan](../plans/2026-10-17-searchfor-m2.md) where Sebastián left it open)
 and [../../CONTEXT.md](../../CONTEXT.md) for the vocabulary.
 
 ## 1. Goal
@@ -28,8 +31,8 @@ contract. That combination is the product.
 | Structural search | `--within`, `--expand`, `--in-headings` | #4 |
 | Detection | extension, exact name, shebang, magic bytes, `--format` override | #5 |
 | Format Definitions | embedded TOML + user directory + export command ([ADR 0002](../adr/0002-format-definitions-as-embedded-toml.md)) | #6 |
-| External Processors | any language, over a documented protocol | #7 |
-| Grammars | WebAssembly; all v1 Grammars embedded, extra ones installable with a helper flag (§7) | #8, 8361 |
+| External Processors | any language, as Helper Processors over protocol v1 (§4.4) | #7, 8451–8459 |
+| Grammars | compiled into sfor for the v1 Formats; any other language as a Grammar Helper installed with `--install-grammar` (§7, [ADR 0005](../adr/0005-grammars-compiled-in-extras-as-helper-processors.md)) | #8, 8361, 8451–8454 |
 | Trail details | §5 | #9–#12 |
 | Output | tree on a TTY, one line per Match in a pipe, `--json` = ripgrep's messages plus `trail`; Fragments for long lines | #13–#15, 8365 |
 | Agents | Claude Code skill, README section for agents, MCP server | #19 |
@@ -97,6 +100,11 @@ Signals, in order; the first one that decides wins:
    Office and EPUB documents of `--docs`).
 5. Shebang on the first line (`#!/usr/bin/env bash` → bash).
 
+Magic bytes and shebangs (signals 4 and 5) are read only for a file whose name has no extension
+(M2 plan). A file with an extension no Definition claims (`.txt`, `.c`) is decided Plain by its
+path alone, so it keeps ripgrep's printing path even though the code Definitions declare
+shebangs; Object Formats (M4) list their extensions (`.so`, `.o`, `.dll`) besides their magic.
+
 A file no signal decides is **Plain**: its Matches print with an empty Trail, exactly like
 ripgrep. There is no content-sniffing heuristic.
 
@@ -111,19 +119,26 @@ processor  = "treesitter"
 
 [params]
 grammar = "php"
-# A tree-sitter query. Every @segment capture opens a Segment; @name labels it,
-# @signature (optional) is the line shown in tree output (#10).
+# A tree-sitter query. Every @segment capture opens a Segment and @name names it. Optional:
+# @prefix is joined to the name with a dot (Go's method receivers: `Server.Start`), and
+# @signature replaces the Segment's first line as the line shown in tree output (#10).
 query = '''
+(namespace_definition name: (namespace_name) @name) @segment
 (class_declaration name: (name) @name) @segment
+(interface_declaration name: (name) @name) @segment
+(trait_declaration name: (name) @name) @segment
+(enum_declaration name: (name) @name) @segment
 (method_declaration name: (name) @name) @segment
 (function_definition name: (name) @name) @segment
 '''
-kinds = { class_declaration = "class", method_declaration = "method", function_definition = "function" }
+kinds = { namespace_definition = "namespace", class_declaration = "class", interface_declaration = "interface", trait_declaration = "trait", enum_declaration = "enum", method_declaration = "method", function_definition = "function" }
 ```
 
 - Built-in Definitions live in `formats/` in the repo and are embedded at compile time.
-- User Definitions live in `$XDG_CONFIG_HOME/searchfor/formats/*.toml`. A user file with the
-  same `name` as a built-in replaces it; a new name adds a Format.
+- An installed Grammar Helper brings its own Definition (§7), loaded after the built-ins.
+- User Definitions live in `$XDG_CONFIG_HOME/searchfor/formats/*.toml`, loaded last. A user file
+  with the same `name` as a built-in or installed Definition replaces it; a new name adds a
+  Format.
 - `sfor --export-formats <DIR>` writes every embedded Definition to `<DIR>` (#6 comment). It
   refuses to write into the user formats directory, so an export never silently overrides
   the built-ins.
@@ -133,57 +148,117 @@ kinds = { class_declaration = "class", method_declaration = "method", function_d
 ### 4.3 Processors
 
 A Processor gets the bytes of one file (or of a document's extracted text), its Format
-Definition parameters and the list of Matches (line numbers and byte offsets). It returns, for each Match, its Trail, and for
-each Segment its Section (start and end line). That contract is the same for built-in and
-External Processors.
+Definition parameters and the list of Matches (line numbers and byte offsets). It returns, for
+each Match, its Trail, and for each Segment its Section (start and end line). That contract is
+the same for built-in Processors and Helper Processors: for a Helper Processor, sfor implements
+it by speaking protocol v1 (§4.4).
 
 | Processor | Formats | Built on |
 |---|---|---|
 | `markdown` | Markdown | pulldown-cmark, with source offsets |
-| `keypath` | YAML, JSON, TOML | tree-sitter grammars, with code to compute array indexes |
-| `treesitter` | code (PHP, JS, TS, Bash, Go, Rust, Python and every other installed Grammar), HTML, XML | a tree-sitter query from the Definition |
+| `keypath` | YAML, JSON, TOML (the Definition's `syntax`) | native parsers: a JSON scanner of our own, `saphyr-parser` for YAML (its character offsets converted to bytes), `toml_edit` for TOML |
+| `treesitter` | code: PHP, JavaScript, TypeScript, TSX, Bash, Go, Rust and Python with their Grammars compiled in; any other language through an installed Grammar Helper (§7). HTML and XML are decided in M3 | a tree-sitter query from the Definition |
 | `csv` | CSV, TSV | the csv crate |
 | `object` | ELF, PE, Mach-O | goblin |
 | `docs` extractors | PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB, SQLite, only with `--docs` (M4) | Rust crates, no external programs; chosen in the M4 plan |
-| `external` | anything | a command named in the Definition (§4.4) |
+| `external` | anything | a Helper Processor named in the Definition (§4.4) |
 
-The generic `treesitter` Processor is what makes most new Formats a pure TOML change: adding a
-language means installing its Grammar and writing a query.
+`keypath` uses native parsers instead of tree-sitter (M2 research, 2026-10-16): tree-sitter-yaml
+turns any file over 32 768 lines into one error node (its scanner counts rows in an `int16_t`),
+and a lock file can pass that size; tree-sitter's TOML tree does not model TOML tables, so
+`[[products.variants]]` would need TOML's table rules reimplemented; and the JSON scanner took
+11 ms on an 859 KB file where tree-sitter took 300 ms.
 
-### 4.4 External Processors (#7)
+The generic `treesitter` Processor is what makes most new languages a TOML change: a query in a
+Format Definition, over a Grammar that is compiled in or installed as a Grammar Helper.
+
+### 4.4 Helper Processors (#7, 8451–8459)
+
+A **Helper Processor** is a Processor that runs as a separate program and talks to sfor over
+protocol v1: JSON lines on its stdin and stdout. It is the one mechanism behind both External
+Processors, written by anyone in any language, and the Grammar Helpers of §7 (8453).
 
 ```toml
 name       = "proto"
 extensions = ["proto"]
 processor  = "external"
 [params]
-command = ["proto-trail"]     # resolved through PATH
-timeout_ms = 2000
+command    = ["proto-trail", "--strict"]   # resolved through PATH
+mode       = "pool"                         # "pool" (default), "concurrent" or "oneshot"
+timeout_ms = 5000                           # per request; 5000 when absent
 ```
 
-Protocol, version 1, one process per request. The request's `op` says what is asked; both
-operations mirror the built-in Processor contract (`trails` and `names`):
+**Lifetime: once per search (8455).** sfor starts a Helper Processor when the first file of its
+Format needs Trails — after the search found a Match in that file (§3) — sends it every other
+file of that Format in the same run, and closes its stdin when the run ends. The helper exits on
+that EOF; sfor waits up to one second and then kills it. The next run starts it again.
 
-- **`"op":"trails"`**, the Trail of each Match:
-  - stdin: `{"protocol":1,"op":"trails","path":"api/user.proto","format":"proto","matches":[{"line":42,"byte":1730}]}`
-    followed by EOF; the External Processor reads the file content from `path`. For
-    extracted document text (`--docs`), searchfor writes it to a temporary file and passes
-    that path.
-  - stdout: `{"trails":[[{"kind":"message","name":"User","line":40,"end_line":55}]]}` — one
-    Trail per input Match, in the same order.
-- **`"op":"names"`**, every searchable Segment name, for `--in-headings` (no `matches`):
-  - stdin: `{"protocol":1,"op":"names","path":"api/user.proto","format":"proto"}` and EOF.
-  - stdout: `{"names":[{"text":"User","pieces":[[0,4,1702,1706]],"anchor":1702,"trail":[…]}]}`.
-    `text` is the name as shown. `pieces` says where each piece of `text` comes from, as
-    `[text_start, text_end, src_start, src_end]` byte ranges: equal lengths when the text is
-    verbatim, different when the Processor decoded it (an entity like `&lt;` is 1 byte of
-    text over 4 of the file); a name spanning two lines has one piece per line. `anchor` is
-    the byte where an empty hit (`^`, `$`) lands when no piece contains it (a name with no
-    text). `trail` is the Trail of the named Segment, the Segment itself last.
-- Non-zero exit, timeout or invalid JSON on `trails` → the Matches of that file print with an
-  empty Trail and one warning on stderr naming the Definition. The same failure on `names`
-  makes `--in-headings` skip that file, with one warning. A broken External Processor never
-  aborts the search.
+**Modes (8458, 8459)**, chosen by `mode` in the Definition:
+
+- **`pool`** (default, M2 plan): each copy of the helper has one request at a time. sfor starts a
+  new copy only when every running copy is busy, up to the search's thread count (`-j`, or
+  ripgrep's default), and gives the files to whichever copy is free. A helper that reads a line,
+  answers it and reads the next one is correct in this mode; that is why it is the default.
+- **`concurrent`**: one process, which receives up to the search's thread count of requests
+  without waiting for answers and may answer them in any order: each answer carries the `id` of
+  its request.
+- **`oneshot`** (8455): one process per request. sfor writes `hello` and the request, closes
+  stdin and reads one answer. Meant for helpers written as small scripts; each file pays the
+  start of a process (1.5–3 ms, measured in 8452).
+
+**Wire format.** UTF-8 JSON, one object per line, ended by `\n`, in both directions. Both sides
+ignore fields they do not know, so later versions can add fields. Every line the helper writes to
+stderr is relayed as a warning, `sfor: <format>: <line>`, silenced by `--no-messages`.
+
+1. **`hello`**, the first line of every process:
+   `{"id":0,"op":"hello","protocol":1,"format":"proto","params":{…},"threads":8}`. `params` is
+   the Definition's `[params]` table and `threads` the most requests sfor will have in flight to
+   this process (1 in `pool` and `oneshot`). The helper answers `{"id":0,"protocol":1}` and may
+   add `"name"` and `"version"`. Another protocol number, or no answer within `timeout_ms`,
+   disables the Definition for the run, with one warning.
+2. **`trails`**, the Trail of each Match:
+   `{"id":7,"op":"trails","path":"api/user.proto","matches":[{"line":42,"byte":1730}]}` →
+   `{"id":7,"trails":[[{"kind":"message","name":"User","line":40,"end_line":55}]]}`, one Trail
+   per Match, in the same order. `byte` is the absolute byte offset of the Match in the file at
+   `path`, and `line` its 1-based line. A Segment is the object of `--json` (§6.4): `kind`,
+   `name`, `line`, `end_line`, and optional `level` and `signature`.
+3. **`names`**, every searchable Segment name, for `--in-headings`:
+   `{"id":8,"op":"names","path":"api/user.proto"}` →
+   `{"id":8,"names":[{"text":"User","pieces":[[0,4,1702,1706]],"anchor":1702,"trail":[…]}]}`.
+   `text` is the name as shown. `pieces` says where each piece of `text` comes from, as
+   `[text_start, text_end, src_start, src_end]` byte ranges: equal lengths when the text is
+   verbatim, different when the Processor decoded it (an entity like `&lt;` is 1 byte of
+   text over 4 of the file); a name spanning two lines has one piece per line. `anchor` is
+   the byte where an empty hit (`^`, `$`) lands when no piece contains it (a name with no
+   text). `trail` is the Trail of the named Segment, the Segment itself last.
+4. **Errors**: `{"id":7,"error":"message"}` fails that request only.
+
+**Paths.** sfor sends the path and the Match positions, never the content (8452); the helper reads
+the file. `path` is relative to sfor's working directory, which the helper inherits, or absolute.
+When the bytes sfor searched differ from the file on disk — stdin, a file whose BOM sfor removed
+or whose UTF-16 it transcoded, a document's extracted text with `--docs` (M4) — sfor writes those
+bytes to a temporary file of the run and sends its path, so `byte` always counts the bytes at
+`path`.
+
+**Releasing resources (8458).** Requests are independent: a helper keeps nothing from one file
+for the next, and frees the file, its tree and its answer before reading the next request. Only
+what belongs to the Format stays loaded: the Grammar, the compiled query, the `params` of
+`hello`. searchfor's own helpers are tested to keep their memory flat over thousands of requests
+(§11).
+
+**Failures.** A broken Helper Processor never aborts the search and never changes the exit code.
+The thresholds below are M2 plan decisions.
+
+- An `error` answer, a wrong number of Trails, or a line that is not valid JSON fails that
+  request: the Matches of that file print with an empty Trail, with one warning naming the
+  Definition and the file. For `names`, `--in-headings` skips that file, with one warning.
+- No answer within `timeout_ms`: the request fails as above, and the process is killed, which
+  fails the other requests it had in flight.
+- A process that exits, or closes its stdout, with requests in flight fails them as above; the
+  next request starts a new process (8455). After three failures in one run — crashes,
+  timeouts or lines that are not valid JSON — the Definition is disabled for the rest of the
+  run, with one warning, and its files print as Plain.
+- A command that cannot be started disables the Definition for the run, with one warning.
 
 ## 5. Trails
 
@@ -205,15 +280,37 @@ headings, and an optional `signature` that tree output may show.
 
 ### 5.2 YAML, JSON, TOML
 
-Each key is a Segment; array elements add `[n]` to the previous Segment's name, zero-based:
-`server › ports[2] › host`. TOML tables and arrays of tables follow the same model. A Match
-inside a multi-line string belongs to that key.
+- Each key is a Segment (`kind = "key"`). An array element is a Segment (`kind = "element"`)
+  named after the key that holds the array plus its zero-based index, and that key is hidden,
+  so the Trail reads `server › ports[2] › host`. Nested arrays chain the indexes
+  (`matrix[1][0]`); the elements of a top-level array are `[0]`, `[1]`…
+- TOML tables and arrays of tables follow the same model: the second `[[products]]` is
+  `products[1]`, and a table's Section runs to the next header that is not inside it, so
+  `[[products.variants]]` lands under `products[1]`. A dotted key (`a.b.c = 1`) is one Segment
+  per part.
+- A Match inside a multi-line string belongs to its key. A Match in the text of a key itself is
+  not inside that key, as a Match on a heading line (§5.1).
+- A YAML stream with more than one document gives each document a Segment named `document N`
+  (`kind = "document"`, 1-based, as `row 128` and `page 42`). Merge keys are keys named `<<`;
+  an alias is text of the key it sits in; a complex key (`? [a, b]`) is named by its first 40
+  characters.
+- JSON accepts comments and trailing commas (`tsconfig.json`, editor settings).
+- On a syntax error the Trails of the Matches before it are kept, and the Matches after it print
+  with an empty Trail, without a warning: Helm templates are often not valid YAML, and a warning
+  per file would bury the output (M2 plan).
 
 ### 5.3 Code (#10)
 
-Segments come from the Definition's query. One-line output shows names
-(`class Cart › addItem`); tree output shows the signature line of each Segment
-(`public function addItem(Item $item, int $qty = 1): void`).
+Segments come from the Definition's query (§4.2): every `@segment` capture is a Segment named
+by its `@name`, with its kind from `kinds` (the node kind when absent). One-line output shows
+the names (`Cart › addItem`), as it does for every Format; tree output shows the signature of
+each Segment: the `@signature` capture, or else the first line of the Segment without a trailing
+`{` (`public function addItem(Item $item, int $qty = 1): void`).
+
+- A Go method is not nested in its type, so the query captures the receiver as `@prefix` and the
+  Segment is named `Server.Start` (M2 plan).
+- A Match in a Segment's name (`addItem` on its own declaration line) is not inside that
+  Segment, as a Match on a heading line (§5.1); a Match in its parameters or body is.
 
 ### 5.4 HTML and XML
 
@@ -335,28 +432,46 @@ one line, wrapped here):
   Their schema lives in `docs/json-schema.json`.
 - `--json --no-trail` prints the same messages as `rg --json`; only the timings differ.
 
-## 7. Grammars (#8, follow-up 8361)
+## 7. Grammars (#8, 8361, 8451–8454)
 
-Requirements from #8: every Grammar included in the default install, extra ones easy to add,
-and a helper command to install them.
+Requirements from #8: every Grammar of the v1 Formats included in the default install, extra
+ones easy to add, and a flag that installs them. 8454 replaced the WebAssembly Grammars of 8361
+([ADR 0003](../adr/0003-grammars-as-wasm.md), superseded) with
+[ADR 0005](../adr/0005-grammars-compiled-in-extras-as-helper-processors.md):
 
-Grammars are WebAssembly modules loaded through tree-sitter's `wasm` feature, the approach the
-Zed editor uses ([ADR 0003](../adr/0003-grammars-as-wasm.md)).
+- **Compiled in.** The Grammars of the code Formats of §2 — php, javascript, typescript, tsx,
+  bash, go, rust, python — are linked into sfor from their crates.io crates. YAML, JSON and TOML
+  use native parsers (§4.3) and Markdown uses pulldown-cmark, so they need no Grammar. M3
+  decides whether HTML and XML use one.
+- **Grammar Helpers.** Any other language is a **Grammar Helper**: a separate binary, built by
+  searchfor from the same `treesitter` code with one Grammar compiled in, that speaks the Helper
+  Processor protocol (§4.4) in `concurrent` mode. It lives in
+  `$XDG_DATA_HOME/searchfor/grammars/<lang>/` (on Linux `~/.local/share/searchfor/grammars/`)
+  together with its Format Definition, `<lang>.toml`, which sfor loads after the built-ins and
+  before the user formats directory. Its Definition says `processor = "treesitter"` and
+  `grammar = "<lang>"`, as a compiled-in one does.
+- **`sfor --install-grammar <lang>`** reads the Grammar index: a JSON file in the GitHub
+  repository, `grammars/index.json`, listing for each Grammar its name, version, source
+  repository, license and Format Definition, and for each system (`linux-x86_64`,
+  `macos-aarch64`, `windows-x86_64`, …) the URL and SHA-256 of its binary. sfor downloads the
+  binary for the running system, verifies the checksum, and only then writes the binary, the
+  Definition and `installed.json` (version and checksum) to the Grammar directory. A checksum
+  mismatch, or no binary for the system, is an error (exit 2) that leaves the directory as it
+  was. Installing a Grammar again replaces it. Only `https://` and `file://` URLs are accepted;
+  `SFOR_GRAMMAR_INDEX` replaces the index URL (tests and mirrors).
+- **`sfor --list-grammars`** lists the compiled-in Grammars, the installed ones with their
+  version and directory, and the ones the index offers for this system; when the index cannot
+  be read it lists the first two and warns.
+- A Format Definition whose Grammar is neither compiled in nor installed is listed by
+  `--list-formats` as unavailable, and its files are treated as Plain with one warning per run.
+- A Grammar Helper binary per Grammar and system is built and published by the release pipeline
+  (§10, M5). M2 ships the client side, the Grammar Helper template and a script that builds one
+  for the running system (M2 plan).
 
-- The Grammars needed by the Formats of §2 (markdown, yaml, json, toml, html, xml, php,
-  javascript, typescript, bash, go, rust, python) are embedded in the binary.
-- Extra Grammars live in `$XDG_DATA_HOME/searchfor/grammars/<lang>.wasm`; a file there with
-  the name of an embedded Grammar replaces it.
-- `sfor --install-grammar <lang>` downloads one `.wasm` from the searchfor Grammar index — a
-  JSON file in the GitHub repository listing language, source repository, version, download
-  URL and SHA-256 — verifies the checksum, and writes it to the Grammar directory. The same
-  file works on every platform.
-- `sfor --list-grammars` shows embedded, installed and available Grammars.
-- A Format Definition whose Grammar is missing is listed by `--list-formats` as unavailable,
-  and its files are treated as Plain with one warning per run.
-
-Cost to measure in the first chunk that parses code: the size wasmtime adds to the binary, and
-parsing speed against a native Grammar. Only files with Matches are parsed (§3).
+Measured in the M2 research (2026-10-16 and 2026-10-17, on this machine): native parsing is
+1.5–1.6× faster than WebAssembly; a stripped release binary with only the seven code Grammars
+and the keypath parsers weighs 8.5 MB (sfor 0.1 weighs 5.5 MB); and tree-sitter parses and
+queries real Rust code at about 3 MB/s per thread. Only files with Matches are parsed (§3).
 
 ## 8. Command line (#3, #4)
 
@@ -379,7 +494,7 @@ parsing speed against a native Grammar. Only files with Matches are parsed (§3)
 | `--no-trail` | ripgrep-identical output |
 | `--fragment-width <N>` | Fragment width when there is no terminal |
 | `--list-formats`, `--export-formats <DIR>` | Format Definitions |
-| `--install-grammar <LANG>`, `--list-grammars` | Grammars |
+| `--install-grammar <LANG>`, `--list-grammars` | Grammar Helpers (§7) |
 | `--docs` | search PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite through the built-in extractors (M4, 8395) |
 | `--mcp` | run as an MCP server over stdio |
 
@@ -399,6 +514,8 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
 - Public repository: https://github.com/neitanod/searchfor (account chosen in 8366).
 - `dist` (formerly cargo-dist) builds GitHub Releases for Linux, macOS and Windows on x86-64
   and arm64, and publishes the Homebrew tap and the npm package from the same configuration.
+- The same pipeline builds a Grammar Helper per Grammar for the same systems and writes their
+  URLs and SHA-256 to `grammars/index.json` (§7, M5).
 - The crate `searchfor` is published on crates.io when v0.1 works (#20).
 
 ## 11. Acceptance criteria
@@ -410,8 +527,8 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
 3. A Match inside a fenced code block under `## Linux` under `# Install` gets the Trail
    `Install › Linux › bash`.
 4. A Match in `config.yaml` at `server.ports[2].host` gets that Trail.
-5. A Match inside a PHP method gets `class Cart › addItem`, and the tree output shows the
-   method's signature.
+5. A Match inside a PHP method gets `Cart › addItem` in the one-line output, and the tree
+   output shows the class's and the method's signatures.
 6. A Match in a stripped ELF binary shows format, section, offset and string, and no symbol.
 7. With `--docs`, a Match in a PDF gets the PDF's chapter Trail; without `--docs`, the PDF
    is treated as ripgrep treats it. A zip is never opened (8390).
@@ -421,12 +538,23 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
    Section once.
 10. A user Definition in the formats directory overrides the built-in with the same name;
     `--export-formats` refuses the formats directory.
-11. An External Processor that crashes leaves its Matches with an empty Trail and a warning;
-    the exit code is still ripgrep's (0 if anything matched).
+11. A Helper Processor that crashes leaves the Matches of the file it was serving with an empty
+    Trail and a warning, is started again for the next file, and the exit code is still
+    ripgrep's (0 if anything matched).
 12. Every `match` message of `--json` carries `trail`, `format` and `fragment` valid against
     `docs/json-schema.json`; `--json --no-trail` equals `rg --json`, timings aside, for the
     implemented flags.
 13. Performance: on `~/robotin/knowledge` (619 Markdown files on 2026-10-16), `sfor` takes at
     most 1.5× the wall time of `rg` for a pattern matching under 5 % of the files, measured as
-    the median of 10 runs with `hyperfine`.
+    the median of 10 runs with `hyperfine`. On code (M2, `scripts/bench-code.sh`): with a
+    pattern no file matches, and with `--no-trail`, at most 1.1× `rg`; with a pattern matching
+    under 5 % of the files, sfor's time over `rg`'s is at most the size of the matching files
+    divided by 2.5 MB/s per search thread, the cost of parsing them.
 14. `sfor --mcp` answers a `search` call from Claude Code.
+15. In `pool`, `concurrent` and `oneshot` modes, an example Helper Processor gives the same
+    Trails; a pool never runs more copies than search threads; a concurrent helper that answers
+    out of order still gets each answer to its own file.
+16. A Grammar Helper and the example helper keep their memory flat over 5 000 requests: their
+    resident memory after 5 000 requests is at most 2 MiB over its value after 500.
+17. `sfor --install-grammar` installs a Grammar Helper from an index, refuses a binary whose
+    SHA-256 does not match, and the installed Grammar gives Trails.
