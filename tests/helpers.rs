@@ -243,6 +243,50 @@ fn h03_out_of_order_answers_reach_their_files() {
 }
 
 #[test]
+fn h03b_copies_that_ignore_eof_close_together() {
+    // Review m2-code-r1, Fable #1: two Definitions, several copies each, every one ignoring
+    // the EOF of its stdin. They all get their second of grace at once, so the run ends about
+    // a second after the search instead of a second per copy (spec §4.4, Lifetime).
+    let fx = Fixture::new();
+    let bin = example_helper();
+    for (name, ext) in [("ini", "ini"), ("cfg", "cfg")] {
+        let def = format!(
+            "name = '{name}'\nextensions = ['{ext}']\nprocessor = 'external'\n[params]\ncommand = [{:?}]\nmode = 'pool'\ntimeout_ms = 2000\n",
+            bin.to_str().unwrap()
+        );
+        std::fs::write(fx.formats.path().join(format!("{name}.toml")), def).unwrap();
+    }
+    let dir = fx.file("gen");
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 1..=8 {
+        for ext in ["ini", "cfg"] {
+            std::fs::write(dir.join(format!("g{i:02}.{ext}")), "[s]\nk = needle\n").unwrap();
+        }
+    }
+    let log = fx.file("helper.log");
+    let started = Instant::now();
+    let o = run(fx
+        .sfor(["needle", "gen", "--flat", "-j", "4"])
+        .env("SFOR_EXAMPLE_SLOW", "/gen/")
+        .env("SFOR_EXAMPLE_NOEXIT", "1")
+        .env("SFOR_EXAMPLE_LOG", &log));
+    let took = started.elapsed();
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(stdout(&o).lines().count(), 16);
+    let copies = starts(&log);
+    assert!(copies >= 4, "{copies} copies");
+    // 16 requests of 300 ms on 4 threads (1.2 s), then one second of grace for all of them;
+    // one second per copy would be over 5 s.
+    assert!(
+        took < Duration::from_millis(4500),
+        "{took:?} for {copies} copies"
+    );
+    for pid in pids(&log) {
+        assert!(!alive(pid), "copy {pid} outlived sfor");
+    }
+}
+
+#[test]
 fn h04_a_crash_is_plain_with_a_warning_and_a_restart() {
     // Spec §11 #11.
     let fx = Fixture::new();

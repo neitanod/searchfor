@@ -12,7 +12,8 @@
 //!
 //! And at start: `SFOR_EXAMPLE_LOG` (a file to append `start <pid>` to), `SFOR_EXAMPLE_TRACE`
 //! (a file to append `begin <pid> <path>` and `end <pid> <path>` to around each request, the
-//! `end` before the answer), `SFOR_EXAMPLE_STDERR`
+//! `end` before the answer), `SFOR_EXAMPLE_NOEXIT` (when set, keep running after the EOF of
+//! stdin, until killed), `SFOR_EXAMPLE_STDERR`
 //! (a line to write to stderr), `SFOR_EXAMPLE_FORK` (when set, start `sleep 30` with this
 //! process's stdout and stderr, as a careless helper's child would).
 use anyhow::Context;
@@ -243,5 +244,10 @@ fn main() {
     }) {
         eprintln!("sfor-example-helper: {e:#}");
         std::process::exit(1);
+    }
+    if std::env::var_os("SFOR_EXAMPLE_NOEXIT").is_some() {
+        loop {
+            std::thread::sleep(Duration::from_secs(3600));
+        }
     }
 }

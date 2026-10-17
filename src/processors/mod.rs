@@ -281,7 +281,8 @@ impl Processors {
         }
     }
 
-    /// Closes every helper's stdin and waits for it (spec §4.4, Lifetime). Idempotent.
+    /// Closes every helper's stdin and waits for it (spec §4.4, Lifetime), every Definition's
+    /// at once (review m2-code-r1, Fable #1). Idempotent.
     pub fn shutdown(&self) {
         let helpers: Vec<_> = self
             .helpers
@@ -290,9 +291,11 @@ impl Processors {
             .drain()
             .map(|(_, h)| h)
             .collect();
-        for h in helpers {
-            h.shutdown();
-        }
+        std::thread::scope(|s| {
+            for h in &helpers {
+                s.spawn(move || h.shutdown());
+            }
+        });
     }
 }
 

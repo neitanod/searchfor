@@ -572,7 +572,9 @@ impl Host {
     }
 
     /// End of the run: no more requests; every process gets EOF, a second, then a kill, and is
-    /// reaped (spec §4.4, Lifetime). Not a warning: a shutdown is not a failure.
+    /// reaped (spec §4.4, Lifetime). Not a warning: a shutdown is not a failure. The copies
+    /// close at once, so their second of grace and of pipes is spent together, not once per
+    /// copy (review m2-code-r1, Fable #1).
     pub fn shutdown(&self) {
         let conns = {
             let mut st = self.st.lock().unwrap();
@@ -580,9 +582,11 @@ impl Host {
             std::mem::take(&mut st.conns)
         };
         self.freed.notify_all();
-        for c in conns {
-            c.close(false);
-        }
+        std::thread::scope(|s| {
+            for c in &conns {
+                s.spawn(move || c.close(false));
+            }
+        });
     }
 }
 
@@ -1476,6 +1480,49 @@ mod tests {
             assert_eq!(w.len(), 1, "{w:?}");
             assert!(w[0].contains("before answering hello"), "{w:?}");
         }
+    }
+
+    #[test]
+    fn shutdown_closes_every_copy_at_once() {
+        // Review m2-code-r1, Fable #1: four copies that ignore the EOF of stdin get their
+        // second of grace together, not one after another (spec §4.4, Lifetime).
+        let deaf: Body = Arc::new(|lines, out, killed| {
+            let _ = lines.next();
+            out.write_all(
+                line(&Reply {
+                    id: 0,
+                    protocol: Some(1),
+                    ..Default::default()
+                })
+                .as_bytes(),
+            )
+            .unwrap();
+            for l in lines.map_while(Result::ok) {
+                std::thread::sleep(Duration::from_millis(100));
+                out.write_all(line(&echo(&req(&l)).unwrap()).as_bytes())
+                    .unwrap();
+            }
+            while !killed.load(SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let r = run(Mode::Pool, 4, 2000, deaf);
+        std::thread::scope(|s| {
+            for i in 0..4 {
+                let h = r.host.clone();
+                s.spawn(move || assert!(trails(&h, &format!("{i}.ini")).is_ok()));
+            }
+        });
+        assert_eq!(r.launches.load(SeqCst), 4);
+        let t = Instant::now();
+        r.host.shutdown();
+        let took = t.elapsed();
+        assert_eq!(r.reaps.load(SeqCst), 4);
+        assert!(took >= SHUTDOWN_WAIT, "{took:?}: no grace");
+        assert!(
+            took < SHUTDOWN_WAIT + Duration::from_millis(500),
+            "{took:?} for four copies: one grace each"
+        );
     }
 
     #[test]
