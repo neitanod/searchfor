@@ -88,6 +88,32 @@ pub fn cut_name(text: &mut String, pieces: &mut Pieces, max: usize) {
     });
 }
 
+/// True for the characters that would break a printed name or drive the terminal: C0 and C1
+/// controls, DEL, and the Unicode line and paragraph separators.
+fn breaks_display(c: char) -> bool {
+    c.is_control() || c == '\u{2028}' || c == '\u{2029}'
+}
+
+/// A Segment name or signature as tree and one-line output print it (spec §6.5, M3 plan D14):
+/// each character of `breaks_display` as its escape (`\n`, `\r`, `\t`, `\0`, else
+/// `\u{1b}`), so a decoded `"a\nb"` key stays on its row and cannot write escape sequences to
+/// the terminal. Everything else, a backslash included, is unchanged; `--json` keeps the name
+/// as decoded.
+pub fn visible(name: &str) -> std::borrow::Cow<'_, str> {
+    if !name.chars().any(breaks_display) {
+        return std::borrow::Cow::Borrowed(name);
+    }
+    let mut out = String::with_capacity(name.len() + 8);
+    for c in name.chars() {
+        if breaks_display(c) {
+            out.extend(c.escape_debug());
+        } else {
+            out.push(c);
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,6 +146,21 @@ mod tests {
         let mut p: Pieces = vec![(0..5, 0..5)];
         cut_name(&mut t, &mut p, 40);
         assert_eq!((t.as_str(), p), ("short", vec![(0..5, 0..5)]));
+    }
+
+    #[test]
+    fn visible_escapes_controls_and_line_separators_only() {
+        assert_eq!(visible("plain ñ"), "plain ñ");
+        assert!(matches!(visible("plain"), std::borrow::Cow::Borrowed(_)));
+        assert_eq!(visible("a\nb"), "a\\nb");
+        assert_eq!(visible("a\r\tb\0"), "a\\r\\tb\\0");
+        assert_eq!(visible("\u{1b}[31mred"), "\\u{1b}[31mred");
+        assert_eq!(
+            visible("x\u{85}y\u{2028}z\u{7f}"),
+            "x\\u{85}y\\u{2028}z\\u{7f}"
+        );
+        // A backslash and quotes are text, not escapes.
+        assert_eq!(visible(r#"a\nb "q" 's'"#), r#"a\nb "q" 's'"#);
     }
 
     #[test]
