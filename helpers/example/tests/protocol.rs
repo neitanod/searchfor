@@ -161,9 +161,12 @@ fn names_list_sections_and_keys() {
     }
 }
 
-/// 8458: memory does not grow from one file to the next (D23). Linux only.
+/// 8458: memory does not grow from one file to the next (D23). Linux only. It takes 21 s in
+/// release and 158 s in debug, so it runs with the ceilings:
+/// `cargo test --release -p sfor-example-helper -- --ignored`.
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore]
 fn memory_stays_flat_over_five_thousand_requests() {
     let big = std::env::temp_dir().join(format!("big-{}.ini", std::process::id()));
     let mut s = String::new();
