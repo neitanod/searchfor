@@ -1303,3 +1303,81 @@ fn stdin_alone_on_a_tty_equals_ripgrep() {
     }
     r.assert_empty();
 }
+
+/// Code review r5, Fable #2: with one thread (`--sort path`, `-j1`, one file), rg 14.1.1's
+/// printer writes the separator between files before a file's first line (hiargs.rs:625-634),
+/// so none goes before a file whose output is only the binary message, and the flat layout
+/// does the same; a single missing path is walked with one thread, as rg's.
+#[test]
+fn the_separator_with_one_thread_waits_for_a_line() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("seq")).unwrap();
+    let plain = "first needle líne\nsecond\nthird needle\n\n# Head\n\nfourth needle ß\nfifth\n";
+    let mut nul8 = b"\xef\xbb\xbf".to_vec();
+    nul8.extend_from_slice(plain.as_bytes());
+    nul8.extend_from_slice(b"bin\0ary needle\nlast needle\n");
+    let mut odd = b"\xff\xfe".to_vec();
+    odd.extend(plain.encode_utf16().flat_map(u16::to_le_bytes));
+    odd.push(b'A');
+    std::fs::write(fx.file("seq/plain.txt"), plain).unwrap();
+    std::fs::write(fx.file("seq/nul8.txt"), &nul8).unwrap();
+    std::fs::write(fx.file("seq/odd.txt"), &odd).unwrap();
+    let files = ["seq/plain.txt", "seq/nul8.txt", "seq/odd.txt"];
+    // The flat layout's Match rows put a space after the line number.
+    let flat = regex_lite::Regex::new(r"(?m)^([^:\n]*:\d+:) ").unwrap();
+    let mut r = Report(Vec::new());
+    for threads in [&["--sort", "path"][..], &["-j1"]] {
+        for order in [&files[..], &[files[1], files[0], files[2]]] {
+            let mut a = threads.to_vec();
+            a.extend_from_slice(&["-C1", "needle"]);
+            a.extend_from_slice(order);
+            let want = rg(&fx, &a, In::Null);
+            let mut s = vec!["--no-trail"];
+            s.extend_from_slice(&a);
+            let got = sfor(&fx, &s, In::Null);
+            r.check(
+                format!("{s:?}"),
+                (code(&want), stdout(&want)),
+                (code(&got), stdout(&got)),
+            );
+            let mut n = vec!["-n"];
+            n.extend_from_slice(&a);
+            let want = rg(&fx, &n, In::Null);
+            let mut f = vec!["--flat"];
+            f.extend_from_slice(&a);
+            let got = sfor(&fx, &f, In::Null);
+            r.check(
+                format!("{f:?}"),
+                (code(&want), stdout(&want)),
+                (
+                    code(&got),
+                    flat.replace_all(&stdout(&got), "$1").into_owned(),
+                ),
+            );
+        }
+    }
+    // On a tty the separator is an empty line before the path heading.
+    let cmd = "{} --color never --sort path -C1 needle seq/plain.txt seq/nul8.txt seq/odd.txt";
+    if let Some(want) = on_a_tty(&fx, &cmd.replace("{}", "rg")) {
+        let got = on_a_tty(&fx, &cmd.replace("{}", "sfor")).unwrap();
+        r.check(cmd.to_string(), (0, want), (0, got));
+    }
+    for mode in [&["--no-trail"][..], &[], &["--json"]] {
+        let want = rg(&fx, &["needle", "zzz"], In::Null);
+        let mut s = mode.to_vec();
+        s.extend_from_slice(&["needle", "zzz"]);
+        let got = sfor(&fx, &s, In::Null);
+        r.check(
+            format!("{s:?} (stderr)"),
+            (
+                code(&want),
+                common::stderr(&want).replacen("rg:", "sfor:", 1),
+            ),
+            (code(&got), common::stderr(&got)),
+        );
+    }
+    r.assert_empty();
+}

@@ -213,10 +213,14 @@ pub(crate) fn write_binary_message(
     w.write_all(format!("{msg}\n").as_bytes())
 }
 
+/// Writes a Described file; `lead`, ripgrep's separator between files when it searches with one
+/// thread, goes before the first row, so a file whose output is only the binary message has
+/// none (code review r5, Fable #2).
 pub fn render(
     d: &Described,
     src: &[u8],
     o: &RenderOptions,
+    lead: Option<&[u8]>,
     w: &mut dyn WriteColor,
 ) -> std::io::Result<()> {
     let kept = if o.expand {
@@ -225,7 +229,12 @@ pub fn render(
         Default::default()
     };
     let file = FileHead::new(&d.file.path, o);
+    let mut lead = lead;
     for piece in super::pieces(d, src, o) {
+        if let Some(l) = lead.take() {
+            w.write_all(l)?;
+            w.write_all(b"\n")?;
+        }
         match piece {
             Piece::Row(r) => write_row(w, &file, &r, o)?,
             Piece::Section { trail, start, end } => {
@@ -278,13 +287,13 @@ mod tests {
 
     fn plain(d: &Described, src: &[u8], o: &RenderOptions) -> String {
         let mut w = NoColor::new(Vec::new());
-        render(d, src, o, &mut w).unwrap();
+        render(d, src, o, None, &mut w).unwrap();
         String::from_utf8(w.into_inner()).unwrap()
     }
 
     fn ansi(d: &Described, src: &[u8], o: &RenderOptions) -> String {
         let mut w = Ansi::new(Vec::new());
-        render(d, src, o, &mut w).unwrap();
+        render(d, src, o, None, &mut w).unwrap();
         String::from_utf8(w.into_inner()).unwrap()
     }
 

@@ -191,9 +191,9 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         Layout::Flat
     };
     let heading = tty;
-    // The separator BufferWriter prints between two non-empty file outputs, as ripgrep's. One
-    // file needs none, so its output is printed as it grows (`Ctx::spill`), and a closed pipe
-    // stops the search as rg's (code review r4 replay).
+    // The separator between files, which BufferWriter prints between two non-empty file
+    // outputs, as ripgrep's. One file needs none, so its output is printed as it grows
+    // (`Ctx::spill`), and a closed pipe stops the search as rg's (code review r4 replay).
     let separator = match mode {
         _ if one_file => None,
         Mode::Passthrough if args.json || summary_mode.is_some() => None,
@@ -204,6 +204,17 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         Mode::Trail if layout == Layout::Flat && context => Some(b"--".to_vec()),
         _ => None,
     };
+    // With one thread, ripgrep 14.1.1's printer writes it instead, before a file's first line
+    // (hiargs.rs:625-634), so none goes before a file whose output is only the binary message
+    // (code review r5, Fable #2): passthrough's printer, and the flat layout as rg's. The tree
+    // prints a path line for that file too, and the separator goes with the path line, as rg's.
+    let sequential = search::one_thread(args, one_file);
+    let line_separator = match mode {
+        Mode::Passthrough if sequential => separator.clone(),
+        Mode::Trail if sequential && layout == Layout::Flat => separator.clone(),
+        _ => None,
+    };
+    let separator = separator.filter(|_| line_separator.is_none());
     let mut out = BufferWriter::stdout(color);
     out.separator(separator.clone());
     let width = if tty && layout != Layout::Json {
@@ -225,8 +236,10 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         matched: AtomicBool::new(false),
         started: Instant::now(),
         stats: Mutex::new(RunStats::default()),
-        spill: separator.is_none()
-            && (one_file || args.sort.as_deref() == Some("path") || args.threads == Some(1)),
+        spill: separator.is_none() && sequential,
+        sequential,
+        line_separator,
+        printed: AtomicBool::new(false),
     };
     match mode {
         Mode::Quiet => ctx.walk(
@@ -390,11 +403,19 @@ struct Ctx<'a> {
     /// A file's rows may be printed while it is searched (`Spill`): no other file's output can
     /// come between them, and no separator goes between two prints.
     spill: bool,
+    /// ripgrep 14.1.1 would search with one thread (`search::one_thread`).
+    sequential: bool,
+    /// The separator written before a file's first line once something was printed, where the
+    /// BufferWriter does not print it (see `main`).
+    line_separator: Option<Vec<u8>>,
+    /// Something was printed: the flat layout's `line_separator` goes before the next file.
+    printed: AtomicBool,
 }
 
 impl Ctx<'_> {
-    /// Walks the paths, sequentially under `--sort path` or `-j1`, else in parallel with one
-    /// state per thread (design note 11), and calls `visit` for every file to search.
+    /// Walks the paths, sequentially where ripgrep 14.1.1 uses one thread (`--sort path`, `-j1`,
+    /// one file), else in parallel with one state per thread (design note 11), and calls `visit`
+    /// for every file to search.
     fn walk<S: Send>(
         &self,
         init: impl Fn() -> S + Sync,
@@ -402,8 +423,7 @@ impl Ctx<'_> {
     ) -> anyhow::Result<()> {
         let cwd = std::env::current_dir()?;
         let w = search::walker(self.args, &self.paths, &cwd)?;
-        let sequential = self.args.sort.as_deref() == Some("path") || self.args.threads == Some(1);
-        if sequential {
+        if self.sequential {
             let mut state = init();
             for r in w.build() {
                 if self.quit.load(Relaxed) {
@@ -491,6 +511,9 @@ impl Ctx<'_> {
     }
 
     fn print(&self, buf: &Buffer) {
+        if !buf.as_slice().is_empty() {
+            self.printed.store(true, Relaxed);
+        }
         if let Err(e) = self.out.print(buf) {
             // A closed pipe (`sfor x | head`) ends the run quietly, as ripgrep.
             if e.kind() != std::io::ErrorKind::BrokenPipe {
@@ -593,6 +616,7 @@ impl Ctx<'_> {
                 .path(self.with_filename)
                 .max_columns(self.args.max_columns)
                 .max_matches(max)
+                .separator_search(self.line_separator.clone())
                 .build(self.spill_lines()),
         )
     }
@@ -707,7 +731,7 @@ impl Ctx<'_> {
         self.matched.store(true, Relaxed);
         let written = match ro.layout {
             Layout::Tree => output::tree::render(&d, src.bytes(), ro, buf),
-            Layout::Flat => output::flat::render(&d, src.bytes(), ro, buf),
+            Layout::Flat => output::flat::render(&d, src.bytes(), ro, self.lead(), buf),
             Layout::Json => {
                 let jo = self.json_options(ro);
                 let mut v = Vec::new();
@@ -734,6 +758,14 @@ impl Ctx<'_> {
         } else {
             self.args.after()
         }
+    }
+
+    /// What the flat layout writes before a file's first line: `line_separator`, once something
+    /// was printed.
+    fn lead(&self) -> Option<&[u8]> {
+        self.line_separator
+            .as_deref()
+            .filter(|_| self.printed.load(Relaxed))
     }
 
     fn json_options(&self, ro: &RenderOptions) -> JsonOptions {
@@ -879,11 +911,13 @@ impl Ctx<'_> {
             src: src.map(Source::bytes),
             outline,
             max_count: search::max_count(self.args),
+            lead: self.lead(),
         };
         searcher.set_binary_detection(search::binary_detection(self.args, explicit));
         let mut w = Spill {
             buf: &mut st.buf,
             out: self.spill.then_some(&self.out),
+            printed: &self.printed,
         };
         let mut sink =
             StreamSink::new(&mut w, &self.matcher, self.args.invert_match, ro, &jo, file);
@@ -1394,6 +1428,7 @@ const SPILL: usize = 64 * 1024;
 struct Spill<'a> {
     buf: &'a mut Buffer,
     out: Option<&'a BufferWriter>,
+    printed: &'a AtomicBool,
 }
 
 impl Write for Spill<'_> {
@@ -1402,6 +1437,7 @@ impl Write for Spill<'_> {
         if let Some(out) = self.out
             && self.buf.as_slice().len() >= SPILL
         {
+            self.printed.store(true, Relaxed);
             out.print(self.buf)?;
             self.buf.clear();
         }

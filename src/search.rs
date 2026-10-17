@@ -151,6 +151,12 @@ pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder>
     Ok(w)
 }
 
+/// Whether ripgrep 14.1.1 searches with one thread (hiargs.rs:167): under `--sort path`, with
+/// one file, or when the walker's threads are one.
+pub fn one_thread(args: &Args, one_file: bool) -> bool {
+    args.sort.as_deref() == Some("path") || one_file || walker_threads(args) == 1
+}
+
 /// The walker's threads: `-j N`, or ripgrep 14.1.1's default when `-j` is absent or 0, the
 /// available parallelism up to 12; ignore 0.4.23 alone would use 2.
 fn walker_threads(args: &Args) -> usize {
@@ -526,8 +532,31 @@ mod tests {
             .map_or(1, |n| n.get())
             .min(12);
         assert_eq!(walker_threads(&args(&["sfor", "needle"])), rg_default);
-        assert_eq!(walker_threads(&args(&["sfor", "-j0", "needle"])), rg_default);
+        assert_eq!(
+            walker_threads(&args(&["sfor", "-j0", "needle"])),
+            rg_default
+        );
         assert_eq!(walker_threads(&args(&["sfor", "-j3", "needle"])), 3);
+    }
+
+    /// Code review r5, Fable #2: ripgrep 14.1.1 searches with one thread under `--sort`, with
+    /// one file (stdin, or a path that is not a directory) and with `-j1` (hiargs.rs:167), and
+    /// then its printer writes the separator between files.
+    #[test]
+    fn one_thread_as_ripgrep() {
+        let many = walker_threads(&args(&["sfor", "needle"])) > 1;
+        assert!(one_thread(
+            &args(&["sfor", "--sort", "path", "needle"]),
+            false
+        ));
+        assert!(one_thread(&args(&["sfor", "-j1", "needle"]), false));
+        assert!(one_thread(&args(&["sfor", "-j4", "needle"]), true));
+        assert!(!one_thread(&args(&["sfor", "-j4", "needle"]), false));
+        assert_eq!(one_thread(&args(&["sfor", "needle"]), false), !many);
+        assert_eq!(
+            one_thread(&args(&["sfor", "--sort=none", "needle"]), false),
+            !many
+        );
     }
     fn fixture(p: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))

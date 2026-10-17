@@ -27,6 +27,9 @@ pub struct StreamFile<'a> {
     pub outline: Option<&'a Outline>,
     /// `-m`, counted here (see `MaxCount`).
     pub max_count: Option<u64>,
+    /// The flat layout's separator from the file before, written before the first row (see
+    /// `flat::render`).
+    pub lead: Option<&'a [u8]>,
 }
 
 /// A row of a Match line: its Trail and the submatches under it.
@@ -161,9 +164,19 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         Ok(())
     }
 
+    /// The file's `lead`, before its first row.
+    fn lead(&mut self) -> std::io::Result<()> {
+        if let Some(l) = self.file.lead.take() {
+            self.w.write_all(l)?;
+            self.w.write_all(b"\n")?;
+        }
+        Ok(())
+    }
+
     /// One row in the tree or flat layout.
     fn row(&mut self, r: &Row) -> std::io::Result<()> {
         if self.o.layout == Layout::Flat {
+            self.lead()?;
             return flat::write_row(self.w, &self.head, r, self.o);
         }
         if !self.header {
@@ -346,6 +359,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             self.header = true;
             tree::write_header(self.w, self.file.path)?;
         }
+        self.lead()?;
         if gap && self.o.context {
             self.w.write_all(if tree { b"  --\n" } else { b"--\n" })?;
         }
@@ -496,6 +510,9 @@ mod tests {
                 Buffer::no_color()
             }
         };
+        // The separator from a file before, as with one thread: both write it before the first
+        // row, and not before a binary message alone.
+        let lead = (layout == Layout::Flat).then_some(&b"--"[..]);
         let mut streamed = new_buf();
         let mut s = searcher(&a, explicit, true);
         let file = StreamFile {
@@ -505,6 +522,7 @@ mod tests {
             src: Some(src.bytes()),
             outline: outline.as_ref(),
             max_count: crate::search::max_count(&a),
+            lead,
         };
         let mut sink = StreamSink::new(&mut streamed, &m, a.invert_match, &ro, &jo, file);
         s.search_reader(&m, std::io::Cursor::new(src.bytes()), &mut sink)
@@ -541,7 +559,7 @@ mod tests {
             };
             match layout {
                 Layout::Flat => {
-                    super::super::flat::render(&d, src.bytes(), &ro, &mut modelled).unwrap()
+                    super::super::flat::render(&d, src.bytes(), &ro, lead, &mut modelled).unwrap()
                 }
                 Layout::Tree => {
                     super::super::tree::render(&d, src.bytes(), &ro, &mut modelled).unwrap()
