@@ -1801,9 +1801,21 @@ fn in_headings_detects_binary_data_where_ripgrep_does() {
     let fx = Fixture::new();
     std::fs::create_dir(fx.file("ihm")).unwrap();
     std::fs::write(fx.file("ihm/late.md"), late_nul_markdown()).unwrap();
+    std::fs::write(fx.file("ihm/ok.md"), "# needle ok\nbody\n").unwrap();
+    let after = format!(
+        "intro\n{}\0\n# needle after\n",
+        "filler line\n".repeat(6000)
+    );
+    std::fs::write(fx.file("ihm/after.md"), after).unwrap();
     let stdin = In::File("ihm/late.md");
     let mut r = Report(Vec::new());
-    let cases: [(&[&str], In); 10] = [
+    let cases: [(&[&str], In); 14] = [
+        // Code review r7, Fable #1: the same, with two files, a context and a heading only
+        // after the NUL.
+        (&["needle", "ihm/late.md", "ihm/ok.md"], In::Null),
+        (&["-A1", "needle", "ihm/late.md"], In::Null),
+        (&["--binary", "needle", "ihm/late.md"], In::Null),
+        (&["needle", "ihm/after.md"], In::Null),
         (&["-m1", "needle", "-"], stdin),
         (&["-m1", "-A2", "needle", "-"], stdin),
         (&["needle", "-"], stdin),
@@ -1818,9 +1830,11 @@ fn in_headings_detects_binary_data_where_ripgrep_does() {
     for (args, input) in cases {
         let json = args.contains(&"--json");
         let mut a = if json { vec![] } else { vec!["-n"] };
+        // ok.md beside late.md: one order.
+        a.extend_from_slice(&["--sort", "path"]);
         a.extend_from_slice(args);
         let want = rg(&fx, &a, input);
-        let mut s = vec!["--in-headings", "--format", "markdown"];
+        let mut s = vec!["--in-headings", "--format", "markdown", "--sort", "path"];
         if !json {
             s.push("--flat");
         }
