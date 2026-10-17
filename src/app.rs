@@ -321,7 +321,8 @@ enum Streamed<'s> {
     Again(&'s Source),
 }
 
-/// A reader that keeps a copy of what it reads: stdin, searched before its Source exists.
+/// A reader that keeps a copy of what it reads: stdin, or a path that cannot be read twice,
+/// searched before its Source exists.
 struct Tee<R> {
     inner: R,
     read: Vec<u8>,
@@ -577,7 +578,7 @@ impl Ctx<'_> {
         if !self.args.structural() && self.summary.is_none() && !self.args.quiet {
             match detector.detect_by_path(&t.path) {
                 Some(None) => return self.plain_file(st, t, ro),
-                Some(Some(def)) if t.fs.is_some() => {
+                Some(Some(def)) if t.fs.as_deref().is_some_and(rewindable) => {
                     if let Some(p) = processors::by_name(&def.processor)
                         && self.outlined_file(st, t, ro, def, p)
                     {
@@ -824,7 +825,8 @@ impl Ctx<'_> {
     /// files searched in memory, as ripgrep (`rg_in_memory`), are read first and searched in
     /// the Source. Every other file, and stdin, is searched with a reader, which stops at the
     /// binary data of a walked file and at `-m` before the end of stdin; then the Source is read
-    /// (stdin: the bytes the search read, kept by a `Tee`). Err: an error, already reported.
+    /// (stdin and every path that is not a regular file: the bytes the search read, kept by a
+    /// `Tee`). Err: an error, already reported.
     fn search_first(
         &self,
         st: &mut TrailState,
@@ -866,12 +868,24 @@ impl Ctx<'_> {
         let mut sink = CollectSink::new(&self.matcher, self.args.invert_match, false);
         st.stream
             .set_binary_detection(search::binary_detection(self.args, t.explicit));
-        let mut stdin = None;
+        // What cannot be read twice (stdin, `/dev/stdin`, a FIFO) is kept as it is read (code
+        // review r2, Codex #1).
+        let mut kept = None;
         let r = match &t.fs {
-            Some(p) => st.stream.search_path(&self.matcher, p, &mut sink),
-            None => {
-                let tee = stdin.insert(Tee {
-                    inner: std::io::stdin().lock(),
+            Some(p) if rewindable(p) => st.stream.search_path(&self.matcher, p, &mut sink),
+            fs => {
+                let inner: Box<dyn Read> = match fs {
+                    None => Box::new(std::io::stdin().lock()),
+                    Some(p) => match std::fs::File::open(p) {
+                        Ok(f) => Box::new(f),
+                        Err(e) => {
+                            report(&e);
+                            return Err(());
+                        }
+                    },
+                };
+                let tee = kept.insert(Tee {
+                    inner,
                     read: Vec::new(),
                 });
                 st.stream.search_reader(&self.matcher, tee, &mut sink)
@@ -884,13 +898,10 @@ impl Ctx<'_> {
         if !sink.items.iter().any(|i| matches!(i, Item::Match(_))) {
             return Ok(None);
         }
-        let src = match (&t.fs, stdin) {
-            (Some(p), _) => open(p)?,
-            (None, tee) => Source::from_bytes(
-                t.path.clone(),
-                tee.map(|t| t.read).unwrap_or_default(),
-                true,
-            ),
+        let src = match (kept, &t.fs) {
+            (Some(tee), _) => Source::from_bytes(t.path.clone(), tee.read, t.explicit),
+            (None, Some(p)) => open(p)?,
+            (None, None) => unreachable!("stdin is always kept"),
         };
         let mut stats = sink.stats;
         stats.elapsed = started.elapsed();
@@ -1244,6 +1255,11 @@ impl<S: Sink<Error = std::io::Error>> Sink for MaxCountSink<S> {
         self.byte_count = f.byte_count();
         self.inner.finish(s, f)
     }
+}
+
+/// A regular file, which can be opened again and read the same: not `/dev/stdin` or a FIFO.
+fn rewindable(p: &Path) -> bool {
+    std::fs::metadata(p).is_ok_and(|m| m.is_file())
 }
 
 /// The file starts with a byte-order mark that makes grep-searcher read it through a reader

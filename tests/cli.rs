@@ -802,3 +802,97 @@ fn t33_the_closing_frontmatter_line_is_the_document_label() {
     let threes = stdout(&o).lines().filter(|l| l.starts_with("3:")).count();
     assert_eq!(threes, 1, "{}", stdout(&o));
 }
+
+/// sfor with `input` written to a pipe on its stdin, closed after it.
+fn piped(fx: &Fixture, args: &[&str], input: &[u8]) -> std::process::Output {
+    let mut c = fx.sfor(args);
+    c.stdin(Stdio::piped()).stdout(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+/// Code review r2, Codex #1: a path that is not a regular file (`/dev/stdin`, a FIFO) is read
+/// once, as stdin: its Matches are the same as through `-`.
+#[test]
+fn t34_a_path_that_cannot_be_read_twice_is_read_as_stdin() {
+    let fx = Fixture::new();
+    let input = b"# H\nneedle\n";
+    for flags in [
+        &["--format", "markdown"][..],
+        &["--format", "markdown", "--within", ""],
+        &["--format", "markdown", "--tree"],
+    ] {
+        let mut dash = flags.to_vec();
+        dash.extend(["needle", "-"]);
+        let want = piped(&fx, &dash, input);
+        assert_eq!(code(&want), 0, "{dash:?}: {}", stderr(&want));
+        let mut dev = flags.to_vec();
+        dev.extend(["needle", "/dev/stdin"]);
+        let got = piped(&fx, &dev, input);
+        assert_eq!(
+            (code(&got), stdout(&got).replace("/dev/stdin", "<stdin>")),
+            (0, stdout(&want)),
+            "{dev:?}: {}",
+            stderr(&got)
+        );
+    }
+}
+
+/// Code review r2, Codex #1: a FIFO whose writer keeps it open answers `-m1` at the limit, and
+/// is not opened again (which would wait for the writer to close it, and find nothing). With
+/// `--within`, `-m` counts the lines the filter keeps, so the search reads to the end, as on stdin.
+#[test]
+fn t35_max_count_on_an_open_fifo_stops_at_the_limit() {
+    let fx = Fixture::new();
+    for (n, args) in [
+        &["-m1", "needle"][..],
+        &["-m1", "--tree", "needle"],
+        &["-m1", "--json", "needle"],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let name = format!("pipe{n}.md");
+        let fifo = fx.file(&name);
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        if !made.is_ok_and(|s| s.success()) {
+            eprintln!("skipping: mkfifo failed");
+            return;
+        }
+        // The writer holds the FIFO open for 4 s after writing; it is left running.
+        std::thread::spawn(move || {
+            let mut w = std::fs::OpenOptions::new().write(true).open(fifo).unwrap();
+            w.write_all(b"# T\nneedle\n").unwrap();
+            w.flush().unwrap();
+            std::thread::sleep(Duration::from_secs(4));
+        });
+        let mut args = args.to_vec();
+        args.push(&name);
+        let mut c = fx.sfor(&args);
+        c.stdout(Stdio::piped());
+        let started = Instant::now();
+        let mut child = c.spawn().unwrap();
+        let status = loop {
+            if let Some(s) = child.try_wait().unwrap() {
+                break Some(s);
+            }
+            if started.elapsed() > Duration::from_secs(2) {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let elapsed = started.elapsed();
+        if status.is_none() {
+            child.kill().unwrap();
+        }
+        let o = child.wait_with_output().unwrap();
+        assert_eq!(
+            status.and_then(|s| s.code()),
+            Some(0),
+            "{args:?}: still running after {elapsed:?}"
+        );
+        assert!(elapsed < Duration::from_secs(2), "{args:?}: {elapsed:?}");
+        assert!(stdout(&o).contains("needle"), "{args:?}: {}", stdout(&o));
+    }
+}
