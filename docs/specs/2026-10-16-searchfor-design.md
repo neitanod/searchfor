@@ -1,7 +1,7 @@
 # searchfor — v1 design
 
-Status: draft · 2026-10-17, aligned with the M1 implementation and the M2 decisions of the Hilo
-(8449–8459) · Task 768 · source of truth for decisions:
+Status: draft · 2026-10-17, aligned with the M1 implementation, the M2 decisions of the Hilo
+(8449–8459) and the M2 implementation (v0.2) · Task 768 · source of truth for decisions:
 [grill-respuestas.md](grill-respuestas.md) (numbers below, like **#6**, refer to its questions;
 four-digit numbers are Hilo messages; «M2 plan» marks a decision taken in
 [the M2 plan](../plans/2026-10-17-searchfor-m2.md) where Sebastián left it open)
@@ -217,14 +217,17 @@ at most one more second for pipes such a child keeps open, and then exits anyway
 
 **Wire format.** UTF-8 JSON, one object per line, ended by `\n`, in both directions. Both sides
 ignore fields they do not know, so later versions can add fields. Every line the helper writes to
-stderr is relayed as a warning, `sfor: <format>: <line>`, silenced by `--no-messages`.
+stderr is relayed as a warning, `sfor: <format>: <line>`, silenced by `--no-messages`; once a
+SIGINT or SIGTERM has cancelled the run (Lifetime, above), nothing more is relayed, as ripgrep
+prints nothing then.
 
 1. **`hello`**, the first line of every process:
    `{"id":0,"op":"hello","protocol":1,"format":"proto","params":{…},"threads":8}`. `params` is
    the Definition's `[params]` table and `threads` the most requests sfor will have in flight to
    this process (1 in `pool` and `oneshot`). The helper answers `{"id":0,"protocol":1}` and may
-   add `"name"` and `"version"`. Another protocol number, or no answer within `timeout_ms`,
-   disables the Definition for the run, with one warning.
+   add `"name"` and `"version"`. Another protocol number, an `error` answer, no answer within
+   `timeout_ms`, or a process that exits before it answers disables the Definition for the
+   run, with one warning.
 2. **`trails`**, the Trail of each Match:
    `{"id":7,"op":"trails","path":"api/user.proto","matches":[{"line":42,"byte":1730}]}` →
    `{"id":7,"trails":[[{"kind":"message","name":"User","line":40,"end_line":55}]]}`, one Trail
@@ -262,8 +265,9 @@ what belongs to the Format stays loaded: the Grammar, the compiled query, the `p
 The thresholds below are M2 plan decisions.
 
 - A file whose request fails prints as Plain — `format` `null` in `--json`, empty Trails, the
-  layout of §6.2 — with one warning naming the Definition and the file. For `names`,
-  `--in-headings` skips that file, with one warning.
+  layout of §6.2 — with one warning naming the file and the Definition,
+  `sfor: <path>: <format>: <reason>`. For `names`, `--in-headings` skips that file, with one
+  warning.
 - An `error` answer, a wrong number of Trails, or a JSON line with the request's `id` whose
   fields do not fit the protocol fails that request only; the process goes on.
 - A line that is not JSON, or that has no `id`, cannot be attributed to a request: the process
@@ -272,12 +276,17 @@ The thresholds below are M2 plan decisions.
   stops reading cannot stall sfor): the request fails, and the process is killed, which fails
   the other requests it had in flight.
 - A process that exits, or closes its stdout, with requests in flight fails them as above; the
-  next request starts a new process (8455). After three failures in one run — crashes,
-  timeouts or lines that are not valid JSON — the Definition is disabled for the rest of the
-  run, with one warning, and its files print as Plain.
+  next request starts a new process (8455). A process that exits between requests is reaped at
+  once, and the next request replaces it without counting a failure. After three failures in
+  one run — crashes, timeouts or lines that are not valid JSON or have no `id`, each process
+  counted once however many requests it failed — the Definition is disabled for the rest of
+  the run, with one warning, and its files print as Plain. An `error` answer and a reply whose
+  fields do not fit the protocol are not counted.
 - A command that cannot be started disables the Definition for the run, with one warning.
-- While a Definition is disabled, and for a `treesitter` Definition whose Grammar is not
-  available, its files print as Plain without further warnings.
+- While a Definition is disabled, its files print as Plain with no further warning.
+- A `treesitter` Definition whose Grammar is neither compiled in nor installed prints its files
+  as Plain with one warning per run (§7), printed when the first file of that Format with a
+  Match needs Trails; a run in which no such file matches prints none.
 
 ## 5. Trails
 
@@ -302,7 +311,19 @@ headings, and an optional `signature` that tree output may show.
 - Each key is a Segment (`kind = "key"`). An array element is a Segment (`kind = "element"`)
   named after the key that holds the array plus its zero-based index, and that key is hidden,
   so the Trail reads `server › ports[2] › host`. Nested arrays chain the indexes
-  (`matrix[1][0]`); the elements of a top-level array are `[0]`, `[1]`…
+  (`matrix[1][1]`); the elements of a top-level array are `[0]`, `[1]`…
+- Real output over the fixtures (`tests/fixtures/data/`, one-line layout):
+
+  ```
+  config.yaml:9: server › ports[2] › host │     - host: needle.example
+  config.json:10: server › matrix[1][1] │     "matrix": [[1, 2], [3, "needle"]]
+  shop.toml:16: products[1] › variants[0] › sku │ sku = "needle-sku"
+  shop.toml:20: database › replica › inline › user │ inline = { user = "needle" }
+  multi.yaml:4: document 2 › second[0] │   - needle
+  ```
+
+  The tree layout shows every Segment by its name, one per level (`server`, `ports[2]`,
+  `host`).
 - TOML tables and arrays of tables follow the same model: the second `[[products]]` is
   `products[1]`, and a table's Section runs to the next header that is not inside it, so
   `[[products.variants]]` lands under `products[1]`. A dotted key (`a.b.c = 1`) is one Segment
@@ -315,8 +336,12 @@ headings, and an optional `signature` that tree output may show.
   characters.
 - JSON accepts comments and trailing commas (`tsconfig.json`, editor settings) and nothing
   else outside JSON: a malformed number, literal, escape or control character is a syntax
-  error. Past 256 nested containers no more Segments open; deeper Matches get the Trail of the
-  deepest one, and nesting of any depth never crashes sfor (M2 plan).
+  error. A key is named by its decoded text (`"caf\u00e9"` is `café`). A file may hold several
+  top-level values, read in turn, so each line of a JSON Lines file gets its own Trails
+  (`{"b": {"c": "needle"}}` gives `b › c`); a Match in a comment between keys has the Trail of
+  the container it sits in, empty at the top level. Past 256 nested containers no more
+  Segments open; deeper Matches get the Trail of the deepest one, and nesting of any depth
+  never crashes sfor (M2 plan).
 - TOML: a table's Section runs from its header to the next header that is not inside it. When a
   header's parent has no table of its own whose Section holds that header (`a` of `[a.b]`, or
   `[p]` whose Section ended before a later `[p.r]`), the parent is repeated over that header's
@@ -350,8 +375,38 @@ each Segment: the `@signature` capture, or else the first line of the Segment wi
 
 - A Go method is not nested in its type, so the query captures the receiver as `@prefix` and the
   Segment is named `Server.Start` (M2 plan).
+- A Rust `impl` block is a Segment named by its type, `kind = "impl"`: `impl Thing` in the tree,
+  `Thing` in the one-line output (M2 plan).
 - A Match in a Segment's name (`addItem` on its own declaration line) is not inside that
   Segment, as a Match on a heading line (§5.1); a Match in its parameters or body is.
+- A Segment covers its node: a PHP `namespace App\Shop;` statement ends at its `;`, so it holds
+  nothing and appears in no Trail; a braced `namespace App\Shop { … }` does.
+- The signature keeps everything but a trailing `{`: Python's `class Outer:` keeps its colon.
+- A file over the Definition's `max_bytes` (16 MiB when absent) is not parsed: its Matches
+  print as Plain, with one warning per Format per run (M2 plan).
+- Real output over the fixtures (`tests/fixtures/code/`, one-line layout), one per code Format:
+
+  ```
+  cart.php:10: Cart › addItem │         // needle: merge equal items
+  widget.js:11: Widget › handler │     console.log("needle clicked");
+  shape.ts:6: Geometry › Base › describe │       return `needle ${this.area()}`;
+  view.tsx:3: View › onClick │     console.log("needle");
+  deploy.sh:9: deploy │   rsync -a build/ host:/srv/needle/
+  server.go:8: Server.Start │ 	return listen(s.Addr, "needle")
+  thing.rs:8: outer › Thing › helper │             self.needle + 1
+  outer.py:4: Outer › method › inner │             return "needle"
+  ```
+
+  and the tree of `cart.php`, with the signatures:
+
+  ```
+  code/cart.php
+    class Cart
+      public function addItem(Item $item, int $qty = 1): void
+        10:        // needle: merge equal items
+    15:function needle_helper(): string
+      17:    return "needle";
+  ```
 
 ### 5.4 HTML and XML
 
@@ -510,7 +565,9 @@ ones easy to add, and a flag that installs them. 8454 replaced the WebAssembly G
   version and directory, and the ones the index offers for this system; when the index cannot
   be read it lists the first two and warns.
 - A Format Definition whose Grammar is neither compiled in nor installed is listed by
-  `--list-formats` as unavailable, and its files are treated as Plain with one warning per run.
+  `--list-formats` as unavailable, and its files are treated as Plain with one warning per run,
+  ``sfor: <format>: grammar `<lang>` is neither compiled in nor installed (see --list-grammars)``,
+  printed only when a file of that Format has a Match (§4.4, Failures).
 - A Grammar Helper binary per Grammar and system is built and published by the release pipeline
   (§10, M5). M2 ships the client side, the Grammar Helper template and a script that builds one
   for the running system (M2 plan).
@@ -519,6 +576,8 @@ Measured in the M2 research (2026-10-16 and 2026-10-17, on this machine): native
 1.5–1.6× faster than WebAssembly; a stripped release binary with only the seven code Grammars
 and the keypath parsers weighs 8.5 MB (sfor 0.1 weighs 5.5 MB); and tree-sitter parses and
 queries real Rust code at about 3 MB/s per thread. Only files with Matches are parsed (§3).
+The v0.2 release binary (Linux x86-64, thin LTO), with the eight Grammars, keypath, the
+Helper Processor host and the index client, weighs 16.4 MB, 15.2 MB stripped (2026-10-17).
 
 ## 8. Command line (#3, #4)
 

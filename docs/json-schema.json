@@ -7,7 +7,7 @@
   "required": ["format", "trail", "fragment"],
   "properties": {
     "format": {
-      "description": "Name of the file's Format (\"markdown\"), or null for Plain files.",
+      "description": "Name of the file's Format (\"markdown\", \"yaml\", \"php\"…), or null for Plain files and for files whose Processor is unavailable or failed.",
       "type": ["string", "null"]
     },
     "trail": {
@@ -51,7 +51,7 @@
       "additionalProperties": false,
       "properties": {
         "kind": {
-          "description": "In v0.1: document, heading, code, item, column. Later Formats add kinds.",
+          "description": "A free string, never an enumeration. Markdown: document, heading, code, item, column. YAML, JSON and TOML (from v0.2): key, element, and document for the documents of a YAML stream. Code (from v0.2): the `kinds` of the Format Definition, such as class, method, function, namespace, struct, impl, or the tree-sitter node kind when `kinds` has none. Helper Processors and later Formats add kinds.",
           "type": "string"
         },
         "name": { "type": "string" },
