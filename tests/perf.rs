@@ -1,13 +1,44 @@
 //! Memory and time ceilings of the Trail pipeline (code review r1, Fable #1). Ignored by
 //! default because they write a 50 MB file and run the binary several times; run them with
 //! `cargo test --release --test perf -- --ignored --nocapture`. `SFOR_BIN` runs them against
-//! another build of sfor (to see them fail before a fix).
+//! another build of sfor (to see them fail before a fix). They measure wall time, so they run
+//! one at a time (`alone`): cargo's default of one thread per test made them load each other
+//! (code review r6, Fable #1).
 mod common;
 
 use common::Fixture;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+/// Taken by every perf test for its whole run.
+static LOCK: Mutex<()> = Mutex::new(());
+
+/// The perf tests measuring right now.
+static RUNNING: AtomicUsize = AtomicUsize::new(0);
+
+/// Held by a perf test while it measures; no other perf test measures meanwhile. `Drop` runs
+/// before the guard is released.
+struct Alone {
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl Drop for Alone {
+    fn drop(&mut self) {
+        RUNNING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Called first by every test: waits for the test measuring now to end.
+fn alone() -> Alone {
+    // A test that failed poisons the lock; the next one still runs alone.
+    let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let before = RUNNING.fetch_add(1, Ordering::SeqCst);
+    assert_eq!(before, 0, "another perf test is measuring at the same time");
+    Alone { _guard: guard }
+}
 
 const SIZE: usize = 50 * 1024 * 1024;
 
@@ -115,12 +146,14 @@ fn ceiling(name: &str, args: &[&str]) {
 #[test]
 #[ignore]
 fn inverted_search_on_a_big_plain_file_stays_under_the_ceilings() {
+    let _alone = alone();
     ceiling("big.txt", &["--flat", "-v", "zzz"]);
 }
 
 #[test]
 #[ignore]
 fn every_line_matching_in_a_big_plain_file_stays_under_the_ceilings() {
+    let _alone = alone();
     ceiling("big.txt", &["--flat", "text"]);
 }
 
@@ -158,12 +191,14 @@ fn markdown_ceiling(args: &[&str]) {
 #[test]
 #[ignore]
 fn inverted_search_on_a_big_markdown_file_stays_under_the_ceilings() {
+    let _alone = alone();
     markdown_ceiling(&["--flat", "-v", "zzz"]);
 }
 
 #[test]
 #[ignore]
 fn tree_output_of_a_big_markdown_file_stays_under_the_ceilings() {
+    let _alone = alone();
     markdown_ceiling(&["--tree", "text"]);
 }
 
@@ -172,6 +207,7 @@ fn tree_output_of_a_big_markdown_file_stays_under_the_ceilings() {
 #[test]
 #[ignore]
 fn walked_binary_files_are_not_read_before_the_search() {
+    let _alone = alone();
     let fx = Fixture::new();
     let dir = fx.file("bin");
     std::fs::create_dir(&dir).unwrap();
@@ -203,6 +239,7 @@ fn repeated(fx: &Fixture, name: &str, unit: &str, count: usize) -> String {
 #[test]
 #[ignore]
 fn an_explicit_markdown_file_without_matches_skips_the_processor() {
+    let _alone = alone();
     let fx = Fixture::new();
     let unit = "# Heading\n\nsome text\n";
     let file = repeated(&fx, "heads.md", unit, 20 * 1024 * 1024 / unit.len());
@@ -225,6 +262,7 @@ fn an_explicit_markdown_file_without_matches_skips_the_processor() {
 #[test]
 #[ignore]
 fn headings_inside_items_stay_under_the_ceiling() {
+    let _alone = alone();
     let fx = Fixture::new();
     let size = 2 * 1024 * 1024;
     let (unit, plain) = ("- # Head\n  text\n", "- Head\n  text\n");
@@ -250,6 +288,7 @@ fn headings_inside_items_stay_under_the_ceiling() {
 #[test]
 #[ignore]
 fn json_of_a_big_plain_file_stays_under_the_ceilings() {
+    let _alone = alone();
     ceiling("big.txt", &["--json", "-v", "zzz"]);
 }
 
@@ -259,6 +298,7 @@ fn json_of_a_big_plain_file_stays_under_the_ceilings() {
 #[test]
 #[ignore]
 fn json_of_a_big_markdown_file_stays_under_the_ceilings() {
+    let _alone = alone();
     let fx = Fixture::new();
     let p = big_file(fx.path(), "big.md");
     let file = p.file_name().unwrap().to_str().unwrap();
@@ -289,6 +329,7 @@ fn json_of_a_big_markdown_file_stays_under_the_ceilings() {
 #[test]
 #[ignore]
 fn json_without_trails_of_a_big_file_is_as_fast_as_ripgrep() {
+    let _alone = alone();
     let rg = Path::new("/usr/bin/rg");
     if !common::reference_rg() || !rg.exists() {
         return;
