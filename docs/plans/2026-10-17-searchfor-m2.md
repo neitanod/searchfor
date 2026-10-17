@@ -117,7 +117,7 @@ ones it describes marked «M2 plan».
 | D5 | `timeout_ms` defaults to 5000; a timeout kills the process | A stuck helper cannot be trusted with the next request; killing it frees the pool slot |
 | D6 | Three crashes in a run disable the Definition; a command that cannot start disables it at once | A crash loop would cost a process start and a warning per file |
 | D7 | A `hello` line opens every process, with `params` and `threads` | The helper compiles its query once per process and sizes its worker pool; the protocol number is checked once |
-| D8 | `Input` gains `disk: Option<&Path>`: set only for a regular file (not `/dev/stdin`, not a FIFO) whose bytes sfor searched unchanged (no BOM, no UTF-16) and whose length on disk equals the Source's; anything else reaches the helper as a temporary file. Non-UTF-8 paths and stdin too | Offsets must count the bytes the helper reads; a helper must never reopen a stream (`/dev/stdin` is its own protocol channel); the `Processor` trait itself is unchanged |
+| D8 | `Input` gains `disk: Option<&Path>`: the canonical path of a regular file outside /dev and /proc whose bytes sfor searched unchanged (no BOM, no UTF-16) and whose length on disk equals the Source's; anything else reaches the helper as a temporary file. Non-UTF-8 paths and stdin too. The typed path is never sent: `stdin` typed in /dev, `/dev/stdin` or a symlink to it would name the helper's own pipe | Offsets must count the bytes the helper reads; a helper must never reopen a stream (`/dev/stdin` is its own protocol channel); the `Processor` trait itself is unchanged |
 | D9 | Helper stderr lines are relayed as warnings `sfor: <format>: <line>` | Authors see their errors; `--no-messages` silences them like every other warning |
 | D10 | `processor = "external"` works from M2 | It is the same code as Grammar Helpers (8453: one mechanism), and the example helper needs it end to end; M5 keeps the guide and the publishing |
 | D11 | The example helper is a Rust workspace member, `helpers/example`, describing INI files (`[section] › key`), with test knobs in environment variables | Portable to M5's Windows CI with no Python or shell in the tests; its own crate tests run it through `CARGO_BIN_EXE_…`; INI is simple enough to read at a glance and absent from sfor's built-ins |
@@ -135,7 +135,7 @@ ones it describes marked «M2 plan».
 | D23 | Memory test: resident memory after 5 000 requests ≤ the value after 500 + 2 MiB, Linux only (`/proc/<pid>/status`) | Allocators keep some memory; growth per file would pass 2 MiB well before 5 000 files |
 | D24 | `treesitter` implements `Processor` directly and runs the query only over the bytes between the first and the last anchor | The query took 1.4 s of the 3.8 s measured; `QueryCursor::set_byte_range` keeps every ancestor of an anchor |
 | D31 | Each helper process has a writer thread: a request is queued to it, so the caller's deadline covers writing and answering, and a kill never waits for a lock the writer holds | A helper that stops reading would otherwise block sfor forever on a full pipe (review r1, Codex #1) |
-| D32 | One idempotent close per process: stdin closed, one second of grace, kill, then always reap; the pipe threads get at most one more second and are then left behind. Helpers stay in sfor's process group; sfor installs no signal handler | No zombies, and a descendant that inherited the pipes cannot keep sfor alive. Helpers stay in sfor's process group, so the terminal's Ctrl-C reaches them too; D42 covers the helpers that do not stop on it. A helper that starts processes must stop them when it exits (spec §4.4) |
+| D32 | One idempotent close per process: stdin closed, one second of grace, kill, then always reap; the pipe threads get at most one more second and are then left behind. Helpers stay in sfor's process group; signals are D42's | No zombies, and a descendant that inherited the pipes cannot keep sfor alive. Helpers stay in sfor's process group, so the terminal's Ctrl-C reaches them too; D42 covers the helpers that do not stop on it. A helper that starts processes must stop them when it exits (spec §4.4) |
 | D33 | A Processor that is unavailable (Grammar missing, helper disabled) or fails makes the file Plain: `format` `null` and empty Trails, which the printers already render as Plain (`path:line: text`, spec §6.2) | Empty Trails under a Format name were neither Plain nor structured (review r1, Codex #6) |
 | D34 | The JSON walker is iterative, with an explicit stack; past 256 nested containers it opens no more Segments, and it validates numbers, literals and strings (escapes, no control characters) | A deep file must not overflow the call stack, and `{"a": nope}` is a syntax error, not a key path |
 | D35 | A hidden Segment that has a name stays searchable by `--in-headings`: `names_of` keeps named hidden Segments and still leaves hidden ancestors out of the Trails it builds | `ports` holds an array, so it is hidden in Trails, but it is a key (spec §8); Markdown's hidden Segments (tables) have no name, so M1 is unchanged |
@@ -144,7 +144,7 @@ ones it describes marked «M2 plan».
 | D38 | ureq runs with `https_only(true)` (checked on every redirect hop, ureq `run.rs:149`), a 10 s connect timeout and a 300 s global one | The first URL being `https://` does not stop a redirect to `http://`; offline listing must not hang |
 | D39 | The treesitter Processor's compiled queries and warnings live in a per-run instance owned by `Processors`, one `OnceLock` per Definition | A second run in one process (M5's MCP server) must see new `params`; concurrent first calls must compile and warn once |
 | D40 | `oneshot` writes `hello` and the request, closes stdin, and then reads both answers | A script that reads its stdin to EOF before answering is the point of `oneshot` (spec §4.4, review r1, Fable #1) |
-| D42 | Supervised cancellation (Unix): when the first helper process of a run starts, sfor starts a thread that waits for SIGINT and SIGTERM (`signal-hook`). On one, it kills and reaps every live helper (SIGKILL, so a helper that ignores or handles SIGINT goes too) and then dies by that same signal with its default disposition (`signal_hook::low_level::emulate_default_handler`). A run that starts no helper installs nothing, as M1 | sfor dying at once would leave a helper that ignores SIGINT, or a SIGINT sent to sfor's pid only, behind and unreaped (review r2, Codex #2); re-raising the signal keeps sfor's exit status the one rg has. Windows (console Ctrl-C) is M5's |
+| D42 | Supervised cancellation (Unix): one lifecycle (`cancel::Supervisor`) for every helper process. Its SIGINT/SIGTERM watcher (`signal-hook`) is installed before the first spawn; every launch runs under its lock, is refused once cancelled, and registers its process before the lock is released. On a signal it marks the run cancelled, kills and reaps every registered helper (SIGKILL, so one that ignores or handles SIGINT goes too, and one being spawned at that moment is registered first), and then sfor dies by that same signal with its default disposition (`signal_hook::low_level::emulate_default_handler`). A run that starts no helper installs nothing, as M1 | sfor dying at once would leave a helper that ignores SIGINT, or a SIGINT sent to sfor's pid only, behind and unreaped (review r2, Codex #2); re-raising the signal keeps sfor's exit status the one rg has. Windows (console Ctrl-C) is M5's |
 | D41 | A line from a helper that is not JSON or has no `id` breaks the process (killed, its requests fail, one failure counted); a JSON line with a known `id` whose fields do not fit the protocol fails that request only | Only a line with an id can be attributed to a request |
 | D25 | Benchmark corpora: the cargo registry sources (`~/.cargo/registry/src/index.crates.io-*`, 29 788 files on 2026-10-17) and `~/robotin/apps` (11 297 files) | The first exists wherever cargo does; the second mixes PHP, JS, Go, Python and Bash |
 | D26 | Installed Grammar Definitions load between the built-ins and the user directory, with origin `installed` | A user file still overrides everything (#6) |
@@ -2526,6 +2526,23 @@ mod tests {
             assert_eq!(needles(src, "toml"), vec![vec!["a", "b"], vec![]], "{}", String::from_utf8_lossy(src));
         }
     }
+
+    #[test]
+    fn recovery_does_not_assume_valid_prefixes_are_monotone() {
+        // Review r3, Codex #3: cuts at lines 20, 19, 17, 13, 5 and 1 all fall inside a string or
+        // give an empty document; the prefix ending at line 15 is the one that keeps `k`.
+        let mut src = String::from("a = \"\"\"\n");
+        for i in 2..=12 {
+            src.push_str(&format!("line {i}\n"));
+        }
+        src.push_str("\"\"\"\n");
+        src.push_str("k = \"needle\"\n");
+        src.push_str("b = \"\"\"\n");
+        for i in 16..=19 {
+            src.push_str(&format!("open {i}\n"));
+        }
+        assert_eq!(needles(src.as_bytes(), "toml"), vec![vec!["k"]]);
+    }
 }
 ```
 
@@ -2539,11 +2556,15 @@ mod tests {
      `text.parse::<toml_edit::Document<String>>()`. **On an error** (`TomlError::span()`,
      verified in toml_edit 0.25.17's source; `None` counts as the end of the file), cut `text`
      at the start of the error's line and parse the prefix; while that fails, step back 1, 2,
-     4, 8… lines; once a prefix parses, halve the gap towards the last cut that failed, keeping
-     the longest prefix that parsed (review r2, Fable #4: one parse costs 44–54 ms on a 1 MB
-     Cargo.lock, so stepping back line by line could cost seconds). Stop when the bytes parsed
-     in this recovery pass 32 MiB, or at the start of the file, and then use the best prefix,
-     or an empty Outline. Verified in the probe (`r1-probe.txt`): for
+     4, 8… lines until a prefix parses (the candidate) or the start of the file. Valid prefixes
+     are not monotone — a cut inside a multi-line string fails though a later one parses — so
+     no interval is ruled out: next, every cut skipped above the candidate is tried from the
+     highest down, and the first that parses wins; otherwise the candidate does (review r3,
+     Codex #3). The whole recovery stops when the bytes it parsed pass 32 MiB (review r2,
+     Fable #4: one parse costs 44–54 ms on a 1 MB Cargo.lock), keeping the best prefix found
+     so far, or an empty Outline. Verified on Codex's counterexample in the probe
+     (`tomlrec.txt`): a valid multi-line string on lines 1–13, `k = "needle"` on 14 and one left
+     open on 15–19 recover the prefix that ends at line 15, which keeps `k`. Verified in the probe (`r1-probe.txt`): for
      `[a]\nb="needle"\nx=[\n[c]\nd="needle"\n` toml_edit reports byte 23 (line 5), and the
      walk back reaches the 15-byte prefix `[a]\nb="needle"\n` (cuts at lines 5, 4 and 3); an
      unclosed `"""` string recovers the same way. toml_edit's own recursion limit («max recursion depth met») is such
@@ -2672,16 +2693,22 @@ pub(crate) mod testing {
         pub(crate) launches: Arc<AtomicUsize>,
         pub(crate) reaps: Arc<AtomicUsize>,
         pub(crate) fail: bool,
+        /// Runs at the start of every launch (the barrier tests of D42).
+        pub(crate) hook: Option<Arc<dyn Fn() + Send + Sync>>,
+        /// How long a kill takes (the barrier tests of D42).
+        pub(crate) slow_kill: Duration,
     }
 
     pub(crate) struct FakeControl {
         pub(crate) killed: Arc<AtomicBool>,
         pub(crate) done: Arc<AtomicBool>,
         pub(crate) reaps: Arc<AtomicUsize>,
+        pub(crate) slow_kill: Duration,
     }
 
     impl Control for FakeControl {
         fn kill(&mut self) {
+            std::thread::sleep(self.slow_kill);
             self.killed.store(true, SeqCst);
         }
         fn wait(&mut self, within: Duration) -> bool {
@@ -2703,6 +2730,9 @@ pub(crate) mod testing {
 
     impl Launcher for Fake {
         fn launch(&self) -> std::io::Result<Proc> {
+            if let Some(h) = &self.hook {
+                h();
+            }
             if self.fail {
                 return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no such command"));
             }
@@ -2716,8 +2746,8 @@ pub(crate) mod testing {
                 body(&mut lines, &mut out_w, &k);
                 d.store(true, SeqCst);
             });
-            let reaps = self.reaps.clone();
-            Ok(Proc { stdin: Box::new(in_w), stdout: Box::new(out_r), stderr: None, control: Box::new(FakeControl { killed, done, reaps }) })
+            let (reaps, slow_kill) = (self.reaps.clone(), self.slow_kill);
+            Ok(Proc { stdin: Box::new(in_w), stdout: Box::new(out_r), stderr: None, control: Box::new(FakeControl { killed, done, reaps, slow_kill }) })
         }
     }
 
@@ -2757,16 +2787,23 @@ pub(crate) mod testing {
         pub(crate) launches: Arc<AtomicUsize>,
         pub(crate) reaps: Arc<AtomicUsize>,
         pub(crate) warnings: Arc<Mutex<Vec<String>>>,
+        pub(crate) sup: &'static cancel::Supervisor,
     }
 
     pub(crate) fn run(mode: Mode, threads: usize, timeout_ms: u64, body: Body) -> Run {
         let launches = Arc::new(AtomicUsize::new(0));
         let reaps = Arc::new(AtomicUsize::new(0));
+        let fake = Fake { body, launches: launches.clone(), reaps: reaps.clone(), fail: false, hook: None, slow_kill: Duration::ZERO };
+        run_with(mode, threads, timeout_ms, fake, launches, reaps)
+    }
+
+    /// `run` with a Fake built by the test and a Supervisor of the Host's own.
+    pub(crate) fn run_with(mode: Mode, threads: usize, timeout_ms: u64, fake: Fake, launches: Arc<AtomicUsize>, reaps: Arc<AtomicUsize>) -> Run {
         let warnings = Arc::new(Mutex::new(Vec::new()));
         let w = warnings.clone();
-        let fake = Fake { body, launches: launches.clone(), reaps: reaps.clone(), fail: false };
-        let host = Arc::new(Host::new(cfg(mode, threads, timeout_ms), Box::new(fake), Arc::new(move |m| w.lock().unwrap().push(m))));
-        Run { host, launches, reaps, warnings }
+        let sup: &'static cancel::Supervisor = Box::leak(Box::new(cancel::Supervisor::new(false)));
+        let host = Arc::new(Host::with_supervisor(cfg(mode, threads, timeout_ms), Box::new(fake), Arc::new(move |m| w.lock().unwrap().push(m)), sup));
+        Run { host, launches, reaps, warnings, sup }
     }
 
     pub(crate) fn trails(h: &Host, path: &str) -> Result<Reply, crate::helper::HelperError> {
@@ -2956,7 +2993,7 @@ mod tests {
     fn a_command_that_cannot_start_disables_with_one_warning() {
         let warnings = Arc::new(Mutex::new(Vec::new()));
         let w = warnings.clone();
-        let fake = Fake { body: helper(echo), launches: Arc::new(AtomicUsize::new(0)), reaps: Arc::new(AtomicUsize::new(0)), fail: true };
+        let fake = Fake { body: helper(echo), launches: Arc::new(AtomicUsize::new(0)), reaps: Arc::new(AtomicUsize::new(0)), fail: true, hook: None, slow_kill: Duration::ZERO };
         let host = Host::new(cfg(Mode::Pool, 4, 2000), Box::new(fake), Arc::new(move |m| w.lock().unwrap().push(m)));
         for _ in 0..5 {
             assert_eq!(trails(&host, "a.ini"), Err(crate::helper::HelperError::Disabled));
@@ -3158,10 +3195,9 @@ mod tests {
         assert!(r.warnings.lock().unwrap().is_empty());
     }
 
-    #[cfg(unix)]
     #[test]
-    fn abort_kills_and_reaps_every_live_process() {
-        // D42: what the signal watcher does, without sending a signal to the test process.
+    fn cancel_kills_and_reaps_every_live_process_and_refuses_new_ones() {
+        // D42: what the signal watcher does, on the Host's own Supervisor.
         let r = run(Mode::Pool, 2, 2000, deaf());
         std::thread::scope(|s| {
             for i in 0..2 {
@@ -3171,9 +3207,69 @@ mod tests {
                 });
             }
             std::thread::sleep(Duration::from_millis(100));
-            cancel::abort(&r.host.conns());
+            r.sup.cancel();
         });
         assert_eq!(r.reaps.load(SeqCst), r.launches.load(SeqCst));
+        let before = r.launches.load(SeqCst);
+        assert_eq!(trails(&r.host, "late.ini"), Err(crate::helper::HelperError::Disabled));
+        assert_eq!(r.launches.load(SeqCst), before);
+    }
+
+    #[test]
+    fn a_signal_during_the_first_launch_still_reaps_it() {
+        // Codex r3 #1: the cancellation arrives while the first process is being spawned.
+        let inside = Arc::new(std::sync::Barrier::new(2));
+        let go = Arc::new(std::sync::Barrier::new(2));
+        let (i2, g2) = (inside.clone(), go.clone());
+        let (launches, reaps) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let fake = Fake {
+            body: deaf(),
+            launches: launches.clone(),
+            reaps: reaps.clone(),
+            fail: false,
+            hook: Some(Arc::new(move || {
+                i2.wait();
+                g2.wait();
+            })),
+            slow_kill: Duration::ZERO,
+        };
+        let r = run_with(Mode::Pool, 1, 2000, fake, launches, reaps);
+        std::thread::scope(|s| {
+            let h = r.host.clone();
+            s.spawn(move || {
+                let _ = trails(&h, "a.ini");
+            });
+            inside.wait(); // the spawn has begun, under the Supervisor's lock
+            let sup = r.sup;
+            let canceller = s.spawn(move || sup.cancel());
+            std::thread::sleep(Duration::from_millis(50)); // the cancel is waiting for the lock
+            go.wait();
+            canceller.join().unwrap();
+        });
+        assert_eq!(r.launches.load(SeqCst), 1);
+        assert_eq!(r.reaps.load(SeqCst), 1);
+    }
+
+    #[test]
+    fn a_launch_during_the_cleanup_is_refused() {
+        // Codex r3 #1: while the kills run, a worker needing a new copy gets none.
+        let (launches, reaps) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let fake = Fake { body: deaf(), launches: launches.clone(), reaps: reaps.clone(), fail: false, hook: None, slow_kill: Duration::from_millis(300) };
+        let r = run_with(Mode::Pool, 2, 5000, fake, launches, reaps);
+        std::thread::scope(|s| {
+            let h = r.host.clone();
+            s.spawn(move || {
+                let _ = trails(&h, "busy.ini"); // copy 1, busy until killed
+            });
+            std::thread::sleep(Duration::from_millis(100));
+            let sup = r.sup;
+            s.spawn(move || sup.cancel()); // its kill takes 300 ms
+            std::thread::sleep(Duration::from_millis(100));
+            // Copy 1 is busy, so this request would start copy 2: refused.
+            assert_eq!(trails(&r.host, "second.ini"), Err(crate::helper::HelperError::Disabled));
+        });
+        assert_eq!(r.launches.load(SeqCst), 1);
+        assert_eq!(r.reaps.load(SeqCst), 1);
     }
 
     #[test]
@@ -3357,7 +3453,7 @@ impl Conn {
                 }
             }));
         }
-        let conn = Arc::new(Conn {
+        Arc::new(Conn {
             queue: Mutex::new(Some(qtx)),
             pending,
             in_flight: AtomicUsize::new(0),
@@ -3367,10 +3463,7 @@ impl Conn {
             reaped: AtomicBool::new(false),
             control: Mutex::new(p.control),
             ends: Mutex::new(ends),
-        });
-        #[cfg(unix)]
-        cancel::register(&conn);
-        conn
+        })
     }
 
     fn alive(&self) -> bool {
@@ -3472,20 +3565,23 @@ pub struct Host {
     st: Mutex<State>,
     freed: Condvar,
     next_id: AtomicU64,
+    /// The lifecycle every launch goes through (D42): the process-wide one, or a test's own.
+    sup: &'static cancel::Supervisor,
 }
 
 impl Host {
     pub fn new(cfg: HostConfig, launcher: Box<dyn Launcher>, warn: Warn) -> Self {
-        Self { cfg, launcher, warn, st: Mutex::default(), freed: Condvar::new(), next_id: AtomicU64::new(1) }
+        Self::with_supervisor(cfg, launcher, warn, &cancel::GLOBAL)
+    }
+
+    /// Tests give each Host a Supervisor of its own (`Box::leak`), so cancelling one never
+    /// touches another test's helpers.
+    pub(crate) fn with_supervisor(cfg: HostConfig, launcher: Box<dyn Launcher>, warn: Warn, sup: &'static cancel::Supervisor) -> Self {
+        Self { cfg, launcher, warn, st: Mutex::default(), freed: Condvar::new(), next_id: AtomicU64::new(1), sup }
     }
 
     pub fn format(&self) -> &str {
         &self.cfg.format
-    }
-
-    #[cfg(test)]
-    fn conns(&self) -> Vec<Arc<Conn>> {
-        self.st.lock().unwrap().conns.clone()
     }
 
     /// Sends the request `make` builds with a fresh id, and returns its answer. The deadline
@@ -3562,10 +3658,14 @@ impl Host {
         out
     }
 
+    /// Every process starts here, inside the Supervisor's lifecycle (D42): refused once the run
+    /// is cancelled, and registered before a cancellation can miss it.
     fn launch(&self) -> Result<Arc<Conn>, HelperError> {
-        match self.launcher.launch() {
-            Ok(p) => Ok(Conn::spawn(p, &self.cfg.format, &self.warn)),
-            Err(e) => {
+        let started = self.sup.launch(|| self.launcher.launch().map(|p| Conn::spawn(p, &self.cfg.format, &self.warn)));
+        match started {
+            Err(cancel::Cancelled) => Err(HelperError::Disabled),
+            Ok(Ok(conn)) => Ok(conn),
+            Ok(Err(e)) => {
                 self.disable(format!("cannot start `{}`: {e}", self.cfg.command.join(" ")));
                 Err(HelperError::Disabled)
             }
@@ -3681,32 +3781,84 @@ impl Host {
     }
 }
 
-/// D42: Ctrl-C (SIGINT) or SIGTERM while helpers run. The first helper process of this sfor
-/// process starts a watcher thread; on a signal it aborts (kills and reaps) every live helper,
-/// so one that ignores SIGINT, or a signal sent to sfor's pid alone, leaves nothing behind, and
-/// then sfor dies by that same signal with its default disposition, as ripgrep would. Without
-/// helpers nothing is installed.
-#[cfg(unix)]
+/// D42: one lifecycle for every helper process of this sfor process. Every launch runs under
+/// the Supervisor's lock: it is refused once the run is cancelled, and the new process is
+/// registered before the lock is released, so a cancellation either comes first (nothing
+/// starts) or sees the process (it is killed and reaped). The process-wide Supervisor installs
+/// its SIGINT/SIGTERM watcher before the first spawn; on a signal it cancels, kills and reaps
+/// every helper — one that ignores SIGINT, or a signal sent to sfor's pid alone, included — and
+/// then sfor dies by that signal with its default disposition, as ripgrep would. A run that
+/// launches no helper installs nothing.
 pub(crate) mod cancel {
     use super::Conn;
     use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-    static LIVE: Mutex<Vec<Weak<Conn>>> = Mutex::new(Vec::new());
-    static WATCHER: OnceLock<()> = OnceLock::new();
+    pub(crate) struct Supervisor {
+        state: Mutex<Lifecycle>,
+        /// Only the process-wide Supervisor watches signals.
+        signals: bool,
+    }
 
-    pub(super) fn register(c: &Arc<Conn>) {
-        {
-            let mut live = LIVE.lock().unwrap();
-            live.retain(|w| w.strong_count() > 0);
-            live.push(Arc::downgrade(c));
+    struct Lifecycle {
+        cancelled: bool,
+        live: Vec<Weak<Conn>>,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) struct Cancelled;
+
+    pub(crate) static GLOBAL: Supervisor = Supervisor::new(true);
+
+    impl Supervisor {
+        pub(crate) const fn new(signals: bool) -> Self {
+            Self { state: Mutex::new(Lifecycle { cancelled: false, live: Vec::new() }), signals }
         }
+
+        /// Runs `start` (the spawn and `Conn::spawn`) under the lifecycle lock. A signal that
+        /// arrives meanwhile waits for the lock, so it finds the new process registered.
+        pub(super) fn launch<E>(&self, start: impl FnOnce() -> Result<Arc<Conn>, E>) -> Result<Result<Arc<Conn>, E>, Cancelled> {
+            if self.signals {
+                watch(); // before the first spawn
+            }
+            let mut st = self.state.lock().unwrap();
+            if st.cancelled {
+                return Err(Cancelled);
+            }
+            let started = start();
+            if let Ok(c) = &started {
+                st.live.retain(|w| w.strong_count() > 0);
+                st.live.push(Arc::downgrade(c));
+            }
+            Ok(started)
+        }
+
+        /// Marks the lifecycle cancelled — every later `launch` is refused — and kills and reaps
+        /// every registered process, in parallel. Processes being started hold the lock, so
+        /// they finish registering first and are in the list.
+        pub(crate) fn cancel(&self) {
+            let live: Vec<Arc<Conn>> = {
+                let mut st = self.state.lock().unwrap();
+                st.cancelled = true;
+                st.live.iter().filter_map(Weak::upgrade).collect()
+            };
+            std::thread::scope(|s| {
+                for c in &live {
+                    s.spawn(move || c.abort());
+                }
+            });
+        }
+    }
+
+    #[cfg(unix)]
+    fn watch() {
+        static WATCHER: OnceLock<()> = OnceLock::new();
         WATCHER.get_or_init(|| {
             use signal_hook::consts::{SIGINT, SIGTERM};
             // If the handler cannot be installed, Ctrl-C keeps M1's behaviour.
             let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGINT, SIGTERM]) else { return };
             std::thread::spawn(move || {
                 if let Some(sig) = signals.forever().next() {
-                    abort_all();
+                    GLOBAL.cancel();
                     let _ = signal_hook::low_level::emulate_default_handler(sig);
                     std::process::exit(128 + sig); // not reached: the default action ends sfor
                 }
@@ -3714,21 +3866,9 @@ pub(crate) mod cancel {
         });
     }
 
-    /// Kills and reaps every live helper process of this sfor process.
-    fn abort_all() {
-        let live: Vec<Arc<Conn>> = LIVE.lock().unwrap().iter().filter_map(Weak::upgrade).collect();
-        abort(&live);
-    }
-
-    /// Kills and reaps `live`, in parallel. Tests call it with one Host's processes: the
-    /// registry is process-wide, and `abort_all` in a test would kill the other tests' fakes.
-    pub(super) fn abort(live: &[Arc<Conn>]) {
-        std::thread::scope(|s| {
-            for c in live {
-                s.spawn(move || c.abort());
-            }
-        });
-    }
+    /// Windows' console Ctrl-C is M5's.
+    #[cfg(not(unix))]
+    fn watch() {}
 }
 
 fn refusal(r: &Reply) -> String {
@@ -3742,8 +3882,9 @@ fn refusal(r: &Reply) -> String {
   `Conn::spawn`'s `thread` closure collects the `ends` receivers; if the borrow checker
   objects to the closure borrowing `ends` mutably, push the receivers after each spawn instead.
   Helpers stay in sfor's process group, so a terminal's Ctrl-C reaches them too (D32); the
-  `cancel` watcher (D42) makes sure the ones that ignore it, or a SIGINT sent to sfor's pid
-  alone, still end and are reaped before sfor dies by the signal. A sfor killed by SIGKILL
+  `cancel` Supervisor (D42) makes sure the ones that ignore it, or a SIGINT sent to sfor's pid
+  alone, still end and are reaped before sfor dies by the signal, including a process being
+  spawned at that moment, and that no new one starts once cancelled. A sfor killed by SIGKILL
   leaves them an EOF on stdin. `signal-hook` 0.3.18 (Unix): `iterator::Signals` and
   `low_level::emulate_default_handler` were run in the `sig` probe.
 
@@ -5962,24 +6103,26 @@ Everything links here. Locate the code by name: `load_registry`, `main` (actions
 - [ ] **Step 7: `Input.disk` (D8, Codex #4).** One helper, used by every `Input` literal:
 
 ```rust
-/// The file on disk whose bytes are exactly `src`'s: a regular file (not `/dev/stdin`, not a
-/// FIFO), searched without a BOM or UTF-16 transcoding, whose length on disk is the Source's.
-/// Anything else reaches a Helper Processor as a temporary copy (spec §4.4, Paths).
-fn disk_of<'a>(t: &'a Target, src: &Source) -> Option<&'a Path> {
-    let p = t.fs.as_deref()?;
-    // `/dev/stdin` is a regular file when stdin is redirected from one (`< app.ini`), and in
-    // the helper it is the protocol pipe; `/dev/fd/N` and `/proc/self/fd/N` likewise. A path
-    // that resolves into /dev or /proc always goes as a copy (review r2, Fable #1).
-    let real = std::fs::canonicalize(p).ok()?;
-    if p.starts_with("/dev") || p.starts_with("/proc") || real.starts_with("/dev") || real.starts_with("/proc") {
+/// The canonical path of the file on disk whose bytes are exactly `src`'s: a regular file
+/// outside /dev and /proc, searched without a BOM or UTF-16 transcoding, whose length on disk
+/// is the Source's. The helper gets this resolved path, never the one typed: `stdin` typed in
+/// /dev, `/dev/stdin`, `/dev/fd/0` or a symlink to them name the helper's own protocol pipe
+/// in the helper's process (review r2, Fable #1; r3, Codex #2). Resolved here, a stream
+/// redirected from a file becomes that file (safe: same bytes), and a pipe or a FIFO does not
+/// resolve to a regular file. Anything else reaches the helper as a temporary copy (spec §4.4).
+fn disk_of(t: &Target, src: &Source) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(t.fs.as_deref()?).ok()?;
+    if real.starts_with("/dev") || real.starts_with("/proc") {
         return None;
     }
     let m = std::fs::metadata(&real).ok()?;
-    (m.is_file() && !src.had_bom && m.len() == src.bytes().len() as u64).then_some(p)
+    (m.is_file() && !src.had_bom && m.len() == src.bytes().len() as u64).then_some(real)
 }
 ```
 
-  It costs one `stat` per file with Matches, never on files without them.
+  Each caller keeps the `PathBuf` alive for the Processor call:
+  `let disk = disk_of(t, &src); let input = Input { disk: disk.as_deref(), … };`. It costs one
+  `canonicalize` and one `stat` per file with Matches, never on files without them.
 - [ ] **Step 8:** `cargo test --workspace` passes, M1's tests included. Commit «Run the
   Processors of each search through a per-run registry».
 
@@ -6335,8 +6478,12 @@ fn starts(log: &std::path::Path) -> usize {
       r1 #4, Fable r2 #1): `sfor --format ini needle /dev/stdin` three ways — `app.ini` through a
       pipe on stdin, `app.ini` redirected as a file (`Stdio::from(File::open("ini/app.ini"))`,
       where `/dev/stdin` is a regular file), and `/dev/fd/0` redirected the same way — and
-      `sfor --format ini needle <fifo>` with a writer thread filling a `mkfifo`: every run gives
-      `app.ini`'s Trails, no timeout warning, in under 4 s.
+      `sfor --format ini needle <fifo>` with a writer thread filling a `mkfifo`; then, with the
+      command's working directory set to `/dev`, `sfor --format ini needle stdin` with
+      `app.ini` redirected as a file and through a pipe; and a symlink `ini/link.ini →
+      /dev/stdin` searched as `sfor needle ini/link.ini`, with `app.ini` redirected as a file and
+      through a pipe (review r3, Codex #2): every run gives `app.ini`'s Trails, no timeout
+      warning, in under 4 s.
   19. `h19_a_failing_helper_is_plain_like_rg` (D33, Codex #6): with `SFOR_EXAMPLE_CRASH=long`, a
       file `long.ini` with a 5 000-character line holding `needle` prints exactly what a `.txt`
       copy of it prints (Fragments included), and `--json` gives `"format": null` for it.
@@ -6392,12 +6539,21 @@ median() {
 # prints a line once per Trail, so a table row can print twice; `--no-trail` exactly rg's).
 check() {
   local name="$1" want="$2" flag="$3"; shift 3
-  local code=0 err rgerr
+  local code=0 rgcode=0 err rgerr
   err=$("$sfor" --color never "$flag" "$@" 2>&1 >/tmp/sfor-bench-check.out | sed 's/^sfor: //' | sort) || true
   "$sfor" --color never "$flag" "$@" >/dev/null 2>&1 || code=$?
   rgerr=$( (rg --color never "$@" 2>&1 >/dev/null || true) | sed 's/^rg: //' | sort)
-  if [ "$code" != "$want" ] || [ "$err" != "$rgerr" ]; then
-    echo "  FAIL $name: sfor exited $code (want $want); stderr differs from rg's: ${err:0:300}"; fail=1; return
+  rg --color never "$@" >/dev/null 2>&1 || rgcode=$?
+  # sfor exits as rg does (2 for both when a file cannot be read is fine), and the pattern
+  # behaves as the benchmark assumes: rg itself found (sparse) or did not find (none) Matches,
+  # which `-q` below checks apart from the errors (review r3, Codex #4).
+  if [ "$code" != "$rgcode" ] || [ "$err" != "$rgerr" ]; then
+    echo "  FAIL $name: sfor exited $code, rg $rgcode; or stderr differs from rg's: ${err:0:300}"; fail=1; return
+  fi
+  local found=0
+  rg -q --no-messages "$@" || found=$?
+  if { [ "$want" = 0 ] && [ "$found" = 1 ]; } || { [ "$want" = 1 ] && [ "$found" = 0 ]; }; then
+    echo "  FAIL $name: the pattern does not behave as the benchmark assumes"; fail=1; return
   fi
   local ours rgs
   ours=$(wc -l </tmp/sfor-bench-check.out)
