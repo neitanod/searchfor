@@ -1,0 +1,10 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"code/outer.py"}}}
+{"type":"match","data":{"path":{"text":"code/outer.py"},"lines":{"text":"            return \"needle\"\n"},"line_number":4,"absolute_offset":56,"submatches":[{"match":{"text":"needle"},"start":20,"end":26}],"format":"python","trail":[{"kind":"class","name":"Outer","line":1,"end_line":8,"signature":"class Outer:"},{"kind":"function","name":"method","line":2,"end_line":5,"signature":"def method(self):"},{"kind":"function","name":"inner","line":3,"end_line":4,"signature":"def inner():"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code/outer.py"},"lines":{"text":"        return \"needle\"\n"},"line_number":8,"absolute_offset":135,"submatches":[{"match":{"text":"needle"},"start":16,"end":22}],"format":"python","trail":[{"kind":"class","name":"Outer","line":1,"end_line":8,"signature":"class Outer:"},{"kind":"function","name":"fetch","line":7,"end_line":8,"signature":"async def fetch(self):"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code/outer.py"},"lines":{"text":"    return \"needle\"\n"},"line_number":12,"absolute_offset":172,"submatches":[{"match":{"text":"needle"},"start":12,"end":18}],"format":"python","trail":[{"kind":"function","name":"top","line":11,"end_line":12,"signature":"def top():"}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"code/outer.py"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":192,"bytes_printed":1320,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1320,"bytes_searched":192,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

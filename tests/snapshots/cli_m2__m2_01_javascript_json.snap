@@ -1,0 +1,10 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"code/widget.js"}}}
+{"type":"match","data":{"path":{"text":"code/widget.js"},"lines":{"text":"    return `<p>needle</p>`;\n"},"line_number":7,"absolute_offset":78,"submatches":[{"match":{"text":"needle"},"start":15,"end":21}],"format":"javascript","trail":[{"kind":"class","name":"Widget","line":1,"end_line":13,"signature":"class Widget"},{"kind":"method","name":"render","line":6,"end_line":8,"signature":"render()"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code/widget.js"},"lines":{"text":"    console.log(\"needle clicked\");\n"},"line_number":11,"absolute_offset":131,"submatches":[{"match":{"text":"needle"},"start":17,"end":23}],"format":"javascript","trail":[{"kind":"class","name":"Widget","line":1,"end_line":13,"signature":"class Widget"},{"kind":"method","name":"handler","line":10,"end_line":12,"signature":"handler = () =>"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code/widget.js"},"lines":{"text":"    return x + \" needle\";\n"},"line_number":17,"absolute_offset":206,"submatches":[{"match":{"text":"needle"},"start":17,"end":23}],"format":"javascript","trail":[{"kind":"method","name":"format","line":16,"end_line":18,"signature":"format(x)"}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"code/widget.js"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":240,"bytes_printed":1256,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1256,"bytes_searched":240,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

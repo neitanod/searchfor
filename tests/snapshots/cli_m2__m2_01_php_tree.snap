@@ -1,0 +1,10 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+code/cart.php
+  class Cart
+    public function addItem(Item $item, int $qty = 1): void
+      10:        // needle: merge equal items
+  15:function needle_helper(): string
+    17:    return "needle";

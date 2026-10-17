@@ -1,0 +1,10 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"code/cart.php"}}}
+{"type":"match","data":{"path":{"text":"code/cart.php"},"lines":{"text":"        // needle: merge equal items\n"},"line_number":10,"absolute_offset":138,"submatches":[{"match":{"text":"needle"},"start":11,"end":17}],"format":"php","trail":[{"kind":"class","name":"Cart","line":4,"end_line":13,"signature":"class Cart"},{"kind":"method","name":"addItem","line":8,"end_line":12,"signature":"public function addItem(Item $item, int $qty = 1): void"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code/cart.php"},"lines":{"text":"function needle_helper(): string\n"},"line_number":15,"absolute_offset":224,"submatches":[{"match":{"text":"needle"},"start":9,"end":15}],"format":"php","trail":[],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code/cart.php"},"lines":{"text":"    return \"needle\";\n"},"line_number":17,"absolute_offset":259,"submatches":[{"match":{"text":"needle"},"start":12,"end":18}],"format":"php","trail":[{"kind":"function","name":"needle_helper","line":15,"end_line":18,"signature":"function needle_helper(): string"}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"code/cart.php"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":282,"bytes_printed":1138,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1138,"bytes_searched":282,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

@@ -1,0 +1,6 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+6: Geometry › Base › describe │       return `needle ${this.area()}`;
+16: make │   return "needle".repeat(n);

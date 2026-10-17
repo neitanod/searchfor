@@ -1,0 +1,9 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+code/deploy.sh
+  greet()
+    5:  echo "hello needle"
+  function deploy
+    9:  rsync -a build/ host:/srv/needle/

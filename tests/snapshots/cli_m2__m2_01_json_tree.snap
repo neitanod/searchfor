@@ -1,0 +1,15 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+data/config.json
+  server
+    ports[2]
+      host
+        8:      {"host": "needle.example", "port": 8443},
+    matrix[1][1]
+      10:    "matrix": [[1, 2], [3, "needle"]]
+  13:     comment with needle */
+  café
+    14:  "caf\u00e9": "needle",
+  15:  "needle_key": true

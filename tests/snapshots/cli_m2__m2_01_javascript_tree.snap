@@ -1,0 +1,12 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+code/widget.js
+  class Widget
+    render()
+      7:    return `<p>needle</p>`;
+    handler = () =>
+      11:    console.log("needle clicked");
+  format(x)
+    17:    return x + " needle";

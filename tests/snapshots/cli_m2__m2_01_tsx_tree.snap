@@ -1,0 +1,9 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+code/view.tsx
+  function View(props: { title: string })
+    onClick = () =>
+      3:    console.log("needle");
+    5:  return <button onClick={onClick}>{props.title} needle</button>;

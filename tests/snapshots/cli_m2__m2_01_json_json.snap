@@ -1,0 +1,12 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"data/config.json"}}}
+{"type":"match","data":{"path":{"text":"data/config.json"},"lines":{"text":"      {\"host\": \"needle.example\", \"port\": 8443},\n"},"line_number":8,"absolute_offset":162,"submatches":[{"match":{"text":"needle"},"start":16,"end":22}],"format":"json","trail":[{"kind":"key","name":"server","line":3,"end_line":11},{"kind":"element","name":"ports[2]","line":8,"end_line":8},{"kind":"key","name":"host","line":8,"end_line":8}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"data/config.json"},"lines":{"text":"    \"matrix\": [[1, 2], [3, \"needle\"]]\n"},"line_number":10,"absolute_offset":217,"submatches":[{"match":{"text":"needle"},"start":28,"end":34}],"format":"json","trail":[{"kind":"key","name":"server","line":3,"end_line":11},{"kind":"element","name":"matrix[1][1]","line":10,"end_line":10}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"data/config.json"},"lines":{"text":"     comment with needle */\n"},"line_number":13,"absolute_offset":273,"submatches":[{"match":{"text":"needle"},"start":18,"end":24}],"format":"json","trail":[],"fragment":null}}
+{"type":"match","data":{"path":{"text":"data/config.json"},"lines":{"text":"  \"caf\\u00e9\": \"needle\",\n"},"line_number":14,"absolute_offset":301,"submatches":[{"match":{"text":"needle"},"start":16,"end":22}],"format":"json","trail":[{"kind":"key","name":"café","line":14,"end_line":14}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"data/config.json"},"lines":{"text":"  \"needle_key\": true\n"},"line_number":15,"absolute_offset":326,"submatches":[{"match":{"text":"needle"},"start":3,"end":9}],"format":"json","trail":[],"fragment":null}}
+{"type":"end","data":{"path":{"text":"data/config.json"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":349,"bytes_printed":1704,"matched_lines":5,"matches":5}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1704,"bytes_searched":349,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":5,"matches":5,"searches":1,"searches_with_match":1}},"type":"summary"}

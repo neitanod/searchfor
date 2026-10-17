@@ -1,0 +1,9 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+2: owner › name │ owner.name = "needle owner"
+13: products[1] › tags[1] │ tags = ["a", "needle"]
+16: products[1] › variants[0] › sku │ sku = "needle-sku"
+19: database › replica › url │ url = "postgres://needle"
+20: database › replica › inline › user │ inline = { user = "needle" }

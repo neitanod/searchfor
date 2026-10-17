@@ -1,0 +1,10 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"code/thing.rs"}}}
+{"type":"match","data":{"path":{"text":"code/thing.rs"},"lines":{"text":"        needle: u32,\n"},"line_number":3,"absolute_offset":35,"submatches":[{"match":{"text":"needle"},"start":8,"end":14}],"format":"rust","trail":[{"kind":"module","name":"outer","line":1,"end_line":17,"signature":"mod outer"},{"kind":"struct","name":"Thing","line":2,"end_line":4,"signature":"pub struct Thing"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code/thing.rs"},"lines":{"text":"            self.needle + 1\n"},"line_number":8,"absolute_offset":118,"submatches":[{"match":{"text":"needle"},"start":17,"end":23}],"format":"rust","trail":[{"kind":"module","name":"outer","line":1,"end_line":17,"signature":"mod outer"},{"kind":"impl","name":"Thing","line":6,"end_line":10,"signature":"impl Thing"},{"kind":"function","name":"helper","line":7,"end_line":9,"signature":"pub fn helper(&self) -> u32"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code/thing.rs"},"lines":{"text":"            String::from(\"needle\")\n"},"line_number":14,"absolute_offset":223,"submatches":[{"match":{"text":"needle"},"start":26,"end":32}],"format":"rust","trail":[{"kind":"module","name":"outer","line":1,"end_line":17,"signature":"mod outer"},{"kind":"trait","name":"Greeter","line":12,"end_line":16,"signature":"pub trait Greeter"},{"kind":"function","name":"greet","line":13,"end_line":15,"signature":"fn greet(&self) -> String"}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"code/thing.rs"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":276,"bytes_printed":1503,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1503,"bytes_searched":276,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

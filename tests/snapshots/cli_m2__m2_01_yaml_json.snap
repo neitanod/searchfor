@@ -1,0 +1,10 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"data/config.yaml"}}}
+{"type":"match","data":{"path":{"text":"data/config.yaml"},"lines":{"text":"    - host: needle.example\n"},"line_number":9,"absolute_offset":128,"submatches":[{"match":{"text":"needle"},"start":12,"end":18}],"format":"yaml","trail":[{"kind":"key","name":"server","line":2,"end_line":14},{"kind":"element","name":"ports[2]","line":9,"end_line":10},{"kind":"key","name":"host","line":9,"end_line":9}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"data/config.yaml"},"lines":{"text":"    a needle in a block\n"},"line_number":13,"absolute_offset":195,"submatches":[{"match":{"text":"needle"},"start":6,"end":12}],"format":"yaml","trail":[{"kind":"key","name":"server","line":2,"end_line":14},{"kind":"key","name":"motd","line":11,"end_line":14}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"data/config.yaml"},"lines":{"text":"  tag: needle\n"},"line_number":19,"absolute_offset":277,"submatches":[{"match":{"text":"needle"},"start":7,"end":13}],"format":"yaml","trail":[{"kind":"key","name":"worker","line":17,"end_line":19},{"kind":"key","name":"tag","line":19,"end_line":19}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"data/config.yaml"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":291,"bytes_printed":1180,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1180,"bytes_searched":291,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

@@ -1,0 +1,21 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+data/shop.toml
+  owner
+    name
+      2:owner.name = "needle owner"
+  products[1]
+    tags[1]
+      13:tags = ["a", "needle"]
+    variants[0]
+      sku
+        16:sku = "needle-sku"
+  database
+    replica
+      url
+        19:url = "postgres://needle"
+      inline
+        user
+          20:inline = { user = "needle" }

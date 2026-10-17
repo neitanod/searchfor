@@ -1,0 +1,7 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+9: server › ports[2] › host │     - host: needle.example
+13: server › motd │     a needle in a block
+19: worker › tag │   tag: needle

@@ -1,0 +1,7 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+3: outer › Thing │         needle: u32,
+8: outer › Thing › helper │             self.needle + 1
+14: outer › Greeter › greet │             String::from("needle")

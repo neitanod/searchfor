@@ -1,0 +1,7 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+4: Server │ 	Addr string // needle address
+8: Server.Start │ 	return listen(s.Addr, "needle")
+12: helper │ 	return "needle"

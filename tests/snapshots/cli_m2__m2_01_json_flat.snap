@@ -1,0 +1,9 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+8: server › ports[2] › host │       {"host": "needle.example", "port": 8443},
+10: server › matrix[1][1] │     "matrix": [[1, 2], [3, "needle"]]
+13:      comment with needle */
+14: café │   "caf\u00e9": "needle",
+15:   "needle_key": true

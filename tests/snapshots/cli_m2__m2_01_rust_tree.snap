@@ -1,0 +1,14 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+code/thing.rs
+  mod outer
+    pub struct Thing
+      3:        needle: u32,
+    impl Thing
+      pub fn helper(&self) -> u32
+        8:            self.needle + 1
+    pub trait Greeter
+      fn greet(&self) -> String
+        14:            String::from("needle")

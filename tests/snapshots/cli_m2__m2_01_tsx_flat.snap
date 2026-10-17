@@ -1,0 +1,6 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+3: View › onClick │     console.log("needle");
+5: View │   return <button onClick={onClick}>{props.title} needle</button>;

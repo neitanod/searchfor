@@ -1,0 +1,9 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"code/shape.ts"}}}
+{"type":"match","data":{"path":{"text":"code/shape.ts"},"lines":{"text":"      return `needle ${this.area()}`;\n"},"line_number":6,"absolute_offset":107,"submatches":[{"match":{"text":"needle"},"start":14,"end":20}],"format":"typescript","trail":[{"kind":"namespace","name":"Geometry","line":1,"end_line":9,"signature":"namespace Geometry"},{"kind":"class","name":"Base","line":2,"end_line":8,"signature":"abstract class Base"},{"kind":"method","name":"describe","line":5,"end_line":7,"signature":"describe(): string"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code/shape.ts"},"lines":{"text":"  return \"needle\".repeat(n);\n"},"line_number":16,"absolute_offset":242,"submatches":[{"match":{"text":"needle"},"start":10,"end":16}],"format":"typescript","trail":[{"kind":"function","name":"make","line":15,"end_line":17,"signature":"make = (n: number): string =>"}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"code/shape.ts"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":274,"bytes_printed":958,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":958,"bytes_searched":274,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

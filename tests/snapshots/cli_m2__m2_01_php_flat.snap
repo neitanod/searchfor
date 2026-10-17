@@ -1,0 +1,7 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+10: Cart › addItem │         // needle: merge equal items
+15: function needle_helper(): string
+17: needle_helper │     return "needle";

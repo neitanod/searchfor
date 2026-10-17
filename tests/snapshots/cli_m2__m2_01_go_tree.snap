@@ -1,0 +1,11 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+code/server.go
+  Server struct
+    4:	Addr string // needle address
+  func (s *Server) Start() error
+    8:	return listen(s.Addr, "needle")
+  func helper() string
+    12:	return "needle"

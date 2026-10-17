@@ -1,0 +1,11 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+code/shape.ts
+  namespace Geometry
+    abstract class Base
+      describe(): string
+        6:      return `needle ${this.area()}`;
+  make = (n: number): string =>
+    16:  return "needle".repeat(n);

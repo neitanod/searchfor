@@ -1,0 +1,7 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+4: Outer › method › inner │             return "needle"
+8: Outer › fetch │         return "needle"
+12: top │     return "needle"

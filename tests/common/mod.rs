@@ -7,11 +7,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 /// A copy of `tests/fixtures/` (dotfiles included) with an empty `.git` at its root, so that
-/// `.gitignore` files apply to rg and sfor alike, and an empty formats directory for
-/// `SFOR_FORMATS_DIR`.
+/// `.gitignore` files apply to rg and sfor alike, an empty formats directory for
+/// `SFOR_FORMATS_DIR`, and an empty Grammar directory for `SFOR_GRAMMARS_DIR`, whose index
+/// does not exist, so no test reads the user's Grammars or the network (M2 plan, Task 10.4).
 pub struct Fixture {
     pub dir: tempfile::TempDir,
     pub formats: tempfile::TempDir,
+    pub grammars: tempfile::TempDir,
 }
 
 impl Fixture {
@@ -22,6 +24,7 @@ impl Fixture {
         Self {
             dir,
             formats: tempfile::tempdir().unwrap(),
+            grammars: tempfile::tempdir().unwrap(),
         }
     }
 
@@ -33,6 +36,14 @@ impl Fixture {
         self.dir.path().join(rel)
     }
 
+    /// The `file://` URL of an index that does not exist, in the Grammar directory.
+    pub fn no_index(&self) -> String {
+        format!(
+            "file://{}",
+            self.grammars.path().join("no-index.json").display()
+        )
+    }
+
     /// sfor in the fixture copy, stdin from /dev/null, `--color never` unless `args` sets it.
     pub fn sfor<I, S>(&self, args: I) -> Command
     where
@@ -42,6 +53,8 @@ impl Fixture {
         let mut c = Command::new(assert_cmd::cargo::cargo_bin("sfor"));
         c.current_dir(self.path())
             .env("SFOR_FORMATS_DIR", self.formats.path())
+            .env("SFOR_GRAMMARS_DIR", self.grammars.path())
+            .env("SFOR_GRAMMAR_INDEX", self.no_index())
             .env_remove("RIPGREP_CONFIG_PATH")
             .stdin(Stdio::null());
         let args: Vec<_> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
@@ -121,4 +134,51 @@ pub fn stderr(o: &Output) -> String {
 
 pub fn code(o: &Output) -> i32 {
     o.status.code().unwrap_or(-1)
+}
+
+/// `--json` output with every `elapsed` of `end` and `summary` replaced by zeros, so it can be
+/// snapshotted.
+pub fn mask_json_times(out: &str) -> String {
+    fn mask(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for (k, x) in m.iter_mut() {
+                    if k == "elapsed" || k == "elapsed_total" {
+                        *x = serde_json::json!({"secs": 0, "nanos": 0, "human": "0s"});
+                    } else {
+                        mask(x);
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => a.iter_mut().for_each(mask),
+            _ => {}
+        }
+    }
+    let mut s = String::new();
+    for line in out.lines() {
+        let mut v: serde_json::Value = serde_json::from_str(line).unwrap();
+        mask(&mut v);
+        s.push_str(&serde_json::to_string(&v).unwrap());
+        s.push('\n');
+    }
+    s
+}
+
+/// Every `match` message of `--json` output validates against `docs/json-schema.json`.
+pub fn assert_valid_json_schema(out: &str) {
+    let schema: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/docs/json-schema.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    for line in out.lines() {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        if v["type"] == "match" {
+            assert!(validator.is_valid(&v["data"]), "{line}");
+        }
+    }
 }

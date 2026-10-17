@@ -1,0 +1,10 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"code/server.go"}}}
+{"type":"match","data":{"path":{"text":"code/server.go"},"lines":{"text":"\tAddr string // needle address\n"},"line_number":4,"absolute_offset":37,"submatches":[{"match":{"text":"needle"},"start":16,"end":22}],"format":"go","trail":[{"kind":"type","name":"Server","line":3,"end_line":5,"signature":"Server struct"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code/server.go"},"lines":{"text":"\treturn listen(s.Addr, \"needle\")\n"},"line_number":8,"absolute_offset":104,"submatches":[{"match":{"text":"needle"},"start":24,"end":30}],"format":"go","trail":[{"kind":"method","name":"Server.Start","line":7,"end_line":9,"signature":"func (s *Server) Start() error"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code/server.go"},"lines":{"text":"\treturn \"needle\"\n"},"line_number":12,"absolute_offset":163,"submatches":[{"match":{"text":"needle"},"start":9,"end":15}],"format":"go","trail":[{"kind":"function","name":"helper","line":11,"end_line":13,"signature":"func helper() string"}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"code/server.go"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":182,"bytes_printed":1093,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1093,"bytes_searched":182,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

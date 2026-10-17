@@ -1,0 +1,13 @@
+---
+source: tests/cli_m2.rs
+expression: out
+---
+code/outer.py
+  class Outer:
+    def method(self):
+      def inner():
+        4:            return "needle"
+    async def fetch(self):
+      8:        return "needle"
+  def top():
+    12:    return "needle"
