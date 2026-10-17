@@ -5,6 +5,7 @@
 /// pipeline, it only turns the contract into requests.
 pub struct HelperProcessor {
     host: crate::helper::host::Host,
+    warn: crate::helper::Warn,
     tmp: std::sync::Arc<RunTemp>,
     /// A Grammar Helper's `max_bytes` (spec §5.3), checked before the request.
     limit: Option<super::treesitter::SizeLimit>,
@@ -18,7 +19,8 @@ impl HelperProcessor {
         warn: crate::helper::Warn,
     ) -> Self {
         Self {
-            host: crate::helper::host::Host::new(cfg, launcher, warn),
+            host: crate::helper::host::Host::new(cfg, launcher, warn.clone()),
+            warn,
             tmp,
             limit: None,
         }
@@ -29,6 +31,20 @@ impl HelperProcessor {
     pub fn with_size_limit(mut self) -> Self {
         self.limit = Some(super::treesitter::SizeLimit::default());
         self
+    }
+
+    /// The error of a failed request. When the failure disabled the Definition, the file's
+    /// warning is printed here, followed by the notice, and the pipeline gets `Unavailable`:
+    /// the two warnings come out in order (review m2-code-r1, Fable #5).
+    fn failure(&self, input: &crate::model::Input, msg: String) -> anyhow::Error {
+        match self.host.take_notice() {
+            Some(notice) => {
+                (self.warn)(format!("sfor: {}: {msg}", input.path.display()));
+                (self.warn)(notice);
+                crate::helper::Unavailable.into()
+            }
+            None => anyhow::anyhow!(msg),
+        }
     }
 
     /// Err(`Unavailable`) for a file over the limit, after the warning of the first one.
@@ -95,7 +111,7 @@ impl super::Processor for HelperProcessor {
                 None => anyhow::bail!("{f}: the helper's answer has no `trails`"),
             },
             Err(HelperError::Disabled) => Err(crate::helper::Unavailable.into()),
-            Err(e) => anyhow::bail!("{f}: {e}"),
+            Err(e) => Err(self.failure(input, format!("{f}: {e}"))),
         }
     }
 
@@ -114,7 +130,7 @@ impl super::Processor for HelperProcessor {
                 None => anyhow::bail!("{f}: the helper's answer has no `names`"),
             },
             Err(HelperError::Disabled) => Err(crate::helper::Unavailable.into()),
-            Err(e) => anyhow::bail!("{f}: {e}"),
+            Err(e) => Err(self.failure(input, format!("{f}: {e}"))),
         }
     }
 }
@@ -220,14 +236,16 @@ mod tests {
             slow_kill: Duration::ZERO,
         };
         let sup: &'static cancel::Supervisor = Box::leak(Box::new(cancel::Supervisor::new(false)));
+        let warn: crate::helper::Warn = Arc::new(move |m| w.lock().unwrap().push(m));
         let host = Host::with_supervisor(
             crate::helper::host::testing::cfg(Mode::Pool, 2, 2000),
             Box::new(fake),
-            Arc::new(move |m| w.lock().unwrap().push(m)),
+            warn.clone(),
             sup,
         );
         let p = HelperProcessor {
             host,
+            warn,
             tmp: Arc::new(RunTemp::new()),
             limit: None,
         };

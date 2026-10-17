@@ -301,6 +301,9 @@ struct State {
     starting: usize,
     failures: u32,
     disabled: bool,
+    /// The warning of a disable caused by a request's failure, held until the warning of
+    /// that request's file is out (review m2-code-r1, Fable #5).
+    notice: Option<String>,
 }
 
 /// The helper processes of one Definition for one run.
@@ -354,7 +357,7 @@ impl Host {
         }
         // A copy that exited with nothing in flight is replaced once, without counting it.
         for attempt in 0..2 {
-            let conn = self.checkout()?;
+            let conn = self.checkout().inspect_err(|_| self.flush_notice())?;
             let deadline = Instant::now() + self.cfg.timeout;
             let sent = conn.send(&req);
             let out = sent.map(|rx| self.outcome(&conn, wait(rx, deadline)));
@@ -555,22 +558,46 @@ impl Host {
             st.failures >= MAX_FAILURES && !st.disabled
         };
         if disable {
-            self.disable(format!("the helper failed {MAX_FAILURES} times"));
+            self.disable_with(format!("the helper failed {MAX_FAILURES} times"), true);
         }
     }
 
     fn disable(&self, why: String) {
-        let first = {
+        self.disable_with(why, false);
+    }
+
+    /// Disables the Definition with one warning; `later`: held as the notice, for the caller
+    /// to print after the warning of the failing file (`take_notice`).
+    fn disable_with(&self, why: String, later: bool) {
+        let msg = format!(
+            "sfor: {}: {why}; its files print without Trails for the rest of this run",
+            self.cfg.format
+        );
+        let now = {
             let mut st = self.st.lock().unwrap();
-            !std::mem::replace(&mut st.disabled, true)
+            let first = !std::mem::replace(&mut st.disabled, true);
+            if first && later {
+                st.notice = Some(msg.clone());
+            }
+            first && !later
         };
-        if first && !self.sup.cancelled() {
-            (self.warn)(format!(
-                "sfor: {}: {why}; its files print without Trails for the rest of this run",
-                self.cfg.format
-            ));
+        if now && !self.sup.cancelled() {
+            (self.warn)(msg);
         }
         self.freed.notify_all();
+    }
+
+    /// The disable notice not printed yet, if any; the caller prints it.
+    pub fn take_notice(&self) -> Option<String> {
+        let n = self.st.lock().unwrap().notice.take();
+        n.filter(|_| !self.sup.cancelled())
+    }
+
+    /// Prints the notice held, if no one did (a later request, the shutdown).
+    fn flush_notice(&self) {
+        if let Some(n) = self.take_notice() {
+            (self.warn)(n);
+        }
     }
 
     /// End of the run: no more requests; every process gets EOF, a second, then a kill, and is
@@ -578,6 +605,7 @@ impl Host {
     /// close at once, so their second of grace and of pipes is spent together, not once per
     /// copy (review m2-code-r1, Fable #1).
     pub fn shutdown(&self) {
+        self.flush_notice();
         let conns = {
             let mut st = self.st.lock().unwrap();
             st.disabled = true;

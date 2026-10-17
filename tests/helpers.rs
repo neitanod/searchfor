@@ -344,6 +344,10 @@ fn h05_three_failures_disable_the_definition() {
         );
     }
     assert!(!err.contains("gen/g04.ini"), "{err}");
+    // The notice that disables the Definition follows the warning of the file that caused it
+    // (review m2-code-r1, Fable #5).
+    assert!(lines[2].contains("gen/g03.ini"), "{err}");
+    assert!(lines[3].contains("failed 3 times"), "{err}");
     let want: String = (1..=6)
         .map(|i| format!("gen/g{i:02}.ini:2: k = needle\n"))
         .collect();
