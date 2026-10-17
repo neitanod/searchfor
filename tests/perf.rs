@@ -69,6 +69,16 @@ fn sfor_bin() -> std::path::PathBuf {
 /// Wall time and peak RSS in bytes of `bin args` (sfor or rg), stdout discarded, measured by
 /// `/usr/bin/time -v`. None when /usr/bin/time is missing.
 fn measure(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
+    measure_with(bin, fx, args, None)
+}
+
+/// `measure` with stdin read from `stdin`, a file in the fixture copy.
+fn measure_with(
+    bin: &Path,
+    fx: &Fixture,
+    args: &[&str],
+    stdin: Option<&str>,
+) -> Option<(Duration, u64)> {
     let time = Path::new("/usr/bin/time");
     if !time.exists() {
         return None;
@@ -80,7 +90,10 @@ fn measure(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
         .current_dir(fx.path())
         .env("SFOR_FORMATS_DIR", fx.formats.path())
         .env_remove("RIPGREP_CONFIG_PATH")
-        .stdin(Stdio::null())
+        .stdin(match stdin {
+            None => Stdio::null(),
+            Some(f) => Stdio::from(std::fs::File::open(fx.file(f)).unwrap()),
+        })
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     let started = Instant::now();
@@ -355,4 +368,35 @@ fn json_without_trails_of_a_big_file_is_as_fast_as_ripgrep() {
             "{t:?} is more than 1.25 × the {base:?} of rg --json"
         );
     }
+}
+
+/// Code review r7, Codex #4: `--in-headings` finds where ripgrep detects the binary data of
+/// stdin by searching it for every line, keeping no line: 8 MiB of Markdown on stdin with a NUL
+/// at its end costs at most 2 × its size more than without the NUL (the NUL-converted copy of
+/// the Source). Before the fix the search kept an empty submatch per line: 289 MiB against
+/// 97 MiB.
+#[test]
+#[ignore]
+fn the_binary_probe_of_in_headings_keeps_no_lines() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let body = "body text\n".repeat(8 * 1024 * 1024 / 10);
+    let size = body.len() as u64;
+    std::fs::write(fx.file("nul.in"), format!("# needle\n\n{body}\0\n")).unwrap();
+    std::fs::write(fx.file("text.in"), format!("# needle\n\n{body}\n")).unwrap();
+    let args = ["--in-headings", "--format", "markdown", "-c", "needle", "-"];
+    let Some((_, nul)) = measure_with(&sfor_bin(), &fx, &args, Some("nul.in")) else {
+        eprintln!("skipping: /usr/bin/time not found");
+        return;
+    };
+    let (_, text) = measure_with(&sfor_bin(), &fx, &args, Some("text.in")).unwrap();
+    eprintln!(
+        "8 MiB on stdin: RSS {} MiB with a NUL, {} MiB without",
+        nul / 1_048_576,
+        text / 1_048_576
+    );
+    assert!(
+        nul < text + 2 * size,
+        "RSS {nul} is not below {text} + 2 × {size}"
+    );
 }

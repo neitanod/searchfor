@@ -1322,35 +1322,25 @@ impl Ctx<'_> {
             &mut st.stream
         };
         searcher.set_binary_detection(detection);
-        let every = RegexMatcher::new_line_matcher("").expect("the empty pattern compiles");
-        let (fm, stats) = match search::search_source_stats(searcher, &every, src, in_memory, None)
-        {
-            Ok(r) => r,
+        let probe = match search::binary_probe(searcher, src, in_memory) {
+            Ok(p) => p,
             Err(e) => {
                 self.msgs
                     .error(format_args!("{}: {e:#}", t.path.display()));
                 return Err(());
             }
         };
-        let Some(offset) = stats.binary_offset else {
+        let Some(offset) = probe.binary_offset else {
             return Ok(None);
         };
         // The end of the last line searched before the binary data was detected.
-        let cut = match (&fm, stats.binary_cut) {
-            (Some(fm), Some(k)) => fm.items[..k.min(fm.items.len())]
-                .last()
-                .map_or(0, |i| {
-                    let l = item_line(i);
-                    l.absolute_offset as usize + l.len
-                }),
-            _ => 0,
-        };
+        let cut = usize::try_from(probe.cut).unwrap_or(usize::MAX);
         Ok(Some(BinaryProbe {
             offset,
             cut: cut.min(src.bytes().len()),
             quit,
             reader: !in_memory,
-            bytes_searched: stats.bytes_searched,
+            bytes_searched: probe.bytes_searched,
         }))
     }
 

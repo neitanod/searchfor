@@ -432,6 +432,63 @@ impl Sink for CollectSink<'_> {
     }
 }
 
+/// Where a search detects binary data, keeping no line (code review r7, Codex #4): the end of
+/// the last line reported before the detection, and the searcher's `binary_offset` and
+/// `bytes_searched`.
+#[derive(Debug, Default)]
+pub struct BinarySink {
+    /// The end of the last line reported before `binary_data`.
+    pub cut: u64,
+    detected: bool,
+    pub binary_offset: Option<u64>,
+    pub bytes_searched: u64,
+}
+
+impl BinarySink {
+    fn line(&mut self, offset: u64, len: usize) {
+        if !self.detected {
+            self.cut = offset + len as u64;
+        }
+    }
+}
+
+impl Sink for BinarySink {
+    type Error = std::io::Error;
+
+    fn matched(&mut self, _s: &Searcher, m: &SinkMatch<'_>) -> Result<bool, Self::Error> {
+        self.line(m.absolute_byte_offset(), m.bytes().len());
+        Ok(true)
+    }
+
+    fn context(&mut self, _s: &Searcher, c: &SinkContext<'_>) -> Result<bool, Self::Error> {
+        self.line(c.absolute_byte_offset(), c.bytes().len());
+        Ok(true)
+    }
+
+    fn binary_data(&mut self, _s: &Searcher, _offset: u64) -> Result<bool, Self::Error> {
+        self.detected = true;
+        Ok(true)
+    }
+
+    fn finish(&mut self, _s: &Searcher, f: &SinkFinish) -> Result<(), Self::Error> {
+        self.bytes_searched = f.byte_count();
+        self.binary_offset = f.binary_byte_offset();
+        Ok(())
+    }
+}
+
+/// Searches `src` for every line with `BinarySink`, as `search_source` would search it.
+pub fn binary_probe(searcher: &mut Searcher, src: &Source, in_memory: bool) -> Result<BinarySink> {
+    let every = RegexMatcher::new_line_matcher("").expect("the empty pattern compiles");
+    let mut sink = BinarySink::default();
+    if in_memory {
+        searcher.search_slice(&every, src.bytes(), &mut sink)?;
+    } else {
+        searcher.search_reader(&every, std::io::Cursor::new(src.as_read()), &mut sink)?;
+    }
+    Ok(sink)
+}
+
 /// Searches a Source. Returns None when nothing matched (stats are discarded: ripgrep's
 /// summary counts only files with Matches, verified with rg 14.1.1).
 ///
