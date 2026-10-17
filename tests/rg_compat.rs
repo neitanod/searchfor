@@ -2003,3 +2003,65 @@ fn in_headings_searches_plain_files_with_the_binary_policy_of_ripgrep() {
     }
     r.assert_empty();
 }
+
+/// Code review r7, Fable #2: `-e` and `-f` patterns join in command-line order, as rg 14.1.1's
+/// `PatternSource`s, and the order decides which alternative of the alternation matches
+/// (`aa|a` finds two Matches in `aaa`, `a|aa` three).
+#[test]
+fn e_and_f_patterns_join_in_command_line_order() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("ef")).unwrap();
+    std::fs::write(fx.file("ef/paa.txt"), "aa\n").unwrap();
+    std::fs::write(fx.file("ef/pab.txt"), "ab\n").unwrap();
+    std::fs::write(fx.file("ef/aaa.txt"), "aaa\n").unwrap();
+    std::fs::write(fx.file("ef/xabab.txt"), "xabab\n").unwrap();
+    let mut r = Report(Vec::new());
+    for args in [
+        &[
+            "--count-matches",
+            "-f",
+            "ef/paa.txt",
+            "-e",
+            "a",
+            "ef/aaa.txt",
+        ][..],
+        &[
+            "--count-matches",
+            "-e",
+            "a",
+            "-f",
+            "ef/paa.txt",
+            "ef/aaa.txt",
+        ],
+        &[
+            "--count-matches",
+            "-e",
+            "x",
+            "-f",
+            "ef/paa.txt",
+            "-e",
+            "a",
+            "ef/aaa.txt",
+        ],
+    ] {
+        passthrough(&fx, &mut r, args, In::Null);
+    }
+    for args in [
+        &["--json", "-f", "ef/pab.txt", "-e", "a", "ef/xabab.txt"][..],
+        &["--json", "-e", "a", "-f", "ef/pab.txt", "ef/xabab.txt"],
+    ] {
+        let want = rg(&fx, args, In::Null);
+        let mut s = vec!["--no-trail"];
+        s.extend_from_slice(args);
+        let got = sfor(&fx, &s, In::Null);
+        r.check(
+            format!("{s:?}"),
+            (code(&want), json_lines(&want, false)),
+            (code(&got), json_lines(&got, false)),
+        );
+    }
+    r.assert_empty();
+}
