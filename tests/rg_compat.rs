@@ -1262,7 +1262,7 @@ fn unicode_classes_equal_ripgrep() {
 /// `rg` and `sfor` naming the reference and our binary. None, with a note, without `script`.
 fn on_a_tty(fx: &Fixture, cmd: &str) -> Option<String> {
     if Command::new("script").arg("--version").output().is_err() {
-        eprintln!("skipping: util-linux script not found");
+        eprintln!("skipping: util-linux script not found, so this pty test tests nothing");
         return None;
     }
     let sfor = assert_cmd::cargo::cargo_bin("sfor");
@@ -1279,7 +1279,9 @@ fn on_a_tty(fx: &Fixture, cmd: &str) -> Option<String> {
 }
 
 /// Code review r5, Fable #1: on a tty, stdin alone (piped, or `-`) is printed without line
-/// numbers, as rg 14.1.1; `/dev/stdin`, stdin with a file and `-c` as rg too.
+/// numbers, as rg 14.1.1; `/dev/stdin`, stdin with a file and `-c` as rg too. Without util-linux
+/// `script` the test returns at once and passes without testing anything (code review r6,
+/// Fable #2); `on_a_tty` prints a note, which `cargo test` shows only with `--nocapture`.
 #[test]
 fn stdin_alone_on_a_tty_equals_ripgrep() {
     if !reference_rg() {
@@ -1292,7 +1294,9 @@ fn stdin_alone_on_a_tty_equals_ripgrep() {
         "cat tty.txt | {} --color never needle",
         "{} --color never needle - < tty.txt",
         "{} --color never needle /dev/stdin < tty.txt",
-        "{} --color never needle - tty.txt < tty.txt",
+        // Two inputs: `-j1` searches them in command line order, as two threads print them
+        // in the order they finish, which varied under load.
+        "{} --color never -j1 needle - tty.txt < tty.txt",
         "{} --color never -c needle - < tty.txt",
     ] {
         let Some(want) = on_a_tty(&fx, &args.replace("{}", "rg")) else {
@@ -1359,7 +1363,8 @@ fn the_separator_with_one_thread_waits_for_a_line() {
             );
         }
     }
-    // On a tty the separator is an empty line before the path heading.
+    // On a tty the separator is an empty line before the path heading. Without util-linux
+    // `script` this case is skipped and tests nothing (code review r6, Fable #2).
     let cmd = "{} --color never --sort path -C1 needle seq/plain.txt seq/nul8.txt seq/odd.txt";
     if let Some(want) = on_a_tty(&fx, &cmd.replace("{}", "rg")) {
         let got = on_a_tty(&fx, &cmd.replace("{}", "sfor")).unwrap();
