@@ -5,8 +5,10 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Origin {
     BuiltIn,
+    /// The Definition of an installed Grammar Helper (spec §7), with its file.
+    Installed(PathBuf),
     User(PathBuf),
-    /// A user file that replaced the built-in with the same name.
+    /// A user file that replaced the built-in or installed Definition with the same name.
     Overridden(PathBuf),
 }
 

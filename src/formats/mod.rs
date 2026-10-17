@@ -1,4 +1,5 @@
-//! Format Definitions: built-in + user directory (ADR 0002).
+//! Format Definitions: built-in, installed with a Grammar Helper, and the user directory
+//! (ADR 0002, spec §4.2).
 pub mod builtin;
 pub mod definition;
 pub mod detector;
@@ -25,6 +26,17 @@ impl Registry {
         user_dir: Option<&Path>,
         known_processor: &dyn Fn(&str) -> bool,
     ) -> (Self, Vec<String>) {
+        Self::load_all(user_dir, None, known_processor)
+    }
+
+    /// Loads the built-ins, then the Definition of every Grammar Helper installed under
+    /// `grammars_dir` (D26), then every `*.toml` in `user_dir` (sorted by file name), which
+    /// overrides either. Returns warnings for files that fail to parse; they are skipped.
+    pub fn load_all(
+        user_dir: Option<&Path>,
+        grammars_dir: Option<&Path>,
+        known_processor: &dyn Fn(&str) -> bool,
+    ) -> (Self, Vec<String>) {
         let mut defs: Vec<FormatDefinition> = builtin::BUILTIN
             .iter()
             .map(|(file, src)| {
@@ -33,6 +45,21 @@ impl Registry {
             })
             .collect();
         let mut warnings = Vec::new();
+        for i in grammars_dir
+            .map(crate::grammars::installed)
+            .unwrap_or_default()
+        {
+            match read_definition(&i.definition, known_processor) {
+                Err(e) => warnings.push(e),
+                Ok(mut d) => {
+                    d.origin = Origin::Installed(i.definition);
+                    match defs.iter().position(|x| x.name == d.name) {
+                        Some(at) => defs[at] = d,
+                        None => defs.push(d),
+                    }
+                }
+            }
+        }
         if let Some(dir) = user_dir {
             let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
                 .into_iter()
@@ -43,11 +70,8 @@ impl Registry {
                 .collect();
             files.sort();
             for f in files {
-                let parsed = std::fs::read_to_string(&f)
-                    .map_err(|e| e.to_string())
-                    .and_then(|s| FormatDefinition::parse(&s, known_processor));
-                match parsed {
-                    Err(e) => warnings.push(format!("sfor: ignoring {}: {e}", f.display())),
+                match read_definition(&f, known_processor) {
+                    Err(e) => warnings.push(e),
                     Ok(mut d) => match defs.iter().position(|x| x.name == d.name) {
                         Some(i) => {
                             d.origin = Origin::Overridden(f);
@@ -74,22 +98,40 @@ impl Registry {
 
     /// Text for `--list-formats`: one line per Format, `name  origin  extensions`.
     pub fn list(&self) -> String {
+        self.list_with(&|_| true)
+    }
+
+    /// `list`, with `  (unavailable)` after each Definition `available` rejects (spec §7).
+    pub fn list_with(&self, available: &dyn Fn(&FormatDefinition) -> bool) -> String {
         let mut out = String::new();
         for d in &self.defs {
             let origin = match &d.origin {
                 Origin::BuiltIn => "built-in".to_string(),
+                Origin::Installed(p) => format!("installed ({})", p.display()),
                 Origin::User(p) => format!("user ({})", p.display()),
                 Origin::Overridden(p) => format!("overridden ({})", p.display()),
             };
             out.push_str(&format!(
-                "{:<12} {:<40} {}\n",
+                "{:<12} {:<40} {}{}\n",
                 d.name,
                 origin,
-                d.extensions.join(",")
+                d.extensions.join(","),
+                if available(d) { "" } else { "  (unavailable)" }
             ));
         }
         out
     }
+}
+
+/// The Definition in `file`, or the warning that names it.
+fn read_definition(
+    file: &Path,
+    known_processor: &dyn Fn(&str) -> bool,
+) -> Result<FormatDefinition, String> {
+    std::fs::read_to_string(file)
+        .map_err(|e| e.to_string())
+        .and_then(|s| FormatDefinition::parse(&s, known_processor))
+        .map_err(|e| format!("sfor: ignoring {}: {e}", file.display()))
 }
 
 /// `--export-formats DIR`: writes the embedded Definitions as templates (grill #6 comment).
@@ -215,6 +257,70 @@ mod tests {
         let (r, warnings) = Registry::load(Some(&base.path().join("absent")), &known);
         assert_eq!(r.all().len(), builtin::BUILTIN.len());
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn installed_definitions_load_between_built_ins_and_user_files() {
+        let grammars = tempfile::tempdir().unwrap();
+        let lua = grammars.path().join("lua");
+        std::fs::create_dir(&lua).unwrap();
+        std::fs::write(lua.join("lua.toml"), "name='lua'\nextensions=['lua']\nprocessor='treesitter'\n[params]\ngrammar='lua'\nquery='(x) @segment'").unwrap();
+        std::fs::write(lua.join(crate::grammars::binary_name("lua")), "").unwrap();
+        std::fs::write(lua.join("installed.json"), r#"{"version":"0.2.0"}"#).unwrap();
+        let user = tempfile::tempdir().unwrap();
+        let (r, w) = Registry::load_all(
+            Some(user.path()),
+            Some(grammars.path()),
+            &crate::processors::Processors::known,
+        );
+        assert!(w.is_empty(), "{w:?}");
+        assert!(matches!(r.get("lua").unwrap().origin, Origin::Installed(_)));
+        assert!(r.list().contains("installed ("));
+        // A user file still wins (#6).
+        std::fs::write(user.path().join("lua.toml"), "name='lua'\nextensions=['luau']\nprocessor='treesitter'\n[params]\ngrammar='lua'\nquery='(x) @segment'").unwrap();
+        let (r, _) = Registry::load_all(
+            Some(user.path()),
+            Some(grammars.path()),
+            &crate::processors::Processors::known,
+        );
+        assert_eq!(r.get("lua").unwrap().extensions, ["luau"]);
+        assert!(matches!(
+            r.get("lua").unwrap().origin,
+            Origin::Overridden(_)
+        ));
+        assert!(r.list().contains("overridden ("));
+    }
+
+    #[test]
+    fn an_installed_definition_that_does_not_parse_is_a_warning_naming_it() {
+        let grammars = tempfile::tempdir().unwrap();
+        let lua = grammars.path().join("lua");
+        std::fs::create_dir(&lua).unwrap();
+        std::fs::write(lua.join("lua.toml"), "name=").unwrap();
+        std::fs::write(lua.join(crate::grammars::binary_name("lua")), "").unwrap();
+        std::fs::write(lua.join("installed.json"), r#"{"version":"0.2.0"}"#).unwrap();
+        let (r, w) = Registry::load_all(None, Some(grammars.path()), &known);
+        assert!(r.get("lua").is_none());
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(
+            w[0].contains(&lua.join("lua.toml").display().to_string()),
+            "{w:?}"
+        );
+    }
+
+    #[test]
+    fn list_marks_unavailable_formats() {
+        let (r, _) = Registry::load(None, &crate::processors::Processors::known);
+        let text = r.list_with(&|d| d.name != "php");
+        let php = text.lines().find(|l| l.starts_with("php ")).unwrap();
+        assert!(php.ends_with("(unavailable)"), "{php}");
+        assert!(
+            !text
+                .lines()
+                .find(|l| l.starts_with("rust "))
+                .unwrap()
+                .contains("unavailable")
+        );
     }
 
     #[test]
