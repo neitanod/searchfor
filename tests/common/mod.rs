@@ -68,13 +68,14 @@ impl Fixture {
         c
     }
 
-    /// rg 14.1.1 in the fixture copy, stdin from /dev/null, `--color never` unless set.
+    /// The reference rg (`rg_path`) in the fixture copy, stdin from /dev/null, `--color never`
+    /// unless set.
     pub fn rg<I, S>(&self, args: I) -> Command
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let mut c = Command::new("rg");
+        let mut c = Command::new(rg_path());
         c.current_dir(self.path())
             .env_remove("RIPGREP_CONFIG_PATH")
             .stdin(Stdio::null());
@@ -152,17 +153,38 @@ pub fn workspace_bin(package: &str, bin: &str, features: &[&str]) -> PathBuf {
     exe
 }
 
-/// True when the reference rg 14.1.1 is installed; prints a note otherwise.
+/// The reference ripgrep: `SFOR_RG` when set, else `/usr/bin/rg` when it exists (another rg,
+/// such as 15.x, may come first on `PATH`), else `rg` on `PATH` (M3 review r1, Codex #8).
+pub fn rg_path() -> PathBuf {
+    if let Some(p) = std::env::var_os("SFOR_RG") {
+        return p.into();
+    }
+    let usr = Path::new("/usr/bin/rg");
+    if usr.is_file() {
+        return usr.to_path_buf();
+    }
+    PathBuf::from("rg")
+}
+
+/// A comparison or measurement that cannot run: a note, or a failure when
+/// `SFOR_REQUIRE_REFERENCE=1`, which acceptance runs set so that a skipped comparison never
+/// counts as passed (M3 review r1, Codex #8). Returns false.
+pub fn missing_reference(what: &str) -> bool {
+    if std::env::var_os("SFOR_REQUIRE_REFERENCE").is_some_and(|v| v == "1") {
+        panic!("{what} is required (SFOR_REQUIRE_REFERENCE=1) and missing");
+    }
+    eprintln!("skipping: {what} not found");
+    false
+}
+
+/// True when `rg_path()` is ripgrep 14.1.1; otherwise `missing_reference`.
 pub fn reference_rg() -> bool {
-    let ok = Command::new("rg")
+    let ok = Command::new(rg_path())
         .arg("--version")
         .env_remove("RIPGREP_CONFIG_PATH")
         .output()
         .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).starts_with("ripgrep 14.1.1"));
-    if !ok {
-        eprintln!("skipping: reference rg 14.1.1 not found");
-    }
-    ok
+    ok || missing_reference(&format!("reference rg 14.1.1 at {}", rg_path().display()))
 }
 
 pub fn run(c: &mut Command) -> Output {

@@ -97,6 +97,7 @@ fn measure_to(
 ) -> Option<(Duration, u64)> {
     let time = Path::new("/usr/bin/time");
     if !time.exists() {
+        common::missing_reference("/usr/bin/time");
         return None;
     }
     let mut c = Command::new(time);
@@ -361,10 +362,10 @@ fn json_of_a_big_markdown_file_stays_under_the_ceilings() {
 #[ignore]
 fn json_without_trails_of_a_big_file_is_as_fast_as_ripgrep() {
     let _alone = alone();
-    let rg = Path::new("/usr/bin/rg");
-    if !common::reference_rg() || !rg.exists() {
+    let Some(rg) = rg_bin() else {
         return;
-    }
+    };
+    let rg = rg.as_path();
     let fx = Fixture::new();
     let line = "line of text here\n";
     let file = repeated(&fx, "ten.txt", line, 10 * 1024 * 1024 / line.len());
@@ -456,14 +457,10 @@ fn a_walked_plain_file_is_not_read_whole_with_in_headings() {
     }
 }
 
-/// The reference rg 14.1.1 on `PATH`, or None (with a note) when it is missing.
+/// The reference rg 14.1.1 (`common::rg_path`), or None (with a note, or a failure under
+/// `SFOR_REQUIRE_REFERENCE=1`) when it is missing.
 fn rg_bin() -> Option<std::path::PathBuf> {
-    if !common::reference_rg() {
-        return None;
-    }
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|d| d.join("rg"))
-        .find(|p| p.is_file())
+    common::reference_rg().then(common::rg_path)
 }
 
 /// The fastest of three runs of `bin args` with their output read, and the largest RSS seen.

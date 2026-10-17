@@ -432,7 +432,7 @@ fn max_columns_in_the_flat_layout() {
 
 /// rg 14.1.1 run with `args` and `RIPGREP_CONFIG_PATH` unset, as the reference.
 fn reference(args: &[&str]) -> Output {
-    run(Command::new("rg")
+    run(Command::new(common::rg_path())
         .args(args)
         .env_remove("RIPGREP_CONFIG_PATH")
         .stdin(Stdio::null()))
