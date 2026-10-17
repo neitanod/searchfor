@@ -906,3 +906,30 @@ fn t35_max_count_on_an_open_fifo_stops_at_the_limit() {
         assert!(stdout(&o).contains("needle"), "{args:?}: {}", stdout(&o));
     }
 }
+
+/// Code review r2, Codex #6: the frontmatter's `title` is the YAML key, however it is written.
+#[test]
+fn t36_the_frontmatter_title_is_the_yaml_key() {
+    let fx = Fixture::new();
+    for head in ["\"title\": Hello", "title : Hello", "title: &mytitle Hello"] {
+        let doc = format!("---\n{head}\n---\nneedle\n");
+        let o = piped(
+            &fx,
+            &["--format", "markdown", "--json", "needle", "-"],
+            doc.as_bytes(),
+        );
+        let m = stdout(&o)
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .find(|v| v["type"] == "match")
+            .unwrap_or_else(|| panic!("{head}: {}", stdout(&o)));
+        let trail = &m["data"]["trail"];
+        assert_eq!(trail[0]["name"], "Hello", "{head}: {m}");
+        let o = piped(
+            &fx,
+            &["--format", "markdown", "--in-headings", "Hello", "-"],
+            doc.as_bytes(),
+        );
+        assert_eq!(code(&o), 0, "{head}: {}", stderr(&o));
+    }
+}

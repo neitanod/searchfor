@@ -1,5 +1,6 @@
 //! The `title` of a YAML frontmatter block, read as YAML reads it (code review r1, Codex #9):
-//! a plain scalar ending at a ` #` comment, a single-quoted one (`''` is a quote), a
+//! the top-level key `title`, plain or quoted (code review r2, Codex #6), and its value after
+//! any anchor or tag: a plain scalar ending at a ` #` comment, a single-quoted one (`''` is a quote), a
 //! double-quoted one with its escapes, or a `|`/`>` block scalar, each over one or more lines.
 //! The name keeps one line: every line break becomes a space, which maps to the `\n` it
 //! replaces. Each piece of the name maps to its bytes in the Source, as `Name::pieces`.
@@ -18,13 +19,19 @@ pub fn title(block: &str, base: usize) -> Option<(String, Pieces)> {
             Some((start, l.strip_suffix('\n').unwrap_or(l)))
         })
         .collect();
-    let i = lines.iter().position(|(_, l)| l.starts_with("title:"))?;
+    let (i, colon) = lines
+        .iter()
+        .enumerate()
+        .find_map(|(i, (_, l))| Some((i, title_key(l)?)))?;
     let mut name = Name::default();
     let (start, line) = lines[i];
-    let value = &line["title:".len()..];
-    let blank = value.len() - value.trim_start_matches([' ', '\t']).len();
-    let at = start + "title:".len() + blank;
-    let value = &value[blank..];
+    let skip = properties(&line[colon..]);
+    let at = start + colon + skip;
+    let value = &line[colon + skip..];
+    if value.starts_with('*') {
+        // An alias names another node: no title of its own.
+        return None;
+    }
     let rest = &lines[i + 1..];
     match value.chars().next() {
         Some('|') | Some('>') => name.block(value, rest),
@@ -35,6 +42,35 @@ pub fn title(block: &str, base: usize) -> Option<(String, Pieces)> {
         Some(_) => name.plain(Some((at, value)), rest),
     }
     Some((name.text, name.pieces))
+}
+
+/// The bytes before the value of a top-level `title` key on `line` (code review r2, Codex #6):
+/// the key plain, `"title"` or `'title'`, blanks before the `:`, and a blank or the line's end
+/// after it. None for any other line.
+fn title_key(line: &str) -> Option<usize> {
+    let key = ["title", "\"title\"", "'title'"]
+        .into_iter()
+        .find(|k| line.starts_with(k))?;
+    let after = &line[key.len()..];
+    let blanks = after.len() - after.trim_start_matches([' ', '\t']).len();
+    let colon = key.len() + blanks;
+    if !line[colon..].starts_with(':') {
+        return None;
+    }
+    let value = &line[colon + 1..];
+    (value.is_empty() || value.starts_with([' ', '\t'])).then_some(colon + 1)
+}
+
+/// The bytes before the value in `s` (what follows the key's `:`): blanks, and the anchors
+/// (`&name`) and tags (`!tag`, `!!str`) before it, each followed by blanks.
+fn properties(s: &str) -> usize {
+    let mut at = s.len() - s.trim_start_matches([' ', '\t']).len();
+    while s[at..].starts_with(['&', '!']) {
+        let token = s[at..].find([' ', '\t']).unwrap_or(s.len() - at);
+        at += token;
+        at += s[at..].len() - s[at..].trim_start_matches([' ', '\t']).len();
+    }
+    at
 }
 
 #[derive(Default)]
@@ -325,6 +361,36 @@ mod tests {
         assert_eq!(title_of("title: >-\n  Folded\n\n  text\n").0, "Folded text");
         assert_eq!(title_of("title: |2 # c\n    indented\n").0, "  indented");
         assert_eq!(title_of("title: |\nnext: x\n").0, "");
+    }
+
+    /// Code review r2, Codex #6: the YAML key `title`, quoted or not, with blanks before `:`.
+    #[test]
+    fn the_title_key_as_yaml_reads_it() {
+        assert_eq!(title_of("\"title\": Hello\n").0, "Hello");
+        assert_eq!(hit("\"title\": Hello\n", "Hello"), "Hello");
+        assert_eq!(title_of("'title': Hello\n").0, "Hello");
+        assert_eq!(title_of("title : Hello\n").0, "Hello");
+        assert_eq!(title_of("title\t:\tHello\n").0, "Hello");
+        assert_eq!(title_of("\"title\" : 'Quoted'\n").0, "Quoted");
+        assert!(title("titles: x\n", 0).is_none());
+        assert!(title("title2: x\n", 0).is_none());
+        assert!(title("title x: y\n", 0).is_none());
+        assert!(title("\"titles\": x\n", 0).is_none());
+    }
+
+    /// Code review r2, Codex #6: an anchor or a tag before the value is not part of it.
+    #[test]
+    fn anchors_and_tags_are_not_part_of_the_title() {
+        assert_eq!(title_of("title: &mytitle Hello\n").0, "Hello");
+        assert_eq!(hit("title: &mytitle Hello\n", "Hello"), "Hello");
+        assert_eq!(title_of("title: !!str Hello\n").0, "Hello");
+        assert_eq!(title_of("title: !!str &a Hello # c\n").0, "Hello");
+        assert_eq!(title_of("title: &a \"Quoted\"\n").0, "Quoted");
+        assert_eq!(hit("title: &a \"Quoted\"\n", "Quoted"), "Quoted");
+        assert_eq!(title_of("title: &a |\n  Block\n").0, "Block");
+        assert_eq!(title_of("title: &a\n  Next line\n").0, "Next line");
+        // An alias names another node: no title of its own.
+        assert!(title("title: *other\n", 0).is_none());
     }
 
     #[test]
