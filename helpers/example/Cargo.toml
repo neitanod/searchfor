@@ -1,0 +1,12 @@
+[package]
+name = "sfor-example-helper"
+version = "0.2.0-dev"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Example Helper Processor for searchfor: INI sections and keys, over protocol v1"
+
+[dependencies]
+anyhow = "1"
+searchfor = { path = "../.." }

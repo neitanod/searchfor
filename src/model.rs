@@ -1,11 +1,11 @@
 //! Types shared by every stage of the pipeline.
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::time::Duration;
 
 /// One step of a Trail (see CONTEXT.md).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Segment {
     /// "document", "heading", "code", "item", "column"; later milestones add kinds.
     pub kind: String,
@@ -14,9 +14,9 @@ pub struct Segment {
     pub line: u64,
     /// 1-based last line of the Section (inclusive).
     pub end_line: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
 }
 

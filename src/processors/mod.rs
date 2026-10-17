@@ -1,6 +1,9 @@
 //! Processors turn Match anchors into Trails (design note 6).
+pub mod external;
 pub mod frontmatter;
+pub mod keypath;
 pub mod markdown;
+pub mod treesitter;
 
 use crate::model::{Input, Name, Trail};
 use crate::trail::{Outline, TrailCursor, names_of, trail_for};

@@ -45,14 +45,42 @@ bstr = { version = "=1.10.0", default-features = false }
 encoding_rs_io = "=0.1.7"
 regex-automata = { version = "=0.4.7", default-features = false }
 regex-syntax = { version = "=0.8.4", default-features = false }
+# Code Grammars compiled in (ADR 0005). tree-sitter 0.24.7 is the newest whose `regex`
+# requirement (^1.10.6, regex-syntax ^0.8.4) accepts the ripgrep 14.1.1 pins above; 0.25+
+# would move regex-automata and regex-syntax, and with them rg's Unicode tables (M2 plan, D1).
+# It loads ABI 14 Grammars, hence these Grammar versions. Keep the `=`: a cargo update must
+# not move them, and `cargo install searchfor` resolves without our lock.
+tree-sitter = "=0.24.7"
+streaming-iterator = "0.1"
+tree-sitter-bash = "=0.23.3"
+tree-sitter-go = "=0.23.4"
+tree-sitter-javascript = "=0.23.1"
+tree-sitter-php = "=0.23.11"
+tree-sitter-python = "=0.23.6"
+tree-sitter-rust = "=0.23.3"
+tree-sitter-typescript = "=0.23.2"
+# keypath (spec §4.3): spans for TOML, events with markers for YAML.
+toml_edit = { version = "0.25", default-features = false, features = ["parse"] }
+saphyr-parser = "0.2"
+# --install-grammar (spec §7).
+sha2 = "0.11"
+ureq = "3"
+# Temporary files for Helper Processors (spec §4.4, Paths).
+tempfile = "3"
+
+# Ctrl-C with Helper Processors running (spec §4.4, Lifetime; M2 plan, D42).
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
 
 [dev-dependencies]
 assert_cmd = "2"
 insta = { version = "1", features = ["json"] }
 jsonschema = { version = "0.21", default-features = false }
 regex-lite = "0.1"
-tempfile = "3"
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[workspace]
+members = ["helpers/example", "helpers/grammar"]

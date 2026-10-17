@@ -3,6 +3,8 @@ pub mod app;
 pub mod cli;
 pub mod filter;
 pub mod formats;
+pub mod grammars;
+pub mod helper;
 pub mod model;
 pub mod output;
 pub mod processors;
