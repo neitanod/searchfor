@@ -1,0 +1,5 @@
+<root>
+  <ok>needle before</ok>
+  <a><b>needle inside</a>
+  <c>needle after</c>
+</root>
