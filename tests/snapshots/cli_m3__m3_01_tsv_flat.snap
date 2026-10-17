@@ -1,0 +1,6 @@
+---
+source: tests/cli_m3.rs
+expression: out
+---
+2: row 1 › Note │ "Ana	admin	needle "quoted
+3: row 2 › Role │ Bea	needle	ok

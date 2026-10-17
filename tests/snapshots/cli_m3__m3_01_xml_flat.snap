@@ -1,0 +1,9 @@
+---
+source: tests/cli_m3.rs
+expression: out
+---
+3:   <!ENTITY pub "needle press">
+6: catalog │   <!-- needle in a comment -->
+12: catalog › book[2] › title │     <title>The needle</title>
+14: catalog › book[2] › note │     <note><![CDATA[ a < b needle ]]></note>
+17: catalog › magazine › title │   <magazine><title>needle monthly</title></magazine>

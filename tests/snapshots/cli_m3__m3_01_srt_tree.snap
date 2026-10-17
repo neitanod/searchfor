@@ -1,0 +1,11 @@
+---
+source: tests/cli_m3.rs
+expression: out
+---
+subs/movie.srt
+  cue 1 00:00:01,000 --> 00:00:03,500
+    3:Where is the needle?
+  cue 2 00:00:04,000 --> 00:00:06,000
+    8:- A needle, in there?
+  cue 3 00:01:02,500 --> 00:01:04,000
+    12:<i>needle</i>

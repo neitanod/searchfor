@@ -1,0 +1,16 @@
+---
+source: tests/cli_m3.rs
+expression: out
+---
+markup/feed.xml
+  3:  <!ENTITY pub "needle press">
+  catalog
+    6:  <!-- needle in a comment -->
+    book[2]
+      title
+        12:    <title>The needle</title>
+      note
+        14:    <note><![CDATA[ a < b needle ]]></note>
+    magazine
+      title
+        17:  <magazine><title>needle monthly</title></magazine>

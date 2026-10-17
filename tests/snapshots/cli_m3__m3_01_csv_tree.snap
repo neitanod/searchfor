@@ -1,0 +1,14 @@
+---
+source: tests/cli_m3.rs
+expression: out
+---
+table/plans.csv
+  row 2
+    column «Plan»
+      3:2,Bea,needle,"likes ""quotes"", and commas"
+  row 3
+    column «Notes»
+      5:lines with needle"
+  row 4
+    column «Notes»
+      7:4,Dan,team,needle at the end,extra

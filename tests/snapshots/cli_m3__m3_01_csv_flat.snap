@@ -1,0 +1,7 @@
+---
+source: tests/cli_m3.rs
+expression: out
+---
+3: row 2 › Plan │ 2,Bea,needle,"likes ""quotes"", and commas"
+5: row 3 › Notes │ lines with needle"
+7: row 4 › Notes │ 4,Dan,team,needle at the end,extra

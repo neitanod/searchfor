@@ -1,0 +1,12 @@
+---
+source: tests/cli_m3.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"markup/feed.xml"}}}
+{"type":"match","data":{"path":{"text":"markup/feed.xml"},"lines":{"text":"  <!ENTITY pub \"needle press\">\n"},"line_number":3,"absolute_offset":59,"submatches":[{"match":{"text":"needle"},"start":16,"end":22}],"format":"xml","trail":[],"fragment":null}}
+{"type":"match","data":{"path":{"text":"markup/feed.xml"},"lines":{"text":"  <!-- needle in a comment -->\n"},"line_number":6,"absolute_offset":147,"submatches":[{"match":{"text":"needle"},"start":7,"end":13}],"format":"xml","trail":[{"kind":"tag","name":"catalog","line":5,"end_line":18}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"markup/feed.xml"},"lines":{"text":"    <title>The needle</title>\n"},"line_number":12,"absolute_offset":280,"submatches":[{"match":{"text":"needle"},"start":15,"end":21}],"format":"xml","trail":[{"kind":"tag","name":"catalog","line":5,"end_line":18},{"kind":"tag","name":"book[2]","line":11,"end_line":16},{"kind":"tag","name":"title","line":12,"end_line":12}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"markup/feed.xml"},"lines":{"text":"    <note><![CDATA[ a < b needle ]]></note>\n"},"line_number":14,"absolute_offset":343,"submatches":[{"match":{"text":"needle"},"start":26,"end":32}],"format":"xml","trail":[{"kind":"tag","name":"catalog","line":5,"end_line":18},{"kind":"tag","name":"book[2]","line":11,"end_line":16},{"kind":"tag","name":"note","line":14,"end_line":14}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"markup/feed.xml"},"lines":{"text":"  <magazine><title>needle monthly</title></magazine>\n"},"line_number":17,"absolute_offset":410,"submatches":[{"match":{"text":"needle"},"start":19,"end":25}],"format":"xml","trail":[{"kind":"tag","name":"catalog","line":5,"end_line":18},{"kind":"tag","name":"magazine","line":17,"end_line":17},{"kind":"tag","name":"title","line":17,"end_line":17}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"markup/feed.xml"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":474,"bytes_printed":1918,"matched_lines":5,"matches":5}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1918,"bytes_searched":474,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":5,"matches":5,"searches":1,"searches_with_match":1}},"type":"summary"}

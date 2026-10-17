@@ -1,0 +1,11 @@
+---
+source: tests/cli_m3.rs
+expression: out
+---
+table/people.tsv
+  row 1
+    column «Note»
+      2:"Ana	admin	needle "quoted
+  row 2
+    column «Role»
+      3:Bea	needle	ok
