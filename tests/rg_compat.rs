@@ -1476,3 +1476,60 @@ fn inverted_count_matches_counts_lines_as_ripgrep() {
     }
     r.assert_empty();
 }
+
+/// Code review r6, Codex #2: once `-f -` has read stdin, ripgrep 14.1.1 rejects a second `-f -`
+/// and the path `-`, with its messages and exit 2, in its order: the pattern files in command
+/// line order (hiargs.rs:1016-1035), then the paths (hiargs.rs:1074-1080), then types and
+/// globs, and all before `-m0` or an empty pattern set search nothing.
+#[test]
+fn stdin_read_for_patterns_cannot_be_read_again() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::write(fx.file("pats.txt"), "needle\n").unwrap();
+    std::fs::write(fx.file("empty.txt"), "").unwrap();
+    let pats = In::File("pats.txt");
+    let mut r = Report(Vec::new());
+    let cases: [&[&str]; 15] = [
+        &["-f", "-", "-"],
+        &["-f", "-", "-f", "-", "md/guide.md"],
+        &["-m0", "-f", "-", "-"],
+        &["-f", "-", "-f", "-", "-m0", "md"],
+        &["-e", "needle", "-f", "-", "-"],
+        &["-f", "-", "needle", "-"],
+        &["-f", "missing.txt", "-f", "-", "-f", "-", "-"],
+        &["-f", "-", "-f", "missing.txt", "-"],
+        &["-f", "empty.txt", "-f", "-", "-"],
+        &["-f", "-", "-f", "empty.txt", "-"],
+        &["-f", "-", "-tunknown", "-"],
+        &["-f", "-", "-g", "[", "-"],
+        &["-f", "-", "-f", "-", "-tunknown", "md"],
+        &["-f", "-", "md/guide.md"],
+        &["-f", "-", "--sort", "path", "md"],
+    ];
+    for variant in ["--no-trail", "--flat"] {
+        for args in cases {
+            let want = rg(&fx, args, pats);
+            let mut s = vec![variant];
+            s.extend_from_slice(args);
+            let got = sfor(&fx, &s, pats);
+            let err = |o: &Output, name: &str| {
+                common::stderr(o).replace(&format!("{name}: "), "PROG: ")
+            };
+            let out = |o: &Output| {
+                if variant == "--no-trail" {
+                    stdout(o)
+                } else {
+                    String::new()
+                }
+            };
+            r.check(
+                format!("{s:?}"),
+                (code(&want), format!("{}{}", out(&want), err(&want, "rg"))),
+                (code(&got), format!("{}{}", out(&got), err(&got, "sfor"))),
+            );
+        }
+    }
+    r.assert_empty();
+}

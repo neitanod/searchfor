@@ -374,18 +374,27 @@ impl Args {
     /// An empty pattern file is an empty pattern set: ripgrep 14.1.1 then searches nothing and
     /// exits 1 in every mode, `-v`, `-c` and `--json` included (no summary either); C9 does the
     /// same before walking.
+    ///
+    /// Stdin is read once, as in ripgrep 14.1.1: a second `-f -` and the path `-` after a
+    /// `-f -` are errors with rg's messages, the pattern files first in command-line order
+    /// (hiargs.rs:1016-1035), then the paths (hiargs.rs:1074-1080). The pattern files are read
+    /// with rg's grep-cli, so their errors carry the path or `<stdin>` as rg's.
     pub fn patterns(&self) -> std::io::Result<Patterns> {
         let mut paths = self.paths.clone();
         let mut patterns = self.regexp.clone();
         let mut stdin_used = false;
         for f in &self.pattern_files {
-            let text = if f.as_os_str() == "-" {
+            if f.as_os_str() == "-" {
+                if stdin_used {
+                    return Err(std::io::Error::other(
+                        "error reading -f/--file from stdin: stdin has already been consumed",
+                    ));
+                }
+                patterns.extend(grep_cli::patterns_from_stdin()?);
                 stdin_used = true;
-                std::io::read_to_string(std::io::stdin())?
             } else {
-                std::fs::read_to_string(f)?
-            };
-            patterns.extend(text.lines().map(str::to_string));
+                patterns.extend(grep_cli::patterns_from_path(f)?);
+            }
         }
         if self.regexp.is_empty() && self.pattern_files.is_empty() {
             if let Some(p) = &self.pattern {
@@ -393,6 +402,11 @@ impl Args {
             }
         } else if let Some(p) = &self.pattern {
             paths.insert(0, PathBuf::from(p));
+        }
+        if stdin_used && paths.iter().any(|p| p.as_os_str() == "-") {
+            return Err(std::io::Error::other(
+                "error: attempted to read patterns from stdin while also searching stdin",
+            ));
         }
         Ok(Patterns {
             patterns,
