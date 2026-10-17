@@ -703,7 +703,11 @@ impl Ctx<'_> {
             .as_ref()
             .is_some_and(|(_, d)| d.file.matches().next().is_some());
         if self.args.quiet {
-            if kept {
+            // With --json, rg's summary printer reads past the first Match and drops the
+            // Matches of a search that quit at binary data (code review r7, Codex #1);
+            // `binary_quit` is false when -m stopped it first. Without --json it stops at the
+            // first Match, before the binary data.
+            if kept && !(self.args.json && st.binary_quit) {
                 self.matched.store(true, Relaxed);
                 // With --json the run goes on, for the summary (`quiet_json_file`).
                 if !self.args.json {
@@ -1209,7 +1213,9 @@ impl Ctx<'_> {
         };
         let binary = self.binary_probe(st, t, &src)?;
         // Without Matches, rg reads on to the binary data; `heading_matches` decides otherwise.
-        st.binary_quit = binary.as_ref().is_some_and(|b| b.quit && b.offset.is_some());
+        st.binary_quit = binary
+            .as_ref()
+            .is_some_and(|b| b.quit && b.offset.is_some());
         if let Some(b) = &binary {
             if b.quit && b.cut == 0 {
                 // rg 14.1.1 skips a walked file whose first buffer has binary data.
@@ -1339,7 +1345,9 @@ impl Ctx<'_> {
         else {
             return true;
         };
-        let window_end = mth.line_number.saturating_add(self.max_count_after() as u64);
+        let window_end = mth
+            .line_number
+            .saturating_add(self.max_count_after() as u64);
         let quit = search::binary_detection(self.args, t.explicit)
             .quit_byte()
             .is_some();
@@ -1365,7 +1373,9 @@ impl Ctx<'_> {
         else {
             return false;
         };
-        let window_end = mth.line_number.saturating_add(self.max_count_after() as u64);
+        let window_end = mth
+            .line_number
+            .saturating_add(self.max_count_after() as u64);
         file.items.last().is_some_and(|i| {
             let l = item_line(i);
             l.line_number >= window_end && l.absolute_offset as usize + l.len <= cut
@@ -1405,8 +1415,7 @@ impl Ctx<'_> {
         let probe = match search::binary_probe(&mut st.stream, src) {
             Ok(p) => p,
             Err(e) => {
-                self.msgs
-                    .error(format_args!("{}: {e:#}", t.path.display()));
+                self.msgs.error(format_args!("{}: {e:#}", t.path.display()));
                 return Err(());
             }
         };

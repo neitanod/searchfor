@@ -1590,7 +1590,11 @@ fn in_headings_stats_deviate_as_documented() {
             "sfor {s:?}: {got:?}"
         );
     }
-    let o = sfor(&fx, &["--in-headings", "--flat", "^needle", "h.md"], In::Null);
+    let o = sfor(
+        &fx,
+        &["--in-headings", "--flat", "^needle", "h.md"],
+        In::Null,
+    );
     assert!(stdout(&o).starts_with("1:"), "{}", stdout(&o));
     let o = rg(&fx, &["-n", "^needle", "h.md"], In::Null);
     assert_eq!(stdout(&o), "2:needle again\n");
@@ -1612,7 +1616,10 @@ fn in_headings_follows_the_binary_policy_of_ripgrep() {
     let nul = "# needle\nbody\0\n## needle two\n";
     std::fs::write(fx.file("ihb/nul.md"), nul).unwrap();
     std::fs::write(fx.file("ihb/ok.md"), "# needle ok\nbody\n").unwrap();
-    let late = format!("# needle\n{}\0\n# needle late\n", "filler line\n".repeat(6000));
+    let late = format!(
+        "# needle\n{}\0\n# needle late\n",
+        "filler line\n".repeat(6000)
+    );
     std::fs::write(fx.file("ihb/late.md"), late).unwrap();
     let ends = |o: &Output| -> Vec<(String, Value)> {
         stdout(o)
@@ -1629,7 +1636,11 @@ fn in_headings_follows_the_binary_policy_of_ripgrep() {
     let cases: [(&[&str], &[&str], In); 3] = [
         (&["--sort", "path", "needle", "ihb"], &[], In::Null),
         (&["needle", "ihb/nul.md"], &[], In::Null),
-        (&["needle"], &["--format", "markdown"], In::File("ihb/nul.md")),
+        (
+            &["needle"],
+            &["--format", "markdown"],
+            In::File("ihb/nul.md"),
+        ),
     ];
     for (args, extra, input) in cases {
         let mut j = vec!["--json"];
@@ -1643,11 +1654,19 @@ fn in_headings_follows_the_binary_policy_of_ripgrep() {
             format!("{s:?}"),
             (
                 code(&want),
-                format!("{:?}\n{:?}", json_of(&want, true, &["begin", "match"]), ends(&want)),
+                format!(
+                    "{:?}\n{:?}",
+                    json_of(&want, true, &["begin", "match"]),
+                    ends(&want)
+                ),
             ),
             (
                 code(&got),
-                format!("{:?}\n{:?}", json_of(&got, true, &["begin", "match"]), ends(&got)),
+                format!(
+                    "{:?}\n{:?}",
+                    json_of(&got, true, &["begin", "match"]),
+                    ends(&got)
+                ),
             ),
         );
         // The binary messages of rg's standard printer and of the flat layout.
@@ -1698,7 +1717,10 @@ fn summaries_of_walked_binary_files_equal_ripgrep() {
     std::fs::create_dir(fx.file("ihb")).unwrap();
     std::fs::write(fx.file("ihb/nul.md"), "# needle\nbody\0\n## needle two\n").unwrap();
     std::fs::write(fx.file("ihb/ok.md"), "# needle ok\nbody\n").unwrap();
-    let late = format!("# needle\n{}\0\n# needle late\n", "filler line\n".repeat(6000));
+    let late = format!(
+        "# needle\n{}\0\n# needle late\n",
+        "filler line\n".repeat(6000)
+    );
     std::fs::write(fx.file("ihb/late.md"), late).unwrap();
     let mut r = Report(Vec::new());
     for mode in [&["--in-headings"][..], &["--within", ""]] {
@@ -1759,7 +1781,10 @@ fn binary_rows(o: &Output) -> Vec<String> {
 
 /// A Markdown file whose NUL is past rg 14.1.1's first buffer of 64 KiB, after a heading.
 fn late_nul_markdown() -> String {
-    format!("# needle\n{}\0\n# needle late\n", "filler line\n".repeat(6000))
+    format!(
+        "# needle\n{}\0\n# needle late\n",
+        "filler line\n".repeat(6000)
+    )
 }
 
 /// Code review r7, Codex #3: `--in-headings` reports the binary data rg's search detects, which
@@ -1852,6 +1877,45 @@ fn within_detects_binary_data_where_ripgrep_does() {
             (code(&want), binary_rows(&want).join("\n")),
             (code(&got), binary_rows(&got).join("\n")),
         );
+    }
+    r.assert_empty();
+}
+
+/// Code review r7, Codex #1: `-q --json` (grep-printer 0.2.2's summary printer with statistics,
+/// which reads past the first Match) drops the Matches of a walked file whose search quit at
+/// binary data, so a walk with only that file exits 1, as rg; with `-m1` the search stops
+/// before the NUL and the Match counts. `-q` alone stops at the first Match.
+#[test]
+fn quiet_json_drops_walked_binary_matches_as_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("qb")).unwrap();
+    std::fs::write(fx.file("qb/late.md"), late_nul_markdown()).unwrap();
+    let mut r = Report(Vec::new());
+    let walks: [&[&str]; 2] = [&["qb"], &["-g", "late-nul.txt", "misc"]];
+    for mode in [&["--in-headings"][..], &["--within", ""]] {
+        for walk in walks {
+            if mode[0] == "--in-headings" && walk.len() > 1 {
+                // late-nul.txt is Plain: no names, no Matches.
+                continue;
+            }
+            for q in [&["-q", "--json"][..], &["-q", "--json", "-m1"], &["-q"]] {
+                let mut a = q.to_vec();
+                a.push("needle");
+                a.extend_from_slice(walk);
+                let want = rg(&fx, &a, In::Null);
+                let mut s = mode.to_vec();
+                s.extend_from_slice(&a);
+                let got = sfor(&fx, &s, In::Null);
+                r.check(
+                    format!("{s:?}"),
+                    (code(&want), String::new()),
+                    (code(&got), String::new()),
+                );
+            }
+        }
     }
     r.assert_empty();
 }
