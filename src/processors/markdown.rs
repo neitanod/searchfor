@@ -403,6 +403,7 @@ mod tests {
             bytes,
             path: Path::new("guide.md"),
             format: "markdown",
+            disk: None,
         }
     }
 

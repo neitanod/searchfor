@@ -143,6 +143,10 @@ pub struct Input<'a> {
     pub bytes: &'a [u8],
     pub path: &'a std::path::Path,
     pub format: &'a str,
+    /// The file on disk whose bytes are exactly `bytes`, for Processors that read the file
+    /// themselves (Helper Processors, spec §4.4). None for stdin, for a Source whose BOM was
+    /// removed or whose UTF-16 was transcoded, and for extracted text.
+    pub disk: Option<&'a std::path::Path>,
 }
 
 /// A Segment name, for `--in-headings` (design note 6).

@@ -858,6 +858,7 @@ impl Ctx<'_> {
             bytes: src.bytes(),
             path: &src.path,
             format: &def.name,
+            disk: None,
         };
         let outline_of = || p.outline_of(&input, &def.params);
         let outline = if self.in_memory {
@@ -1137,6 +1138,7 @@ impl Ctx<'_> {
                             bytes: src.bytes(),
                             path: &src.path,
                             format: &d.name,
+                            disk: None,
                         };
                         self.trails(p, &input, &d.params, &fm)
                     }
@@ -1262,6 +1264,7 @@ impl Ctx<'_> {
             bytes: src.bytes(),
             path: &src.path,
             format: &def.name,
+            disk: None,
         };
         let names = match p.names(&input, &def.params) {
             Ok(n) => n,

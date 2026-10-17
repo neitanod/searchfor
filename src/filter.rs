@@ -473,6 +473,7 @@ mod tests {
             bytes: guide.as_bytes(),
             path: Path::new("guide.md"),
             format: "markdown",
+            disk: None,
         };
         let trails = Markdown
             .trails(&input, &toml::Table::new(), &lm.anchors())

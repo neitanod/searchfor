@@ -91,6 +91,7 @@ mod tests {
             bytes,
             path: Path::new("x.md"),
             format: "markdown",
+            disk: None,
         }
     }
 

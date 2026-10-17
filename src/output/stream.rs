@@ -495,6 +495,7 @@ mod tests {
             bytes: src.bytes(),
             path,
             format: "markdown",
+            disk: None,
         };
         let outline = markdown.then(|| {
             Markdown
