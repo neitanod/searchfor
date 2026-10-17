@@ -1,7 +1,8 @@
 # searchfor — v1 design
 
 Status: draft · 2026-10-17, aligned with the M1 implementation, the M2 decisions of the Hilo
-(8449–8459), the M2 implementation (v0.2) and the decisions of the M3 plan · Task 768 · source of
+(8449–8459), the M2 implementation (v0.2), the decisions of the M3 plan and the M3
+implementation (v0.3) · Task 768 · source of
 truth for decisions: [grill-respuestas.md](grill-respuestas.md) (numbers below, like **#6**, refer
 to its questions; four-digit numbers are Hilo messages; «M2 plan» and «M3 plan» mark a decision
 taken in [the M2 plan](../plans/2026-10-17-searchfor-m2.md) or
@@ -86,6 +87,13 @@ paths ─▶ walker (ignore crate: .gitignore, -g, -t, --hidden…)
    recognises an object Format (ELF, PE, Mach-O), searchfor searches the whole file and
    describes each Match (§5.7). Any other binary file keeps ripgrep's behaviour, including
    `-a/--text` and `--binary`.
+5. **Dense Matches (pending, M5).** The pipeline keeps the Trails of a whole file before
+   printing it, so a file where every line matches costs time and memory in proportion to its
+   Matches, in every Format. Measured in the M3 plan on 50 MB files where every line matches
+   (2026-10-17): JSON Lines 3.51 s and 876 MiB, Markdown 3.62 s and 409 MiB, CSV 5.36 s and
+   1.48 GiB, against 0.16–0.46 s with `--no-trail`. M3 reports this cost in
+   `scripts/bench-m3.sh` and bounds nothing (M3 plan, D16); streaming the Trails of such a file
+   is left for M5, whose flag work touches the printers anyway.
 
 ## 4. Formats, Detector and Format Definitions
 
@@ -785,7 +793,9 @@ Measured in the M2 research (2026-10-16 and 2026-10-17, on this machine): native
 and the keypath parsers weighs 8.5 MB (sfor 0.1 weighs 5.5 MB); and tree-sitter parses and
 queries real Rust code at about 3 MB/s per thread. Only files with Matches are parsed (§3).
 The v0.2 release binary (Linux x86-64, thin LTO), with the eight Grammars, keypath, the
-Helper Processor host and the index client, weighs 16.4 MB, 15.2 MB stripped (2026-10-17).
+Helper Processor host and the index client, weighs 16.4 MB, 15.2 MB stripped (2026-10-17). The
+v0.3 release binary, which adds `markup`, `csv` (with `csv-core`) and `subtitles`, weighs 16.6 MB
+(16 575 912 bytes), 15.4 MB stripped (2026-10-17), under the M3 plan's ceiling of 20 MB.
 
 ## 8. Command line (#3, #4)
 
@@ -868,10 +878,11 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
     at most 1.1× `rg`; with a pattern matching under 5 % of the files, sfor's time over `rg`'s is
     at most the largest matching file divided by 50 MB/s, plus the size of all the matching files
     divided by 50 MB/s per search thread, plus 0.05 s. A 50 MB file of each of these Formats with
-    three Matches gets its Trails within `rg`'s time plus 1 s (`tests/perf.rs`). The reference is
-    `/usr/bin/rg`, which must be ripgrep 14.1.1 (another `rg` may come first on `PATH`), and a
-    comparison that cannot run makes an acceptance run fail instead of passing silently
-    (`SFOR_REQUIRE_REFERENCE=1`, M3 plan, D33).
+    three Matches gets its Trails within `rg`'s time plus 1 s (`tests/perf.rs`). A pattern that
+    matches every line is measured and reported, not bounded (§3, item 5; pending for M5). The
+    reference is `/usr/bin/rg`, which must be ripgrep 14.1.1 (another `rg` may come first on
+    `PATH`), and a comparison that cannot run makes an acceptance run fail instead of passing
+    silently (`SFOR_REQUIRE_REFERENCE=1`, M3 plan, D33).
 14. `sfor --mcp` answers a `search` call from Claude Code.
 15. In `pool`, `concurrent` and `oneshot` modes, an example Helper Processor gives the same
     Trails; a pool never runs more copies than search threads; a concurrent helper that answers

@@ -51,7 +51,7 @@
       "additionalProperties": false,
       "properties": {
         "kind": {
-          "description": "A free string, never an enumeration. Markdown: document, heading, code, item, column. YAML, JSON and TOML (from v0.2): key, element, and document for the documents of a YAML stream. Code (from v0.2): the `kinds` of the Format Definition, such as class, method, function, namespace, struct, impl, or the tree-sitter node kind when `kinds` has none. Helper Processors and later Formats add kinds.",
+          "description": "A free string, never an enumeration. Markdown: document, heading, code, item, column. YAML, JSON and TOML (from v0.2): key, element, and document for the documents of a YAML stream. Code (from v0.2): the `kinds` of the Format Definition, such as class, method, function, namespace, struct, impl, or the tree-sitter node kind when `kinds` has none. HTML and XML (from v0.3): tag. CSV and TSV (from v0.3): row, column. Subtitles (from v0.3): cue, with a signature. Helper Processors and later Formats add kinds.",
           "type": "string"
         },
         "name": { "type": "string" },
@@ -71,7 +71,7 @@
           "minimum": 1
         },
         "signature": {
-          "description": "The line that declares the Segment, for code (from v0.2).",
+          "description": "The line that declares the Segment, for code (from v0.2); for a subtitle cue (from v0.3), the cue's name followed by ` --> ` and its end time.",
           "type": "string"
         }
       }

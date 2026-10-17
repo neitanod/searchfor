@@ -1,6 +1,6 @@
 ---
 name: searchfor
-description: Use when searching Markdown, code or YAML/JSON/TOML and you need to know which section, function or key each match belongs to — before running rg and opening whole files
+description: Use when searching Markdown, code, YAML/JSON/TOML, HTML/XML, CSV/TSV or subtitles and you need to know which section, function, key, element, row or cue each match belongs to — before running rg and opening whole files
 ---
 
 # searchfor (`sfor`)
@@ -8,7 +8,10 @@ description: Use when searching Markdown, code or YAML/JSON/TOML and you need to
 `sfor` searches like ripgrep (same flags, same regex engine, same exit codes) and prints, for
 every match, its **Trail**: where the match sits in the structure of its file. In Markdown,
 the frontmatter title, headings, fenced code block, parent list items and table column; in
-code, the namespace, class and function; in YAML, JSON and TOML, the key path. With
+code, the namespace, class and function; in YAML, JSON and TOML, the key path; in HTML and
+XML, the element path (`section#pricing.card.wide › table › tr[3] › td[2]`); in CSV and TSV,
+the row and the column's header (`row 2 › Plan`); in SubRip and WebVTT subtitles, the cue and
+its start time (`cue 2 00:00:04,000`). With
 `--expand` it prints the whole Section that holds the match, so you read that part of the
 file and nothing else.
 
@@ -20,9 +23,11 @@ file and nothing else.
 - You want the surrounding section or function of each match without guessing `-A`/`-B`
   (`--expand`).
 
-Trails cover Markdown, YAML, JSON, TOML, PHP, JavaScript, TypeScript, TSX, Bash, Go, Rust and
-Python (`sfor --list-formats` lists them). Every other file (logs, C, HTML, CSV) prints as
-`rg` prints it, with an empty Trail, so `rg` is just as good there.
+Trails cover Markdown, YAML, JSON, TOML, PHP, JavaScript, TypeScript, TSX, Bash, Go, Rust,
+Python, HTML, XML (also `.svg`, `.rss`, `.csproj`, `.xaml`… and files starting with `<?xml`),
+CSV, TSV, SubRip (`.srt`) and WebVTT (`.vtt`); `sfor --list-formats` lists them. Every other
+file (logs, C, Java) prints as `rg` prints it, with an empty Trail, so `rg` is just as good
+there.
 
 ## Recipes
 
@@ -65,8 +70,30 @@ index, so `ports[2]` is the third element of `ports`:
 sfor --within 'server › ports' --flat 'pattern' config/
 ```
 
+HTML and XML: the matches inside an element. Elements are named `tag#id.class`, with `[n]`
+among siblings of the same tag; `html` and `body` never appear:
+
+```bash
+sfor --within 'pricing › table' needle site/
+```
+
+```
+site/page.html:23: main#content › section#pricing.card.wide › table › tr[3] › td[2] │         <tr><td>Pro<td>needle 9
+```
+
+Subtitles: the cues that start at a time. `--in-headings` searches the cue names, so
+`'01:02'` finds the cues starting at 1:02:
+
+```bash
+sfor --in-headings '01:02' subs/
+```
+
+```
+subs/movie.srt:11: cue 3 00:01:02,500 │ 00:01:02,500 --> 00:01:04,000
+```
+
 Where something is defined, not used: `--in-headings` matches only Segment names (headings,
-keys, function and class names):
+keys, function and class names, elements, CSV header cells, cues):
 
 ```bash
 sfor --in-headings --flat '^addItem$' src/
@@ -80,7 +107,11 @@ or `--within addItem` is enough when the name is unique.
 
 - `--in-headings 'regex'` parses every candidate file, so it is slower than a normal search.
 - A match on the line that names a function, heading or key is outside that Segment: the
-  Trail of `function addItem(...)` is the class, not `addItem`.
+  Trail of `function addItem(...)` is the class, not `addItem`. The same holds for an HTML or
+  XML start tag and its attributes, and for a CSV header row, whose matches have an empty
+  Trail. A cue's timing line is the exception: it is inside its cue.
+- The CSV delimiter (`,`, `;`, tab or `|`) is read from the first line; `--expand` on a CSV
+  match prints its record, not the file.
 - The tree layout (`--tree`, the default on a terminal) shows each code Segment by the line
   that declares it, signature included.
 - Long lines (minified JSON, one-line HTML) print as Fragments around the matches,

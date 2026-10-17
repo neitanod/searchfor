@@ -17,16 +17,18 @@ md/guide.md
 
 Las líneas que están arriba de `12:apt install needle-pkg` son el **Trail** del resultado:
 el título del documento tomado del frontmatter, los títulos y el bloque de código en el que
-cae el resultado. En el código el Trail es la clase y la función, y en YAML, JSON y TOML es la
-ruta de claves. Todos los ejemplos de este README son salidas reales sobre
+cae el resultado. En el código el Trail es la clase y la función; en YAML, JSON y TOML, la ruta
+de claves; en HTML y XML, la ruta de elementos; en CSV y TSV, la fila y la columna; y en los
+subtítulos, el cue. Todos los ejemplos de este README son salidas reales sobre
 [`tests/fixtures/`](tests/fixtures), corridas desde adentro de ese directorio, salvo el de
 [Helper Processors](#helper-processors), que dice sobre qué corre.
 
 ## Estado
 
-**v0.2: Markdown, archivos de configuración y código.** El motor de búsqueda son los crates de
-ripgrep, así que la búsqueda se comporta como `rg`; encima de eso, Markdown, YAML, JSON, TOML
-y el código en ocho lenguajes tienen Trails (ver [Formatos](#formatos)), las líneas largas se
+**v0.3: Markdown, archivos de configuración, código, markup, tablas y subtítulos.** El motor de
+búsqueda son los crates de ripgrep, así que la búsqueda se comporta como `rg`; encima de eso,
+Markdown, YAML, JSON, TOML, el código en ocho lenguajes, HTML, XML, CSV, TSV, SubRip y WebVTT
+tienen Trails (ver [Formatos](#formatos)), las líneas largas se
 muestran como Fragmentos, y `--within`, `--expand` e `--in-headings` filtran y expanden por
 estructura. Otros lenguajes se pueden describir con un [Helper Processor](#helper-processors),
 un programa aparte con el que sfor se comunica. Cualquier otro archivo es **Plain**: sus
@@ -43,8 +45,8 @@ El glosario está en [CONTEXT.md](CONTEXT.md), el diseño en
 cargo install searchfor
 ```
 
-Eso instala la última versión publicada en crates.io. Hasta que v0.2.0 esté publicada ahí,
-v0.2 se instala desde el repositorio:
+Eso instala la última versión publicada en crates.io. Hasta que v0.3.0 esté publicada ahí,
+v0.3 se instala desde el repositorio:
 
 ```
 cargo install --git https://github.com/neitanod/searchfor
@@ -69,10 +71,17 @@ v1.0.
 | Go | `.go` | tipos, funciones, y métodos nombrados por su receptor (`Server.Start`) |
 | Rust | `.rs` | módulos, structs, enums, traits, bloques `impl`, funciones |
 | Python | `.py`, `.pyi`, `.pyw` | clases y funciones, también las anidadas |
+| HTML | `.html`, `.htm`, `.xhtml` | elementos como `tag#id.class`, con `[n]` entre los hermanos con el mismo tag; `html` y `body` ocultos |
+| XML | `.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`, `.rss`, `.atom`, `.plist`, `.wsdl`, `.xlf`, `.xliff`, `.kml`, `.gpx`, `.csproj`, `.vbproj`, `.fsproj`, `.nuspec`, `.resx`, `.xaml`, y los archivos que empiezan con `<?xml` | elementos por tag, con `[n]` entre los hermanos con el mismo tag |
+| CSV | `.csv` | `row N › Columna`; el separador (`,` `;` tab `\|`) se lee de la primera línea |
+| TSV | `.tsv` | `row N › Columna` |
+| SubRip | `.srt` | cues: `cue 12 00:01:02,500` |
+| WebVTT | `.vtt` | cues: `cue intro 00:00.000` |
 
 Un archivo sin extensión también se reconoce por su shebang (`#!/usr/bin/env python3`,
 `node`, `bash`…). Los Formatos de código los parsean Grammars de tree-sitter compiladas
-dentro de `sfor`; YAML, JSON y TOML, parsers nativos. `sfor --list-formats` los lista todos.
+dentro de `sfor`; YAML, JSON y TOML, parsers nativos; HTML, XML, CSV, TSV y los subtítulos,
+scanners propios de sfor. `sfor --list-formats` los lista todos.
 
 La misma ruta de claves en un archivo YAML y en uno JSON:
 
@@ -105,6 +114,52 @@ $ sfor needle code/cart.php --flat
 
 Un resultado en el nombre de una función, como el de la línea 15, cae fuera de esa función,
 igual que un resultado en la línea de un título cae fuera de su sección.
+
+En HTML y XML el Trail es la ruta de elementos:
+
+```
+$ sfor needle markup/page.html --flat
+4: head › title │   <title>Pricing needle</title>
+5: head › script │   <script>if (a < b) { label = "</div> needle"; }</script>
+12: nav.top.menu › ul › li[3] │       <li><a href="/needle">Needle</a>
+19: main#content › section#pricing.card.wide › p.note[2] │       <p class="note">The needle plan is free.
+23: main#content › section#pricing.card.wide › table › tr[3] › td[2] │         <tr><td>Pro<td>needle 9
+26: main#content › div › div › div │     <div><div><div>deep needle</div></div></div>
+27: main#content │     <img src="needle.png" alt="">
+```
+
+`html` y `body` contienen la página entera, así que los Trails empiezan debajo de ellos.
+`li[3]` es el tercer `li` de su `ul`, un elemento con `id` no lleva índice, y los tags de
+cierre que HTML permite omitir (`<li>`, `<td>`, `<p>`) se deducen. Un resultado dentro de un
+tag de apertura, como el de la línea 27, pertenece al elemento padre. En XML, la primera
+construcción mal formada termina la estructura, y los resultados que vienen después se
+imprimen con el Trail vacío.
+
+En CSV y TSV el Trail es la fila y el encabezado de la columna:
+
+```
+$ sfor needle table/plans.csv --flat
+3: row 2 › Plan │ 2,Bea,needle,"likes ""quotes"", and commas"
+5: row 3 › Notes │ lines with needle"
+7: row 4 › Notes │ 4,Dan,team,needle at the end,extra
+```
+
+`row 2` es el segundo registro después del encabezado. La línea 5 es la segunda línea de un
+campo entre comillas de la fila 3, así que sigue estando en la fila 3.
+
+En los subtítulos el Trail es el cue, nombrado por su número (o su identificador de WebVTT) y
+su tiempo de inicio tal como está escrito; el árbol muestra la línea de tiempos completa:
+
+```
+$ sfor needle subs/movie.srt --tree
+subs/movie.srt
+  cue 1 00:00:01,000 --> 00:00:03,500
+    3:Where is the needle?
+  cue 2 00:00:04,000 --> 00:00:06,000
+    8:- A needle, in there?
+  cue 3 00:01:02,500 --> 00:01:04,000
+    12:<i>needle</i>
+```
 
 ## Uso
 
@@ -186,7 +241,7 @@ de Fragmentos.
 |---|---|
 | `--within <TRAIL>` | se queda con los resultados cuyo Trail contiene esos nombres de Segmento, en orden (`›`, `>` o `/` entre nombres; subcadenas sin distinguir mayúsculas) |
 | `--expand` | imprime la Sección entera del último Segmento de cada resultado, una vez por Sección |
-| `--in-headings` | busca sólo dentro de los nombres de Segmento (títulos, claves, nombres de función); procesa todos los archivos candidatos, así que es más lento |
+| `--in-headings` | busca sólo dentro de los nombres de Segmento (títulos, claves, nombres de función, elementos, encabezados de CSV, cues); procesa todos los archivos candidatos, así que es más lento |
 | `--format <F>` / `--format <GLOB>=<F>` | fuerza un Formato para todos los archivos o para los que coinciden con un glob |
 | `--flat` / `--tree` | fuerza la salida de una línea o la de árbol |
 | `--no-trail` | imprime exactamente lo que imprimiría ripgrep |
@@ -203,7 +258,7 @@ nombre de un Formato incluido o instalado lo reemplaza, y un nombre nuevo agrega
 ### Compatibilidad con ripgrep
 
 ripgrep 14.1.1 tiene 146 nombres de flag (104 flags, 30 negaciones `--no-` y 12 negaciones de
-otra forma). v0.2 implementa 51. Los otros 95 se aceptan por nombre y fallan con
+otra forma). v0.3 implementa 51. Los otros 95 se aceptan por nombre y fallan con
 `sfor: --<flag> is not supported yet` y código de salida 2, así que ninguno se ignora en
 silencio. La tabla está en [docs/rg-compat.md](docs/rg-compat.md). Los códigos de salida son
 los de ripgrep: 0 si algo coincidió, 1 si nada, 2 si hubo un error.
@@ -291,7 +346,7 @@ python         compiled in
 El índice, [`grammars/index.json`](grammars/index.json), queda vacío hasta que v1.0 compile y
 publique los binarios de los Grammar Helpers para cada sistema, así que por ahora
 `--install-grammar` no tiene nada para instalar. [`helpers/grammar/`](helpers/grammar) es el
-template del que se arman (Lua en v0.2), y
+template del que se arman (Lua en v0.3), y
 [`scripts/build-grammar-helper.sh`](scripts/build-grammar-helper.sh) arma uno para el sistema
 en el que corre e imprime su entrada del índice. `SFOR_GRAMMAR_INDEX` apunta sfor a otro
 índice, por ejemplo uno propio con `file://`.
@@ -378,7 +433,8 @@ que cualquier consumidor de `rg --json` sigue funcionando, y agrega tres campos 
 - `format`: el Formato del archivo, o `null` para los archivos Plain.
 - `trail`: los Segmentos desde la raíz del archivo hasta el resultado, cada uno con `kind`,
   `name`, `line` y `end_line` (las líneas de su Sección), `level` en los títulos, y
-  `signature` en el código (la línea que lo declara).
+  `signature` en el código (la línea que lo declara) y en los cues de subtítulos (el cue con su
+  tiempo de fin).
 - `fragment`: `null`, o el Fragmento de una línea más larga que `--fragment-width`.
 - Con `--expand`, `section`: `{"start_line", "end_line", "text"}` de la Sección.
 - Cuando los resultados de una misma línea tienen Trails distintos (dos celdas de una tabla),
@@ -397,7 +453,7 @@ recetas; para instalarlo, copiá ese directorio a `~/.claude/skills/`.
 |---|---|---|
 | M1 | v0.1 | Markdown, los flags centrales de ripgrep, salida en árbol / una línea / JSON, Fragmentos, `--within`, `--expand`, `--in-headings`, skill de Claude Code |
 | M2 | v0.2 | rutas de claves en YAML, JSON y TOML (`server › ports[2] › host`); código (PHP, JavaScript, TypeScript, TSX, Bash, Go, Rust, Python) como `Cart › addItem`, con las Grammars de tree-sitter compiladas adentro; Helper Processors (`processor = "external"`); `--install-grammar` y `--list-grammars` |
-| M3 | v0.3 | HTML, XML, CSV y subtítulos (.srt, .vtt) |
+| M3 (terminado, 2026-10-17) | v0.3 | rutas de elementos en HTML y XML (`section#pricing › table › tr[3] › td[2]`); filas y columnas en CSV y TSV (`row 2 › Plan`); cues de SubRip y WebVTT (`cue 2 00:00:04,000`); los caracteres de control de los nombres impresos como escapes |
 | M4 | v0.4 | archivos objeto (ELF, PE, Mach-O); `--docs`, extractores incluidos que buscan en PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB y SQLite con su estructura; el `--pre` de ripgrep |
 | M5 | v1.0 | un servidor MCP, el resto de los flags de ripgrep, binarios precompilados, Homebrew y npm, Windows y macOS; los binarios de los Grammar Helpers publicados en el índice de Grammars; la guía para escribir un Helper Processor |
 

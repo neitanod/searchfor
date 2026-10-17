@@ -17,16 +17,18 @@ md/guide.md
 
 The lines above `12:apt install needle-pkg` are the match's **Trail**: the document title
 from the frontmatter, the headings, and the fenced code block the match sits in. In code the
-Trail is the class and the function, and in YAML, JSON and TOML it is the key path. Every
+Trail is the class and the function; in YAML, JSON and TOML it is the key path; in HTML and XML,
+the element path; in CSV and TSV, the row and the column; and in subtitles, the cue. Every
 example in this README is real output over [`tests/fixtures/`](tests/fixtures), run from
 inside that directory, except the one of [Helper Processors](#helper-processors), which says
 what it runs over.
 
 ## Status
 
-**v0.2: Markdown, configuration files and code.** The search engine is ripgrep's own crates,
-so the search behaves like `rg`; on top of it, Markdown, YAML, JSON, TOML and code in eight
-languages get Trails (see [Formats](#formats)), long lines are shown as Fragments, and
+**v0.3: Markdown, configuration files, code, markup, tables and subtitles.** The search engine
+is ripgrep's own crates, so the search behaves like `rg`; on top of it, Markdown, YAML, JSON,
+TOML, code in eight languages, HTML, XML, CSV, TSV, SubRip and WebVTT get Trails (see
+[Formats](#formats)), long lines are shown as Fragments, and
 `--within`, `--expand` and `--in-headings` filter and expand by structure. Other languages
 can be described by a [Helper Processor](#helper-processors), a separate program that sfor
 talks to. Every other file is **Plain**: its matches print with an empty Trail. More Formats
@@ -42,8 +44,8 @@ The glossary is in [CONTEXT.md](CONTEXT.md), the design in
 cargo install searchfor
 ```
 
-That installs the latest version published on crates.io. Until v0.2.0 is published there,
-install v0.2 from the repository:
+That installs the latest version published on crates.io. Until v0.3.0 is published there,
+install v0.3 from the repository:
 
 ```
 cargo install --git https://github.com/neitanod/searchfor
@@ -67,10 +69,17 @@ Both install the `sfor` binary. Prebuilt binaries, Homebrew and npm come in v1.0
 | Go | `.go` | types, functions, and methods named by their receiver (`Server.Start`) |
 | Rust | `.rs` | modules, structs, enums, traits, `impl` blocks, functions |
 | Python | `.py`, `.pyi`, `.pyw` | classes and functions, nested ones included |
+| HTML | `.html`, `.htm`, `.xhtml` | elements as `tag#id.class`, with `[n]` among siblings of the same tag; `html` and `body` hidden |
+| XML | `.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`, `.rss`, `.atom`, `.plist`, `.wsdl`, `.xlf`, `.xliff`, `.kml`, `.gpx`, `.csproj`, `.vbproj`, `.fsproj`, `.nuspec`, `.resx`, `.xaml`, and files starting with `<?xml` | elements by tag, with `[n]` among siblings of the same tag |
+| CSV | `.csv` | `row N › Column`; the delimiter (`,` `;` tab `\|`) is read from the first line |
+| TSV | `.tsv` | `row N › Column` |
+| SubRip | `.srt` | cues: `cue 12 00:01:02,500` |
+| WebVTT | `.vtt` | cues: `cue intro 00:00.000` |
 
 A file without an extension is also recognised by its shebang (`#!/usr/bin/env python3`,
 `node`, `bash`…). The code Formats are parsed by tree-sitter Grammars compiled into `sfor`;
-YAML, JSON and TOML by native parsers. `sfor --list-formats` lists them all.
+YAML, JSON and TOML by native parsers; HTML, XML, CSV, TSV and subtitles by scanners of sfor's
+own. `sfor --list-formats` lists them all.
 
 The same key path in a YAML file and in a JSON file:
 
@@ -103,6 +112,51 @@ $ sfor needle code/cart.php --flat
 
 A match in the name of a function, as on line 15, is outside that function, as a match on a
 heading line is outside its section.
+
+In HTML and XML the Trail is the element path:
+
+```
+$ sfor needle markup/page.html --flat
+4: head › title │   <title>Pricing needle</title>
+5: head › script │   <script>if (a < b) { label = "</div> needle"; }</script>
+12: nav.top.menu › ul › li[3] │       <li><a href="/needle">Needle</a>
+19: main#content › section#pricing.card.wide › p.note[2] │       <p class="note">The needle plan is free.
+23: main#content › section#pricing.card.wide › table › tr[3] › td[2] │         <tr><td>Pro<td>needle 9
+26: main#content › div › div › div │     <div><div><div>deep needle</div></div></div>
+27: main#content │     <img src="needle.png" alt="">
+```
+
+`html` and `body` hold the whole page, so Trails start below them. `li[3]` is the third `li`
+of its `ul`, an element with an `id` gets no index, and the end tags HTML lets you leave out
+(`<li>`, `<td>`, `<p>`) are inferred. A match inside a start tag, as on line 27, belongs to the
+parent element. In XML the first construct that is not well formed ends the structure, and the
+matches after it print with an empty Trail.
+
+In CSV and TSV the Trail is the row and the column's header:
+
+```
+$ sfor needle table/plans.csv --flat
+3: row 2 › Plan │ 2,Bea,needle,"likes ""quotes"", and commas"
+5: row 3 › Notes │ lines with needle"
+7: row 4 › Notes │ 4,Dan,team,needle at the end,extra
+```
+
+`row 2` is the second record after the header. Line 5 is the second line of a quoted field of
+row 3, so it is still in row 3.
+
+In subtitles the Trail is the cue, named by its number (or its WebVTT identifier) and its start
+time as written; the tree shows the whole timing line:
+
+```
+$ sfor needle subs/movie.srt --tree
+subs/movie.srt
+  cue 1 00:00:01,000 --> 00:00:03,500
+    3:Where is the needle?
+  cue 2 00:00:04,000 --> 00:00:06,000
+    8:- A needle, in there?
+  cue 3 00:01:02,500 --> 00:01:04,000
+    12:<i>needle</i>
+```
 
 ## Usage
 
@@ -179,7 +233,7 @@ ripgrep's `-M/--max-columns` keeps its meaning: with it, long lines print ripgre
 |---|---|
 | `--within <TRAIL>` | keep matches whose Trail contains these Segment names, in order (`›`, `>` or `/` between names; case-insensitive substrings) |
 | `--expand` | print the whole Section of the last Segment of each match, once per Section |
-| `--in-headings` | match only inside Segment names (headings, keys, function names); every candidate file is parsed, so it is slower |
+| `--in-headings` | match only inside Segment names (headings, keys, function names, elements, CSV headers, cues); every candidate file is parsed, so it is slower |
 | `--format <F>` / `--format <GLOB>=<F>` | force a Format for every file or for the files matching a glob |
 | `--flat` / `--tree` | force the one-line or the tree layout |
 | `--no-trail` | print exactly what ripgrep would print |
@@ -196,7 +250,7 @@ installed Format replaces it, and a new name adds a Format.
 ### ripgrep compatibility
 
 ripgrep 14.1.1 has 146 flag names (104 flags, 30 `--no-` negations and 12 other negations).
-v0.2 implements 51 of them. The other 95 are accepted by name and fail
+v0.3 implements 51 of them. The other 95 are accepted by name and fail
 with `sfor: --<flag> is not supported yet` and exit code 2, so nothing is silently ignored.
 The table is [docs/rg-compat.md](docs/rg-compat.md). Exit codes are ripgrep's: 0 when
 something matched, 1 when nothing did, 2 on error.
@@ -283,7 +337,7 @@ python         compiled in
 The index, [`grammars/index.json`](grammars/index.json), is empty until v1.0 builds and
 publishes the Grammar Helper binaries for each system, so `--install-grammar` has nothing to
 install yet. [`helpers/grammar/`](helpers/grammar) is the template they are built from (Lua
-in v0.2), and [`scripts/build-grammar-helper.sh`](scripts/build-grammar-helper.sh) builds one
+in v0.3), and [`scripts/build-grammar-helper.sh`](scripts/build-grammar-helper.sh) builds one
 for the running system and prints its index entry. `SFOR_GRAMMAR_INDEX` points sfor at
 another index, such as a `file://` one of your own.
 
@@ -368,7 +422,8 @@ code/thing.rs:7-9: outer › Thing › helper
 - `format`: the file's Format, or `null` for Plain files.
 - `trail`: the Segments from the root of the file down to the match, each with `kind`,
   `name`, `line` and `end_line` (the lines of its Section), `level` for headings, and
-  `signature` for code (the line that declares it).
+  `signature` for code (the line that declares it) and for subtitle cues (the cue with its end
+  time).
 - `fragment`: `null`, or the Fragment of a line longer than `--fragment-width`.
 - With `--expand`, `section`: `{"start_line", "end_line", "text"}` of the Section.
 - When the matches of one line have different Trails (two table cells), each object in
@@ -387,7 +442,7 @@ copy that directory to `~/.claude/skills/` to install it.
 |---|---|---|
 | M1 | v0.1 | Markdown, the core ripgrep flags, tree / one-line / JSON output, Fragments, `--within`, `--expand`, `--in-headings`, Claude Code skill |
 | M2 | v0.2 | YAML, JSON and TOML key paths (`server › ports[2] › host`); code (PHP, JavaScript, TypeScript, TSX, Bash, Go, Rust, Python) as `Cart › addItem`, with tree-sitter Grammars compiled in; Helper Processors (`processor = "external"`); `--install-grammar` and `--list-grammars` |
-| M3 | v0.3 | HTML, XML, CSV and subtitles (.srt, .vtt) |
+| M3 (done, 2026-10-17) | v0.3 | HTML and XML element paths (`section#pricing › table › tr[3] › td[2]`); CSV and TSV rows and columns (`row 2 › Plan`); SubRip and WebVTT cues (`cue 2 00:00:04,000`); control characters in printed names shown as escapes |
 | M4 | v0.4 | object files (ELF, PE, Mach-O); `--docs`, built-in extractors that search PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite with their structure; ripgrep's `--pre` |
 | M5 | v1.0 | an MCP server, the rest of ripgrep's flags, prebuilt binaries, Homebrew and npm, Windows and macOS; Grammar Helper binaries published in the Grammar index; the guide for writing a Helper Processor |
 
