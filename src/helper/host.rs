@@ -344,16 +344,18 @@ impl Host {
     }
 
     /// Sends the request `make` builds with a fresh id, and returns its answer. The deadline
-    /// covers queuing, writing and answering (D31).
+    /// covers queuing, writing and answering (D31); it starts once a copy takes the request,
+    /// so waiting for a copy to start (or to be free) does not count against it (spec §4.4,
+    /// review m2-code-r1, Fable #4).
     pub fn request(&self, make: impl FnOnce(u64) -> Request) -> Result<Reply, HelperError> {
         let req = make(self.next_id.fetch_add(1, SeqCst));
         if self.cfg.mode == Mode::Oneshot {
             return self.oneshot(&req);
         }
-        let deadline = Instant::now() + self.cfg.timeout;
         // A copy that exited with nothing in flight is replaced once, without counting it.
         for attempt in 0..2 {
             let conn = self.checkout()?;
+            let deadline = Instant::now() + self.cfg.timeout;
             let sent = conn.send(&req);
             let out = sent.map(|rx| self.outcome(&conn, wait(rx, deadline)));
             self.release(&conn);
@@ -1523,6 +1525,44 @@ mod tests {
             took < SHUTDOWN_WAIT + Duration::from_millis(500),
             "{took:?} for four copies: one grace each"
         );
+    }
+
+    #[test]
+    fn the_timeout_counts_from_the_queue_not_from_the_start_of_the_copy() {
+        // Review m2-code-r1, Fable #4: spec §4.4 counts `timeout_ms` from when sfor queues the
+        // request. A copy that takes 350 ms to answer `hello` and 300 ms per request answers
+        // within a 500 ms timeout; counted from before the start it would take 650 ms.
+        let body: Body = Arc::new(|lines, out, _| {
+            let _ = lines.next();
+            std::thread::sleep(Duration::from_millis(350));
+            out.write_all(
+                line(&Reply {
+                    id: 0,
+                    protocol: Some(1),
+                    ..Default::default()
+                })
+                .as_bytes(),
+            )
+            .unwrap();
+            for l in lines.map_while(Result::ok) {
+                std::thread::sleep(Duration::from_millis(300));
+                out.write_all(line(&echo(&req(&l)).unwrap()).as_bytes())
+                    .unwrap();
+            }
+        });
+        for mode in [Mode::Pool, Mode::Concurrent] {
+            let r = run(mode, 1, 500, body.clone());
+            let t = Instant::now();
+            assert_eq!(
+                name_of(&trails(&r.host, "a.ini").unwrap()),
+                "a.ini",
+                "{mode:?}"
+            );
+            let took = t.elapsed();
+            assert!(took >= Duration::from_millis(650), "{mode:?}: {took:?}");
+            assert!(took < Duration::from_millis(1000), "{mode:?}: {took:?}");
+            r.host.shutdown();
+        }
     }
 
     #[test]
