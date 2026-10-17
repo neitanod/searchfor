@@ -35,14 +35,9 @@ fn sfor_bin() -> std::path::PathBuf {
         .unwrap_or_else(|| assert_cmd::cargo::cargo_bin("sfor"))
 }
 
-/// Wall time and peak RSS in bytes of `sfor args`, stdout discarded, measured by
+/// Wall time and peak RSS in bytes of `bin args` (sfor or rg), stdout discarded, measured by
 /// `/usr/bin/time -v`. None when /usr/bin/time is missing.
-fn measure(fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
-    measure_bin(&sfor_bin(), fx, args)
-}
-
-/// `measure` for any program: sfor or rg.
-fn measure_bin(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
+fn measure(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
     let time = Path::new("/usr/bin/time");
     if !time.exists() {
         return None;
@@ -81,7 +76,7 @@ fn best_of_three(fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
 fn best_of_three_bin(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
     let mut best: Option<(Duration, u64)> = None;
     for _ in 0..3 {
-        let (t, rss) = measure_bin(bin, fx, args)?;
+        let (t, rss) = measure(bin, fx, args)?;
         best = Some(match best {
             None => (t, rss),
             Some((bt, br)) => (bt.min(t), br.max(rss)),
