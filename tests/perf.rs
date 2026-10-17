@@ -284,8 +284,8 @@ fn json_of_a_big_markdown_file_stays_under_the_ceilings() {
 
 /// Code review r4, Fable #1: grep-printer's JSON printer writes each message in many pieces,
 /// and the output printed as it grows looks for the last line break only when it prints: on
-/// 10 MB of Match lines, `--json --no-trail` takes at most 1.1 × rg's `--json` (before the
-/// fix: 1.51 s against 1.11 s).
+/// 10 MB of Match lines, `--json --no-trail` takes at most 1.25 × rg's `--json` (before the
+/// fix: 1.51 s against 1.11 s, 1.36 ×).
 #[test]
 #[ignore]
 fn json_without_trails_of_a_big_file_is_as_fast_as_ripgrep() {
@@ -307,9 +307,11 @@ fn json_without_trails_of_a_big_file_is_as_fast_as_ripgrep() {
         args.insert(1, "--no-trail");
         let (t, _) = best_of_three(&fx, &args).unwrap();
         eprintln!("10 MB {pattern:?}: --json --no-trail {t:?}, rg --json {base:?}");
+        // It runs in about rg's time; the margin is for a loaded machine, and the bug it
+        // guards against was 1.36 × (code review r5, Fable #5).
         assert!(
-            t.as_secs_f64() <= base.as_secs_f64() * 1.1,
-            "{t:?} is more than 1.1 × the {base:?} of rg --json"
+            t.as_secs_f64() <= base.as_secs_f64() * 1.25,
+            "{t:?} is more than 1.25 × the {base:?} of rg --json"
         );
     }
 }
