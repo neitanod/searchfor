@@ -10,11 +10,8 @@ use grep_searcher::{
     SinkFinish, SinkMatch,
 };
 use ignore::{WalkBuilder, overrides::OverrideBuilder, types::TypesBuilder};
-use std::cell::Cell;
-use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
 pub fn matcher(args: &Args, patterns: &[String]) -> Result<RegexMatcher> {
     let mut b = RegexMatcherBuilder::new();
@@ -174,144 +171,21 @@ pub fn rg_types() -> anyhow::Result<TypesBuilder> {
     Ok(tb)
 }
 
-/// Whether a sink stopped its search, shared with the reader the search reads from, and how
-/// far that reader got (`UntilStopped`).
-#[derive(Debug, Clone, Default)]
-pub struct Stop(Rc<StopState>);
-
-#[derive(Debug, Default)]
-struct StopState {
-    stopped: Cell<bool>,
-    /// The searcher's binary bytes: its quit byte and its convert byte (`MaxCount::begin`).
-    quit: Cell<Option<u8>>,
-    convert: Cell<Option<u8>>,
-    /// The bytes read so far.
-    read: Cell<u64>,
-    /// The absolute end of the searcher's buffer after its last fill, as grep-searcher's
-    /// `LineBuffer::fill` sets `last_lineterm`; None before the first read.
-    buffer_end: Cell<Option<u64>>,
-    /// The quit byte was read: the buffers end there.
-    quit_seen: Cell<bool>,
-}
-
-impl Stop {
-    pub fn is_set(&self) -> bool {
-        self.0.stopped.get()
-    }
-
-    fn set(&self, stopped: bool) {
-        self.0.stopped.set(stopped);
-    }
-
-    /// A new search with `binary`: nothing read yet.
-    fn reset(&self, binary: &BinaryDetection) {
-        let s = &self.0;
-        s.stopped.set(false);
-        s.quit.set(binary.quit_byte());
-        s.convert.set(binary.convert_byte());
-        s.read.set(0);
-        s.buffer_end.set(None);
-        s.quit_seen.set(false);
-    }
-
-    /// The end of the buffer the searcher filled last, when it reads through `UntilStopped`.
-    fn buffer_end(&self) -> Option<u64> {
-        self.0.buffer_end.get()
-    }
-
-    /// `bytes` were read (none: the end of the input). Follows `LineBuffer::fill`: the buffer
-    /// ends after the last line terminator read (a converted binary byte is one), at the quit
-    /// byte, or at the end of the input.
-    fn read(&self, bytes: &[u8]) {
-        let s = &self.0;
-        let start = s.read.get();
-        s.read.set(start + bytes.len() as u64);
-        if s.quit_seen.get() {
-            return;
-        }
-        if bytes.is_empty() {
-            s.buffer_end.set(Some(start));
-            return;
-        }
-        if let Some(i) = s.quit.get().and_then(|q| memchr::memchr(q, bytes)) {
-            s.quit_seen.set(true);
-            s.buffer_end.set(Some(start + i as u64));
-            return;
-        }
-        let last = match s.convert.get() {
-            Some(c) => memchr::memrchr2(b'\n', c, bytes),
-            None => memchr::memrchr(b'\n', bytes),
-        };
-        if let Some(i) = last {
-            s.buffer_end.set(Some(start + i as u64 + 1));
-        }
-    }
-}
-
-/// A reader that ends once its sink stopped the search. grep-searcher 0.1.17 goes on after a
-/// sink stops it on an inverted Match (`match_by_line_fast` leaves its loop with `break` and
-/// carries on with the next buffer, core.rs:396), which reads the rest of the input; its sinks
-/// drop what comes after the stop (`MaxCount`), and this reader ends the input there. It also
-/// tells the sink where the searcher's buffers end (`Stop::buffer_end`).
-pub struct UntilStopped<R> {
-    inner: R,
-    stop: Stop,
-}
-
-impl<R> UntilStopped<R> {
-    pub fn new(inner: R, stop: Stop) -> Self {
-        Self { inner, stop }
-    }
-}
-
-impl<R: Read> Read for UntilStopped<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.stop.is_set() {
-            return Ok(0);
-        }
-        let n = self.inner.read(buf)?;
-        self.stop.read(&buf[..n]);
-        Ok(n)
-    }
-}
-
 /// ripgrep 14.1.1's `-m`, counted by its printers (grep-printer 0.2.2, standard.rs:785 and
-/// json.rs:651) and so by our sinks: the searcher (grep-searcher 0.1.17) gets no limit, because
-/// its own reports a line that matches inside the after context of the last Match allowed as
-/// context on its slow path (patterns like `\A` or `$`), and gets `-v` wrong (code review r2,
-/// Codex #2). After the limit the after context goes on; a line that matches inside it is a
-/// Match that does not extend it, and the search stops where it ends. Summary printers stop at
-/// the limit (summary.rs:552). Lines that come after the stop are dropped (see `UntilStopped`).
-///
-/// Also ripgrep's `bytes_searched` at that stop: its searcher (grep-searcher 0.1.14) reports,
-/// for a reader search, only the bytes of the buffers rolled out before the one it stopped in;
-/// grep-searcher 0.1.17 adds the position it reached (`consume_remaining` in glue.rs). The
-/// rolled-out bytes of a Match's buffer are its absolute offset minus its offset in the buffer.
-/// An after-context line past the end of that buffer is the first line of the next one: the
-/// buffer of the last Match ended with the after context running, so all of it was rolled out
-/// (code review r2, Codex #5); that next buffer ends where the reader says (`Stop::buffer_end`),
-/// and so on through every buffer the after context crosses (code review r3, Codex #2). A
-/// search in memory reports its position in both versions, so it is left alone, except with
-/// -v (`slice_stop`). Not reproduced, see docs/rg-compat.md: buffers rolled with an after
-/// context longer than the before context.
+/// json.rs:651) and so by our sinks: the searcher (grep-searcher 0.1.14, rg 14.1.1's) has no
+/// limit of its own. After the limit the after context goes on; a line that matches inside it
+/// is a Match that does not extend it, and the search stops where it ends. Summary printers
+/// stop at the limit (summary.rs:552). A sink that stops its search makes the searcher stop
+/// reading, and the searcher's `byte_count` is then rg's `bytes_searched`.
 #[derive(Debug, Clone, Default)]
 pub struct MaxCount {
     limit: Option<u64>,
-    /// The search runs over a slice in memory, with this matcher (for `slice_stop`).
-    slice: Option<RegexMatcher>,
-    invert: bool,
-    /// Where grep-searcher 0.1.14 stops an inverted search in memory (`slice_stop`).
-    slice_stop: Option<u64>,
     /// A summary printer's -m: no after context.
     summary: bool,
     after: u64,
     count: u64,
     after_left: u64,
-    rolled: u64,
-    /// The absolute end of the lines of the last Match's buffer, until a line past it.
-    buffer_end: Option<u64>,
-    stopped: Option<u64>,
-    stop: Stop,
+    stopped: bool,
 }
 
 impl MaxCount {
@@ -330,177 +204,59 @@ impl MaxCount {
         }
     }
 
-    /// The search runs over a slice in memory: `-v`'s stop is computed with `matcher`.
-    pub fn in_slice(self, matcher: &RegexMatcher) -> Self {
-        Self {
-            slice: Some(matcher.clone()),
-            ..self
-        }
-    }
-
-    pub fn stop(&self) -> Stop {
-        self.stop.clone()
-    }
-
-    /// The search runs over a slice in memory (`in_slice`).
-    pub fn is_slice(&self) -> bool {
-        self.slice.is_some()
-    }
-
     /// For a sink's `begin`: a new search with the searcher's after context.
     pub fn begin(&mut self, s: &Searcher) {
         *self = Self {
             limit: self.limit,
-            slice: self.slice.take(),
-            invert: s.invert_match(),
             summary: self.summary,
             after: if self.summary {
                 0
             } else {
                 s.after_context() as u64
             },
-            stop: self.stop.clone(),
             ..Self::default()
         };
-        self.stop.reset(s.binary_detection());
     }
 
-    /// A Match line. False: it comes after the stop, and is dropped.
-    pub fn matched(&mut self, m: &SinkMatch<'_>) -> bool {
-        if self.stop.is_set() {
-            return false;
-        }
-        self.rolled = m
-            .absolute_byte_offset()
-            .saturating_sub(m.bytes_range_in_buffer().start as u64);
-        self.buffer_end = Some(self.rolled + m.buffer().len() as u64);
+    /// A Match line.
+    pub fn matched(&mut self) {
         self.count += 1;
         if self.limit.is_some_and(|l| self.count > l) {
             self.after_left = self.after_left.saturating_sub(1);
         } else {
             self.after_left = self.after;
         }
-        if let Some(matcher) = self.slice.as_ref().filter(|_| self.invert)
-            && self.limit == Some(self.count)
-        {
-            let line = m.bytes_range_in_buffer();
-            self.slice_stop = slice_stop(matcher, m.buffer(), line.start, self.after);
-        }
         self.check();
-        true
     }
 
-    /// A context line. False: it comes after the stop, and is dropped.
-    pub fn context(&mut self, c: &SinkContext<'_>) -> bool {
-        if self.stop.is_set() {
-            return false;
-        }
+    /// A context line.
+    pub fn context(&mut self, c: &SinkContext<'_>) {
         if *c.kind() == SinkContextKind::After {
             self.after_left = self.after_left.saturating_sub(1);
-            // The first line of a later buffer: the after context rolled out every line
-            // before it (grep-searcher's `Core::roll` consumes the lines it visited), and that
-            // buffer ends where the reader's last fill left it (code review r3, Codex #2).
-            if self
-                .buffer_end
-                .is_some_and(|e| c.absolute_byte_offset() >= e)
-            {
-                self.rolled = c.absolute_byte_offset();
-                self.buffer_end = self.stop.buffer_end();
-            }
         }
         self.check();
-        true
     }
 
     /// The sink stops the search for its own reason (-q's first Match, -l).
-    pub fn stop_now(&self) {
-        self.stop.set(true);
+    pub fn stop_now(&mut self) {
+        self.stopped = true;
+    }
+
+    /// The search was stopped, at the limit or by `stop_now`.
+    pub fn is_stopped(&self) -> bool {
+        self.stopped
     }
 
     /// What the sink answers the searcher.
     pub fn go_on(&self) -> bool {
-        !self.stop.is_set()
+        !self.stopped
     }
 
     fn check(&mut self) {
-        if self.stopped.is_none()
-            && self.limit.is_some_and(|l| self.count >= l)
-            && self.after_left == 0
-        {
-            self.stopped = Some(self.rolled);
-            self.stop.set(true);
+        if self.limit.is_some_and(|l| self.count >= l) && self.after_left == 0 {
+            self.stopped = true;
         }
     }
-
-    /// What ripgrep reports: `byte_count` (the searcher's), unless a reader search stopped at
-    /// `-m`.
-    pub fn bytes_searched(&self, byte_count: u64, reader: bool) -> u64 {
-        match self.stopped {
-            Some(rolled) if reader => rolled,
-            // grep-searcher's count in memory is its position, but no further than the
-            // binary data (`SliceByLine::byte_count`); `byte_count` already stops there, and
-            // goes further than 0.1.14 otherwise (code review r3, Codex #3).
-            Some(_) => self.slice_stop.map_or(byte_count, |s| s.min(byte_count)),
-            None => byte_count,
-        }
-    }
-}
-
-/// grep-searcher 0.1.14's position when `-v` stops a search over `slice`, the whole file in
-/// memory, `after` lines after the last Match allowed, which starts at `start`; None when the
-/// file ends before. Its fast path finds the line that matches the pattern after an inverted
-/// run before it reports the run, and the position is that line's end (or the file's): after
-/// an inverted line, the next line that matches; after a context line (one that matches), the
-/// line that ends the next inverted run. grep-searcher 0.1.17 goes on to the end of the buffer
-/// instead (see `UntilStopped`). Measured with rg 14.1.1: `-v -m1 needle` on
-/// `a\nneedle\nb\nneedle\nc\nd\n` reports 9. On the slow path (`line_by_line_fast`) both
-/// versions stop at the end of the line they stopped on: None, the searcher's count.
-fn slice_stop(matcher: &RegexMatcher, slice: &[u8], start: usize, after: u64) -> Option<u64> {
-    if !line_by_line_fast(matcher) {
-        return None;
-    }
-    let line_at = |at: usize| {
-        let end = memchr::memchr(b'\n', &slice[at..]).map_or(slice.len(), |i| at + i + 1);
-        at..end
-    };
-    let matching = |r: &Range<usize>| {
-        let line = &slice[r.clone()];
-        let line = line.strip_suffix(b"\n").unwrap_or(line);
-        matcher.is_match(line).unwrap_or(false)
-    };
-    let mut stop = line_at(start);
-    for _ in 0..after {
-        if stop.end >= slice.len() {
-            return None;
-        }
-        stop = line_at(stop.end);
-    }
-    let mut at = stop.end;
-    let mut want_match = !matching(&stop);
-    loop {
-        if at >= slice.len() {
-            return Some(slice.len() as u64);
-        }
-        let line = line_at(at);
-        if matching(&line) == want_match {
-            if want_match {
-                return Some(line.end as u64);
-            }
-            want_match = true;
-        }
-        at = line.end;
-    }
-}
-
-/// grep-searcher's choice of its fast line-by-line path (core.rs `is_line_by_line_fast`, the
-/// same in 0.1.14 and 0.1.17) for our matcher: a pattern with `\A` or `\z` has no line
-/// terminator (grep-regex config.rs:296) and takes the slow path.
-fn line_by_line_fast(matcher: &RegexMatcher) -> bool {
-    let lf = grep_matcher::LineTerminator::byte(b'\n');
-    matcher.line_terminator() == Some(lf)
-        || matcher
-            .non_matching_bytes()
-            .is_some_and(|b| b.contains(b'\n'))
 }
 
 /// Builds the model of one file (design note 4) and its stats. Lines are not copied (they are
@@ -538,15 +294,14 @@ impl<'m> CollectSink<'m> {
         self
     }
 
-    /// What ends the reader of its search (see `UntilStopped`).
-    pub fn stop(&self) -> Stop {
-        self.max_count.stop()
+    /// The sink stopped its search (at `-m`, or at `-q`'s first Match).
+    pub fn stopped(&self) -> bool {
+        self.max_count.is_stopped()
     }
 
     /// The search runs in memory: lines always equal the Source's bytes.
     pub fn in_memory(mut self) -> Self {
         self.reader = false;
-        self.max_count = std::mem::take(&mut self.max_count).in_slice(self.matcher);
         self
     }
 
@@ -555,8 +310,8 @@ impl<'m> CollectSink<'m> {
     }
 }
 
-/// grep-printer 0.3.1's JSON sink (`record_matches`, json.rs:645–680, and
-/// `find_iter_at_in_context`, util.rs:473–520), copied because those helpers are
+/// grep-printer 0.2.2's JSON sink (`record_matches`, json.rs:611–644, and
+/// `find_iter_at_in_context`, util.rs:467–522), copied because those helpers are
 /// `pub(crate)`. Only the single-line branch: our searcher never runs in multi-line mode
 /// (`-U` is not in M1). The line terminator is trimmed from the end of `range` (a `\r`
 /// stays: CRLF mode is not in M1) and the matcher runs over the buffer up to there, from
@@ -621,9 +376,7 @@ impl Sink for CollectSink<'_> {
     }
 
     fn matched(&mut self, _s: &Searcher, m: &SinkMatch<'_>) -> Result<bool, Self::Error> {
-        if !self.max_count.matched(m) {
-            return Ok(false);
-        }
+        self.max_count.matched();
         let subs = match_submatches(self.matcher, self.invert, m);
         self.stats.matched_lines += m.lines().count() as u64;
         self.stats.matches += subs.len() as u64;
@@ -641,9 +394,7 @@ impl Sink for CollectSink<'_> {
     }
 
     fn context(&mut self, _s: &Searcher, c: &SinkContext<'_>) -> Result<bool, Self::Error> {
-        if !self.max_count.context(c) {
-            return Ok(false);
-        }
+        self.max_count.context(c);
         self.items.push(Item::Context(Line {
             line_number: c.line_number().unwrap_or(0),
             absolute_offset: c.absolute_byte_offset(),
@@ -660,7 +411,7 @@ impl Sink for CollectSink<'_> {
     }
 
     fn finish(&mut self, _s: &Searcher, f: &SinkFinish) -> Result<(), Self::Error> {
-        self.stats.bytes_searched = self.max_count.bytes_searched(f.byte_count(), self.reader);
+        self.stats.bytes_searched = f.byte_count();
         self.stats.binary_offset = f.binary_byte_offset();
         Ok(())
     }
@@ -671,12 +422,13 @@ impl Sink for CollectSink<'_> {
 ///
 /// The search path decides how `BinaryDetection::convert` behaves: the reader path converts NUL
 /// bytes into line terminators, the in-memory path does not
-/// (grep-searcher-0.1.17/src/searcher/mod.rs:83), and line numbers and offsets differ
+/// (grep-searcher-0.1.14/src/searcher/mod.rs:83), and line numbers and offsets differ
 /// accordingly. ripgrep 14.1.1 searches memory-mapped (in memory) only in the cases of
 /// `rg_in_memory`, and with a reader otherwise; we do the same on the Source's bytes, so our
 /// coordinates are ripgrep's. C9 passes `in_memory && !src.had_bom`, because grep-searcher
-/// reads a file with a BOM through a reader even when memory maps are on. When the result has
-/// a binary offset, C9 skips the Processor.
+/// reads a file with a BOM through a reader even when memory maps are on; the reader reads
+/// `Source::as_read`, so with a BOM `searcher` must sniff it (`streaming_searcher`). When the
+/// result has a binary offset, C9 skips the Processor.
 pub fn search_source(
     searcher: &mut Searcher,
     matcher: &RegexMatcher,
@@ -714,8 +466,7 @@ fn search_with(
         sink = sink.in_memory();
         searcher.search_slice(matcher, src.bytes(), &mut sink)?;
     } else {
-        let rdr = UntilStopped::new(std::io::Cursor::new(src.bytes()), sink.stop());
-        searcher.search_reader(matcher, rdr, &mut sink)?;
+        searcher.search_reader(matcher, std::io::Cursor::new(src.as_read()), &mut sink)?;
     }
     sink.stats.elapsed = started.elapsed();
     let stats = sink.stats.clone();
@@ -763,10 +514,11 @@ mod tests {
             .join(p)
     }
 
+    /// A reader search over `Source::as_read`, which sniffs a BOM as ripgrep's.
     fn run(a: &Args, pats: &[&str], src: &Source) -> Option<FileMatches> {
         let pats: Vec<String> = pats.iter().map(|s| s.to_string()).collect();
         search_source(
-            &mut searcher(a, src.explicit, true),
+            &mut streaming_searcher(a, src.explicit, false),
             &matcher(a, &pats).unwrap(),
             src,
             false,

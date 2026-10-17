@@ -28,8 +28,10 @@ pub struct Source {
     data: Data,
     /// Bytes to skip at the start (a UTF-8 BOM).
     skip: usize,
+    /// The text of a UTF-16 file, transcoded to UTF-8.
+    decoded: Option<Vec<u8>>,
     /// The raw file started with a BOM (UTF-8 or UTF-16). grep-searcher then searches with a
-    /// reader even when memory maps are on (searcher/mod.rs:781), so C9 does the same.
+    /// reader even when memory maps are on (grep-searcher 0.1.14, searcher/mod.rs:762), so C9 does the same.
     pub had_bom: bool,
 }
 
@@ -61,6 +63,7 @@ impl Source {
                 explicit,
                 data,
                 skip: 3,
+                decoded: None,
                 had_bom: true,
             };
         }
@@ -73,12 +76,13 @@ impl Source {
         };
         if let Some(enc) = utf16 {
             let (text, _) = enc.decode_without_bom_handling(&raw[2..]);
-            let data = Data::Owned(text.into_owned().into_bytes());
+            let decoded = Some(text.into_owned().into_bytes());
             return Self {
                 path,
                 explicit,
                 data,
                 skip: 0,
+                decoded,
                 had_bom: true,
             };
         }
@@ -87,13 +91,24 @@ impl Source {
             explicit,
             data,
             skip: 0,
+            decoded: None,
             had_bom: false,
         }
     }
 
     /// The decoded bytes every stage works on.
     pub fn bytes(&self) -> &[u8] {
-        &self.data.raw()[self.skip..]
+        match &self.decoded {
+            Some(d) => d,
+            None => &self.data.raw()[self.skip..],
+        }
+    }
+
+    /// The bytes as read, BOM included: what a reader search reads. With a BOM, it needs a
+    /// searcher that sniffs it, which decodes them into `bytes` as ripgrep does, filling its
+    /// buffers as ripgrep's (code review r4, Codex #2).
+    pub fn as_read(&self) -> &[u8] {
+        self.data.raw()
     }
 
     /// The first 512 bytes, for the Detector.

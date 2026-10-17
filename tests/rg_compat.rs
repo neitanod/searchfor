@@ -825,10 +825,12 @@ fn bytes_searched_when_the_after_context_crosses_a_buffer() {
     r.assert_empty();
 }
 
-/// The deviation docs/rg-compat.md documents («`bytes_searched` with an after context longer
-/// than the before context»), as measured; when it is fixed, this fails and the page changes.
+/// What docs/rg-compat.md documented as a deviation until code review r4, Codex #2: with an
+/// after context longer than the before context, a reader search that `-m` or binary data
+/// stops past the first buffer. With rg 14.1.1's searcher (grep-searcher 0.1.14), which rolls
+/// its buffers keeping `max(-A, -B)` lines, `bytes_searched` is rg's in every layout.
 #[test]
-fn documented_bytes_searched_deviation() {
+fn bytes_searched_with_a_longer_after_context_equals_ripgrep() {
     if !reference_rg() {
         return;
     }
@@ -840,24 +842,37 @@ fn documented_bytes_searched_deviation() {
         format!("{}needle\n{}", line.repeat(1500), line.repeat(10)),
     )
     .unwrap();
-    let run = |flags: &[&str], dir: &str| {
+    let mut r = Report(Vec::new());
+    let cases: [(&[&str], &str); 5] = [
+        (&["-m1", "-A1"], "deep"),
+        (&["-m1", "-A3"], "deep"),
+        (&["-m1", "-C3"], "deep"),
+        (&["-g", "late-nul*", "-A2", "-B1"], "misc"),
+        (&["-g", "late-nul*", "-A1"], "misc"),
+    ];
+    for (flags, dir) in cases {
         let mut a = vec!["--json"];
         a.extend_from_slice(flags);
         a.extend(["needle", dir]);
-        let mut s = vec!["--no-trail"];
-        s.extend_from_slice(&a);
-        (
-            bytes_searched(&rg(&fx, &a, In::Null)),
-            bytes_searched(&sfor(&fx, &s, In::Null)),
-        )
-    };
-    assert_eq!(run(&["-m1", "-A1"], "deep").0[0], 130600);
-    assert_eq!(run(&["-m1", "-A1"], "deep").1[0], 130800);
-    let (want, got) = run(&["-m1", "-C3"], "deep");
-    assert_eq!(want, got);
-    let late = ["-g", "late-nul*", "-A2", "-B1"];
-    let (want, got) = run(&late, "misc");
-    assert_eq!((want[0], got[0]), (65213, 65313));
+        let want = rg(&fx, &a, In::Null);
+        // Past the first buffer: rg counts the bytes rolled out of it (65213 for late-nul).
+        assert!(
+            bytes_searched(&want).iter().all(|&b| b > 65_000),
+            "{a:?} {}",
+            stdout(&want)
+        );
+        for mode in [&["--no-trail"][..], &[], &["--format", "markdown"]] {
+            let mut s = mode.to_vec();
+            s.extend_from_slice(&a);
+            let got = sfor(&fx, &s, In::Null);
+            r.check(
+                format!("{s:?}"),
+                (code(&want), format!("{:?}", bytes_searched(&want))),
+                (code(&got), format!("{:?}", bytes_searched(&got))),
+            );
+        }
+    }
+    r.assert_empty();
 }
 
 /// Code review r2, Codex #7: `--json -q` prints no message per file and ends with rg 14.1.1's
@@ -1097,6 +1112,74 @@ fn a_closed_pipe_exits_as_ripgrep() {
                 (want.0, format!("{:?}", want.1)),
                 (got.0, format!("{:?}", got.1)),
             );
+        }
+    }
+    r.assert_empty();
+}
+
+/// Code review r4, Codex #2: `bytes_searched` with a BOM (UTF-8 and UTF-16LE), on stdin and on
+/// an explicit file, which the searcher reads decoded: rg 14.1.1's count, with and without
+/// Trails, past the first buffer and with any context.
+#[test]
+fn bytes_searched_with_a_bom_equals_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("bom")).unwrap();
+    let text = format!(
+        "needle\n{}tail\n",
+        format!("{}\n", "x".repeat(9000)).repeat(30)
+    );
+    let mut utf8 = b"\xef\xbb\xbf".to_vec();
+    utf8.extend_from_slice(text.as_bytes());
+    let mut utf16 = b"\xff\xfe".to_vec();
+    utf16.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+    for (name, bytes) in [("utf8", &utf8), ("utf16", &utf16)] {
+        for ext in ["txt", "md"] {
+            std::fs::write(fx.file(&format!("bom/{name}.{ext}")), bytes).unwrap();
+        }
+    }
+    let inputs = [
+        "bom/utf8.txt",
+        "bom/utf8.md",
+        "bom/utf16.txt",
+        "bom/utf16.md",
+    ];
+    let mut r = Report(Vec::new());
+    for flags in [
+        &["-m1"][..],
+        &["-m1", "-C8"],
+        &["-m1", "-C20"],
+        &["-m1", "-A2"],
+        &["-m1", "-A20", "-B1"],
+        &["-m2", "-A3", "-B1"],
+        &[],
+    ] {
+        for input in inputs {
+            for stdin in [true, false] {
+                let mut a = vec!["--json"];
+                a.extend_from_slice(flags);
+                a.push("needle");
+                let src = if stdin {
+                    a.push("-");
+                    In::File(input)
+                } else {
+                    a.push(input);
+                    In::Null
+                };
+                let want = rg(&fx, &a, src);
+                for mode in [&["--no-trail"][..], &[], &["--expand"]] {
+                    let mut s = mode.to_vec();
+                    s.extend_from_slice(&a);
+                    let got = sfor(&fx, &s, src);
+                    r.check(
+                        format!("{s:?} < {}", if stdin { input } else { "null" }),
+                        (code(&want), format!("{:?}", bytes_searched(&want))),
+                        (code(&got), format!("{:?}", bytes_searched(&got))),
+                    );
+                }
+            }
         }
     }
     r.assert_empty();

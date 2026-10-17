@@ -40,7 +40,7 @@ pub struct RenderOptions {
 }
 
 /// True when -M omits this line: ripgrep compares the whole line, terminator included
-/// (grep-printer 0.3.1 `standard.rs:1054` and `1562`).
+/// (grep-printer 0.2.2 `standard.rs:1120` and `1600`).
 pub fn omitted(bytes: &[u8], o: &RenderOptions) -> bool {
     o.max_columns.is_some_and(|m| bytes.len() as u64 > m)
 }

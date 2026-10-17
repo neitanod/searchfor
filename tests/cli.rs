@@ -476,8 +476,8 @@ fn t23_max_count_on_stdin_stops_before_eof() {
         &["-m1", "--format", "markdown", "needle", "-"],
         &["-m1", "--json", "needle", "-"],
         &["-m1", "--tree", "needle", "-"],
-        // Code review r2, Codex #2: -m is counted by the sinks, which end the input when they
-        // stop, also with -v (grep-searcher 0.1.17 would read on, see `UntilStopped`).
+        // Code review r2, Codex #2: -m is counted by the sinks, and the searcher stops reading
+        // when they stop, also with -v.
         &["-v", "-m1", "needle", "-"],
         &["-v", "-m1", "--no-trail", "needle", "-"],
         &["-v", "-m1", "--json", "needle", "-"],

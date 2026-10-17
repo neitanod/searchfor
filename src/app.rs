@@ -12,7 +12,7 @@ use crate::output::{
     summary,
 };
 use crate::processors::{self, Processor};
-use crate::search::{self, CollectSink, MaxCount, Stop, UntilStopped};
+use crate::search::{self, CollectSink, MaxCount};
 use crate::source::Source;
 use crate::trail::{LineIndex, Outline};
 use grep_matcher::Matcher;
@@ -461,24 +461,20 @@ impl Ctx<'_> {
         })
     }
 
-    /// Searches a file on disk or stdin, streaming (passthrough and the quiet path).
-    /// `stop` ends the reader when the sink stops (see `UntilStopped`); a file searched in
-    /// memory is mapped.
+    /// Searches a file on disk or stdin, streaming (passthrough and the quiet path). A file
+    /// searched in memory is mapped.
     fn search_raw<S: Sink<Error = std::io::Error>>(
         &self,
         searcher: &mut Searcher,
         t: &Target,
         sink: S,
-        stop: Stop,
     ) -> std::io::Result<()> {
         searcher.set_binary_detection(search::binary_detection(self.args, t.explicit));
         let m = &self.matcher;
         match &t.fs {
-            None => {
-                searcher.search_reader(m, UntilStopped::new(std::io::stdin().lock(), stop), sink)
-            }
+            None => searcher.search_reader(m, std::io::stdin().lock(), sink),
             Some(p) if self.in_memory => searcher.search_path(m, p, sink),
-            Some(p) => searcher.search_reader(m, UntilStopped::new(File::open(p)?, stop), sink),
+            Some(p) => searcher.search_reader(m, File::open(p)?, sink),
         }
     }
 
@@ -502,8 +498,7 @@ impl Ctx<'_> {
 
     fn quiet_file(&self, searcher: &mut Searcher, t: &Target) {
         let mut sink = CollectSink::new(&self.matcher, self.args.invert_match, true);
-        let stop = sink.stop();
-        match self.search_raw(searcher, t, &mut sink, stop) {
+        match self.search_raw(searcher, t, &mut sink) {
             Err(e) => self.msgs.error(format_args!("{}: {e}", t.path.display())),
             Ok(()) => {
                 if sink.items.iter().any(|i| matches!(i, Item::Match(_))) {
@@ -519,23 +514,15 @@ impl Ctx<'_> {
     /// every file searched. A walked file whose binary data stopped the search counts its
     /// Matches but has none (summary.rs:760).
     fn quiet_json_file(&self, searcher: &mut Searcher, t: &Target) {
-        let reader = !self.in_memory || t.fs.as_deref().is_none_or(starts_with_bom);
-        let max = MaxCount::summary(search::max_count(self.args));
-        let max = if reader {
-            max
-        } else {
-            max.in_slice(&self.matcher)
-        };
         let mut sink = StatsSink {
             matcher: &self.matcher,
             invert: self.args.invert_match,
-            max,
+            max: MaxCount::summary(search::max_count(self.args)),
             stats: FileStats::default(),
             lines: 0,
             started: Instant::now(),
         };
-        let stop = sink.max.stop();
-        if let Err(e) = self.search_raw(searcher, t, &mut sink, stop) {
+        if let Err(e) = self.search_raw(searcher, t, &mut sink) {
             self.msgs.error(format_args!("{}: {e}", t.path.display()));
             return;
         }
@@ -557,9 +544,11 @@ impl Ctx<'_> {
         }
     }
 
-    /// grep-printer's printer for the mode, with ripgrep's defaults (design note 9).
+    /// grep-printer's printer for the mode, with ripgrep's defaults (design note 9) and its
+    /// `-m`, which grep-printer 0.2.2's printers count.
     fn printer(&self, heading: bool) -> Printer<'_> {
         let specs = ColorSpecs::new(&grep_printer::default_color_specs());
+        let max = search::max_count(self.args);
         if let Some(mode) = self.summary {
             let kind = match mode {
                 summary::Mode::Count => SummaryKind::Count,
@@ -574,11 +563,16 @@ impl Ctx<'_> {
                     .path(self.with_filename)
                     .exclude_zero(true)
                     .separator_field(b":".to_vec())
+                    .max_matches(max)
                     .build(self.spill_lines()),
             );
         }
         if self.args.json {
-            return Printer::Json(JSONBuilder::new().build(self.spill_lines()));
+            return Printer::Json(
+                JSONBuilder::new()
+                    .max_matches(max)
+                    .build(self.spill_lines()),
+            );
         }
         Printer::Standard(
             StandardBuilder::new()
@@ -586,6 +580,7 @@ impl Ctx<'_> {
                 .heading(heading)
                 .path(self.with_filename)
                 .max_columns(self.args.max_columns)
+                .max_matches(max)
                 .build(self.spill_lines()),
         )
     }
@@ -602,48 +597,28 @@ impl Ctx<'_> {
 
     fn passthrough_file(&self, searcher: &mut Searcher, printer: &mut Printer, t: &Target) {
         let path = t.path.as_path();
-        let max = || MaxCount::new(search::max_count(self.args));
         let (result, has_match, buf) = match printer {
             Printer::Standard(p) => {
                 p.get_mut().clear();
-                let mut sink = Limited::new(p.sink_with_path(&self.matcher, path), max());
-                let stop = sink.max.stop();
-                let r = self.search_raw(searcher, t, &mut sink, stop);
-                let m = sink.inner.has_match();
+                let mut sink = p.sink_with_path(&self.matcher, path);
+                let r = self.search_raw(searcher, t, &mut sink);
+                let m = sink.has_match();
                 (r, m, &p.get_mut().buf)
             }
             Printer::Summary(p) => {
                 p.get_mut().clear();
-                let max = MaxCount::summary(search::max_count(self.args));
-                let mut sink = Limited::new(p.sink_with_path(&self.matcher, path), max);
-                let stop = sink.max.stop();
-                let r = self.search_raw(searcher, t, &mut sink, stop);
-                let m = sink.inner.has_match();
+                let mut sink = p.sink_with_path(&self.matcher, path);
+                let r = self.search_raw(searcher, t, &mut sink);
+                let m = sink.has_match();
                 (r, m, &p.get_mut().buf)
             }
             Printer::Json(p) => {
                 p.get_mut().clear();
-                // A reader search: stdin, a walked file, or one with a BOM (see Source::had_bom).
-                let reader = !self.in_memory || t.fs.as_deref().is_none_or(starts_with_bom);
-                let max = if reader {
-                    max()
-                } else {
-                    max().in_slice(&self.matcher)
-                };
-                let mut sink = Limited::new(p.sink_with_path(&self.matcher, path), max);
-                let stop = sink.max.stop();
-                let r = self.search_raw(searcher, t, &mut sink, stop);
-                let m = sink.inner.has_match();
-                let searched = sink.max.bytes_searched(sink.byte_count, reader);
-                let mut stats = run_stats(sink.inner.stats());
+                let mut sink = p.sink_with_path(&self.matcher, path);
+                let r = self.search_raw(searcher, t, &mut sink);
+                let m = sink.has_match();
                 if m {
-                    stats.bytes_searched = stats.bytes_searched - sink.byte_count + searched;
-                    *self.stats.lock().expect("stats") += &stats;
-                }
-                let byte_count = sink.byte_count;
-                drop(sink);
-                if searched != byte_count {
-                    patch_bytes_searched(&mut p.get_mut().buf, byte_count, searched);
+                    *self.stats.lock().expect("stats") += &run_stats(sink.stats());
                 }
                 (r, m, &p.get_mut().buf)
             }
@@ -789,10 +764,8 @@ impl Ctx<'_> {
             let mut probe = CollectSink::new(&self.matcher, self.args.invert_match, true);
             st.stream
                 .set_binary_detection(search::binary_detection(self.args, t.explicit));
-            let searched = File::open(path).and_then(|f| {
-                let rdr = UntilStopped::new(f, probe.stop());
-                st.stream.search_reader(&self.matcher, rdr, &mut probe)
-            });
+            let searched = File::open(path)
+                .and_then(|f| st.stream.search_reader(&self.matcher, f, &mut probe));
             match searched {
                 Err(e) => {
                     self.msgs.error(format_args!("{}: {e}", t.path.display()));
@@ -878,11 +851,13 @@ impl Ctx<'_> {
         let jo = self.json_options(ro);
         st.buf.clear();
         let explicit = t.explicit;
-        let (searcher, src, reader) = match how {
-            Streamed::Raw => (&mut st.stream, None, true),
-            Streamed::Source(src) => (&mut st.source, Some(src), src.had_bom),
+        let (searcher, src) = match how {
+            Streamed::Raw => (&mut st.stream, None),
+            // A BOM: the bytes as read, decoded by the searcher as ripgrep's (`Source::as_read`).
+            Streamed::Source(src) if src.had_bom => (&mut st.stream, Some(src)),
+            Streamed::Source(src) => (&mut st.source, Some(src)),
             // No BOM: the Source's bytes are the file's, read again as the first search read them.
-            Streamed::Again(src) => (&mut st.stream, Some(src), true),
+            Streamed::Again(src) => (&mut st.stream, Some(src)),
         };
         let file = StreamFile {
             path: &t.path,
@@ -890,7 +865,6 @@ impl Ctx<'_> {
             format,
             src: src.map(Source::bytes),
             outline,
-            reader,
             max_count: search::max_count(self.args),
         };
         searcher.set_binary_detection(search::binary_detection(self.args, explicit));
@@ -901,28 +875,19 @@ impl Ctx<'_> {
         let mut sink =
             StreamSink::new(&mut w, &self.matcher, self.args.invert_match, ro, &jo, file);
         let m = &self.matcher;
-        let stop = sink.stop();
         let r = match (how, &t.fs) {
-            (Streamed::Raw, None) => searcher.search_reader(
-                m,
-                UntilStopped::new(std::io::stdin().lock(), stop),
-                &mut sink,
-            ),
+            (Streamed::Raw, None) => searcher.search_reader(m, std::io::stdin().lock(), &mut sink),
             (Streamed::Raw, Some(p)) => match File::open(p) {
-                Ok(f) => searcher.search_reader(m, UntilStopped::new(f, stop), &mut sink),
+                Ok(f) => searcher.search_reader(m, f, &mut sink),
                 Err(e) => Err(e),
             },
-            (Streamed::Source(src), _) if src.had_bom => searcher.search_reader(
-                m,
-                UntilStopped::new(std::io::Cursor::new(src.bytes()), stop),
-                &mut sink,
-            ),
+            (Streamed::Source(src), _) if src.had_bom => {
+                searcher.search_reader(m, std::io::Cursor::new(src.as_read()), &mut sink)
+            }
             (Streamed::Source(src), _) => searcher.search_slice(m, src.bytes(), &mut sink),
-            (Streamed::Again(src), _) => searcher.search_reader(
-                m,
-                UntilStopped::new(std::io::Cursor::new(src.bytes()), stop),
-                &mut sink,
-            ),
+            (Streamed::Again(src), _) => {
+                searcher.search_reader(m, std::io::Cursor::new(src.bytes()), &mut sink)
+            }
         };
         let result = r.and_then(|()| Ok((sink.has_match, sink.close()?)));
         match result {
@@ -974,11 +939,16 @@ impl Ctx<'_> {
         };
         if let (Some(p), true) = (&t.fs, self.in_memory) {
             let src = open(p)?;
-            st.source
-                .set_binary_detection(search::binary_detection(self.args, t.explicit));
+            // A BOM: a reader search that decodes it, as ripgrep's (`Source::as_read`).
             let in_memory = !src.had_bom;
+            let searcher = if in_memory {
+                &mut st.source
+            } else {
+                &mut st.stream
+            };
+            searcher.set_binary_detection(search::binary_detection(self.args, t.explicit));
             return match search::search_source_stats(
-                &mut st.source,
+                searcher,
                 &self.matcher,
                 &src,
                 in_memory,
@@ -997,17 +967,15 @@ impl Ctx<'_> {
         let started = Instant::now();
         let mut sink = CollectSink::new(&self.matcher, self.args.invert_match, false)
             .limit(search::max_count(self.args));
-        let stop = sink.stop();
         st.stream
             .set_binary_detection(search::binary_detection(self.args, t.explicit));
         // What cannot be read twice (stdin, `/dev/stdin`, a FIFO) is kept as it is read (code
         // review r2, Codex #1).
         let mut kept = None;
         let r = match &t.fs {
-            Some(p) if rewindable(p) => File::open(p).and_then(|f| {
-                let rdr = UntilStopped::new(f, stop.clone());
-                st.stream.search_reader(&self.matcher, rdr, &mut sink)
-            }),
+            Some(p) if rewindable(p) => {
+                File::open(p).and_then(|f| st.stream.search_reader(&self.matcher, f, &mut sink))
+            }
             fs => {
                 let inner: Box<dyn Read> = match fs {
                     None => Box::new(std::io::stdin().lock()),
@@ -1023,14 +991,14 @@ impl Ctx<'_> {
                     inner,
                     read: Vec::new(),
                 });
-                let rdr = UntilStopped::new(tee, stop.clone());
-                st.stream.search_reader(&self.matcher, rdr, &mut sink)
+                st.stream.search_reader(&self.matcher, tee, &mut sink)
             }
         };
         if let Err(e) = r {
             report(&e);
             return Err(());
         }
+        let stopped = sink.stopped();
         let mut stats = sink.stats;
         stats.elapsed = started.elapsed();
         let found = sink.items.iter().any(|i| matches!(i, Item::Match(_)));
@@ -1040,7 +1008,7 @@ impl Ctx<'_> {
         }
         let src = match (kept, &t.fs) {
             (Some(mut tee), _) => {
-                if stop.is_set()
+                if stopped
                     && stats.binary_offset.is_none()
                     && self.complete_input(t, &tee.read, detector)
                     && let Err(e) = std::io::copy(&mut tee, &mut std::io::sink())
@@ -1398,74 +1366,6 @@ fn empty_trails(fm: &FileMatches) -> Vec<Vec<Trail>> {
         .collect()
 }
 
-/// A grep-printer 0.3.1 sink with ripgrep 14.1.1's `-m` (`MaxCount`) in front: what comes
-/// after the stop is dropped, and the searcher's byte count is kept (for JSON's
-/// `bytes_searched`).
-struct Limited<S> {
-    inner: S,
-    max: MaxCount,
-    byte_count: u64,
-}
-
-impl<S> Limited<S> {
-    fn new(inner: S, max: MaxCount) -> Self {
-        Self {
-            inner,
-            max,
-            byte_count: 0,
-        }
-    }
-
-    /// The inner sink's answer: when it stops (-l), the reader ends too.
-    fn answer(&self, go_on: bool) -> bool {
-        if !go_on {
-            self.max.stop_now();
-        }
-        go_on && self.max.go_on()
-    }
-}
-
-impl<S: Sink<Error = std::io::Error>> Sink for Limited<S> {
-    type Error = std::io::Error;
-
-    fn begin(&mut self, s: &Searcher) -> std::io::Result<bool> {
-        self.max.begin(s);
-        self.inner.begin(s)
-    }
-
-    fn matched(&mut self, s: &Searcher, m: &SinkMatch<'_>) -> std::io::Result<bool> {
-        if !self.max.matched(m) {
-            return Ok(false);
-        }
-        let go_on = self.inner.matched(s, m)?;
-        Ok(self.answer(go_on))
-    }
-
-    fn context(&mut self, s: &Searcher, c: &SinkContext<'_>) -> std::io::Result<bool> {
-        if !self.max.context(c) {
-            return Ok(false);
-        }
-        let go_on = self.inner.context(s, c)?;
-        Ok(self.answer(go_on))
-    }
-
-    fn context_break(&mut self, s: &Searcher) -> std::io::Result<bool> {
-        if !self.max.go_on() {
-            return Ok(false);
-        }
-        self.inner.context_break(s)
-    }
-
-    fn binary_data(&mut self, s: &Searcher, offset: u64) -> std::io::Result<bool> {
-        self.inner.binary_data(s, offset)
-    }
-
-    fn finish(&mut self, s: &Searcher, f: &SinkFinish) -> std::io::Result<()> {
-        self.byte_count = f.byte_count();
-        self.inner.finish(s, f)
-    }
-}
-
 /// A regular file, which can be opened again and read the same: not `/dev/stdin` or a FIFO.
 fn rewindable(p: &Path) -> bool {
     std::fs::metadata(p).is_ok_and(|m| m.is_file())
@@ -1515,8 +1415,8 @@ impl WriteColor for Spill<'_> {
 
 /// A file's output from grep-printer's printers that, with `out`, prints the complete lines
 /// it held before a write once it holds `SPILL` bytes: the line being written stays until the
-/// file ends, so the JSON `end` message can still be patched (`patch_bytes_searched`). Only
-/// where nothing can come between the pieces (`Ctx::spill`).
+/// next spill or the end of the file. Only where nothing can come between the pieces
+/// (`Ctx::spill`).
 struct SpillLines<'a> {
     buf: Buffer,
     out: Option<&'a BufferWriter>,
@@ -1596,9 +1496,7 @@ impl Sink for StatsSink<'_> {
     }
 
     fn matched(&mut self, _s: &Searcher, m: &SinkMatch<'_>) -> std::io::Result<bool> {
-        if !self.max.matched(m) {
-            return Ok(false);
-        }
+        self.max.matched();
         self.lines += 1;
         self.stats.matched_lines += m.lines().count() as u64;
         let subs = search::match_submatches(self.matcher, self.invert, m);
@@ -1607,54 +1505,16 @@ impl Sink for StatsSink<'_> {
     }
 
     fn context(&mut self, _s: &Searcher, c: &SinkContext<'_>) -> std::io::Result<bool> {
-        if !self.max.context(c) {
-            return Ok(false);
-        }
+        self.max.context(c);
         Ok(self.max.go_on())
     }
 
     fn finish(&mut self, _s: &Searcher, f: &SinkFinish) -> std::io::Result<()> {
         self.stats.elapsed = self.started.elapsed();
         self.stats.binary_offset = f.binary_byte_offset();
-        // A search in memory is a slice for `MaxCount` (`quiet_json_file`).
-        self.stats.bytes_searched = self
-            .max
-            .bytes_searched(f.byte_count(), !self.max.is_slice());
+        self.stats.bytes_searched = f.byte_count();
         Ok(())
     }
-}
-
-/// The file starts with a byte-order mark that makes grep-searcher read it through a reader
-/// even when memory maps are on (UTF-8, UTF-16LE, UTF-16BE).
-fn starts_with_bom(p: &Path) -> bool {
-    let mut head = [0u8; 3];
-    let n = std::fs::File::open(p)
-        .and_then(|mut f| f.read(&mut head))
-        .unwrap_or(0);
-    let head = &head[..n];
-    head.starts_with(b"\xEF\xBB\xBF")
-        || head.starts_with(b"\xFF\xFE")
-        || head.starts_with(b"\xFE\xFF")
-}
-
-/// Rewrites `bytes_searched` in the file's `end` message, its last line.
-fn patch_bytes_searched(buf: &mut Buffer, from: u64, to: u64) {
-    let out = buf.as_slice();
-    let body = out.strip_suffix(b"\n").unwrap_or(out);
-    let start = body.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
-    let old = format!("\"bytes_searched\":{from},");
-    let Some(at) = out[start..]
-        .windows(old.len())
-        .position(|w| w == old.as_bytes())
-        .map(|i| start + i)
-    else {
-        return;
-    };
-    let mut patched = out[..at].to_vec();
-    patched.extend_from_slice(format!("\"bytes_searched\":{to},").as_bytes());
-    patched.extend_from_slice(&out[at + old.len()..]);
-    buf.clear();
-    let _ = buf.write_all(&patched);
 }
 
 /// grep-printer's per-file stats as the `RunStats` the summary adds up.
