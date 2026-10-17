@@ -213,3 +213,11 @@ r4, Fable #5):
 ```sh
 yes | sfor --format markdown --json -m1 y    # does not end; rg -m1 y does
 ```
+
+### `--in-headings` on UTF-16 with a NUL character and a context
+
+On a walked file with binary data, `--in-headings` keeps the names rg 14.1.1 would have
+searched before the read that brings the NUL. For UTF-16 that cut cannot follow rg's reads
+through the decoder, so it is the larger of the last reported line and `bytes_searched`: with a
+context (`-A`, `-B`, `-C`) on a UTF-16 file that holds U+0000, the names of the last lines of
+that buffer can be missing (fix after code review r9).
