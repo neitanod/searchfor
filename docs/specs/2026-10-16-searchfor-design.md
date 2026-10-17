@@ -719,7 +719,9 @@ one line, wrapped here):
 - The `stats` of `end` and `summary` count the Matches found by the search, before
   `--within` filters them. With `--in-headings` the search is the one in Segment names, which
   reads the whole Source: `bytes_searched` is its size, even with `-m`, and `matched_lines` and
-  `matches` count the Matches in names (a deviation from ripgrep, in `docs/rg-compat.md`).
+  `matches` count the Matches in names (a deviation from ripgrep, in `docs/rg-compat.md`). A
+  Match over contiguous pieces of a name — an entity, an escape, a byte that is not UTF-8 between
+  letters — is one submatch over all of them and counts once (M3 plan, D35).
 - A document searched with `--docs` (M4) keeps the document in `path`; its structure appears
   as Segments of `trail`.
 - Added field names are stable from v0.1; new ones may appear, existing ones are never renamed.

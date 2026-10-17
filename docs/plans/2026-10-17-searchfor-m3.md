@@ -131,14 +131,15 @@ ones it describes marked «M3 plan».
 | D30 | XML tags are checked against XML's syntax: Names with XML 1.0's NameStartChar and NameChar over Unicode, XML's white space (no form feed), `S attr S? = S? "value"`, no `<` in values, no attribute twice, `</name S?>`; a doctype ends at its first `>` outside literals, comments and processing instructions | `<a=b>` and `<a x=bare>` were taken as elements, `<!ENTITY e "]> <fake>">` invented a `fake` (review r1, Codex #4, #5), and `<©>`, `<a\fb='x'>` and `<a x='1' x='2'>` still were (review r2, Codex #3); spec §5.4 ends the structure at the first construct that is not well formed. Duplicates are compared one by one up to 16 attributes and in a set past them |
 | D31 | `text::push_lossy` and `text::cut_name`, written in C1 and used by C2–C4: a name's text is built with one piece per valid UTF-8 run and one per replaced sequence, and a cut keeps the pieces of the visible prefix; only `…` maps to nothing | Each Processor dropped the piece that crossed the cut, so a 50-letter header, `id` or cue identifier was not found by `--in-headings` (review r1, Codex #6), and a Latin-1 `é` before the letters made the whole run one decoded piece, dropped the same way (review r2, Codex #2); one module, because three chunks of one tanda need it |
 | D32 | The end of a CSV file is inside a quote only when csv-core's states say so: quoted from the first byte, `""` stays quoted, a closing quote followed by anything else turns the rest into text | Counting quotes lost `1,"needle"junk"` at the end of a file, which csv-core reads closed (review r1, Codex #7, Fable #2) |
-| D34 | The markup walk never searches the open elements per element: each open element keeps its `html::Reach` (where each implied-end rule would stop, computed from its parent's when it opens), HTML tags get an id with a count of open elements per id, and `close_implied` trims the white space before a byte once | 40 000 nested `div`s took 4.8 s (each start tag searched the stack for a `p`), 20 000 end tags with nothing open 2.9 s, and 20 000 elements ended after 200 000 spaces 5.7 s (review r2, Codex #1). An end tag's search now only covers the elements it closes, and the limit of 256 Segments (D25) stays |
 | D33 | The reference is `SFOR_RG`, else `/usr/bin/rg`; it must be ripgrep 14.1.1. Under `SFOR_REQUIRE_REFERENCE=1` a comparison that cannot run (no rg 14.1.1, no `/usr/bin/time`) fails instead of skipping; acceptance runs set it, and `scripts/bench-m3.sh` always refuses another rg | The `rg` on `PATH` was 15.2.0 in a review session, and a skipped comparison passed the test (review r1, Codex #8) |
+| D34 | The markup walk never searches the open elements per element: each open element keeps its `html::Reach` (where each implied-end rule would stop, computed from its parent's when it opens), HTML tags get an id with a count of open elements per id, and `close_implied` trims the white space before a byte once | 40 000 nested `div`s took 3.96 s (each start tag searched the stack for a `p`), 20 000 end tags with nothing open 2.88 s, and 20 000 elements ended after 200 000 spaces 5.65 s (review r2, Codex #1). An end tag's search now only covers the elements it closes, and the limit of 256 Segments (D25) stays |
+| D35 | A Match of `--in-headings` over contiguous pieces of a name is one submatch: `heading_matches` joins the Source ranges of one Match where they touch, never across two Matches | `push_lossy` split `A\xe9B` into three pieces, so `A.*B` printed three submatches and counted `"matches":3`; Markdown's entities (`a&lt;b`) and JavaScript's escaped keys did the same since M1 and M2, which `m2_14` had written down (review r3, Codex #1). Spec §6.4 counts Matches in names |
 
 ## Verified for this plan (2026-10-17)
 
 Outputs in `/tmp/subtask/m3-plan/outputs/`; probes in `/tmp/subtask/m3-plan/realtree` (the
 repository at `f7cccfe` plus the candidate dependencies) and, for this plan's code, the frozen
-copy `/tmp/subtask/m3-plan/m3tree-43e9b76`: the repository at `f7cccfe` plus the code of this
+copy `/tmp/subtask/m3-plan/m3tree-<commit>`: the repository at `f7cccfe` plus the code of this
 version of the plan, named after the commit that wrote that code into the plan. The working copy
 `/tmp/subtask/m3-plan/m3tree` keeps changing with the reviews; the frozen one does not (review
 r2, Fable #2).
@@ -163,8 +164,8 @@ r2, Fable #2).
   empty input.
 - The frozen copy (this plan's code, after review r2): `cargo build --workspace`, `cargo clippy
   --workspace --all-targets -- -D warnings` (no findings) and `SFOR_REQUIRE_REFERENCE=1 cargo
-  test --workspace` pass entirely: 393 unit tests passed and 2 ignored, `cli` 41, `cli_m2` 16 (with the one known
-  change, `m2_07`, Task 1.3), `cli_m3` 14, `fuzz` 2, `helpers` 22, `rg_compat` 37, and the
+  test --workspace` pass entirely: 393 unit tests passed and 2 ignored, `cli` 42, `cli_m2` 16 (with the two known
+  changes, `m2_07` in Task 1.3 and `m2_14` in Task 1.6), `cli_m3` 15, `fuzz` 2, `helpers` 22, `rg_compat` 37, and the
   helpers' own. The fuzz passes with 17 000 inputs (default) and 340 000 (`SFOR_FUZZ_N=20000 SFOR_FUZZ_SEED=42`); before review r1
   it found two mapping bugs in header and cue names, fixed in the code below. `Cargo.lock`
   gains only `csv-core 0.1.13`. Without a lock (`cargo generate-lockfile`, what `cargo install
@@ -184,6 +185,9 @@ r2, Fable #2).
   (457 MiB against rg's 56 + 32) and PASSES with `fill_lines` (Codex #4). The walk's bookkeeping
   costs time on tag-dense HTML: the generated 20 MB HTML takes 0.15 s against 0.12 s for the
   review-r1 walk, measured side by side under a load average of 5.
+- Review r3: `t38` (Markdown `a&lt;b`) and `m3_15` (CSV `A\xe9B`) give three submatches and
+  `"matches":3` with the binary of review r2, one submatch and `"matches":1` now (Codex #1);
+  `m2_14` changes with them, from three submatches to one.
 - The perf ceilings of Task 7.1 and the guards of Task 2.5 in release, with
   `SFOR_REQUIRE_REFERENCE=1` and `/usr/bin/rg` 14.1.1: 50 MB HTML 0.76 s (rg 0.022 s), XML 0.37 s, CSV 0.30 s, TSV 0.30 s, SRT 0.16 s, VTT 0.14 s, RSS 57 MiB against rg's 56; 40 000 nested `div`s 0.03 s, 20 000 end tags with nothing open 0.02 s, 20 000 implied ends after 200 000 spaces 0.02 s (rg 0.008 s); 200 000 distinct siblings and 50 MB of line breaks pass. The HTML ceiling keeps 0.26 s of margin under that load; `scripts/bench-m3.sh` (24 006 files) gave none 1.02 × rg, `--no-trail` 1.01 ×, sparse extra 0.21 s against 0.58 s, dense 14.5 × and 660 MiB.
 - `scripts/bench-m3.sh` on its generated corpus (24 006 files, 246 of them matching the sparse pattern): none 1.04 × rg, `--no-trail` 1.02 ×, sparse extra 0.14 s against a budget of 0.58 s, dense 14.4 × rg with 660 MiB of RSS against rg's 61 (reported only); `SFOR_RG=/nonexistent` and `SFOR_BIN=scripts/fake-sfor-exit-2.sh` make it exit 1.
@@ -307,7 +311,7 @@ README.md, README.es.md, skills/searchfor/SKILL.md, docs/json-schema.json, the s
 
 | Chunk | Content | Depends on | Files and folders (exclusive within its tanda) | Tanda |
 |---|---|---|---|---|
-| C1 | csv-core, the six Definitions, stubs of the three Processors, `by_name`, `m2_07`, `text::cut_name`, the reference rg of the tests | — | `Cargo.toml`, `Cargo.lock`, `formats/{html,xml,csv,tsv,srt,vtt}.toml`, `src/formats/builtin.rs`, `src/formats/mod.rs` (tests), `src/processors/mod.rs`, stubs `src/processors/markup/{mod,scan,html}.rs`, `src/processors/{csv,subtitles}.rs`, `src/text.rs` (`cut_name`), `tests/cli_m2.rs`, `tests/common/mod.rs`, `tests/rg_compat.rs`, `tests/perf.rs` (three hunks) | 1 |
+| C1 | csv-core, the six Definitions, stubs of the three Processors, `by_name`, `m2_07`, `text::cut_name`, the reference rg of the tests, one submatch per name Match | — | `Cargo.toml`, `Cargo.lock`, `formats/{html,xml,csv,tsv,srt,vtt}.toml`, `src/formats/builtin.rs`, `src/formats/mod.rs` (tests), `src/processors/mod.rs`, stubs `src/processors/markup/{mod,scan,html}.rs`, `src/processors/{csv,subtitles}.rs`, `src/text.rs` (`cut_name`), `src/app.rs` (`heading_matches`), `tests/cli.rs` (t38), `tests/cli_m2.rs`, `tests/common/mod.rs`, `tests/rg_compat.rs`, `tests/perf.rs` (three hunks) | 1 |
 | C2 | markup: scanner, HTML rules, walk; Outline lines without a line index; the walk's perf guards | C1 | `src/processors/markup/**`, `src/trail.rs`, `tests/fixtures/markup/**`, `tests/perf.rs` (the markup guards) | 2 |
 | C3 | csv | C1 | `src/processors/csv.rs`, `tests/fixtures/table/**` | 2 |
 | C4 | subtitles | C1 | `src/processors/subtitles.rs`, `tests/fixtures/subs/**` | 2 |
@@ -855,6 +859,99 @@ test helpers, so the tanda-3 chunks only use them.
   missing`. `SFOR_REQUIRE_REFERENCE=1 cargo test --workspace`: PASSES with `/usr/bin/rg` 14.1.1.
   Commit: `git add -- tests/common/mod.rs tests/rg_compat.rs tests/perf.rs` and
   `git commit -m "Compare against /usr/bin/rg 14.1.1 and fail acceptance runs that skip it"`.
+
+### Task 1.6: one submatch per Match in a name (D35)
+
+`push_lossy` (Task 1.4) splits a name like `A\xe9B` into three pieces, and `heading_matches`
+turned each piece a Match touches into its own submatch: `--in-headings 'A.*B' --json` printed
+three submatches and `"matches":3` (review r3, Codex #1). Markdown's entities (`a&lt;b`) and
+JavaScript's escaped keys did the same before M3; `m2_14` had written that down.
+
+- [ ] **Step 1:** the regression, at the end of `tests/cli.rs`:
+
+```diff
+--- a/tests/cli.rs
++++ b/tests/cli.rs
+@@ -1080,3 +1080,22 @@
+         assert_eq!(got, matches(&want), "{dash:?}");
+     }
+ }
++
++#[test]
++fn t38_a_heading_match_across_decoded_pieces_is_one_match() {
++    // M3 review r3, Codex #1: `a&lt;b` decodes to `a<b` in three pieces; one Match of `a.b` is
++    // one submatch over bytes 2..8 and counts once.
++    let fx = Fixture::new();
++    std::fs::write(fx.file("ent.md"), "# a&lt;b\n\ntext\n").unwrap();
++    let out = stdout(&run(&mut fx.sfor([
++        "--json",
++        "--in-headings",
++        "a.b",
++        "ent.md",
++    ])));
++    assert!(
++        out.contains(r#""submatches":[{"match":{"text":"a&lt;b"},"start":2,"end":8}]"#),
++        "{out}"
++    );
++    assert!(out.contains(r#""matches":1,"#), "{out}");
++}
+```
+
+- [ ] **Step 2:** `cargo test --test cli t38`: FAILS (three submatches `2..3`, `3..7`, `7..8`,
+  `"matches":3`).
+
+- [ ] **Step 3:** join the Source ranges of one Match where they touch, in `heading_matches`:
+
+```diff
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -1730,7 +1730,17 @@
+             let section = n.trail.last().map(|s| (s.line, s.end_line));
+             // RegexMatcher's error type is NoError: the search cannot fail.
+             let _ = self.matcher.find_iter(n.text.as_bytes(), |m| {
++                // One Match over contiguous pieces (`a&lt;b`, a replaced byte between letters)
++                // is one hit: its Source ranges are joined where they touch, never across two
++                // Matches (M3 review r3, Codex #1).
++                let mut joined: Vec<std::ops::Range<usize>> = Vec::new();
+                 for r in n.source_ranges(m.start()..m.end()) {
++                    match joined.last_mut() {
++                        Some(last) if last.end == r.start && !r.is_empty() => last.end = r.end,
++                        _ => joined.push(r),
++                    }
++                }
++                for r in joined {
+                     hits.push((r.start, r.end, n.trail_at(r.start), section));
+                 }
+                 true
+```
+
+  and `m2_14` expects the joined submatch:
+
+```diff
+--- a/tests/cli_m2.rs
++++ b/tests/cli_m2.rs
+@@ -331,14 +331,15 @@
+             .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+             .find(|v| v["type"] == "match")
+             .unwrap_or_else(|| panic!("{ext}: no match in {o}"));
+-        // One submatch per piece, as Markdown's entities: `a`, the escape, `c`.
++        // One Match is one submatch over its contiguous pieces (`a`, the escape, `c`): M3 review
++        // r3, Codex #1, which joined them for every Format, Markdown's entities included.
+         let subs: Vec<(u64, u64)> = m["data"]["submatches"]
+             .as_array()
+             .unwrap()
+             .iter()
+             .map(|s| (s["start"].as_u64().unwrap(), s["end"].as_u64().unwrap()))
+             .collect();
+-        assert_eq!(subs, [(13, 14), (14, 20), (20, 21)], "{ext}: {o}");
++        assert_eq!(subs, [(13, 21)], "{ext}: {o}");
+     }
+ }
+ 
+```
+
+- [ ] **Step 4:** `cargo test --workspace`: PASS. Commit: `git add -- src/app.rs tests/cli.rs
+  tests/cli_m2.rs` and `git commit -m "Count a Match across the pieces of a name once"`.
 
 ## Chunk 2: markup — HTML and XML
 
@@ -2193,9 +2290,9 @@ struct Frame {
     ordinal: u32,
     /// Children seen so far, by tag name: (a name of that tag, count).
     counts: Vec<(Range<usize>, u32)>,
-    /// Past `LINEAR` distinct tags, the slot in `counts` of each tag's key (`key`), so a parent
-    /// with thousands of distinct child tags costs constant time per child (M3 review r1,
-    /// Codex #1). Memory: one entry per distinct child tag of each open element.
+    /// Past `LINEAR` distinct tags, the slot in `counts` of each tag's key (`fill_key`), so a
+    /// parent with thousands of distinct child tags costs constant time per child (M3 review
+    /// r1, Codex #1). Memory: one entry per distinct child tag of each open element.
     index: Option<Map<usize>>,
     /// Closed children kept as Segments and without an id, which get `[n]` when their tag
     /// repeats: they reach the Collector when this element closes and the counts are final.
@@ -2701,7 +2798,7 @@ for; Markdown, keypath and treesitter get the same lines.
 +    );
 +}
 +
-+/// 40 000 nested `div`s: a start tag finds the `p` it ends without searching the stack (4.8 s
++/// 40 000 nested `div`s: a start tag finds the `p` it ends without searching the stack (3.96 s
 +/// before `html::Reach`).
 +#[test]
 +#[ignore]
@@ -2715,7 +2812,7 @@ for; Markdown, keypath and treesitter get the same lines.
 +    markup_linear("deep.html", body, 256);
 +}
 +
-+/// 20 000 end tags with no element of their tag open: each is ignored at once (2.9 s before
++/// 20 000 end tags with no element of their tag open: each is ignored at once (2.88 s before
 +/// the open counts).
 +#[test]
 +#[ignore]
@@ -2731,7 +2828,7 @@ for; Markdown, keypath and treesitter get the same lines.
 +}
 +
 +/// 20 000 elements ended together at the end of the file, after 200 000 spaces: the white
-+/// space is trimmed once (6.6 s before).
++/// space is trimmed once (5.65 s before).
 +#[test]
 +#[ignore]
 +fn markup_implied_ends_at_one_byte_stay_linear() {
@@ -4485,9 +4582,27 @@ fn m3_14_a_cut_name_stays_searchable_up_to_its_cut() {
     let o = run(&mut fx.sfor(["--in-headings", "…", "long.csv"]));
     assert_eq!(code(&o), 1);
 }
+
+#[test]
+fn m3_15_a_name_match_across_a_replaced_byte_is_one_match() {
+    // M3 review r3, Codex #1: `A\xe9B` is three pieces (D31); `A.*B` is one Match over 0..3.
+    let fx = Fixture::new();
+    std::fs::write(fx.file("l.csv"), b"A\xe9B\nvalue\n").unwrap();
+    let out = stdout(&run(&mut fx.sfor([
+        "--json",
+        "--in-headings",
+        "A.*B",
+        "l.csv",
+    ])));
+    assert!(
+        out.contains(r#""submatches":[{"match":{"bytes":"QelC"},"start":0,"end":3}]"#),
+        "{out}"
+    );
+    assert!(out.contains(r#""matches":1,"#), "{out}");
+}
 ```
 
-- [ ] **Step 2:** `INSTA_UPDATE=always cargo test --test cli_m3`: the 14 tests PASS and `m3_01`
+- [ ] **Step 2:** `INSTA_UPDATE=always cargo test --test cli_m3`: the 15 tests PASS and `m3_01`
   writes 18 snapshots. Read every `tests/snapshots/cli_m3__m3_01_*.snap` in full: each tree shows
   the Segments of the flat rows of `m3_02`–`m3_05`, each JSON line validates (the test checks it)
   and carries `"format"` and the kinds `tag`, `row`/`column` or `cue`. For example
@@ -4511,7 +4626,9 @@ table/plans.csv
   `git checkout -- src/output/flat.rs` and the test PASSES again. Report it: this is the test that
   pins M2's leftover.
 
-- [ ] **Step 3b:** `m3_14` is review r1's Codex #6: with the release binary built before
+- [ ] **Step 3b:** `m3_15` is review r3's Codex #1 on a CSV header (`A\xe9B`, one submatch
+  `0..3`, `"matches":1`); with C1's Task 1.6 already merged it passes, and it FAILED with the
+  binary of review r2. `m3_14` is review r1's Codex #6: with the release binary built before
   `cut_name` (Task 1.4) the four `--in-headings` runs exit 1; with it, each prints one row.
 
 - [ ] **Step 4:** commit: `git add -- tests/cli_m3.rs tests/snapshots` (only the
@@ -4981,8 +5098,9 @@ table/plans.csv
 ```
 
 - [ ] **Step 2:** RED check, as M2's ceilings: `SFOR_BIN=<a build of f7cccfe> cargo test
-  --release --test perf -- --ignored _a_second`: the six FAIL on their Trail assertions (the
-  Formats are Plain there).
+  --release --test perf -- --ignored _a_second`: seven run; the six of M3 FAIL on their Trail
+  assertions (the Formats are Plain there) and M2's `keypath_json_scans_at_fifty_megabytes_a_second`
+  passes.
 
 - [ ] **Step 3:** check the reference first: `/usr/bin/rg --version` prints `ripgrep 14.1.1`.
   Then `SFOR_REQUIRE_REFERENCE=1 cargo test --release --test perf -- --ignored --nocapture
