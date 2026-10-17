@@ -351,3 +351,21 @@ fn m3_16_a_quoted_header_cell_with_commas_keeps_its_semicolons() {
     let o = run(&mut fx.sfor(["--flat", "--within", "Suffix", "needle", "people.csv"]));
     assert_eq!(code(&o), 1, "{}", stdout(&o));
 }
+
+#[test]
+fn m3_17_an_invalid_xml_declaration_ends_the_structure() {
+    // M3 code review r2, Codex #3: the structure ends at `<?xml?>`, so no Match is inside `a`.
+    let fx = Fixture::new();
+    for (file, body) in [
+        ("empty.xml", "<?xml?><r><a>needle</a></r>\n"),
+        ("upper.xml", "<?XML version=\"1.0\"?><r><a>needle</a></r>\n"),
+        (
+            "subset.xml",
+            "<!DOCTYPE r [<?xml version=\"1.0\"?>]><r><a>needle</a></r>\n",
+        ),
+    ] {
+        std::fs::write(fx.file(file), body).unwrap();
+        let o = run(&mut fx.sfor(["--format", "xml", "--flat", "--within", "a", "needle", file]));
+        assert_eq!(code(&o), 1, "{file}: {}", stdout(&o));
+    }
+}

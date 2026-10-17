@@ -30,8 +30,6 @@ pub struct Scanner<'a> {
     src: &'a [u8],
     pos: usize,
     xml: bool,
-    /// No start tag yet: the XML declaration may still come.
-    prolog: bool,
 }
 
 fn is_space(b: u8) -> bool {
@@ -105,12 +103,7 @@ fn name_start(b: u8, xml: bool) -> bool {
 
 impl<'a> Scanner<'a> {
     pub fn new(src: &'a [u8], xml: bool) -> Self {
-        Self {
-            src,
-            pos: 0,
-            xml,
-            prolog: true,
-        }
+        Self { src, pos: 0, xml }
     }
 
     /// The byte after `pat`, searched from `from`; None when the file ends first.
@@ -224,18 +217,82 @@ impl<'a> Scanner<'a> {
 
     /// XML: the byte after a well-formed processing instruction whose `<?` is at `lt`: a
     /// target that is an XML Name, then `?>` or white space and any text up to `?>`. A target
-    /// named `xml` in any case is the XML declaration, only in the prolog (M3 code review r1,
-    /// Codex #3). Err when it is not one or never ends.
+    /// named `xml` in any case is reserved: only `xml` itself, as the first bytes of the
+    /// document, is the XML declaration (M3 code review r1 and r2, Codex #3 and Fable #2). Err
+    /// when it is not one or never ends.
     fn xml_pi_end(&self, lt: usize) -> Result<usize, ()> {
         let s = self.src;
         let ne = xml_name_end(s, lt + 2)?;
-        if s[lt + 2..ne].eq_ignore_ascii_case(b"xml") && !self.prolog {
-            return Err(());
+        let target = &s[lt + 2..ne];
+        if target.eq_ignore_ascii_case(b"xml") {
+            return if target == b"xml" && lt == 0 {
+                self.xml_decl_end(ne)
+            } else {
+                Err(())
+            };
         }
         match s.get(ne) {
             Some(b'?') if s.get(ne + 1) == Some(&b'>') => Ok(ne + 2),
             Some(b' ' | b'\t' | b'\n' | b'\r') => self.after(ne, b"?>").ok_or(()),
             _ => Err(()),
+        }
+    }
+
+    /// XML: the byte after the XML declaration whose `<?xml` ends at `from` (XML 1.0, [23]
+    /// XMLDecl): `version` with a value `1.` and digits, then optionally `encoding` with an
+    /// EncName and `standalone` with `yes` or `no`, in this order, each after white space and
+    /// with `=` and a quoted value, then `?>`. Err when it is not one.
+    fn xml_decl_end(&self, from: usize) -> Result<usize, ()> {
+        const PSEUDO: [&[u8]; 3] = [b"version", b"encoding", b"standalone"];
+        let s = self.src;
+        let spaces = |mut i: usize| {
+            while i < s.len() && matches!(s[i], b' ' | b'\t' | b'\n' | b'\r') {
+                i += 1;
+            }
+            i
+        };
+        // The first pseudo-attribute still allowed.
+        let mut next = 0;
+        let mut i = from;
+        loop {
+            let j = spaces(i);
+            if s[j..].starts_with(b"?>") {
+                return if next > 0 { Ok(j + 2) } else { Err(()) };
+            }
+            if j == i {
+                return Err(());
+            }
+            let k = (next..PSEUDO.len())
+                .find(|&k| s[j..].starts_with(PSEUDO[k]))
+                .filter(|&k| k == 0 || next > 0)
+                .ok_or(())?;
+            let mut v = spaces(j + PSEUDO[k].len());
+            if s.get(v) != Some(&b'=') {
+                return Err(());
+            }
+            v = spaces(v + 1);
+            let q = *s.get(v).filter(|&&b| b == b'"' || b == b'\'').ok_or(())?;
+            let close = memchr::memchr(q, &s[v + 1..]).ok_or(())? + v + 1;
+            let val = &s[v + 1..close];
+            let ok = match k {
+                0 => {
+                    val.len() > 2
+                        && val.starts_with(b"1.")
+                        && val[2..].iter().all(u8::is_ascii_digit)
+                }
+                1 => {
+                    val.first().is_some_and(u8::is_ascii_alphabetic)
+                        && val[1..]
+                            .iter()
+                            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+                }
+                _ => val == b"yes" || val == b"no",
+            };
+            if !ok {
+                return Err(());
+            }
+            next = k + 1;
+            i = close + 1;
         }
     }
 
@@ -435,7 +492,6 @@ impl<'a> Scanner<'a> {
             if close {
                 return Step::Tag(Tag::End { name, tag });
             }
-            self.prolog = false;
             return Step::Tag(Tag::Start {
                 name,
                 tag,
@@ -594,7 +650,7 @@ mod tests {
     #[test]
     fn xml_comments_and_pis_must_be_well_formed() {
         // M3 code review r1, Codex #3: no `--` inside a comment, a PI names its target, and
-        // only the XML declaration, in the prolog, is named `xml`.
+        // only the XML declaration, first in the document, is named `xml`.
         for bad in [
             "<!-- bad -- comment -->",
             "<!-- a --->",
@@ -625,6 +681,49 @@ mod tests {
             ["error at 0"]
         );
         assert_eq!(tags("<!DOCTYPE r [<??>]><r/>", true), ["error at 0"]);
+    }
+
+    #[test]
+    fn the_xml_declaration_is_well_formed_and_first() {
+        // M3 code review r2, Codex #3 and Fable #2: `<?xml` is the XML declaration, valid
+        // (version 1.x, then encoding and standalone in that order), and only as the first
+        // bytes of the document; any other target named `xml` in any case is no PI.
+        for (bad, at) in [
+            ("<?xml?><r/>", 0),
+            ("<?xml ?><r/>", 0),
+            ("<?XML version=\"1.0\"?><r/>", 0),
+            ("<?xml version=\"2.0\"?><r/>", 0),
+            ("<?xml version=\"1.\"?><r/>", 0),
+            ("<?xml version=\"1.0'?><r/>", 0),
+            ("<?xml version=\"1.0\"encoding=\"UTF-8\"?><r/>", 0),
+            ("<?xml encoding=\"UTF-8\" version=\"1.0\"?><r/>", 0),
+            ("<?xml version=\"1.0\" encoding=\"8bit\"?><r/>", 0),
+            ("<?xml version=\"1.0\" standalone=\"maybe\"?><r/>", 0),
+            (
+                "<?xml version=\"1.0\" standalone=\"no\" encoding=\"a\"?><r/>",
+                0,
+            ),
+            ("<?xml version=\"1.0\" other=\"x\"?><r/>", 0),
+            ("<?xml version=\"1.0\"><r/>", 0),
+            (" <?xml version=\"1.0\"?><r/>", 1),
+            ("<?xml version=\"1.0\"?><?xml version=\"1.0\"?><r/>", 21),
+            (
+                "<?xml version=\"1.0\"?><!DOCTYPE r><?xml version=\"1.0\"?><r/>",
+                33,
+            ),
+            ("<!-- c --><?xml version=\"1.0\"?><r/>", 10),
+            ("<!DOCTYPE r [<?xml version=\"1.0\"?>]><r/>", 0),
+        ] {
+            assert_eq!(tags(bad, true), [format!("error at {at}")], "{bad}");
+        }
+        for good in [
+            "<?xml version=\"1.0\"?><r/>",
+            "<?xml version = '1.1' encoding=\"ISO-8859-1\" standalone=\"no\" ?>\n<r/>",
+            "<?xml version=\"1.0\" standalone='yes'?><r/>",
+            "<?xml version=\"1.10\"\tencoding=\"utf-8\"?><!DOCTYPE r><?xml-css a?><r/>",
+        ] {
+            assert_eq!(tags(good, true), ["<r/"], "{good}");
+        }
     }
 
     #[test]
