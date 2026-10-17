@@ -2545,6 +2545,25 @@ mod tests {
     }
 
     #[test]
+    fn statement_like_lines_inside_strings_only_cost_budget() {
+        // Review r5, Codex #2: a valid string of 100 statement-like lines, `note`, and an open
+        // one of 100 more. Every line inside is a candidate and fails; the recovery stays within
+        // its budget (64 × the file's size) and never gives a wrong Trail: `note` keeps its own
+        // or none, and nothing is attributed to a key inside the strings.
+        let mut src = String::from("title = \"x\"\ndoc = \"\"\"\n");
+        for i in 0..100 {
+            src.push_str(&format!("option{i} = text {i}\n"));
+        }
+        src.push_str("\"\"\"\nnote = \"needle\"\nopen = \"\"\"\n");
+        for i in 0..100 {
+            src.push_str(&format!("option{i} = text {i}\n"));
+        }
+        let t = needles(src.as_bytes(), "toml");
+        assert!(t == vec![vec!["note".to_string()]] || t == vec![Vec::<String>::new()], "{t:?}");
+        assert!(super::recovery_parsed_bytes(&src) <= 64 * src.len() + src.len(), "over budget");
+    }
+
+    #[test]
     fn an_open_string_deep_in_a_lock_file_keeps_the_line_before_it() {
         // Review r4, Fable #1: 5 000 lines shaped like a Cargo.lock, a `"""` left open in the
         // middle, and the `needle` on the line just before it.
@@ -2583,13 +2602,18 @@ mod tests {
   1. `std::str::from_utf8` or an empty Outline. Parse with
      `text.parse::<toml_edit::Document<String>>()`. **On an error** (`TomlError::span()`,
      verified in toml_edit 0.25.17's source; `None` counts as the end of the file), cut `text`
-     at a **statement start** — a line whose first non-blank character (`line.trim_start()`:
+     at a **statement start candidate** — a line whose first non-blank character (`line.trim_start()`:
      TOML allows indentation, as `netlify.toml` and Hugo's `config.toml` use under their
      headers; review r5, Fable #1) is `[`, or a key character (alphanumeric, `"`, `'`, `_`,
      `-`) on a line that contains `=`; line 1 always counts — and try only
-     such cuts: every proposed cut moves up to the nearest statement start at or before it. A
-     cut inside an open string or array (`dependencies = [ … ]`, an unclosed `"""`) is then
-     never tried, and those are most of the cuts in a Cargo.lock (review r4, Fable #1). In
+     such cuts: every proposed cut moves up to the nearest candidate at or before it. The
+     filter is a heuristic: it skips the continuation lines of arrays and most lines of strings
+     (` "crate-x",`, prose), which are most of the cuts in a Cargo.lock (review r4, Fable #1),
+     but a line inside a string or an array that looks like a statement (`option0 = text`) is
+     still a candidate, still tried, and only fails (review r5, Codex #2). So in a file whose
+     strings are full of such lines, the budget can run out before the cut that keeps the keys
+     just before the damage, and those keys lose their Trails: the best prefix found may end
+     well before the damage. In
      order, within one budget of bytes parsed — 64 times the file's size, and never more than
      32 MiB (review r2, Fable #4; without the size bound a 60 KB file would spend the whole
      32 MiB in step c, 628 parses):
@@ -2605,7 +2629,9 @@ mod tests {
         prefix and the error's line that a and b did not try, starting from the one nearest the
         error and going towards the start of the file; the first that parses wins (valid
         prefixes are not monotone — review r3, Codex #3).
-     No cut is parsed twice in a, b and c. The best prefix found is used; if none parses, an empty Outline. Verified as written here (trim_start,
+     No cut is parsed twice in a, b and c. `recovery_parsed_bytes(text) -> usize`, a
+     `#[cfg(test)]` function of `toml.rs`, runs the recovery and returns the bytes it parsed,
+     for the budget test. The best prefix found is used; if none parses, an empty Outline. Verified as written here (trim_start,
      the bisection rule, the start at the last line for an error at the end of the file) in
      `/tmp/subtask/m2-plan/snap6`, output `/tmp/subtask/m2-plan/outputs/r5-b38092a-recovery.txt`,
      on eleven fixtures, every `needle` kept: the 5 000-line fixture of
@@ -3246,6 +3272,13 @@ mod tests {
         }
         assert_eq!(r.launches.load(SeqCst), 5);
         assert!(r.warnings.lock().unwrap().is_empty());
+        // Codex r5 #1: the last copy exited after its answer and is reaped by its reader, with
+        // no further request and no shutdown.
+        let t = Instant::now();
+        while r.reaps.load(SeqCst) < 5 {
+            assert!(t.elapsed() < Duration::from_secs(2), "{} of 5 reaped", r.reaps.load(SeqCst));
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
@@ -3443,8 +3476,9 @@ struct Conn {
     /// D42: set by `abort`; silences the stderr relay.
     aborted: Arc<AtomicBool>,
     /// Reaped already: `abort` and `close` may both run (Ctrl-C during a failure).
-    reaped: AtomicBool,
-    control: Mutex<Box<dyn Control>>,
+    reaped: Arc<AtomicBool>,
+    /// Shared with the reader thread, which reaps the process when its output ends.
+    control: Arc<Mutex<Box<dyn Control>>>,
     /// One per pipe thread: a message when it ends.
     ends: Mutex<Vec<mpsc::Receiver<()>>>,
 }
@@ -3473,8 +3507,11 @@ impl Conn {
                 }
             }
         }));
+        let control: Arc<Mutex<Box<dyn Control>>> = Arc::new(Mutex::new(p.control));
+        let reaped = Arc::new(AtomicBool::new(false));
         // Reader (D41).
         let (pend, live, stdout) = (pending.clone(), alive.clone(), p.stdout);
+        let (ctl, done) = (control.clone(), reaped.clone());
         thread(Box::new(move || {
             let mut why = "exited".to_string();
             for l in BufReader::new(stdout).lines() {
@@ -3503,6 +3540,19 @@ impl Conn {
                 let _ = w.send(r);
             }
             fail_all(&pend, &live, &why);
+            // The output ended or broke: collect the process now, even with nothing in flight,
+            // so a helper that exits between requests is not a zombie until the next request or
+            // the shutdown (review r5, Codex #1). The kill only matters for a process that broke
+            // its output and is still alive; on one that exited it is harmless, since it is not
+            // reaped yet and its pid cannot be reused. A `close` in progress holds `control`, so
+            // this waits for it and then finds the process reaped.
+            let mut c = ctl.lock().unwrap();
+            if !done.load(SeqCst) {
+                c.kill();
+                if !done.swap(true, SeqCst) {
+                    c.reap();
+                }
+            }
         }));
         // Set by `abort` before its kill: a helper's dying words on Ctrl-C (Python's
         // KeyboardInterrupt traceback) are not relayed, as ripgrep prints nothing then. Not
@@ -3527,8 +3577,8 @@ impl Conn {
             counted: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             aborted,
-            reaped: AtomicBool::new(false),
-            control: Mutex::new(p.control),
+            reaped,
+            control,
             ends: Mutex::new(ends),
         })
     }

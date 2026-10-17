@@ -329,9 +329,12 @@ headings, and an optional `signature` that tree output may show.
   with an empty Trail, without a warning: Helm templates are often not valid YAML, and a warning
   per file would bury the output (M2 plan). For TOML, toml_edit can report an error many lines
   after the unclosed string or array that caused it, so «before it» is the longest prefix sfor
-  finds that parses and ends at the start of a statement (a line whose first non-blank character
-  is `[`, or a key character on a line that contains `=`) at or before the reported error's
-  line. sfor looks for it by stepping back 1, 2, 4… lines from the error's line (the last line
+  finds that parses and ends at a statement start candidate (a line whose first non-blank
+  character is `[`, or a key character on a line that contains `=`) at or before the reported
+  error's line. The candidate filter is a heuristic: a line inside a string or an array that
+  looks like a statement is a candidate too, and only costs a try, so when the budget runs out
+  the best prefix found may end well before the damage, and the keys between them lose their
+  Trails. sfor looks for it by stepping back 1, 2, 4… lines from the error's line (the last line
   when the error is at the end of the file), each cut moved up to a statement start, then
   bisecting, then trying the statement starts it skipped, from the one nearest the error towards
   the start of the file, never parsing a cut twice, and stops when it has parsed 64 times the
