@@ -510,7 +510,11 @@ fn t23_max_count_on_stdin_stops_before_eof() {
             "{args:?}: still running after {elapsed:?}"
         );
         assert!(elapsed < Duration::from_secs(2), "{args:?}");
-        let want = if args.contains(&"-v") { "# T" } else { "needle" };
+        let want = if args.contains(&"-v") {
+            "# T"
+        } else {
+            "needle"
+        };
         assert!(stdout(&o).contains(want), "{args:?}: {}", stdout(&o));
     }
 }

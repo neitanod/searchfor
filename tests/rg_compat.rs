@@ -739,3 +739,123 @@ fn max_columns_zero_disables_the_limit() {
     }
     r.assert_empty();
 }
+
+/// `bytes_searched` of every `end` and `summary` message.
+fn bytes_searched(o: &Output) -> Vec<u64> {
+    stdout(o)
+        .lines()
+        .filter_map(|l| {
+            let v: Value = serde_json::from_str(l).ok()?;
+            let stats = &v["data"]["stats"];
+            stats["bytes_searched"].as_u64()
+        })
+        .collect()
+}
+
+/// Code review r2, Codex #5: when `-m` stops a reader search on an after-context line read into
+/// a later buffer than its Match, rg 14.1.1 reports the bytes rolled out before that buffer.
+#[test]
+fn bytes_searched_when_the_after_context_crosses_a_buffer() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("cross")).unwrap();
+    // A second line longer than the first buffer (64 KiB).
+    let long = format!("needle\n{}\ntail\n", "x".repeat(70_000));
+    std::fs::write(fx.file("cross/long.txt"), &long).unwrap();
+    std::fs::write(fx.file("cross/long.md"), &long).unwrap();
+    let mut r = Report(Vec::new());
+    let cases: [(&[&str], In); 3] = [
+        (&["-m1", "-A1", "needle"], In::File("cross/long.txt")),
+        (&["-m1", "-A1", "needle"], In::File("cross/long.md")),
+        (&["-m1", "-A1", "needle", "cross"], In::Null),
+    ];
+    for (args, input) in cases {
+        let mut a = vec!["--sort", "path", "--json"];
+        a.extend_from_slice(args);
+        let want = rg(&fx, &a, input);
+        assert!(bytes_searched(&want).contains(&7), "{}", stdout(&want));
+        for mode in [
+            &["--no-trail"][..],
+            &[],
+            &["--expand"],
+            &["--format", "markdown"],
+        ] {
+            let mut s = mode.to_vec();
+            s.extend_from_slice(&a);
+            let got = sfor(&fx, &s, input);
+            r.check(
+                format!("{s:?}"),
+                (code(&want), json_lines(&want, true)),
+                (code(&got), json_lines(&got, true)),
+            );
+        }
+    }
+    // Through a pipe whose writer pauses after 8 KiB: the second line comes in a second read.
+    let chunked = |mut c: Command| {
+        c.stdin(Stdio::piped()).stdout(Stdio::piped());
+        let mut child = c.spawn().unwrap();
+        let mut w = child.stdin.take().unwrap();
+        let line = format!("needle\n{}\ntail\n", "x".repeat(9000));
+        std::io::Write::write_all(&mut w, &line.as_bytes()[..8192]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        std::io::Write::write_all(&mut w, &line.as_bytes()[8192..]).unwrap();
+        drop(w);
+        child.wait_with_output().unwrap()
+    };
+    let args = ["--json", "-m1", "-A1", "needle", "-"];
+    let want = chunked(fx.rg(args));
+    assert_eq!(bytes_searched(&want), vec![7, 7], "{}", stdout(&want));
+    for mode in [
+        &["--no-trail"][..],
+        &[],
+        &["--expand"],
+        &["--format", "markdown"],
+    ] {
+        let mut s = mode.to_vec();
+        s.extend_from_slice(&args);
+        let got = chunked(fx.sfor(&s));
+        r.check(
+            format!("chunked {s:?}"),
+            (0, "[7, 7]".into()),
+            (code(&got), format!("{:?}", bytes_searched(&got))),
+        );
+    }
+    r.assert_empty();
+}
+
+/// The deviation docs/rg-compat.md documents («`bytes_searched` with an after context longer
+/// than the before context»), as measured; when it is fixed, this fails and the page changes.
+#[test]
+fn documented_bytes_searched_deviation() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("deep")).unwrap();
+    let line = format!("{}\n", "x".repeat(99));
+    std::fs::write(
+        fx.file("deep/deep.txt"),
+        format!("{}needle\n{}", line.repeat(1500), line.repeat(10)),
+    )
+    .unwrap();
+    let run = |flags: &[&str], dir: &str| {
+        let mut a = vec!["--json"];
+        a.extend_from_slice(flags);
+        a.extend(["needle", dir]);
+        let mut s = vec!["--no-trail"];
+        s.extend_from_slice(&a);
+        (
+            bytes_searched(&rg(&fx, &a, In::Null)),
+            bytes_searched(&sfor(&fx, &s, In::Null)),
+        )
+    };
+    assert_eq!(run(&["-m1", "-A1"], "deep").0[0], 130600);
+    assert_eq!(run(&["-m1", "-A1"], "deep").1[0], 130800);
+    let (want, got) = run(&["-m1", "-C3"], "deep");
+    assert_eq!(want, got);
+    let late = ["-g", "late-nul*", "-A2", "-B1"];
+    let (want, got) = run(&late, "misc");
+    assert_eq!((want[0], got[0]), (65213, 65313));
+}
