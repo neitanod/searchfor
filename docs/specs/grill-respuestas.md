@@ -178,3 +178,63 @@
   keeps ripgrep's meaning: single-stream compressed files). Without `--docs` those files are
   treated as ripgrep does. Also implement ripgrep's `--pre`. Milestone M4. Archive Formats stay
   out (8390).
+
+---
+
+# Follow-up decisions in the Hilo (17/10/2026): Grammars and Helper Processors
+
+Messages 8449–8459, quoted from the Hilo. What Sebastián wrote, and what he accepted with «Va»,
+is a decision; the agent's measurements are the reasons given at the time.
+
+- **8449** — Question, no decision: «En rust se puede derivar trabajo a procesos concurrentes?
+  Lo estamos haciendo?» The answer (8450): sfor already searches with one thread per core, as
+  ripgrep does, through the `ignore` crate's parallel walker.
+- **8451** — «Y tendría mucho overhead poner los procesadores de sintaxis en ejecutables aparte?
+  Binarios independientes que se puedan ejecutar y comunicar con el proceso principal? Tal vez
+  correrlos una vez y usarlos para procesar muchos archivos mediante IPC?» Sebastián proposes
+  Processors as separate executables, started once and fed many files over IPC.
+- **8452 / 8453** — The agent's proposal, measured on this machine: starting a process costs
+  1.5 ms (`true`) and starting sfor 3 ms; a JSON round trip over a pipe costs 60 µs (measured
+  with Python); sfor sends the path and the Match positions, never the content. Against WASM:
+  no wasmtime (sfor stays around 5–7 MB and builds about ten times faster), native parsing speed
+  and no per-Grammar load time (400 ms for Bash under WASM), and the same mechanism as M5's
+  External Processors. Costs: one binary per OS and architecture instead of one `.wasm`, no
+  sandbox (mitigated with a SHA-256 per binary in the index and signed releases), and the logic
+  to start, restart and feed helpers from many threads. Proposal, replacing the one of 8439: the
+  v1 Grammars compiled natively into sfor; everything extra (`--install-grammar` and M5's
+  External Processors) as persistent helper binaries speaking JSON lines over stdin and stdout;
+  WASM out.
+- **8454** — «Va.» Accepts 8453: WASM out, v1 Grammars compiled in, extras as helper binaries.
+  Supersedes 8361 and ADR 0003 (replaced by ADR 0005). Same message, a follow-up question:
+  «Y si el vez de correr una vez por formato lo corremos una vez por archivo a procesar o le
+  pasamos un grupo a procesar y que se cierre cuando termina? Y ejecutar otra vez si hace
+  falta?»
+- **8455** — The agent's answer: one process per file costs 1.5–3 ms per file with Matches
+  (1.5–3 s for 1000 files, against 15 ms for the whole `rg` run); groups delay the output and
+  complicate its order. Recommended: **once per search** — the helper starts with the first
+  file of its Format, serves all the others, and exits when sfor ends because its stdin is
+  closed; if it crashes, it is restarted and that file prints as Plain. Also proposed: an
+  optional `mode = "oneshot"` in the Format Definition, one process per file, for helpers
+  written as simple scripts. Sebastián did not answer this message with «Va»; 8458 builds on it
+  («Pero…») and 8459 announced writing it into the M2 plan with no objection, so it is taken as
+  accepted.
+- **8456 / 8457** — Question, no decision: «Que es menos tiempo? 1 milisegundo o menos un µs?
+  Cómo se pronuncia este último?» (a microsecond is a thousandth of a millisecond, so the 60 µs
+  round trip is 25 times cheaper than starting a process).
+- **8458** — «Pero diseñarlo de modo que libere recursos entre un archivo que procesa y el
+  siguiente, y tal vez que procese varios en paralelo». Two requirements on the helper design:
+  release resources between files, and process several files in parallel.
+- **8459** — The agent's design, written into the M2 plan as announced, with no objection:
+  - **Release between files:** every request is independent; the helper reads the file,
+    builds its tree, answers the Trails and frees everything before the next request; only the
+    Grammar stays loaded. A memory test processes thousands of files and requires that memory
+    use does not grow.
+  - **Parallel:** every request carries an id and its answer carries the same id, so a helper
+    can serve several at once in its own threads and answer in any order (concurrent mode). For
+    a simple helper that does not handle threads, sfor starts several copies of it (up to the
+    search's thread count) and spreads the files among them (pool mode). The Format Definition
+    says which mode a helper uses.
+  - Together with «once per search» as the lifetime and the optional one-per-file mode of 8455.
+- **Still valid from M1** (8385): the search must be as fast as ripgrep, the added cost belongs
+  to the files with Matches only, and a Match with no structure prints the way ripgrep prints
+  it.
