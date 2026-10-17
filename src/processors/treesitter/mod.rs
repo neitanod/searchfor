@@ -83,9 +83,14 @@ pub fn parse(c: &Compiled, src: &[u8]) -> Option<Tree> {
     })
 }
 
-/// The first line of a Segment, without a trailing `{` (spec §5.3).
+/// The first line of a Segment, without a trailing `{` (spec §5.3), and without its body when
+/// the body starts on that line (`fn top() -> u32 { needle }`, review m2-code-r1, Fable #2).
 fn first_line(src: &[u8], n: Node) -> String {
-    let text = String::from_utf8_lossy(&src[n.byte_range()]);
+    let end = n
+        .child_by_field_name("body")
+        .map_or(n.end_byte(), |b| b.start_byte())
+        .clamp(n.start_byte(), n.end_byte());
+    let text = String::from_utf8_lossy(&src[n.start_byte()..end]);
     let line = text.lines().next().unwrap_or("").trim_end();
     let line = line.strip_suffix('{').unwrap_or(line).trim_end();
     line.chars().take(200).collect()
@@ -310,7 +315,12 @@ mod tests {
 
     /// (line, Trail names, signatures) of every `needle`.
     fn needles(format: &str, file: &str) -> Vec<(u64, String, String)> {
-        let src = fixture(file);
+        needles_in(format, file, &fixture(file))
+    }
+
+    /// `needles` over `src`.
+    fn needles_in(format: &str, file: &str, src: &[u8]) -> Vec<(u64, String, String)> {
+        let src = src.to_vec();
         let anchors: Vec<usize> = memchr::memmem::find_iter(&src, b"needle").collect();
         let lines = crate::trail::LineIndex::new(&src);
         let input = Input {
@@ -337,6 +347,24 @@ mod tests {
 
     fn t(line: u64, names: &str, sigs: &str) -> (u64, String, String) {
         (line, names.into(), sigs.into())
+    }
+
+    #[test]
+    fn a_one_line_body_stays_out_of_the_signature() {
+        // Review m2-code-r1, Fable #2: the signature ends where the body starts.
+        let src = b"pub async fn top(needle: u32) -> u32 { needle }\ntrait Tr { fn d(&self) { let _ = \"needle\"; } }\n";
+        assert_eq!(
+            needles_in("rust", "x.rs", src),
+            [
+                t(1, "top", "pub async fn top(needle: u32) -> u32"),
+                t(1, "top", "pub async fn top(needle: u32) -> u32"),
+                t(2, "Tr › d", "trait Tr ‖ fn d(&self)"),
+            ]
+        );
+        let py = b"def f(): return \"needle\"\n";
+        assert_eq!(needles_in("python", "x.py", py), [t(1, "f", "def f():")]);
+        let go = b"package p\nfunc g() int { return needle }\n";
+        assert_eq!(needles_in("go", "x.go", go), [t(2, "g", "func g() int")]);
     }
 
     #[test]
