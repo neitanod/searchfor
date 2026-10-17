@@ -17,8 +17,11 @@ Measured on this machine (8452, M2 research): starting a process costs 1.5 ms an
 trip over a pipe 60 µs, so a helper started once per search costs one start per run, while
 wasmtime added about 11.5 MB to the binary, multiplied the clean build time by ten, parsed 1.5–
 1.6× slower than native code, and needed up to 400 ms to load one Grammar (Bash) in each run.
-tree-sitter 0.27 with the `wasm` feature also requires rustc 1.95; without it, tree-sitter
-0.27.1 builds with our rustc 1.90.
+tree-sitter 0.27 with the `wasm` feature also requires rustc 1.95. The compiled-in version is
+tree-sitter 0.24.7, the newest whose `regex` requirement accepts the regex-automata 0.4.7 and
+regex-syntax 0.8.4 that ADR 0001 pins to ripgrep 14.1.1; it loads ABI 14 Grammars, so the
+Grammar crates are their last ABI 14 releases (M2 plan, D1). Moving tree-sitter forward moves
+with the ripgrep baseline.
 
 ## Considered Options
 
@@ -41,7 +44,8 @@ tree-sitter 0.27 with the `wasm` feature also requires rustc 1.95; without it, t
 - sfor gains the code that starts helpers, restarts the ones that crash (that file prints as
   Plain), kills the ones that time out, reaps every process it started, and spreads requests
   from many search threads. Helpers share sfor's process group, so a terminal's Ctrl-C reaches
-  them as it reaches sfor, which keeps sfor's own reaction to Ctrl-C identical to ripgrep's.
+  them as it reaches sfor; once one runs, sfor watches SIGINT and SIGTERM, kills and reaps the
+  helpers that did not stop, and then dies by the signal, as ripgrep would.
 - A helper must free everything between requests; searchfor's own helpers are tested to keep
   their memory flat over thousands of files.
 - The binary grows by the compiled-in Grammars: a stripped probe with only them and the keypath

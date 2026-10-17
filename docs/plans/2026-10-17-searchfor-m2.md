@@ -28,12 +28,15 @@ helpers (the example helper and the Grammar Helper template, both workspace memb
 
 **Tech stack:** Rust 1.90 (edition 2024), as M1. New dependencies, versions checked on
 crates.io on 2026-10-17 and built together in a probe crate with rustc 1.90 (see «Verified for
-this plan»): `tree-sitter` 0.27.1, `streaming-iterator` 0.1.9, `tree-sitter-php` 0.25.1,
-`tree-sitter-javascript` 0.25.0, `tree-sitter-typescript` 0.23.2, `tree-sitter-bash` 0.25.1,
-`tree-sitter-go` 0.25.0, `tree-sitter-rust` 0.24.2, `tree-sitter-python` 0.25.0, `toml_edit`
+this plan»): `tree-sitter` 0.24.7 and the ABI 14 Grammar crates `tree-sitter-php` 0.23.11,
+`tree-sitter-javascript` 0.23.1, `tree-sitter-typescript` 0.23.2, `tree-sitter-bash` 0.23.3,
+`tree-sitter-go` 0.23.4, `tree-sitter-rust` 0.23.3, `tree-sitter-python` 0.23.6, all pinned
+with `=` (D1: the newer ones need a `regex` that breaks M1's ripgrep pins), `streaming-iterator`
+0.1.9, `signal-hook` 0.3.18 (Unix only, D42), `toml_edit`
 0.25.17 (feature `parse` only), `saphyr-parser` 0.2.2, `ureq` 3.4.2 (default features: rustls,
 gzip), `sha2` 0.11.1; `tempfile` 3 moves from dev-dependencies to dependencies. The Grammar
-Helper template adds `tree-sitter-lua` 0.5.0 (built with tree-sitter 0.27.1 in the probe).
+Helper template adds `tree-sitter-lua` 0.2.0 (ABI 14, built with tree-sitter 0.24.7 in the
+probe).
 
 **Reference ripgrep:** 14.1.1, as M1. Every rule of M1 about comparing with `rg` still applies.
 
@@ -107,7 +110,7 @@ ones it describes marked «M2 plan».
 
 | Id | Decision | Reason |
 |---|---|---|
-| D1 | `tree-sitter` 0.27.1, not 0.26 | The research's rustc 1.95 requirement comes from wasmtime 48 behind the `wasm` feature. Without it, tree-sitter 0.27.1 declares `rust-version = 1.90` and the probe built and ran the seven queries with rustc 1.90. 0.27 made `QueryMatch::captures` a method. 0.26.13 is the fallback if a Grammar crate refuses 0.27 |
+| D1 | `tree-sitter` =0.24.7 with ABI 14 Grammar crates (php 0.23.11, javascript 0.23.1, typescript 0.23.2, bash 0.23.3, go 0.23.4, rust 0.23.3, python 0.23.6; lua 0.2.0 for the Grammar Helper), all pinned with `=` | M1 pins `regex-automata =0.4.7` and `regex-syntax =0.8.4`, ripgrep 14.1.1's, for rg's Unicode tables (ADR 0001). tree-sitter needs the `regex` crate: 0.27 asks `regex ^1.12.3` (→ regex-automata ^0.4.12), 0.26 `regex-syntax ^0.8.6`, 0.25 `^0.8.5`; 0.24.7 asks `regex ^1.10.6` and `regex-syntax ^0.8.4`, and regex 1.10.6 accepts automata 0.4.7 and syntax 0.8.4 (cargo index cache, review r2, Codex #1). With M1's whole Cargo.toml and lock, adding these crates resolves `regex` 1.10.6 and leaves every M1 version where it was, and M1's 265 tests pass (`realtree` probe). tree-sitter 0.24 loads ABI 13–14 only, so the Grammars are their last ABI 14 releases; the eight queries give the same Trails as with 0.27 (`ts024` probe). API differences from 0.27: `QueryMatch::captures` is a field, `Language::version()` instead of `abi_version()`. Moving to a newer tree-sitter moves with the ripgrep baseline of ADR 0001; the `=` pins keep `cargo install searchfor` (which resolves without our lock) on the same versions |
 | D2 | `keypath` over native parsers: own JSON scanner, `saphyr-parser`, `toml_edit` | tree-sitter-yaml breaks over 32 768 lines; tree-sitter's TOML tree gives `products.variants[0]` instead of `products[1].variants[0]`; the JSON scanner is 27× faster (research §5) |
 | D3 | No tree-sitter-yaml fallback; a syntax error keeps the Trails before it, silently (YAML: the events before the error; TOML: the longest prefix ending at a line start before the error that parses, at most 256 tries; JSON: the walk up to the error) | One YAML implementation; Helm templates are often not valid YAML, and a warning per file would bury the output. saphyr-parser read `a: {{ .Values.x }}` without error (as flow mappings) in the probe |
 | D4 | `pool` is the default mode | A helper that answers one line at a time is correct in `pool`; `concurrent` needs a helper that handles ids, so it is opt-in |
@@ -132,7 +135,7 @@ ones it describes marked «M2 plan».
 | D23 | Memory test: resident memory after 5 000 requests ≤ the value after 500 + 2 MiB, Linux only (`/proc/<pid>/status`) | Allocators keep some memory; growth per file would pass 2 MiB well before 5 000 files |
 | D24 | `treesitter` implements `Processor` directly and runs the query only over the bytes between the first and the last anchor | The query took 1.4 s of the 3.8 s measured; `QueryCursor::set_byte_range` keeps every ancestor of an anchor |
 | D31 | Each helper process has a writer thread: a request is queued to it, so the caller's deadline covers writing and answering, and a kill never waits for a lock the writer holds | A helper that stops reading would otherwise block sfor forever on a full pipe (review r1, Codex #1) |
-| D32 | One idempotent close per process: stdin closed, one second of grace, kill, then always reap; the pipe threads get at most one more second and are then left behind. Helpers stay in sfor's process group; sfor installs no signal handler | No zombies, and a descendant that inherited the pipes cannot keep sfor alive. In sfor's process group the terminal's Ctrl-C reaches the helpers as it reaches sfor, so sfor dies by SIGINT exactly as ripgrep does; a separate group would need a handler that changes that. A helper that starts processes must stop them when it exits (spec §4.4) |
+| D32 | One idempotent close per process: stdin closed, one second of grace, kill, then always reap; the pipe threads get at most one more second and are then left behind. Helpers stay in sfor's process group; sfor installs no signal handler | No zombies, and a descendant that inherited the pipes cannot keep sfor alive. Helpers stay in sfor's process group, so the terminal's Ctrl-C reaches them too; D42 covers the helpers that do not stop on it. A helper that starts processes must stop them when it exits (spec §4.4) |
 | D33 | A Processor that is unavailable (Grammar missing, helper disabled) or fails makes the file Plain: `format` `null` and empty Trails, which the printers already render as Plain (`path:line: text`, spec §6.2) | Empty Trails under a Format name were neither Plain nor structured (review r1, Codex #6) |
 | D34 | The JSON walker is iterative, with an explicit stack; past 256 nested containers it opens no more Segments, and it validates numbers, literals and strings (escapes, no control characters) | A deep file must not overflow the call stack, and `{"a": nope}` is a syntax error, not a key path |
 | D35 | A hidden Segment that has a name stays searchable by `--in-headings`: `names_of` keeps named hidden Segments and still leaves hidden ancestors out of the Trails it builds | `ports` holds an array, so it is hidden in Trails, but it is a key (spec §8); Markdown's hidden Segments (tables) have no name, so M1 is unchanged |
@@ -141,6 +144,7 @@ ones it describes marked «M2 plan».
 | D38 | ureq runs with `https_only(true)` (checked on every redirect hop, ureq `run.rs:149`), a 10 s connect timeout and a 300 s global one | The first URL being `https://` does not stop a redirect to `http://`; offline listing must not hang |
 | D39 | The treesitter Processor's compiled queries and warnings live in a per-run instance owned by `Processors`, one `OnceLock` per Definition | A second run in one process (M5's MCP server) must see new `params`; concurrent first calls must compile and warn once |
 | D40 | `oneshot` writes `hello` and the request, closes stdin, and then reads both answers | A script that reads its stdin to EOF before answering is the point of `oneshot` (spec §4.4, review r1, Fable #1) |
+| D42 | Supervised cancellation (Unix): when the first helper process of a run starts, sfor starts a thread that waits for SIGINT and SIGTERM (`signal-hook`). On one, it kills and reaps every live helper (SIGKILL, so a helper that ignores or handles SIGINT goes too) and then dies by that same signal with its default disposition (`signal_hook::low_level::emulate_default_handler`). A run that starts no helper installs nothing, as M1 | sfor dying at once would leave a helper that ignores SIGINT, or a SIGINT sent to sfor's pid only, behind and unreaped (review r2, Codex #2); re-raising the signal keeps sfor's exit status the one rg has. Windows (console Ctrl-C) is M5's |
 | D41 | A line from a helper that is not JSON or has no `id` breaks the process (killed, its requests fail, one failure counted); a JSON line with a known `id` whose fields do not fit the protocol fails that request only | Only a line with an id can be attributed to a request |
 | D25 | Benchmark corpora: the cargo registry sources (`~/.cargo/registry/src/index.crates.io-*`, 29 788 files on 2026-10-17) and `~/robotin/apps` (11 297 files) | The first exists wherever cargo does; the second mixes PHP, JS, Go, Python and Bash |
 | D26 | Installed Grammar Definitions load between the built-ins and the user directory, with origin `installed` | A user file still overrides everything (#6) |
@@ -153,7 +157,18 @@ ones it describes marked «M2 plan».
 
 Outputs in `/tmp/subtask/m2-plan/outputs/`; the probe crates in `/tmp/subtask/m2-plan/probe*`.
 
-- `cargo search`: the versions of «Tech stack». `cargo info`: tree-sitter 0.27.1
+- Review round 2 (`/tmp/subtask/m2-plan/realtree`, `ts024`, `tsp`, `sig`): M1's own
+  Cargo.toml, Cargo.lock, src and tests plus every M2 dependency at the versions of Task 1.1:
+  `cargo build` adds 55 packages, changes no M1 version (`regex-automata` 0.4.7,
+  `regex-syntax` 0.8.4, `memchr` 2.7.4, `aho-corasick` 1.1.3, `bstr` 1.10.0 stay; `regex`
+  1.10.6 comes in), and `cargo test` passes 265 tests. With tree-sitter 0.24.7 the seven code
+  Grammars and lua 0.2.0 report ABI 14 and the queries give the Trails of Task 6.2 and of
+  `player.lua`; tree-sitter-lua 0.4.1 is ABI 15 and fails with `LanguageError { version: 15 }`.
+  The plan's treesitter module and its tests compile and pass (28 tests) against 0.24.7 with
+  the two API changes of D1. `signal-hook` 0.3.18: a parent with a SIGINT-ignoring child, sent
+  SIGINT to its pid or to its group, kills and reaps the child and then dies by SIGINT
+  (`emulate_default_handler`).
+- `cargo search`: the versions of «Tech stack» (the round 2 pins replace the tree-sitter ones). `cargo info`: tree-sitter 0.27.1
   `rust-version 1.90`; toml_edit 1.85; saphyr-parser 1.85.0; ureq 1.85; sha2 1.88.
 - A probe with tree-sitter 0.27.1, the seven code Grammar crates, toml_edit and saphyr-parser
   built with rustc 1.90 in 12 s (incremental) and ran the seven queries of the research
@@ -180,7 +195,8 @@ Outputs in `/tmp/subtask/m2-plan/outputs/`; the probe crates in `/tmp/subtask/m2
   and sha2 gave the SHA-256 the research recorded.
 - `std::io::pipe` exists in rustc 1.90.
 - tree-sitter-lua 0.5.0 builds with tree-sitter 0.27.1; `(function_declaration name: (_) @name)
-  @segment` captures `Player:update` and `helper` on C8's fixture.
+  @segment` captures `Player:update` and `helper` on C8's fixture (round 2: the same holds for
+  lua 0.2.0 with tree-sitter 0.24.7, the pair D1 chose).
 - `toml::Value::try_from(serde_json::Map)` gives a `Table` (toml 1.1), and
   `body_mut().with_config().limit(…).read_to_vec()` compiles against ureq 3.4.2.
 - Review round 1 (`/tmp/subtask/m2-plan/kp`, `hp`, `probe027/src/bin/r1.rs`): the plan's
@@ -363,17 +379,20 @@ signatures fixed in this plan, and C10 is where everything links.
 - [ ] **Step 1:** add to `[dependencies]`, keeping M1's pinned lines untouched:
 
 ```toml
-# Code Grammars compiled in (ADR 0005). tree-sitter 0.27 without the `wasm` feature builds
-# with rustc 1.90; the `wasm` feature would need 1.95 (M2 plan, D1).
-tree-sitter = "0.27"
+# Code Grammars compiled in (ADR 0005). tree-sitter 0.24.7 is the newest whose `regex`
+# requirement (^1.10.6, regex-syntax ^0.8.4) accepts the ripgrep 14.1.1 pins above; 0.25+
+# would move regex-automata and regex-syntax, and with them rg's Unicode tables (M2 plan, D1).
+# It loads ABI 14 Grammars, hence these Grammar versions. Keep the `=`: a cargo update must
+# not move them, and `cargo install searchfor` resolves without our lock.
+tree-sitter = "=0.24.7"
 streaming-iterator = "0.1"
-tree-sitter-bash = "0.25"
-tree-sitter-go = "0.25"
-tree-sitter-javascript = "0.25"
-tree-sitter-php = "0.25"
-tree-sitter-python = "0.25"
-tree-sitter-rust = "0.24"
-tree-sitter-typescript = "0.23"
+tree-sitter-bash = "=0.23.3"
+tree-sitter-go = "=0.23.4"
+tree-sitter-javascript = "=0.23.1"
+tree-sitter-php = "=0.23.11"
+tree-sitter-python = "=0.23.6"
+tree-sitter-rust = "=0.23.3"
+tree-sitter-typescript = "=0.23.2"
 # keypath (spec §4.3): spans for TOML, events with markers for YAML.
 toml_edit = { version = "0.25", default-features = false, features = ["parse"] }
 saphyr-parser = "0.2"
@@ -382,6 +401,10 @@ sha2 = "0.11"
 ureq = "3"
 # Temporary files for Helper Processors (spec §4.4, Paths).
 tempfile = "3"
+
+# Ctrl-C with Helper Processors running (spec §4.4, Lifetime; M2 plan, D42).
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
 ```
 
   and remove `tempfile` from `[dev-dependencies]` (a normal dependency serves the tests too).
@@ -428,16 +451,19 @@ lua = ["dep:tree-sitter-lua"]
 [dependencies]
 anyhow = "1"
 searchfor = { path = "../.." }
-tree-sitter = "0.27"
-tree-sitter-lua = { version = "0.5", optional = true }
+tree-sitter = "=0.24.7"
+tree-sitter-lua = { version = "=0.2.0", optional = true }
 ```
 
   Both `src/main.rs` stubs: `fn main() {}` with a `//!` line naming the chunk that fills them
   (C5, C8).
 
-- [ ] **Step 3:** `cargo build --workspace` resolves and compiles. Record in the chunk report the
-  versions `Cargo.lock` picked for every new crate. If `tree-sitter-lua` 0.5 does not resolve
-  against tree-sitter 0.27, leave it out of `default` and say so: C8 then picks the version.
+- [ ] **Step 3:** `cargo build --workspace` resolves and compiles. Use `cargo build`, never
+  `cargo generate-lockfile` or `cargo update`, so M1's locked versions stay. Then check the
+  ripgrep pins survived: `cargo tree -i regex-automata` and `cargo tree -i regex-syntax` show
+  only 0.4.7 and 0.8.4, `grep -A1 'name = "regex"$' Cargo.lock` shows 1.10.x, and the diff of
+  `Cargo.lock` only adds packages (one new copy of `base64` and of `windows-sys` beside M1's
+  is expected). `cargo test` passes all M1 tests. Record the versions in the report.
 
 ### Task 1.2: module tree and stubs
 
@@ -2173,6 +2199,19 @@ mod tests {
     }
 
     #[test]
+    fn an_escaped_line_break_keeps_each_part_on_its_line() {
+        // saphyr gives "foobar": no space marks the join, so the pieces come from the source.
+        let src = b"? \"foo\\\n  bar\"\n: needle\n";
+        let input = crate::model::Input { bytes: src, path: Path::new("x"), format: "yaml", disk: None };
+        let names = super::super::Keypath.names(&input, &super::super::tests::params("yaml")).unwrap();
+        let n = names.iter().find(|n| n.text == "foobar").expect("the key");
+        let line_of = |r: &std::ops::Range<usize>| src[..r.start].iter().filter(|&&b| b == b'\n').count() + 1;
+        let bar = n.pieces.iter().find(|(t, _)| t.end == "foobar".len()).unwrap();
+        assert_eq!(line_of(&bar.1), 2, "{:?}", n.pieces);
+        assert_eq!(n.pieces.len(), 2);
+    }
+
+    #[test]
     fn deep_flow_nesting_is_a_syntax_error_not_a_crash() {
         // saphyr-parser stops at its recursion limit with an error (probe: "recursion limit
         // exceeded at byte 258"); the Trails before it stay.
@@ -2332,10 +2371,20 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
     verbatim piece `s..e` when `text[s..e] == value` (plain), one over `s+1..e-1` when the scalar
     is quoted and the inside equals `value`. A key that spans several lines (only explicit `?`
     keys can) gets one piece per source line, as M1 maps each piece to the line it starts on
-    (`app.rs` `heading_matches`): for a plain scalar, each line's trimmed text, joined by the
-    single spaces of the folded `value`; when the lines do not reproduce `value` (quoted or
-    escaped), one decoded piece per line, splitting `value` at its spaces in order. Otherwise
-    one decoded piece over `s..e`.
+    (`app.rs` `heading_matches`). The pieces come from decoding the scalar's source line by
+    line, keeping each line's source range, never from splitting `value` afterwards (review
+    r2, Codex #3):
+    - plain: each line's text without its indentation; lines are joined by one space (an
+      empty line by a line break);
+    - double-quoted: each line's text (the first after the opening `"`, the others without
+      their indentation, the last before the closing `"`), escapes decoded (`\\`, `\"`, `\n`,
+      `\t`, `\xNN`, `\uNNNN`, `\UNNNNNNNN`, and the others of YAML 1.2); a line that ends in an
+      unescaped `\` joins the next one with nothing (`"foo\` + `bar"` is `foobar`), any other
+      line break folds into one space (an empty line into a line break);
+    - single-quoted: as double-quoted, with `''` as the only escape.
+    Each line's decoded text is one decoded piece over that line's source part (verbatim when
+    they are equal). When the joined pieces do not equal saphyr's `value`, the key gets one
+    decoded piece over `s..e`, which still finds it by name.
   - `ScanError::marker()` gives the error's position (verified in saphyr-parser 0.2.2's
     source, `scanner.rs`).
 
@@ -2437,6 +2486,9 @@ mod tests {
         assert_eq!(db.segment.line, 18);
         let ports = o.segments.iter().find(|s| s.segment.name == "ports").unwrap();
         assert!(ports.hidden);
+        // The key of an array of tables: hidden in Trails, still a name.
+        assert!(o.segments.iter().filter(|s| s.segment.name == "products").all(|s| s.hidden));
+        assert!(crate::trail::names_of(&o).iter().any(|n| n.text == "products"));
     }
 
     #[test]
@@ -2485,12 +2537,16 @@ mod tests {
 
   1. `std::str::from_utf8` or an empty Outline. Parse with
      `text.parse::<toml_edit::Document<String>>()`. **On an error** (`TomlError::span()`,
-     verified in toml_edit 0.25.17's source), cut `text` at the start of the error's line and
-     parse the prefix; while that fails, cut one line earlier, at most 256 times; then use the
-     first prefix that parses, or an empty Outline. Verified in the probe (`r1-probe.txt`): for
+     verified in toml_edit 0.25.17's source; `None` counts as the end of the file), cut `text`
+     at the start of the error's line and parse the prefix; while that fails, step back 1, 2,
+     4, 8… lines; once a prefix parses, halve the gap towards the last cut that failed, keeping
+     the longest prefix that parsed (review r2, Fable #4: one parse costs 44–54 ms on a 1 MB
+     Cargo.lock, so stepping back line by line could cost seconds). Stop when the bytes parsed
+     in this recovery pass 32 MiB, or at the start of the file, and then use the best prefix,
+     or an empty Outline. Verified in the probe (`r1-probe.txt`): for
      `[a]\nb="needle"\nx=[\n[c]\nd="needle"\n` toml_edit reports byte 23 (line 5), and the
-     walk back reaches the 15-byte prefix `[a]\nb="needle"\n`; an unclosed `"""` string
-     recovers the same way. toml_edit's own recursion limit («max recursion depth met») is such
+     walk back reaches the 15-byte prefix `[a]\nb="needle"\n` (cuts at lines 5, 4 and 3); an
+     unclosed `"""` string recovers the same way. toml_edit's own recursion limit («max recursion depth met») is such
      an error.
   2. **Paths are components.** A path is `Vec<Step>`, `enum Step { Key(String), Index(usize) }`,
      from the decoded keys: `["a.b"]` is one `Key("a.b")`, never two. A path is under another
@@ -2506,7 +2562,10 @@ mod tests {
      this header, push a Segment for that step (kind `key`, or `element` named `key[i]` for an
      index step) with this header's Section as range and this header's span as label; then the
      header's own Segment (kind `key`, or `element` `key[i]`), with its Section and its header
-     span as label. So `[a.b]`, `[x]`, `[a.c]` give `a` twice, each over one header's Section,
+     span as label. A `Key` step followed by an `Index` step — `products` of `[[products]]` — is
+     the key that holds an array: it is pushed with `hidden = true` and labelled by its key's
+     span inside the header, so the Trail reads `products[1] › …` and `--in-headings
+     '^products$'` still finds it (spec §5.2, D19, D35; review r2, Fable #2). So `[a.b]`, `[x]`, `[a.c]` give `a` twice, each over one header's Section,
      and `[p.r]` after `[q]` gets its own `p`.
   5. **Key-values**, inside each table's items: a key with a value gets a Segment from the key's
      start to the value's end (`Item::span()` is the value only, quotes included), labelled by
@@ -2594,8 +2653,9 @@ tests module starts with `use super::testing::*;`: C9's `external.rs` tests reus
   can stop it:
 
 ```rust
+/// The fake launcher, shared with C9's `external.rs` tests (every item is `pub(crate)`).
 #[cfg(test)]
-mod tests {
+pub(crate) mod testing {
     use super::*;
     use crate::helper::protocol::{line, MatchPos, Reply, Request};
     use crate::helper::{Control, HostConfig, Launcher, Mode, Proc};
@@ -2604,20 +2664,20 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    type Lines = std::io::Lines<BufReader<std::io::PipeReader>>;
-    type Body = Arc<dyn Fn(&mut Lines, &mut std::io::PipeWriter, &AtomicBool) + Send + Sync>;
+    pub(crate) type Lines = std::io::Lines<BufReader<std::io::PipeReader>>;
+    pub(crate) type Body = Arc<dyn Fn(&mut Lines, &mut std::io::PipeWriter, &AtomicBool) + Send + Sync>;
 
-    struct Fake {
-        body: Body,
-        launches: Arc<AtomicUsize>,
-        reaps: Arc<AtomicUsize>,
-        fail: bool,
+    pub(crate) struct Fake {
+        pub(crate) body: Body,
+        pub(crate) launches: Arc<AtomicUsize>,
+        pub(crate) reaps: Arc<AtomicUsize>,
+        pub(crate) fail: bool,
     }
 
-    struct FakeControl {
-        killed: Arc<AtomicBool>,
-        done: Arc<AtomicBool>,
-        reaps: Arc<AtomicUsize>,
+    pub(crate) struct FakeControl {
+        pub(crate) killed: Arc<AtomicBool>,
+        pub(crate) done: Arc<AtomicBool>,
+        pub(crate) reaps: Arc<AtomicUsize>,
     }
 
     impl Control for FakeControl {
@@ -2661,12 +2721,12 @@ mod tests {
         }
     }
 
-    fn req(l: &str) -> Request {
+    pub(crate) fn req(l: &str) -> Request {
         serde_json::from_str(l).unwrap()
     }
 
     /// Answers `hello`, then `answer` for every request until EOF or `None` (a crash).
-    fn helper(answer: impl Fn(&Request) -> Option<Reply> + Send + Sync + 'static) -> Body {
+    pub(crate) fn helper(answer: impl Fn(&Request) -> Option<Reply> + Send + Sync + 'static) -> Body {
         Arc::new(move |lines, out, _| {
             let Some(Ok(h)) = lines.next() else { return };
             let Request::Hello { .. } = req(&h) else { return };
@@ -2682,24 +2742,24 @@ mod tests {
     }
 
     /// One Trail with one Segment named after the path, per Match.
-    fn echo(r: &Request) -> Option<Reply> {
+    pub(crate) fn echo(r: &Request) -> Option<Reply> {
         let Request::Trails { id, path, matches } = r else { return None };
         let seg = crate::model::Segment { kind: "key".into(), name: path.clone(), line: 1, end_line: 1, level: None, signature: None };
         Some(Reply { id: *id, trails: Some(vec![vec![seg]; matches.len()]), ..Default::default() })
     }
 
-    fn cfg(mode: Mode, threads: usize, timeout_ms: u64) -> HostConfig {
+    pub(crate) fn cfg(mode: Mode, threads: usize, timeout_ms: u64) -> HostConfig {
         HostConfig { format: "ini".into(), command: vec!["fake".into()], mode, timeout: Duration::from_millis(timeout_ms), params: toml::Table::new(), threads }
     }
 
-    struct Run {
-        host: Arc<Host>,
-        launches: Arc<AtomicUsize>,
-        reaps: Arc<AtomicUsize>,
-        warnings: Arc<Mutex<Vec<String>>>,
+    pub(crate) struct Run {
+        pub(crate) host: Arc<Host>,
+        pub(crate) launches: Arc<AtomicUsize>,
+        pub(crate) reaps: Arc<AtomicUsize>,
+        pub(crate) warnings: Arc<Mutex<Vec<String>>>,
     }
 
-    fn run(mode: Mode, threads: usize, timeout_ms: u64, body: Body) -> Run {
+    pub(crate) fn run(mode: Mode, threads: usize, timeout_ms: u64, body: Body) -> Run {
         let launches = Arc::new(AtomicUsize::new(0));
         let reaps = Arc::new(AtomicUsize::new(0));
         let warnings = Arc::new(Mutex::new(Vec::new()));
@@ -2709,16 +2769,32 @@ mod tests {
         Run { host, launches, reaps, warnings }
     }
 
-    fn trails(h: &Host, path: &str) -> Result<Reply, crate::helper::HelperError> {
+    pub(crate) fn trails(h: &Host, path: &str) -> Result<Reply, crate::helper::HelperError> {
         h.request(|id| Request::Trails { id, path: path.into(), matches: vec![MatchPos { line: 1, byte: 0 }] })
     }
 
-    fn name_of(r: &Reply) -> &str {
+    pub(crate) fn name_of(r: &Reply) -> &str {
         &r.trails.as_ref().unwrap()[0][0].name
     }
+}
 ```
 
-- [ ] **Step 2:** the tests, in the same module:
+- [ ] **Step 2:** the tests, in their own module, which starts with:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::testing::*;
+    use super::*;
+    use crate::helper::protocol::{line, MatchPos, Reply, Request};
+    use crate::helper::Mode;
+    use std::io::Write;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+```
+
+  and closes after the last test below. The tests:
 
 ```rust
     #[test]
@@ -3046,6 +3122,61 @@ mod tests {
     }
 
     #[test]
+    fn oneshot_disables_a_helper_that_never_answers_hello() {
+        // Review r2, Codex #5: the handshake policy of the other modes, in oneshot too.
+        let body: Body = Arc::new(|lines, _out, killed| {
+            for _ in lines.map_while(Result::ok) {}
+            while !killed.load(SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let r = run(Mode::Oneshot, 1, 100, body);
+        assert_eq!(trails(&r.host, "a.ini"), Err(crate::helper::HelperError::Disabled));
+        assert_eq!(trails(&r.host, "b.ini"), Err(crate::helper::HelperError::Disabled));
+        assert_eq!(r.launches.load(SeqCst), 1);
+        assert_eq!(r.reaps.load(SeqCst), 1);
+        assert_eq!(r.warnings.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_copy_that_exits_between_requests_is_not_a_failure() {
+        // Review r2, Fable #7: each copy answers one request and exits with nothing in
+        // flight; five such exits never reach the three-failure limit.
+        let body: Body = Arc::new(|lines, out, _| {
+            let _ = lines.next();
+            out.write_all(line(&Reply { id: 0, protocol: Some(1), ..Default::default() }).as_bytes()).unwrap();
+            if let Some(Ok(l)) = lines.next() {
+                out.write_all(line(&echo(&req(&l)).unwrap()).as_bytes()).unwrap();
+            }
+        });
+        let r = run(Mode::Pool, 1, 2000, body);
+        for i in 0..5 {
+            assert!(trails(&r.host, &format!("{i}.ini")).is_ok(), "request {i}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(r.launches.load(SeqCst), 5);
+        assert!(r.warnings.lock().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn abort_kills_and_reaps_every_live_process() {
+        // D42: what the signal watcher does, without sending a signal to the test process.
+        let r = run(Mode::Pool, 2, 2000, deaf());
+        std::thread::scope(|s| {
+            for i in 0..2 {
+                let h = r.host.clone();
+                s.spawn(move || {
+                    let _ = h.request(|id| Request::Trails { id, path: format!("{i}.ini"), matches: vec![] });
+                });
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            cancel::abort(&r.host.conns());
+        });
+        assert_eq!(r.reaps.load(SeqCst), r.launches.load(SeqCst));
+    }
+
+    #[test]
     fn oneshot_works_with_a_helper_that_reads_to_eof_first() {
         // Fable #1 / D40: hello and the request arrive before EOF; both answers come after it.
         let body: Body = Arc::new(|lines, out, _| {
@@ -3156,6 +3287,8 @@ struct Conn {
     /// Its failure was counted (several requests in flight see the same crash).
     counted: AtomicBool,
     closed: AtomicBool,
+    /// Reaped already: `abort` and `close` may both run (Ctrl-C during a failure).
+    reaped: AtomicBool,
     control: Mutex<Box<dyn Control>>,
     /// One per pipe thread: a message when it ends.
     ends: Mutex<Vec<mpsc::Receiver<()>>>,
@@ -3224,34 +3357,48 @@ impl Conn {
                 }
             }));
         }
-        Arc::new(Conn {
+        let conn = Arc::new(Conn {
             queue: Mutex::new(Some(qtx)),
             pending,
             in_flight: AtomicUsize::new(0),
             alive,
             counted: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            reaped: AtomicBool::new(false),
             control: Mutex::new(p.control),
             ends: Mutex::new(ends),
-        })
+        });
+        #[cfg(unix)]
+        cancel::register(&conn);
+        conn
     }
 
     fn alive(&self) -> bool {
         self.alive.load(SeqCst)
     }
 
-    /// Registers `req` and queues it for the writer. Never blocks (D31).
-    fn send(&self, req: &Request) -> mpsc::Receiver<Result<Reply, Fail>> {
+    /// Registers `req` and queues it for the writer. Never blocks (D31). None: the process was
+    /// already gone, so nothing was sent (Fable r2 #7: not a failure of this request).
+    fn send(&self, req: &Request) -> Option<mpsc::Receiver<Result<Reply, Fail>>> {
         let (tx, rx) = mpsc::channel();
         let id = req.id();
         self.pending.lock().unwrap().insert(id, tx);
         let queued = self.alive() && self.queue.lock().unwrap().as_ref().is_some_and(|q| q.send(line(req).into_bytes()).is_ok());
         if !queued {
-            if let Some(w) = self.pending.lock().unwrap().remove(&id) {
-                let _ = w.send(Err(Fail::Gone("exited".into())));
-            }
+            self.pending.lock().unwrap().remove(&id);
+            return None;
         }
-        rx
+        Some(rx)
+    }
+
+    /// D42: kill and reap now, without the grace or the pipe wait of `close` (Ctrl-C).
+    fn abort(&self) {
+        self.alive.store(false, SeqCst);
+        let mut c = self.control.lock().unwrap();
+        c.kill();
+        if !self.reaped.swap(true, SeqCst) {
+            c.reap();
+        }
     }
 
     /// Closes stdin once the queued lines are written (oneshot; shutdown).
@@ -3270,10 +3417,12 @@ impl Conn {
         self.close_input();
         {
             let mut c = self.control.lock().unwrap();
-            if kill || !c.wait(SHUTDOWN_WAIT) {
+            if !self.reaped.load(SeqCst) && (kill || !c.wait(SHUTDOWN_WAIT)) {
                 c.kill();
             }
-            c.reap();
+            if !self.reaped.swap(true, SeqCst) {
+                c.reap();
+            }
         }
         let deadline = Instant::now() + PIPE_WAIT;
         for end in self.ends.lock().unwrap().drain(..) {
@@ -3286,6 +3435,14 @@ enum CallError {
     Timeout,
     Gone(String),
     Malformed(String),
+}
+
+/// A receiver that already holds «exited»: for `hello`, where a process gone before it
+/// answered is a handshake failure.
+fn gone() -> mpsc::Receiver<Result<Reply, Fail>> {
+    let (tx, rx) = mpsc::channel();
+    let _ = tx.send(Err(Fail::Gone("exited".into())));
+    rx
 }
 
 fn wait(rx: mpsc::Receiver<Result<Reply, Fail>>, deadline: Instant) -> Result<Reply, CallError> {
@@ -3326,6 +3483,11 @@ impl Host {
         &self.cfg.format
     }
 
+    #[cfg(test)]
+    fn conns(&self) -> Vec<Arc<Conn>> {
+        self.st.lock().unwrap().conns.clone()
+    }
+
     /// Sends the request `make` builds with a fresh id, and returns its answer. The deadline
     /// covers queuing, writing and answering (D31).
     pub fn request(&self, make: impl FnOnce(u64) -> Request) -> Result<Reply, HelperError> {
@@ -3333,13 +3495,26 @@ impl Host {
         if self.cfg.mode == Mode::Oneshot {
             return self.oneshot(&req);
         }
-        let conn = self.checkout()?;
         let deadline = Instant::now() + self.cfg.timeout;
-        let out = self.outcome(&conn, wait(conn.send(&req), deadline));
+        // A copy that exited with nothing in flight is replaced once, without counting it.
+        for attempt in 0..2 {
+            let conn = self.checkout()?;
+            let sent = conn.send(&req);
+            let out = sent.map(|rx| self.outcome(&conn, wait(rx, deadline)));
+            self.release(&conn);
+            match out {
+                Some(out) => return out,
+                None if attempt == 0 => continue,
+                None => break,
+            }
+        }
+        Err(HelperError::Crashed("the helper exited".into()))
+    }
+
+    fn release(&self, conn: &Conn) {
         conn.in_flight.fetch_sub(1, SeqCst);
         let _st = self.st.lock().unwrap();
         self.freed.notify_all();
-        out
     }
 
     fn outcome(&self, conn: &Conn, r: Result<Reply, CallError>) -> Result<Reply, HelperError> {
@@ -3365,8 +3540,8 @@ impl Host {
         }
         let conn = self.launch()?;
         let deadline = Instant::now() + self.cfg.timeout;
-        let hello = conn.send(&Request::hello(&self.cfg.format, &self.cfg.params, 1));
-        let answer = conn.send(req);
+        let hello = conn.send(&Request::hello(&self.cfg.format, &self.cfg.params, 1)).unwrap_or_else(gone);
+        let answer = conn.send(req).unwrap_or_else(gone);
         conn.close_input();
         let out = match wait(hello, deadline) {
             Ok(r) if r.protocol == Some(PROTOCOL) && r.error.is_none() => self.outcome(&conn, wait(answer, deadline)),
@@ -3374,6 +3549,13 @@ impl Host {
                 self.disable(refusal(&r));
                 Err(HelperError::Disabled)
             }
+            // Codex r2 #5: no answer to hello is a handshake failure, as in `start`.
+            Err(CallError::Timeout) => {
+                conn.close(true);
+                self.disable(format!("did not answer hello within {} ms", self.cfg.timeout.as_millis()));
+                Err(HelperError::Disabled)
+            }
+            // A script that dies before writing anything is a failure of this file.
             Err(e) => self.outcome(&conn, Err(e)),
         };
         conn.close(false);
@@ -3445,7 +3627,7 @@ impl Host {
         let conn = self.launch()?;
         let threads = if self.cfg.mode == Mode::Concurrent { self.cfg.threads } else { 1 };
         let hello = Request::hello(&self.cfg.format, &self.cfg.params, threads);
-        let why = match wait(conn.send(&hello), Instant::now() + self.cfg.timeout) {
+        let why = match wait(conn.send(&hello).unwrap_or_else(gone), Instant::now() + self.cfg.timeout) {
             Ok(r) if r.protocol == Some(PROTOCOL) && r.error.is_none() => return Ok(conn),
             Ok(r) => refusal(&r),
             Err(CallError::Timeout) => format!("did not answer hello within {} ms", self.cfg.timeout.as_millis()),
@@ -3499,6 +3681,56 @@ impl Host {
     }
 }
 
+/// D42: Ctrl-C (SIGINT) or SIGTERM while helpers run. The first helper process of this sfor
+/// process starts a watcher thread; on a signal it aborts (kills and reaps) every live helper,
+/// so one that ignores SIGINT, or a signal sent to sfor's pid alone, leaves nothing behind, and
+/// then sfor dies by that same signal with its default disposition, as ripgrep would. Without
+/// helpers nothing is installed.
+#[cfg(unix)]
+pub(crate) mod cancel {
+    use super::Conn;
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
+
+    static LIVE: Mutex<Vec<Weak<Conn>>> = Mutex::new(Vec::new());
+    static WATCHER: OnceLock<()> = OnceLock::new();
+
+    pub(super) fn register(c: &Arc<Conn>) {
+        {
+            let mut live = LIVE.lock().unwrap();
+            live.retain(|w| w.strong_count() > 0);
+            live.push(Arc::downgrade(c));
+        }
+        WATCHER.get_or_init(|| {
+            use signal_hook::consts::{SIGINT, SIGTERM};
+            // If the handler cannot be installed, Ctrl-C keeps M1's behaviour.
+            let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGINT, SIGTERM]) else { return };
+            std::thread::spawn(move || {
+                if let Some(sig) = signals.forever().next() {
+                    abort_all();
+                    let _ = signal_hook::low_level::emulate_default_handler(sig);
+                    std::process::exit(128 + sig); // not reached: the default action ends sfor
+                }
+            });
+        });
+    }
+
+    /// Kills and reaps every live helper process of this sfor process.
+    fn abort_all() {
+        let live: Vec<Arc<Conn>> = LIVE.lock().unwrap().iter().filter_map(Weak::upgrade).collect();
+        abort(&live);
+    }
+
+    /// Kills and reaps `live`, in parallel. Tests call it with one Host's processes: the
+    /// registry is process-wide, and `abort_all` in a test would kill the other tests' fakes.
+    pub(super) fn abort(live: &[Arc<Conn>]) {
+        std::thread::scope(|s| {
+            for c in live {
+                s.spawn(move || c.abort());
+            }
+        });
+    }
+}
+
 fn refusal(r: &Reply) -> String {
     match &r.error {
         Some(e) => format!("refused hello: {e}"),
@@ -3509,8 +3741,11 @@ fn refusal(r: &Reply) -> String {
 
   `Conn::spawn`'s `thread` closure collects the `ends` receivers; if the borrow checker
   objects to the closure borrowing `ends` mutably, push the receivers after each spawn instead.
-  sfor installs no signal handler, and helpers stay in its process group, so a terminal's
-  Ctrl-C ends them with sfor (D32); a sfor killed in another way leaves them an EOF on stdin.
+  Helpers stay in sfor's process group, so a terminal's Ctrl-C reaches them too (D32); the
+  `cancel` watcher (D42) makes sure the ones that ignore it, or a SIGINT sent to sfor's pid
+  alone, still end and are reaped before sfor dies by the signal. A sfor killed by SIGKILL
+  leaves them an EOF on stdin. `signal-hook` 0.3.18 (Unix): `iterator::Signals` and
+  `low_level::emulate_default_handler` were run in the `sig` probe.
 
 - [ ] **Step 2:** GREEN: `cargo test helper::host`, then the same 20 times in a row
   (`for i in $(seq 20); do cargo test -q helper::host || break; done`) to catch races. Commit
@@ -4499,7 +4734,8 @@ mod tests {
     fn every_compiled_in_grammar_loads() {
         for g in grammars::COMPILED_IN {
             let l = grammars::language(g).unwrap_or_else(|| panic!("{g}"));
-            assert!(l.abi_version() >= 14, "{g}");
+            // tree-sitter 0.24 loads ABI 13–14 (D1).
+            assert_eq!(l.version(), 14, "{g}");
         }
         assert!(grammars::language("lua").is_none());
     }
@@ -4619,7 +4855,8 @@ pub fn outline(c: &Compiled, tree: &Tree, src: &[u8], range: Option<Range<usize>
     let mut matches = cursor.matches(&c.query, tree.root_node(), src);
     while let Some(m) = matches.next() {
         let (mut seg, mut name, mut prefix, mut sig) = (None, None, None, None);
-        for cap in m.captures() {
+        // tree-sitter 0.24: `captures` is a field (0.27 made it a method).
+        for cap in m.captures {
             match cap.index {
                 i if i == c.segment => seg = Some(cap.node),
                 i if i == c.name => name = Some(cap.node),
@@ -4763,7 +5000,7 @@ The index, `grammars/index.json` (its schema is C8's `docs/grammar-index.schema.
   "grammars": [
     {
       "name": "lua",
-      "version": "0.5.0",
+      "version": "0.2.0",
       "source": "https://github.com/tree-sitter-grammars/tree-sitter-lua",
       "license": "MIT",
       "definition": "name = \"lua\"\nextensions = [\"lua\"]\nprocessor = \"treesitter\"\n…",
@@ -4782,7 +5019,7 @@ The index, `grammars/index.json` (its schema is C8's `docs/grammar-index.schema.
 mod tests {
     use super::*;
 
-    const INDEX: &str = r#"{"version":1,"grammars":[{"name":"lua","version":"0.5.0","source":"https://example.org/lua","license":"MIT","definition":"name = 'lua'\nprocessor = 'treesitter'\n","binaries":{"linux-x86_64":{"url":"file:///tmp/x","sha256":"00"}},"future_field":1}]}"#;
+    const INDEX: &str = r#"{"version":1,"grammars":[{"name":"lua","version":"0.2.0","source":"https://example.org/lua","license":"MIT","definition":"name = 'lua'\nprocessor = 'treesitter'\n","binaries":{"linux-x86_64":{"url":"file:///tmp/x","sha256":"00"}},"future_field":1}]}"#;
 
     #[test]
     fn parses_and_ignores_unknown_fields() {
@@ -5024,7 +5261,7 @@ mod tests {
         let p = dir.join("payload");
         std::fs::write(&p, bin).unwrap();
         let sha = sha.map(String::from).unwrap_or_else(|| hex(&sha2::Sha256::digest(bin)));
-        let json = serde_json::json!({"version":1,"grammars":[{"name":"lua","version":"0.5.0","source":"s","license":"MIT",
+        let json = serde_json::json!({"version":1,"grammars":[{"name":"lua","version":"0.2.0","source":"s","license":"MIT",
             "definition":"name = 'lua'\nextensions = ['lua']\nprocessor = 'treesitter'\n[params]\ngrammar = 'lua'\nquery = '(x) @segment'\n",
             "binaries":{ (crate::grammars::index::system()): {"url": format!("file://{}", p.display()), "sha256": sha} }}]});
         Index::parse(json.to_string().as_bytes()).unwrap()
@@ -5038,7 +5275,7 @@ mod tests {
         assert_eq!(std::fs::read(&got.binary).unwrap(), b"#!fake");
         assert!(std::fs::read_to_string(&got.definition).unwrap().contains("processor = 'treesitter'"));
         assert_eq!(installed(dir.path()), vec![got.clone()]);
-        assert_eq!(got.version, "0.5.0");
+        assert_eq!(got.version, "0.2.0");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -5073,7 +5310,14 @@ mod tests {
         install(&index(src.path(), b"one", None), "lua", dir.path()).unwrap();
         let got = install(&index(src.path(), b"two", None), "lua", dir.path()).unwrap();
         assert_eq!(std::fs::read(&got.binary).unwrap(), b"two");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        // The lock stays (removing it would let two installers lock different inodes); no
+        // staging or backup directory does (review r2, Codex #4, Fable #3).
+        let names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let mut names = names;
+        names.sort();
+        assert_eq!(names, [".lua.lock", "lua"]);
+        assert_eq!(installed(dir.path()).len(), 1);
     }
 
     #[test]
@@ -5131,10 +5375,10 @@ mod tests {
         let i = index(src.path(), b"x", None);
         let before = list(&["php", "rust"], &installed(dir.path()), Ok(&i));
         assert!(before.contains("php") && before.contains("compiled in"), "{before}");
-        assert!(before.contains("lua") && before.contains("available 0.5.0"), "{before}");
+        assert!(before.contains("lua") && before.contains("available 0.2.0"), "{before}");
         install(&i, "lua", dir.path()).unwrap();
         let after = list(&["php"], &installed(dir.path()), Err("offline"));
-        assert!(after.contains("installed 0.5.0"), "{after}");
+        assert!(after.contains("installed 0.2.0"), "{after}");
         assert!(!after.contains("available"), "{after}");
     }
 }
@@ -5287,8 +5531,9 @@ query = '''
 kinds = { function_declaration = "function" }
 ```
 
-Verified in the probe: tree-sitter-lua 0.5.0 (ABI 15) builds with tree-sitter 0.27.1, and this
-query on the fixture captures `Player:update` (a `method_index_expression`) and `helper`.
+Verified in the probe: tree-sitter-lua 0.2.0 (ABI 14) builds with tree-sitter 0.24.7, and this
+query on the fixture captures `Player:update` (a `method_index_expression`) and `helper`
+(`ts024.txt`). 0.4.1 and 0.5.0 are ABI 15, which tree-sitter 0.24 refuses (D1).
 
 - [ ] **Step 1: failing tests** in `helpers/grammar/tests/protocol.rs`, with the same `H`
   harness as the example helper's tests (copy it; the two crates do not share test code):
@@ -5543,7 +5788,7 @@ impl super::Processor for HelperProcessor {
         std::fs::create_dir(&lua).unwrap();
         std::fs::write(lua.join("lua.toml"), "name='lua'\nextensions=['lua']\nprocessor='treesitter'\n[params]\ngrammar='lua'\nquery='(x) @segment'").unwrap();
         std::fs::write(lua.join(crate::grammars::binary_name("lua")), "").unwrap();
-        std::fs::write(lua.join("installed.json"), r#"{"version":"0.5.0"}"#).unwrap();
+        std::fs::write(lua.join("installed.json"), r#"{"version":"0.2.0"}"#).unwrap();
         let user = tempfile::tempdir().unwrap();
         let (r, w) = Registry::load_all(Some(user.path()), Some(grammars.path()), &crate::processors::Processors::known);
         assert!(w.is_empty(), "{w:?}");
@@ -5594,7 +5839,7 @@ impl super::Processor for HelperProcessor {
         std::fs::create_dir(&lua).unwrap();
         std::fs::write(lua.join(crate::grammars::binary_name("lua")), "").unwrap();
         std::fs::write(lua.join("lua.toml"), "name='lua'\nprocessor='treesitter'").unwrap();
-        std::fs::write(lua.join("installed.json"), r#"{"version":"0.5.0"}"#).unwrap();
+        std::fs::write(lua.join("installed.json"), r#"{"version":"0.2.0"}"#).unwrap();
         let (w, seen) = collecting();
         let ps = Processors::new(4, w).with_grammars(Some(grammars.path().to_path_buf()));
         let d = def("name='lua'\nprocessor='treesitter'\n[params]\ngrammar='lua'\nquery=''");
@@ -5722,7 +5967,14 @@ Everything links here. Locate the code by name: `load_registry`, `main` (actions
 /// Anything else reaches a Helper Processor as a temporary copy (spec §4.4, Paths).
 fn disk_of<'a>(t: &'a Target, src: &Source) -> Option<&'a Path> {
     let p = t.fs.as_deref()?;
-    let m = std::fs::metadata(p).ok()?;
+    // `/dev/stdin` is a regular file when stdin is redirected from one (`< app.ini`), and in
+    // the helper it is the protocol pipe; `/dev/fd/N` and `/proc/self/fd/N` likewise. A path
+    // that resolves into /dev or /proc always goes as a copy (review r2, Fable #1).
+    let real = std::fs::canonicalize(p).ok()?;
+    if p.starts_with("/dev") || p.starts_with("/proc") || real.starts_with("/dev") || real.starts_with("/proc") {
+        return None;
+    }
+    let m = std::fs::metadata(&real).ok()?;
     (m.is_file() && !src.had_bom && m.len() == src.bytes().len() as u64).then_some(p)
 }
 ```
@@ -6056,27 +6308,35 @@ fn starts(log: &std::path::Path) -> usize {
       (`start <pid>`) exists under `/proc`.
   14. `h14_install_a_grammar_and_use_it` (spec §11 #17): build
       `workspace_bin("sfor-grammar", "sfor-grammar", &["lua"])`, copy it to `<tmp>/payload`,
-      write `<tmp>/index.json` with one entry `lua` (version `0.5.0`, the Definition from
+      write `<tmp>/index.json` with one entry `lua` (version `0.2.0`, the Definition from
       `helpers/grammar/definitions/lua.toml`, the binary for `grammars::index::system()` with
       a `file://` URL and its SHA-256), set `SFOR_GRAMMAR_INDEX=file://<tmp>/index.json`;
       `sfor --install-grammar lua` exits 0; `--list-grammars` has a line `lua … installed
-      0.5.0`; `--list-formats` shows `lua` as `installed (…)`; with
+      0.2.0`; `--list-formats` shows `lua` as `installed (…)`; with
       `helpers/grammar/tests/fixtures/player.lua` copied into the fixture,
       `sfor needle player.lua --flat` prints `Player:update` and `helper` Trails.
   15. `h15_a_wrong_checksum_installs_nothing`: the same index with a wrong `sha256`: exit 2,
       stderr contains `SHA-256`, the Grammar directory has no `lua`.
-  16. `h16_ctrl_c_ends_the_helpers` (Linux, D32): start sfor in a new process group
-      (`std::os::unix::process::CommandExt::process_group(0)`) with `SFOR_EXAMPLE_HANG=web` and
-      `SFOR_EXAMPLE_LOG`, wait until the log has a `start` line, then send SIGINT to the whole
-      group as a terminal's Ctrl-C does (`kill -INT -- -<pgid>`); within 2 s sfor has exited by
-      that signal and no pid of the log exists under `/proc`.
+  16. `h16_ctrl_c_ends_every_helper` (Linux, D32, D42; review r2, Codex #2): the Definition's
+      command is `["sh", "-c", "trap '' INT; exec <example helper>"]`, so the helper ignores
+      SIGINT; `SFOR_EXAMPLE_HANG=web` keeps a request in flight and `SFOR_EXAMPLE_LOG` records
+      the pids. Two runs: (a) sfor in a new process group
+      (`std::os::unix::process::CommandExt::process_group(0)`), SIGINT to the whole group as a
+      terminal's Ctrl-C does (`kill -INT -- -<pgid>`); (b) SIGINT to sfor's pid alone. In both,
+      once the log has a `start` line: within 2 s sfor's `ExitStatus::signal()` is
+      `Some(SIGINT)` (`std::os::unix::process::ExitStatusExt`), and no pid of the log exists
+      under `/proc` (killed and reaped, not left as a zombie re-parented to init). And (c) a run
+      with no helper (a Markdown search on a FIFO that never ends) killed by SIGINT also ends
+      by SIGINT: nothing was installed.
   17. `h17_a_helpers_child_cannot_hold_sfor` (Linux, D32): `SFOR_EXAMPLE_FORK=1`: the helper
       leaves a `sleep 30` holding its stdout and stderr; sfor still finishes in under 4 s, with
       its normal output.
   18. `h18_streams_named_on_the_command_line_go_through_a_temporary_file` (Linux, D8, Codex
-      #4): `sfor --format ini needle /dev/stdin` with `app.ini` on stdin, and the same through
-      a FIFO (`mkfifo`, a writer thread writing `app.ini` into it): both give `app.ini`'s Trails,
-      and the helper never blocks (the run takes under 4 s).
+      r1 #4, Fable r2 #1): `sfor --format ini needle /dev/stdin` three ways — `app.ini` through a
+      pipe on stdin, `app.ini` redirected as a file (`Stdio::from(File::open("ini/app.ini"))`,
+      where `/dev/stdin` is a regular file), and `/dev/fd/0` redirected the same way — and
+      `sfor --format ini needle <fifo>` with a writer thread filling a `mkfifo`: every run gives
+      `app.ini`'s Trails, no timeout warning, in under 4 s.
   19. `h19_a_failing_helper_is_plain_like_rg` (D33, Codex #6): with `SFOR_EXAMPLE_CRASH=long`, a
       file `long.ini` with a 5 000-character line holding `needle` prints exactly what a `.txt`
       copy of it prints (Fragments included), and `--json` gives `"format": null` for it.
@@ -6126,15 +6386,18 @@ median() {
   awk -v a="$SFOR_S" -v b="$RG_S" -v n="$1" 'BEGIN { printf "%-22s rg %.3f s  sfor %.3f s  ratio %.2f\n", n, b, a, a / b }'
 }
 
-# check NAME EXPECTED_CODE SFOR_FLAG RG_ARGS…: sfor must exit EXPECTED_CODE with nothing on
-# stderr (no fallback warning), and print at least as many lines as rg (`--flat` prints a line
-# once per Trail, so a table row can print twice; `--no-trail` must print exactly rg's).
+# check NAME EXPECTED_CODE SFOR_FLAG RG_ARGS…: sfor must exit EXPECTED_CODE, write to stderr
+# only what rg writes (an unreadable file warns in both; any other line is a fallback
+# warning and fails — review r2, Fable #6), and print at least as many lines as rg (`--flat`
+# prints a line once per Trail, so a table row can print twice; `--no-trail` exactly rg's).
 check() {
   local name="$1" want="$2" flag="$3"; shift 3
-  local code=0 err
-  err=$("$sfor" --color never "$flag" "$@" 2>&1 >/tmp/sfor-bench-check.out) || code=$?
-  if [ "$code" != "$want" ] || [ -n "$err" ]; then
-    echo "  FAIL $name: sfor exited $code (want $want); stderr: ${err:0:300}"; fail=1; return
+  local code=0 err rgerr
+  err=$("$sfor" --color never "$flag" "$@" 2>&1 >/tmp/sfor-bench-check.out | sed 's/^sfor: //' | sort) || true
+  "$sfor" --color never "$flag" "$@" >/dev/null 2>&1 || code=$?
+  rgerr=$( (rg --color never "$@" 2>&1 >/dev/null || true) | sed 's/^rg: //' | sort)
+  if [ "$code" != "$want" ] || [ "$err" != "$rgerr" ]; then
+    echo "  FAIL $name: sfor exited $code (want $want); stderr differs from rg's: ${err:0:300}"; fail=1; return
   fi
   local ours rgs
   ours=$(wc -l </tmp/sfor-bench-check.out)
@@ -6202,6 +6465,9 @@ exit "$fail"
   RSS is at most rg's plus 32 MiB (the collector keeps three stacks, not the keys).
 - [ ] `treesitter_skips_files_over_max_bytes`: a 20 MB generated JavaScript file with one
   `needle`: one warning naming `max_bytes`, Plain output, and at most 2 × rg's wall time.
+- [ ] `broken_toml_recovers_in_bounded_time`: a 1 MB TOML shaped like a Cargo.lock with a
+  `"""` left open 300 lines before its end and a `needle` before it: the `needle`'s Trail
+  survives, and sfor's wall time is at most rg's plus 2 s (review r2, Fable #4).
 - [ ] `yaml_beyond_the_tree_sitter_limit`: a 40 000-line YAML with a `needle` at the end gets
   its Trail end to end, in at most rg's time plus 1 s.
 - [ ] Commit «Add the M2 performance ceilings».

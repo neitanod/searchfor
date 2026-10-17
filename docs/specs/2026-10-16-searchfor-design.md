@@ -194,8 +194,11 @@ file of that Format in the same run, and closes its stdin when the run ends. The
 that EOF; sfor waits up to one second and then kills it. The next run starts it again. Every
 process sfor starts is also reaped: a copy that crashed, timed out or was killed is collected at
 once, never left as a zombie until sfor exits (M2 plan, D32). Helpers run in sfor's process
-group, so a terminal's Ctrl-C ends them with sfor, and a sfor ended any other way leaves them an
-EOF on stdin. A helper that starts processes of its own must stop them when it exits; sfor waits
+group, so a terminal's Ctrl-C reaches them too. On Unix, once a helper has started, sfor also
+watches SIGINT and SIGTERM: on one, it kills and reaps every helper — including one that
+ignores the signal, and also when the signal was sent to sfor alone — and then dies by that
+signal, as ripgrep would (M2 plan, D42). A sfor killed with SIGKILL leaves its helpers an EOF
+on stdin. A helper that starts processes of its own must stop them when it exits; sfor waits
 at most one more second for pipes such a child keeps open, and then exits anyway.
 
 **Modes (8458, 8459)**, chosen by `mode` in the Definition:
@@ -241,9 +244,10 @@ stderr is relayed as a warning, `sfor: <format>: <line>`, silenced by `--no-mess
 
 **Paths.** sfor sends the path and the Match positions, never the content (8452); the helper reads
 the file. `path` is relative to sfor's working directory, which the helper inherits, or absolute.
-sfor sends a file's own path only when it is a regular file whose bytes sfor searched unchanged.
-For anything else — stdin, `/dev/stdin` or a FIFO named on the command line (a helper must never
-reopen a stream), a file whose BOM sfor removed or whose UTF-16 it transcoded, a path that is not
+sfor sends a file's own path only when it is a regular file whose bytes sfor searched unchanged,
+outside `/dev` and `/proc`. For anything else — stdin, `/dev/stdin`, `/dev/fd/N` or a FIFO named
+on the command line (a helper must never reopen a stream; `/dev/stdin` redirected from a file is
+a regular file, and in the helper it is the protocol pipe), a file whose BOM sfor removed or whose UTF-16 it transcoded, a path that is not
 UTF-8, a document's extracted text with `--docs` (M4) — sfor writes the bytes it searched to a
 temporary file of the run, removed after the answer, and sends that path, so `byte` always
 counts the bytes at `path`.
@@ -323,9 +327,10 @@ headings, and an optional `signature` that tree output may show.
   `--in-headings '^ports$'` finds `ports:`.
 - On a syntax error the Trails of the Matches before it are kept, and the Matches after it print
   with an empty Trail, without a warning: Helm templates are often not valid YAML, and a warning
-  per file would bury the output (M2 plan). For TOML, «before it» is the longest prefix ending at
-  a line start before the reported error that still parses (up to 256 lines back), since
-  toml_edit can report an error lines after an unclosed array or string.
+  per file would bury the output (M2 plan). For TOML, «before it» is a prefix ending at a line
+  start before the reported error that still parses, found by stepping back 1, 2, 4… lines and
+  then halving the gap, within 32 MiB of parsing, since toml_edit can report an error lines
+  after an unclosed array or string.
 
 ### 5.3 Code (#10)
 
