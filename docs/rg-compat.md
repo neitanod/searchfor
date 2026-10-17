@@ -183,8 +183,9 @@ count that whole search (spec §6.4) (code review r3, Fable #5).
 `--in-headings` searches the Segment names the Processor reads from the whole Source, in place
 of ripgrep's search of the lines (spec §1, note 2). The `end` and `summary` statistics of
 `--json` count that search: `bytes_searched` is the size of the Source even when `-m` keeps only
-the first Match, where rg 14.1.1 stops reading at its `-m`th Match, and `matched_lines` and
-`matches` count the Matches in names. Spec §6.4 says the statistics count the search before
+the first Match, where rg 14.1.1 stops reading at its `-m`th Match (a walked file with binary
+data is read as rg reads it, up to where rg stops), and `matched_lines` and `matches` count the
+Matches in names. Spec §6.4 says the statistics count the search before
 `--in-headings` filters it; with `--in-headings` there is no line search to count, as the names
 search finds Matches the line search does not (`^needle` matches `# needle`), so no rg command
 gives the same numbers:

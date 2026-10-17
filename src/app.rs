@@ -288,6 +288,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
                     stream: search::streaming_searcher(args, false, false),
                     source: search::searcher(args, false, true),
                     buf: ctx.out.buffer(),
+                    binary_quit: false,
                 },
                 |st, t| ctx.trail_file(st, &t, &detector, &ro),
             )?;
@@ -350,6 +351,8 @@ struct TrailState {
     stream: Searcher,
     source: Searcher,
     buf: Buffer,
+    /// The last `describe`d file's search quit at binary data (`BinaryDetection::quit`).
+    binary_quit: bool,
 }
 
 /// What `stream_file` searches: the file or stdin as it is; the Source, in memory as ripgrep
@@ -713,6 +716,20 @@ impl Ctx<'_> {
         buf.clear();
         if let Some(mode) = self.summary {
             let d = found.as_ref().map(|(_, d)| d).filter(|_| kept);
+            // rg 14.1.1's summary printer prints nothing for a file whose search quit at binary
+            // data (grep-printer-0.2.2/src/summary.rs:744-766), unless -m stopped the search
+            // first; -l stops at the first Match, before the binary data. Its count is zero,
+            // which for --files-without-match still counts as a Match in the exit code
+            // (`SummarySink::has_match`).
+            let stopped_first = self.args.max_count.is_some_and(|m| {
+                d.map_or(0, |d| d.file.matches().count() as u64) >= m
+            });
+            if st.binary_quit && mode != summary::Mode::FilesWithMatches && !stopped_first {
+                if mode == summary::Mode::FilesWithoutMatch {
+                    self.matched.store(true, Relaxed);
+                }
+                return;
+            }
             match summary::render(mode, &t.path, d, self.with_filename, buf) {
                 Ok(true) => self.matched.store(true, Relaxed),
                 Ok(false) => {}
@@ -1003,6 +1020,7 @@ impl Ctx<'_> {
                 search::max_count(self.args),
             ) {
                 Ok((fm, stats)) => {
+                    st.binary_quit = self.quit_at_binary(t, &stats);
                     self.count_quiet_json(&stats, fm.is_some());
                     Ok(fm.map(|fm| (src, fm)))
                 }
@@ -1050,6 +1068,7 @@ impl Ctx<'_> {
         let mut stats = sink.stats;
         stats.elapsed = started.elapsed();
         let found = sink.items.iter().any(|i| matches!(i, Item::Match(_)));
+        st.binary_quit = self.quit_at_binary(t, &stats);
         self.count_quiet_json(&stats, found);
         if !found {
             return Ok(None);
@@ -1104,8 +1123,9 @@ impl Ctx<'_> {
         t: &Target,
         detector: &Detector,
     ) -> Result<Option<(Source, Described)>, ()> {
+        st.binary_quit = false;
         let found = if self.args.in_headings {
-            self.names_of(t, detector)?
+            self.names_of(st, t, detector)?
         } else {
             self.search_first(st, t, detector)?.map(|(src, fm)| {
                 let def = detector.detect(&src.path, src.head());
@@ -1155,11 +1175,16 @@ impl Ctx<'_> {
     /// --in-headings: the Source and its names, and the Matches in them. A Plain file has no
     /// names: searched, nothing found (code review r1, Fable #5), and not read when its path
     /// says so.
-    fn names_of(&self, t: &Target, detector: &Detector) -> Result<Option<(Source, Described)>, ()> {
+    fn names_of(
+        &self,
+        st: &mut TrailState,
+        t: &Target,
+        detector: &Detector,
+    ) -> Result<Option<(Source, Described)>, ()> {
         if matches!(detector.detect_by_path(&t.path), Some(None)) {
             return Ok(None);
         }
-        let src = match &t.fs {
+        let mut src = match &t.fs {
             None => {
                 let mut v = Vec::new();
                 if let Err(e) = std::io::stdin().lock().read_to_end(&mut v) {
@@ -1179,6 +1204,36 @@ impl Ctx<'_> {
                 }
             },
         };
+        let binary = self.binary_probe(st, t, &src)?;
+        st.binary_quit = binary.as_ref().is_some_and(|b| b.quit);
+        if let Some(b) = &binary {
+            if b.quit && b.cut == 0 {
+                // rg 14.1.1 skips a walked file whose first buffer has binary data.
+                let stats = FileStats {
+                    bytes_searched: b.bytes_searched,
+                    ..FileStats::default()
+                };
+                self.count_quiet_json(&stats, false);
+                return Ok(None);
+            }
+            // The names of the bytes rg searches: up to the buffer it quits at, or with NUL
+            // bytes turned into line breaks by a reader search.
+            let bytes = if b.quit {
+                Some(src.bytes()[..b.cut].to_vec())
+            } else if b.reader {
+                Some(
+                    src.bytes()
+                        .iter()
+                        .map(|&c| if c == 0 { b'\n' } else { c })
+                        .collect(),
+                )
+            } else {
+                None
+            };
+            if let Some(bytes) = bytes {
+                src = Source::from_bytes(src.path.clone(), bytes, src.explicit);
+            }
+        }
         let def = detector.detect(&src.path, src.head());
         let Some((p, def)) = def.and_then(|d| Some((processors::by_name(&d.processor)?, d))) else {
             return Ok(None);
@@ -1196,10 +1251,27 @@ impl Ctx<'_> {
                 return Err(());
             }
         };
-        let found = self.heading_matches(&src, &names);
+        let mut found = self.heading_matches(&src, &names);
+        if let (Some(b), Some((file, ..))) = (&binary, found.as_mut()) {
+            let s = &mut file.stats;
+            s.binary_offset = Some(b.offset);
+            // The items rg prints before it detects the binary data (design note 3).
+            s.binary_cut = Some(
+                file.items
+                    .iter()
+                    .take_while(|i| item_line(i).absolute_offset < b.cut as u64)
+                    .count(),
+            );
+            if b.quit {
+                s.bytes_searched = b.bytes_searched;
+            }
+        }
         let stats = found.as_ref().map_or_else(
             || FileStats {
-                bytes_searched: src.bytes().len() as u64,
+                bytes_searched: match &binary {
+                    Some(b) if b.quit => b.bytes_searched,
+                    _ => src.bytes().len() as u64,
+                },
                 ..FileStats::default()
             },
             |f| f.0.stats.clone(),
@@ -1218,6 +1290,67 @@ impl Ctx<'_> {
                 },
             };
             (src, d)
+        }))
+    }
+
+    /// The search behind `stats` stopped at binary data, as a walked file's does.
+    fn quit_at_binary(&self, t: &Target, stats: &FileStats) -> bool {
+        stats.binary_offset.is_some()
+            && search::binary_detection(self.args, t.explicit)
+                .quit_byte()
+                .is_some()
+    }
+
+    /// --in-headings: what ripgrep 14.1.1's search of `src` does with its binary data, found by
+    /// searching it for every line with the searcher, the binary policy and the search path of
+    /// `search_first`. None: no binary data, or `-a`.
+    fn binary_probe(
+        &self,
+        st: &mut TrailState,
+        t: &Target,
+        src: &Source,
+    ) -> Result<Option<BinaryProbe>, ()> {
+        let detection = search::binary_detection(self.args, t.explicit);
+        let quit = detection.quit_byte().is_some();
+        if (!quit && detection.convert_byte().is_none()) || !src.bytes().contains(&0) {
+            return Ok(None);
+        }
+        let in_memory = t.fs.is_some() && self.in_memory && !src.had_bom;
+        let searcher = if in_memory {
+            &mut st.source
+        } else {
+            &mut st.stream
+        };
+        searcher.set_binary_detection(detection);
+        let every = RegexMatcher::new_line_matcher("").expect("the empty pattern compiles");
+        let (fm, stats) = match search::search_source_stats(searcher, &every, src, in_memory, None)
+        {
+            Ok(r) => r,
+            Err(e) => {
+                self.msgs
+                    .error(format_args!("{}: {e:#}", t.path.display()));
+                return Err(());
+            }
+        };
+        let Some(offset) = stats.binary_offset else {
+            return Ok(None);
+        };
+        // The end of the last line searched before the binary data was detected.
+        let cut = match (&fm, stats.binary_cut) {
+            (Some(fm), Some(k)) => fm.items[..k.min(fm.items.len())]
+                .last()
+                .map_or(0, |i| {
+                    let l = item_line(i);
+                    l.absolute_offset as usize + l.len
+                }),
+            _ => 0,
+        };
+        Ok(Some(BinaryProbe {
+            offset,
+            cut: cut.min(src.bytes().len()),
+            quit,
+            reader: !in_memory,
+            bytes_searched: stats.bytes_searched,
         }))
     }
 
@@ -1377,6 +1510,27 @@ impl Ctx<'_> {
             stats,
         };
         Some((file, trails, sections))
+    }
+}
+
+/// What `binary_probe` finds about a Source with binary data.
+struct BinaryProbe {
+    /// rg's `binary_offset`.
+    offset: u64,
+    /// The byte where rg detected the binary data: the lines before it were searched first.
+    cut: usize,
+    /// Walked: rg stops at `cut` (`BinaryDetection::quit`). Otherwise it converts.
+    quit: bool,
+    /// A reader search, whose conversion turns NUL bytes into line breaks.
+    reader: bool,
+    /// rg's `bytes_searched`.
+    bytes_searched: u64,
+}
+
+/// The line of a Match or of a context line.
+fn item_line(i: &Item) -> &Line {
+    match i {
+        Item::Match(l) | Item::Context(l) => l,
     }
 }
 

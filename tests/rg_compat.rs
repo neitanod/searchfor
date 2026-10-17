@@ -1595,3 +1595,133 @@ fn in_headings_stats_deviate_as_documented() {
     let o = rg(&fx, &["-n", "^needle", "h.md"], In::Null);
     assert_eq!(stdout(&o), "2:needle again\n");
 }
+
+/// Follow-up of code review r6: `--in-headings` follows ripgrep 14.1.1's binary policy. A walked
+/// file stops at the buffer with its NUL (`quit`): one whose NUL is in its first buffer is
+/// skipped, and one whose NUL comes later keeps the Matches before it, with rg's warning. A file
+/// named on the command line and stdin are searched whole (`convert`, with stdin's NUL turned
+/// into a line break as rg's reader does) and print `binary file matches`. The pattern matches
+/// only in headings, so rg's line Matches are the heading Matches.
+#[test]
+fn in_headings_follows_the_binary_policy_of_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("ihb")).unwrap();
+    let nul = "# needle\nbody\0\n## needle two\n";
+    std::fs::write(fx.file("ihb/nul.md"), nul).unwrap();
+    std::fs::write(fx.file("ihb/ok.md"), "# needle ok\nbody\n").unwrap();
+    let late = format!("# needle\n{}\0\n# needle late\n", "filler line\n".repeat(6000));
+    std::fs::write(fx.file("ihb/late.md"), late).unwrap();
+    let ends = |o: &Output| -> Vec<(String, Value)> {
+        stdout(o)
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|m| m["type"] == "end")
+            .map(|m| {
+                let p = m["data"]["path"]["text"].as_str().unwrap().to_string();
+                (p, m["data"]["binary_offset"].clone())
+            })
+            .collect()
+    };
+    let mut r = Report(Vec::new());
+    let cases: [(&[&str], &[&str], In); 3] = [
+        (&["--sort", "path", "needle", "ihb"], &[], In::Null),
+        (&["needle", "ihb/nul.md"], &[], In::Null),
+        (&["needle"], &["--format", "markdown"], In::File("ihb/nul.md")),
+    ];
+    for (args, extra, input) in cases {
+        let mut j = vec!["--json"];
+        j.extend_from_slice(args);
+        let want = rg(&fx, &j, input);
+        let mut s = vec!["--in-headings"];
+        s.extend_from_slice(extra);
+        s.extend_from_slice(&j);
+        let got = sfor(&fx, &s, input);
+        r.check(
+            format!("{s:?}"),
+            (
+                code(&want),
+                format!("{:?}\n{:?}", json_of(&want, true, &["begin", "match"]), ends(&want)),
+            ),
+            (
+                code(&got),
+                format!("{:?}\n{:?}", json_of(&got, true, &["begin", "match"]), ends(&got)),
+            ),
+        );
+        // The binary messages of rg's standard printer and of the flat layout.
+        let messages = |o: &Output| -> Vec<String> {
+            stdout(o)
+                .lines()
+                .filter_map(|l| l.find("binary file").map(|_| l))
+                .map(|l| {
+                    let l = l.trim_start();
+                    let at = l.find("WARNING").or_else(|| l.find("binary file")).unwrap();
+                    l[at..].to_string()
+                })
+                .collect()
+        };
+        let want = rg(&fx, args, input);
+        let mut f = vec!["--in-headings", "--flat"];
+        f.extend_from_slice(extra);
+        f.extend_from_slice(args);
+        let got = sfor(&fx, &f, input);
+        r.check(
+            format!("{f:?}"),
+            (code(&want), format!("{:?}", messages(&want))),
+            (code(&got), format!("{:?}", messages(&got))),
+        );
+        if args.len() < 4 {
+            // One file: the flat layout prints only rg's message.
+            r.check(
+                format!("{f:?} (stdout)"),
+                (code(&want), stdout(&want)),
+                (code(&got), stdout(&got)),
+            );
+        }
+    }
+    r.assert_empty();
+}
+
+/// rg 14.1.1's summary printer prints nothing for a file whose search quit at binary data
+/// (grep-printer-0.2.2/src/summary.rs:744-766), except `-l`, which stops at its first Match
+/// before the binary data; `-m` that stops the search first keeps the count. The same with
+/// `--in-headings` and with `--within ''`, which keeps every Match. Same files as
+/// `in_headings_follows_the_binary_policy_of_ripgrep`.
+#[test]
+fn summaries_of_walked_binary_files_equal_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("ihb")).unwrap();
+    std::fs::write(fx.file("ihb/nul.md"), "# needle\nbody\0\n## needle two\n").unwrap();
+    std::fs::write(fx.file("ihb/ok.md"), "# needle ok\nbody\n").unwrap();
+    let late = format!("# needle\n{}\0\n# needle late\n", "filler line\n".repeat(6000));
+    std::fs::write(fx.file("ihb/late.md"), late).unwrap();
+    let mut r = Report(Vec::new());
+    for mode in [&["--in-headings"][..], &["--within", ""]] {
+        for summary in [
+            &["-c"][..],
+            &["--count-matches"],
+            &["-l"],
+            &["--files-without-match"],
+            &["-c", "-m1"],
+            &["--files-without-match", "-m1"],
+        ] {
+            let mut a = summary.to_vec();
+            a.extend_from_slice(&["--sort", "path", "needle", "ihb"]);
+            let want = rg(&fx, &a, In::Null);
+            let mut s = mode.to_vec();
+            s.extend_from_slice(&a);
+            let got = sfor(&fx, &s, In::Null);
+            r.check(
+                format!("{s:?}"),
+                (code(&want), stdout(&want)),
+                (code(&got), stdout(&got)),
+            );
+        }
+    }
+    r.assert_empty();
+}
