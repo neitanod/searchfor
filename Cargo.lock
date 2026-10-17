@@ -1426,6 +1426,7 @@ version = "0.2.0-dev"
 dependencies = [
  "anyhow",
  "searchfor",
+ "serde_json",
  "tree-sitter",
  "tree-sitter-lua",
 ]
