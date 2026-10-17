@@ -92,23 +92,33 @@ pub fn render_with_stats(
 }
 
 /// One file's messages, written as they come: `begin` before the first line, `end` last.
+/// `match` and `context` are written straight into a reused buffer, in the bytes `serde_json`
+/// gives for the same values (code review r2, Fable #3).
 pub struct JsonFile<'a> {
-    path: Value,
-    format: Value,
+    /// The path's `Data`, serialized.
+    path: Vec<u8>,
+    /// The Format's name or null, serialized.
+    format: Vec<u8>,
     o: &'a JsonOptions,
     /// Bytes written so far for this file.
     pub written: u64,
     begun: bool,
+    scratch: Vec<u8>,
 }
 
 impl<'a> JsonFile<'a> {
     pub fn new(path: &std::path::Path, format: Option<&str>, o: &'a JsonOptions) -> Self {
+        let mut p = Vec::new();
+        put_data(&mut p, &super::path_bytes(path));
+        let mut f = Vec::new();
+        put_json(&mut f, &format);
         Self {
-            path: path_data(path),
-            format: json!(format),
+            path: p,
+            format: f,
             o,
             written: 0,
             begun: false,
+            scratch: Vec::new(),
         }
     }
 
@@ -116,13 +126,70 @@ impl<'a> JsonFile<'a> {
     pub fn begin(&mut self, w: &mut dyn Write) -> std::io::Result<()> {
         if !self.begun {
             self.begun = true;
-            self.written += emit(w, "begin", json!({"path": self.path}))?;
+            let s = &mut self.scratch;
+            s.clear();
+            s.extend_from_slice(b"{\"type\":\"begin\",\"data\":{\"path\":");
+            s.extend_from_slice(&self.path);
+            s.extend_from_slice(b"}}\n");
+            w.write_all(s)?;
+            self.written += s.len() as u64;
         }
         Ok(())
     }
 
     pub fn begun(&self) -> bool {
         self.begun
+    }
+
+    /// The fields ripgrep writes for a match or context message, in its order, up to the
+    /// submatches' array, open; `sub` adds the extra fields of submatch `k`.
+    fn line_fields(
+        &mut self,
+        kind: &str,
+        line: &Line,
+        bytes: &[u8],
+        sub: impl Fn(&mut Vec<u8>, usize),
+    ) {
+        let s = &mut self.scratch;
+        s.clear();
+        s.extend_from_slice(b"{\"type\":\"");
+        s.extend_from_slice(kind.as_bytes());
+        s.extend_from_slice(b"\",\"data\":{\"path\":");
+        s.extend_from_slice(&self.path);
+        s.extend_from_slice(b",\"lines\":");
+        put_data(s, bytes);
+        s.extend_from_slice(b",\"line_number\":");
+        if self.o.line_numbers {
+            put_u64(s, line.line_number);
+        } else {
+            s.extend_from_slice(b"null");
+        }
+        s.extend_from_slice(b",\"absolute_offset\":");
+        put_u64(s, line.absolute_offset);
+        s.extend_from_slice(b",\"submatches\":[");
+        for (k, m) in line.submatches.iter().enumerate() {
+            if k > 0 {
+                s.push(b',');
+            }
+            let (a, b) = (m.start.min(bytes.len()), m.end.min(bytes.len()));
+            s.extend_from_slice(b"{\"match\":");
+            put_data(s, &bytes[a..b.max(a)]);
+            s.extend_from_slice(b",\"start\":");
+            put_u64(s, m.start as u64);
+            s.extend_from_slice(b",\"end\":");
+            put_u64(s, m.end as u64);
+            sub(s, k);
+            s.push(b'}');
+        }
+        s.push(b']');
+    }
+
+    /// Writes the message built in `scratch`, closed.
+    fn emit_scratch(&mut self, w: &mut dyn Write) -> std::io::Result<()> {
+        self.scratch.extend_from_slice(b"}}\n");
+        w.write_all(&self.scratch)?;
+        self.written += self.scratch.len() as u64;
+        Ok(())
     }
 
     /// A `match` message: `bytes` is the line, `trails` one per submatch (one for an inverted
@@ -136,63 +203,52 @@ impl<'a> JsonFile<'a> {
         sections: &[Value],
     ) -> std::io::Result<()> {
         self.begin(w)?;
-        let mut data = rg_data(
-            &self.path,
-            bytes,
-            m.line_number,
-            m.absolute_offset,
-            &m.submatches,
-            self.o,
-        );
-        if trails.iter().any(|t| *t != trails[0]) {
-            let subs = data["submatches"].as_array_mut().expect("submatches");
-            for (k, sub) in subs.iter_mut().enumerate() {
-                let sub = sub.as_object_mut().expect("submatch");
-                sub.insert("trail".into(), json!(trails[k]));
-                if self.o.expand && sections[k] != sections[0] {
-                    sub.insert("section".into(), sections[k].clone());
+        let expand = self.o.expand;
+        let differ = trails.iter().any(|t| *t != trails[0]);
+        self.line_fields("match", m, bytes, |s, k| {
+            if differ {
+                s.extend_from_slice(b",\"trail\":");
+                put_json(s, trails[k]);
+                if expand && sections[k] != sections[0] {
+                    s.extend_from_slice(b",\"section\":");
+                    put_json(s, &sections[k]);
                 }
             }
+        });
+        let s = &mut self.scratch;
+        s.extend_from_slice(b",\"format\":");
+        s.extend_from_slice(&self.format);
+        s.extend_from_slice(b",\"trail\":");
+        put_json(s, trails[0]);
+        s.extend_from_slice(b",\"fragment\":");
+        // A line that fits has no Fragment: it has no more characters than bytes.
+        if text::strip_terminator(bytes).len() <= self.o.width {
+            s.extend_from_slice(b"null");
+        } else {
+            put_json(s, &fragment(bytes, &m.submatches, self.o.width));
         }
-        let obj = data.as_object_mut().expect("data");
-        obj.insert("format".into(), self.format.clone());
-        obj.insert("trail".into(), json!(trails[0]));
-        obj.insert(
-            "fragment".into(),
-            fragment(bytes, &m.submatches, self.o.width),
-        );
-        if self.o.expand {
-            obj.insert(
-                "section".into(),
-                sections.first().cloned().unwrap_or(Value::Null),
-            );
+        if expand {
+            s.extend_from_slice(b",\"section\":");
+            put_json(s, sections.first().unwrap_or(&Value::Null));
         }
-        self.written += emit(w, "match", data)?;
-        Ok(())
+        self.emit_scratch(w)
     }
 
     pub fn context(&mut self, w: &mut dyn Write, c: &Line, bytes: &[u8]) -> std::io::Result<()> {
         self.begin(w)?;
-        let data = rg_data(
-            &self.path,
-            bytes,
-            c.line_number,
-            c.absolute_offset,
-            &c.submatches,
-            self.o,
-        );
-        self.written += emit(w, "context", data)?;
-        Ok(())
+        self.line_fields("context", c, bytes, |_, _| {});
+        self.emit_scratch(w)
     }
 
     /// The `end` message with the search's stats; returns them as the summary adds them up.
     pub fn end(&mut self, w: &mut dyn Write, st: &FileStats) -> std::io::Result<RunStats> {
         let stats = file_stats(st, self.written);
+        let path: Value = serde_json::from_slice(&self.path).expect("a serialized path");
         self.written += emit(
             w,
             "end",
             json!({
-                "path": self.path,
+                "path": path,
                 "binary_offset": st.binary_offset,
                 "stats": {
                     "elapsed": elapsed(stats.elapsed),
@@ -263,41 +319,29 @@ fn elapsed(d: std::time::Duration) -> Value {
     json!({"secs": d.as_secs(), "nanos": d.subsec_nanos(), "human": human(d)})
 }
 
-/// The fields ripgrep writes for a match or context message, in its order.
-fn rg_data(
-    path: &Value,
-    bytes: &[u8],
-    line_number: u64,
-    absolute_offset: u64,
-    subs: &[Submatch],
-    o: &JsonOptions,
-) -> Value {
-    let subs: Vec<Value> = subs
-        .iter()
-        .map(|s| {
-            let (a, b) = (s.start.min(bytes.len()), s.end.min(bytes.len()));
-            json!({"match": data(&bytes[a..b.max(a)]), "start": s.start, "end": s.end})
-        })
-        .collect();
-    json!({
-        "path": path,
-        "lines": data(bytes),
-        "line_number": o.line_numbers.then_some(line_number),
-        "absolute_offset": absolute_offset,
-        "submatches": subs,
-    })
+/// `value` as `serde_json` serializes it.
+fn put_json<T: serde::Serialize + ?Sized>(out: &mut Vec<u8>, value: &T) {
+    serde_json::to_writer(out, value).expect("serializing to memory");
 }
 
-/// grep-printer's `Data`: `{"text": …}` for UTF-8, `{"bytes": base64}` otherwise.
-fn data(bytes: &[u8]) -> Value {
+fn put_u64(out: &mut Vec<u8>, n: u64) {
+    let _ = write!(out, "{n}");
+}
+
+/// grep-printer's `Data`, serialized: `{"text": …}` for UTF-8, `{"bytes": base64}` otherwise.
+fn put_data(out: &mut Vec<u8>, bytes: &[u8]) {
     match std::str::from_utf8(bytes) {
-        Ok(t) => json!({"text": t}),
-        Err(_) => json!({"bytes": base64(bytes)}),
+        Ok(t) => {
+            out.extend_from_slice(b"{\"text\":");
+            put_json(out, t);
+        }
+        Err(_) => {
+            out.extend_from_slice(b"{\"bytes\":\"");
+            out.extend_from_slice(base64(bytes).as_bytes());
+            out.push(b'"');
+        }
     }
-}
-
-fn path_data(p: &std::path::Path) -> Value {
-    data(&super::path_bytes(p))
+    out.push(b'}');
 }
 
 /// Standard base64 with padding, as grep-printer's `base64_standard`.
@@ -364,7 +408,126 @@ mod tests {
     use super::*;
     use crate::output::fixture::*;
     use serde_json::Value;
+    use std::path::Path;
     use std::time::Duration;
+
+    /// grep-printer's `Data` as a value: the reference of `put_data`.
+    fn data(bytes: &[u8]) -> Value {
+        match std::str::from_utf8(bytes) {
+            Ok(t) => json!({"text": t}),
+            Err(_) => json!({"bytes": base64(bytes)}),
+        }
+    }
+
+    /// A `match` message built from `serde_json` values, as the printer built it before it
+    /// wrote the bytes itself: the reference of `JsonFile::matched`.
+    fn reference_match(
+        path: &str,
+        m: &Line,
+        bytes: &[u8],
+        trails: &[&[Segment]],
+        sections: &[Value],
+        o: &JsonOptions,
+    ) -> String {
+        let subs: Vec<Value> = m
+            .submatches
+            .iter()
+            .map(|s| {
+                let (a, b) = (s.start.min(bytes.len()), s.end.min(bytes.len()));
+                json!({"match": data(&bytes[a..b.max(a)]), "start": s.start, "end": s.end})
+            })
+            .collect();
+        let mut d = json!({
+            "path": data(path.as_bytes()),
+            "lines": data(bytes),
+            "line_number": o.line_numbers.then_some(m.line_number),
+            "absolute_offset": m.absolute_offset,
+            "submatches": subs,
+        });
+        if trails.iter().any(|t| *t != trails[0]) {
+            for (k, sub) in d["submatches"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .enumerate()
+            {
+                let sub = sub.as_object_mut().unwrap();
+                sub.insert("trail".into(), json!(trails[k]));
+                if o.expand && sections[k] != sections[0] {
+                    sub.insert("section".into(), sections[k].clone());
+                }
+            }
+        }
+        let obj = d.as_object_mut().unwrap();
+        obj.insert("format".into(), json!("markdown"));
+        obj.insert("trail".into(), json!(trails[0]));
+        obj.insert("fragment".into(), fragment(bytes, &m.submatches, o.width));
+        if o.expand {
+            obj.insert(
+                "section".into(),
+                sections.first().cloned().unwrap_or(Value::Null),
+            );
+        }
+        format!("{}\n", json!({"type": "match", "data": d}))
+    }
+
+    /// Code review r2, Fable #3: the bytes written directly are the ones the values gave.
+    #[test]
+    fn match_messages_equal_the_value_built_ones() {
+        let a = h(1, "A \"quoted\" \\ é", 1, 4);
+        let b = seg("column", "Note\ttab", 1, 4);
+        let both = [a, b];
+        let (ta, tb): (&[Segment], &[Segment]) = (&both[..1], &both);
+        let long = format!("{}needle{}\n", "x".repeat(60), "é".repeat(60));
+        type Case = (Vec<u8>, Vec<(usize, usize)>);
+        let cases: Vec<Case> = vec![
+            (b"one needle\n".to_vec(), vec![(4, 10)]),
+            (b"tab\t\"q\" \\ needle\n".to_vec(), vec![(10, 16)]),
+            (b"bad \xff needle\n".to_vec(), vec![(6, 12)]),
+            (b"no terminator needle".to_vec(), vec![(14, 20)]),
+            (b"inverted\n".to_vec(), vec![]),
+            (long.clone().into_bytes(), vec![(60, 66)]),
+            (b"two needle needle\n".to_vec(), vec![(4, 10), (11, 17)]),
+        ];
+        for line_numbers in [true, false] {
+            for expand in [false, true] {
+                for width in [12, 200] {
+                    let o = JsonOptions {
+                        line_numbers,
+                        width,
+                        expand,
+                    };
+                    for (bytes, subs) in &cases {
+                        let m = Line {
+                            line_number: 7,
+                            absolute_offset: 42,
+                            len: bytes.len(),
+                            owned: None,
+                            submatches: subs
+                                .iter()
+                                .map(|&(start, end)| Submatch { start, end })
+                                .collect(),
+                        };
+                        let n = subs.len().max(1);
+                        let mut trails = vec![ta; n];
+                        let sec = |a: u64| json!({"start_line": a, "end_line": 9, "text": "x\n"});
+                        let mut sections = vec![sec(1); n];
+                        if n > 1 {
+                            trails[1] = tb;
+                            sections[1] = sec(2);
+                        }
+                        let sections = if expand { sections } else { Vec::new() };
+                        let want = reference_match("dir/ä.md", &m, bytes, &trails, &sections, &o);
+                        let mut f = JsonFile::new(Path::new("dir/ä.md"), Some("markdown"), &o);
+                        f.begun = true;
+                        let mut got = Vec::new();
+                        f.matched(&mut got, &m, bytes, &trails, &sections).unwrap();
+                        assert_eq!(String::from_utf8(got).unwrap(), want, "{bytes:?} {width}");
+                    }
+                }
+            }
+        }
+    }
 
     fn opts() -> JsonOptions {
         JsonOptions {

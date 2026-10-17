@@ -933,3 +933,27 @@ fn t36_the_frontmatter_title_is_the_yaml_key() {
         assert_eq!(code(&o), 0, "{head}: {}", stderr(&o));
     }
 }
+
+/// Code review r2, Fable #3: one file's output is printed as it grows; a reader that closes
+/// the pipe early ends the run without an error message, as ripgrep (exit 1: the search was
+/// cut, rg 14.1.1 measured).
+#[test]
+fn t37_output_printed_while_searching_stops_quietly_on_a_closed_pipe() {
+    use std::io::BufRead;
+    let fx = Fixture::new();
+    std::fs::write(fx.file("big.txt"), "line of text here\n".repeat(200_000)).unwrap();
+    for layout in ["--json", "--flat"] {
+        let mut c = fx.sfor([layout, "-v", "zzz", "big.txt"]);
+        c.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = c.spawn().unwrap();
+        let mut first = String::new();
+        let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+        // JSON starts with `begin`.
+        while !first.contains("line of text here") && out.read_line(&mut first).unwrap() > 0 {}
+        assert!(first.contains("line of text here"), "{first}");
+        drop(out);
+        let o = child.wait_with_output().unwrap();
+        assert_eq!(stderr(&o), "", "{layout}");
+        assert_eq!(code(&o), 1, "{layout}");
+    }
+}

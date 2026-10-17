@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::time::Instant;
-use termcolor::{Buffer, BufferWriter, ColorChoice};
+use termcolor::{Buffer, BufferWriter, ColorChoice, WriteColor};
 
 pub fn run(argv: Vec<OsString>) -> i32 {
     let args = match cli::parse(argv) {
@@ -202,7 +202,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         _ => None,
     };
     let mut out = BufferWriter::stdout(color);
-    out.separator(separator);
+    out.separator(separator.clone());
     let width = if tty && layout != Layout::Json {
         terminal_size::terminal_size().map_or(args.fragment_width, |(w, _)| w.0 as usize)
     } else {
@@ -222,6 +222,8 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         matched: AtomicBool::new(false),
         started: Instant::now(),
         stats: Mutex::new(RunStats::default()),
+        spill: separator.is_none()
+            && (one_file || args.sort.as_deref() == Some("path") || args.threads == Some(1)),
     };
     match mode {
         Mode::Quiet => ctx.walk(
@@ -373,6 +375,9 @@ struct Ctx<'a> {
     started: Instant,
     /// JSON totals of the printed files, for the final `summary` message.
     stats: Mutex<RunStats>,
+    /// A file's rows may be printed while it is searched (`Spill`): no other file's output can
+    /// come between them, and no separator goes between two prints.
+    spill: bool,
 }
 
 impl Ctx<'_> {
@@ -861,14 +866,12 @@ impl Ctx<'_> {
             max_count: search::max_count(self.args),
         };
         searcher.set_binary_detection(search::binary_detection(self.args, explicit));
-        let mut sink = StreamSink::new(
-            &mut st.buf,
-            &self.matcher,
-            self.args.invert_match,
-            ro,
-            &jo,
-            file,
-        );
+        let mut w = Spill {
+            buf: &mut st.buf,
+            out: self.spill.then_some(&self.out),
+        };
+        let mut sink =
+            StreamSink::new(&mut w, &self.matcher, self.args.invert_match, ro, &jo, file);
         let m = &self.matcher;
         let stop = sink.stop();
         let r = match (how, &t.fs) {
@@ -895,6 +898,11 @@ impl Ctx<'_> {
         };
         let result = r.and_then(|()| Ok((sink.has_match, sink.close()?)));
         match result {
+            // A closed pipe while `Spill` printed: the run ends quietly, as in `print`.
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                self.quit.store(true, Relaxed);
+                st.buf.clear();
+            }
             Err(e) => {
                 self.msgs.error(format_args!("{}: {e}", t.path.display()));
                 st.buf.clear();
@@ -1407,6 +1415,48 @@ impl<S: Sink<Error = std::io::Error>> Sink for Limited<S> {
 /// A regular file, which can be opened again and read the same: not `/dev/stdin` or a FIFO.
 fn rewindable(p: &Path) -> bool {
     std::fs::metadata(p).is_ok_and(|m| m.is_file())
+}
+
+/// What `Spill` holds before it prints: a file's output is printed in pieces of about this size.
+const SPILL: usize = 64 * 1024;
+
+/// A thread's output buffer that, with `out`, prints what it holds every `SPILL` bytes, so one
+/// file's output is not held in memory until the file ends (code review r2, Fable #3). Only
+/// where nothing can come between the pieces (`Ctx::spill`).
+struct Spill<'a> {
+    buf: &'a mut Buffer,
+    out: Option<&'a BufferWriter>,
+}
+
+impl Write for Spill<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let n = self.buf.write(bytes)?;
+        if let Some(out) = self.out
+            && self.buf.as_slice().len() >= SPILL
+        {
+            out.print(self.buf)?;
+            self.buf.clear();
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl WriteColor for Spill<'_> {
+    fn supports_color(&self) -> bool {
+        self.buf.supports_color()
+    }
+
+    fn set_color(&mut self, spec: &termcolor::ColorSpec) -> std::io::Result<()> {
+        self.buf.set_color(spec)
+    }
+
+    fn reset(&mut self) -> std::io::Result<()> {
+        self.buf.reset()
+    }
 }
 
 /// The counting part of grep-printer 0.2.2's summary sink with statistics, for `--json -q`.

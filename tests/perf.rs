@@ -240,3 +240,40 @@ fn headings_inside_items_stay_under_the_ceiling() {
         "{t:?} is more than 3 × the {base:?} of the items without headings"
     );
 }
+
+/// Code review r2, Fable #3: `--json` writes its messages without intermediate values, and a
+/// single file's output is printed as it grows instead of held until the end.
+#[test]
+#[ignore]
+fn json_of_a_big_plain_file_stays_under_the_ceilings() {
+    ceiling("big.txt", &["--json", "-v", "zzz"]);
+}
+
+/// Every line matching in a big Markdown file: the Processor once, plus at most 1.5 × what
+/// grep-printer's own JSON (`--no-trail`) takes to write the same messages without Trails
+/// (before the fix: 46.7 s against 0.9 s + 3.3 s); RSS as `markdown_ceiling`.
+#[test]
+#[ignore]
+fn json_of_a_big_markdown_file_stays_under_the_ceilings() {
+    let fx = Fixture::new();
+    let p = big_file(fx.path(), "big.md");
+    let file = p.file_name().unwrap().to_str().unwrap();
+    let Some((t, rss)) = best_of_three(&fx, &["--json", "text", file]) else {
+        eprintln!("skipping: /usr/bin/time not found");
+        return;
+    };
+    let (parse, parse_rss) = best_of_three(&fx, &["--in-headings", "zzz", file]).unwrap();
+    let (raw, _) = best_of_three(&fx, &["--no-trail", "--json", "text", file]).unwrap();
+    eprintln!(
+        "--json text: {t:?}, RSS {} MB; Processor alone: {parse:?}; --no-trail --json: {raw:?}",
+        rss / 1_048_576
+    );
+    assert!(
+        rss < parse_rss + 3 * SIZE as u64,
+        "RSS {rss} is not below {parse_rss} + 3 × {SIZE}"
+    );
+    assert!(
+        t <= parse + raw * 3 / 2,
+        "{t:?} is more than {parse:?} + 1.5 × {raw:?}"
+    );
+}
