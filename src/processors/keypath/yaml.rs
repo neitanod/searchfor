@@ -182,14 +182,17 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
             }
             Event::Scalar(value, style, ..) if expecting_key(&frames) => {
                 last_end = e;
-                let mut k = OutlineSegment::new("key", value.to_string(), s..s, s..e);
-                let pieces = name_pieces(text, s..e, &value, style);
+                let (name, pieces) = match style {
+                    ScalarStyle::Literal | ScalarStyle::Folded => block_name(text, s..e, &value),
+                    _ => (value.to_string(), name_pieces(text, s..e, &value, style)),
+                };
+                let mut k = OutlineSegment::new("key", name.clone(), s..s, s..e);
                 k.name_anchor = pieces.first().map_or(s, |(_, r)| r.start);
                 k.name = Some(pieces);
                 c.open(k);
                 if let Some(Frame::Map { key, key_name }) = frames.last_mut() {
                     *key = true;
-                    *key_name = value.to_string();
+                    *key_name = name;
                 }
             }
             Event::Alias(_) if expecting_key(&frames) => {
@@ -287,6 +290,45 @@ fn name_pieces(text: &str, span: Range<usize>, value: &str, style: ScalarStyle) 
         Some((joined, pieces)) if joined == value => pieces,
         _ => vec![(0..value.len(), s..e)],
     }
+}
+
+/// The name of a block scalar key (`? |` or `? >`) over `span`, and its pieces: the value
+/// without its leading and final line breaks, its lines joined by a space, so that a Segment name
+/// stays on one line (review m2-code-r2, Fable #1). One verbatim piece per non-empty source line,
+/// without the block's indentation; when a line is not found in the name, one decoded piece over
+/// the whole span.
+fn block_name(text: &str, span: Range<usize>, value: &str) -> (String, Pieces) {
+    let name = value.trim_matches('\n').replace('\n', " ");
+    let (s, e) = (span.start, span.end);
+    // saphyr's span starts at the first content character, after the block's indentation.
+    let line_start = text
+        .get(..s)
+        .and_then(|t| t.rfind(['\n', '\r']))
+        .map_or(0, |i| i + 1);
+    let indent = s - line_start;
+    let mut pieces = Vec::new();
+    let mut at = 0;
+    for (i, (from, line)) in break_lines(slice(text, s..e), s).into_iter().enumerate() {
+        let lead = if i == 0 {
+            0
+        } else {
+            indent.min(line.len() - line.trim_start_matches(' ').len())
+        };
+        let part = &line[lead..];
+        if part.trim_matches([' ', '\t']).is_empty() {
+            continue;
+        }
+        let Some(k) = name.get(at..).and_then(|rest| rest.find(part)) else {
+            return (name.clone(), vec![(0..name.len(), s..e)]);
+        };
+        let from = from + lead;
+        pieces.push((at + k..at + k + part.len(), from..from + part.len()));
+        at += k + part.len();
+    }
+    if pieces.is_empty() {
+        pieces.push((0..name.len(), s..e));
+    }
+    (name, pieces)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -584,6 +626,72 @@ mod tests {
             .map(|(_, r)| std::str::from_utf8(&src[r.clone()]).unwrap())
             .collect();
         assert_eq!(lines, ["multi", "line key"]);
+    }
+
+    #[test]
+    fn a_block_scalar_key_is_named_on_one_line() {
+        // Review m2-code-r2, Fable #1: a `? |` or `? >` key kept its line breaks in the name,
+        // which split the one-line output of its Matches. The name is the value without its
+        // final break, its lines joined by a space, with one verbatim piece per line.
+        for (src, name, lines) in [
+            (
+                "a: 1\n? |\n  ñ multi\n  line\n: needle\n",
+                "ñ multi line",
+                &["ñ multi", "line"][..],
+            ),
+            (
+                "? >\n  folded key\n: needle\n",
+                "folded key",
+                &["folded key"],
+            ),
+            (
+                "? >\n  folded\n  key\n\n  more\n    ind\n: needle\n",
+                "folded key more   ind",
+                &["folded", "key", "more", "  ind"],
+            ),
+            ("? |+ # kept\n  keep\n\n\n: needle\n", "keep", &["keep"]),
+            ("? |-\n  strip\n: needle\n", "strip", &["strip"]),
+            ("? |\r\n  a\r\n  b\r\n: needle\n", "a b", &["a", "b"]),
+            ("? |\n\n  a\n\n  b\n: needle\n", "a  b", &["a", "b"]),
+            (
+                "? |2\n    two\n   three\n: needle\n",
+                "  two  three",
+                &["  two", " three"],
+            ),
+            (
+                "x:\n  ? |\n    deep\n    key\n  : needle\n",
+                "deep key",
+                &["deep", "key"],
+            ),
+        ] {
+            let b = src.as_bytes();
+            let input = crate::model::Input {
+                bytes: b,
+                path: Path::new("x"),
+                format: "yaml",
+                disk: None,
+            };
+            let names = super::super::Keypath
+                .names(&input, &super::super::tests::params("yaml"))
+                .unwrap();
+            let n = names
+                .iter()
+                .find(|n| n.text != "a" && n.text != "x")
+                .unwrap_or_else(|| panic!("{src:?}: {names:?}"));
+            assert_eq!(n.text, name, "{src:?}");
+            let got: Vec<&str> = n
+                .pieces
+                .iter()
+                .map(|(t, r)| {
+                    let s = std::str::from_utf8(&b[r.clone()]).unwrap();
+                    assert_eq!(&n.text[t.clone()], s, "{src:?}: {:?}", n.pieces);
+                    s
+                })
+                .collect();
+            assert_eq!(got, lines, "{src:?}");
+            let trail = needles(b, "yaml");
+            assert_eq!(trail.last().unwrap().last().unwrap(), name, "{src:?}");
+        }
     }
 
     #[test]

@@ -340,3 +340,34 @@ fn m2_14_a_quoted_key_with_escapes_is_one_segment() {
         assert_eq!(subs, [(13, 14), (14, 20), (20, 21)], "{ext}: {o}");
     }
 }
+
+#[test]
+fn m2_15_a_block_scalar_key_stays_on_one_line() {
+    // Review m2-code-r2, Fable #1: `? |` kept its line breaks in the Segment name.
+    let fx = Fixture::new();
+    std::fs::write(
+        fx.file("k.yaml"),
+        "a: 1\n? |\n  ñ multi\n  line\n: needle\n",
+    )
+    .unwrap();
+    let o = run(&mut fx.sfor(["needle", "k.yaml", "--flat"]));
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(stdout(&o), "5: ñ multi line │ : needle\n");
+    let o = stdout(&run(&mut fx.sfor(["needle", "k.yaml", "--json"])));
+    let m: serde_json::Value = o
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .find(|v| v["type"] == "match")
+        .unwrap();
+    assert_eq!(m["data"]["trail"][0]["name"], "ñ multi line", "{o}");
+    // A Match in the name maps to the line it is on.
+    let o = stdout(&run(&mut fx.sfor([
+        "--in-headings",
+        "multi line",
+        "k.yaml",
+        "--flat",
+    ])));
+    assert_eq!(o.lines().count(), 2, "{o}");
+    assert!(o.starts_with("3: "), "{o}");
+    assert!(o.contains("\n4: "), "{o}");
+}
