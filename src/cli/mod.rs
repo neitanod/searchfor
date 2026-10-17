@@ -273,6 +273,8 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
     a.hidden_resolved = last_by_index(&m, &[("hidden", true), ("no_hidden", false)], u(1), true);
     a.binary_choice = binary_choice(&m);
     a.type_selections = type_selections(&m);
+    // `-M0` turns the limit off, as in ripgrep 14.1.1 (code review r2, Codex #3).
+    a.max_columns = a.max_columns.filter(|&n| n > 0);
     if let Some(s) = &a.sort
         && s != "path"
         && s != "none"
@@ -454,6 +456,13 @@ mod tests {
     }
     fn p(v: &[&str]) -> Args {
         parse(os(v)).unwrap()
+    }
+
+    #[test]
+    fn max_columns_zero_is_no_limit() {
+        assert_eq!(p(&["sfor", "-M0", "x"]).max_columns, None);
+        assert_eq!(p(&["sfor", "-M", "5", "x"]).max_columns, Some(5));
+        assert_eq!(p(&["sfor", "x"]).max_columns, None);
     }
 
     #[test]

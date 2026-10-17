@@ -694,3 +694,48 @@ fn max_count_with_after_context_equals_ripgrep() {
     }
     r.assert_empty();
 }
+
+/// Code review r2, Codex #3: `-M0` turns the limit off in rg 14.1.1, in every layout.
+#[test]
+fn max_columns_zero_disables_the_limit() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let mut r = Report(Vec::new());
+    for args in [
+        &["-n", "-M0", "needle", "md/guide.md"][..],
+        &["-n", "-M0", "-C1", "needle", "md/guide.md"],
+        &["-n", "--max-columns", "0", "-v", "needle", "md/guide.md"],
+    ] {
+        let want = rg(&fx, args, In::Null);
+        let mut nt = vec!["--no-trail"];
+        nt.extend_from_slice(args);
+        let got = sfor(&fx, &nt, In::Null);
+        r.check(
+            format!("--no-trail {args:?}"),
+            (code(&want), stdout(&want)),
+            (code(&got), stdout(&got)),
+        );
+        let w = format!("{:?}", by_line(&stdout(&want), false));
+        for layout in [&["--flat"][..], &["--flat", "--within", ""]] {
+            let mut a = layout.to_vec();
+            a.extend_from_slice(args);
+            let got = sfor(&fx, &a, In::Null);
+            r.check(
+                format!("{a:?}"),
+                (code(&want), w.clone()),
+                (code(&got), format!("{:?}", by_line(&stdout(&got), true))),
+            );
+        }
+        let mut a = vec!["--tree"];
+        a.extend_from_slice(args);
+        let got = sfor(&fx, &a, In::Null);
+        r.check(
+            format!("{a:?}"),
+            (code(&want), String::new()),
+            (code(&got), stdout(&got).matches("[Omitted").collect()),
+        );
+    }
+    r.assert_empty();
+}
