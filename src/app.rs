@@ -1188,7 +1188,17 @@ impl Ctx<'_> {
         t: &Target,
         detector: &Detector,
     ) -> Result<Option<(Source, Described)>, ()> {
-        if matches!(detector.detect_by_path(&t.path), Some(None)) {
+        // A Plain file has no names. rg searches it, which shows in the statistics of
+        // `-q --json` and, at a walked file's binary data, in --files-without-match (code review
+        // r7, Codex #2 and Fable #4): it is read only for those.
+        let plain = matches!(detector.detect_by_path(&t.path), Some(None));
+        let quits = search::binary_detection(self.args, t.explicit)
+            .quit_byte()
+            .is_some();
+        if plain
+            && !(self.args.json && self.args.quiet)
+            && !(quits && self.summary == Some(summary::Mode::FilesWithoutMatch))
+        {
             return Ok(None);
         }
         let mut src = match &t.fs {
@@ -1216,16 +1226,20 @@ impl Ctx<'_> {
         st.binary_quit = binary
             .as_ref()
             .is_some_and(|b| b.quit && b.offset.is_some());
+        if let Some(b) = binary.as_ref().filter(|b| b.quit && b.cut == 0) {
+            // rg 14.1.1 skips a walked file whose first buffer has binary data.
+            let stats = FileStats {
+                bytes_searched: b.bytes_searched,
+                ..FileStats::default()
+            };
+            self.count_quiet_json(&stats, false);
+            return Ok(None);
+        }
+        if plain {
+            self.count_unnamed(st, binary.as_ref(), &src);
+            return Ok(None);
+        }
         if let Some(b) = &binary {
-            if b.quit && b.cut == 0 {
-                // rg 14.1.1 skips a walked file whose first buffer has binary data.
-                let stats = FileStats {
-                    bytes_searched: b.bytes_searched,
-                    ..FileStats::default()
-                };
-                self.count_quiet_json(&stats, false);
-                return Ok(None);
-            }
             // The names of the bytes rg searches: up to the buffer it quits at, or with NUL
             // bytes turned into line breaks by a reader search.
             let bytes = if b.quit {
@@ -1246,6 +1260,7 @@ impl Ctx<'_> {
         }
         let def = detector.detect(&src.path, src.head());
         let Some((p, def)) = def.and_then(|d| Some((processors::by_name(&d.processor)?, d))) else {
+            self.count_unnamed(st, binary.as_ref(), &src);
             return Ok(None);
         };
         let input = Input {
@@ -1321,6 +1336,20 @@ impl Ctx<'_> {
             };
             (src, d)
         }))
+    }
+
+    /// --in-headings, `-q --json`: adds a Source without names (Plain) to the summary, searched
+    /// as rg searches it: up to the binary data a walked file quits at, or whole.
+    fn count_unnamed(&self, st: &TrailState, binary: Option<&BinaryProbe>, src: &Source) {
+        let bytes_searched = match binary {
+            Some(b) if st.binary_quit => b.bytes_searched,
+            _ => src.bytes().len() as u64,
+        };
+        let stats = FileStats {
+            bytes_searched,
+            ..FileStats::default()
+        };
+        self.count_quiet_json(&stats, false);
     }
 
     /// The search behind `stats` stopped at binary data, as a walked file's does.

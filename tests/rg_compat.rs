@@ -1919,3 +1919,73 @@ fn quiet_json_drops_walked_binary_matches_as_ripgrep() {
     }
     r.assert_empty();
 }
+
+/// Code review r7, Codex #2 and Fable #4: a Plain file (by its extension) has no names, but
+/// `--in-headings` still searches it as rg does, with rg's binary policy: a walked binary file
+/// is not listed by `--files-without-match` (unless `-a` or `--binary`), and `-q --json` counts
+/// every file searched and its bytes. The pattern is absent, so rg's line search finds nothing
+/// either and the numbers are rg's.
+#[test]
+fn in_headings_searches_plain_files_with_the_binary_policy_of_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let mut r = Report(Vec::new());
+    let cases: [&[&str]; 8] = [
+        &["--files-without-match", "-g", "bin.dat", "absent", "misc"],
+        &[
+            "--files-without-match",
+            "-g",
+            "late-nul.txt",
+            "absent",
+            "misc",
+        ],
+        &[
+            "--files-without-match",
+            "-a",
+            "-g",
+            "bin.dat",
+            "absent",
+            "misc",
+        ],
+        &[
+            "--files-without-match",
+            "--binary",
+            "-g",
+            "bin.dat",
+            "absent",
+            "misc",
+        ],
+        &["--files-without-match", "absent", "misc/bin.dat"],
+        &["--files-without-match", "--sort", "path", "absent", "misc"],
+        &["-q", "--json", "absent", "misc"],
+        &["-q", "--json", "-g", "late-nul.txt", "absent", "misc"],
+    ];
+    // The `summary` statistics that do not depend on time.
+    let out = |o: &Output| -> String {
+        stdout(o)
+            .lines()
+            .map(|l| match serde_json::from_str::<Value>(l) {
+                Ok(v) => {
+                    let s = &v["data"]["stats"];
+                    format!("{} {} {}", v["type"], s["searches"], s["bytes_searched"])
+                }
+                Err(_) => l.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for args in cases {
+        let want = rg(&fx, args, In::Null);
+        let mut s = vec!["--in-headings"];
+        s.extend_from_slice(args);
+        let got = sfor(&fx, &s, In::Null);
+        r.check(
+            format!("{s:?}"),
+            (code(&want), out(&want)),
+            (code(&got), out(&got)),
+        );
+    }
+    r.assert_empty();
+}
