@@ -1425,6 +1425,7 @@ name = "sfor-grammar"
 version = "0.2.0-dev"
 dependencies = [
  "anyhow",
+ "jsonschema",
  "searchfor",
  "serde_json",
  "tree-sitter",

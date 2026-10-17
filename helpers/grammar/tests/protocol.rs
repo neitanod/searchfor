@@ -208,3 +208,161 @@ fn memory_stays_flat_over_five_thousand_requests() {
         "RSS grew from {at_500} to {at_5000}"
     );
 }
+
+/// The workspace root: the build script and the index paths are relative to it.
+fn root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn read_json(rel: &str) -> Value {
+    let path = root().join(rel);
+    let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    serde_json::from_str(&src).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+fn index_validator() -> jsonschema::Validator {
+    jsonschema::validator_for(&read_json("docs/grammar-index.schema.json")).unwrap()
+}
+
+fn errors(v: &jsonschema::Validator, index: &Value) -> Vec<String> {
+    match v.validate(index) {
+        Ok(()) => Vec::new(),
+        Err(e) => e.map(|e| format!("{}: {e}", e.instance_path)).collect(),
+    }
+}
+
+/// An index entry as the build script prints it, for a system and a binary URL.
+fn entry(name: &str, system: &str, url: &str, sha: &str) -> Value {
+    json!({
+        "name": name,
+        "version": "0.2.0",
+        "source": "https://crates.io/crates/tree-sitter-lua",
+        "license": "MIT",
+        "definition": "name = \"lua\"\n",
+        "binaries": {system: {"url": url, "sha256": sha}},
+    })
+}
+
+#[test]
+fn the_committed_index_is_empty_and_valid() {
+    let index = read_json("grammars/index.json");
+    assert_eq!(index, json!({"version": 1, "grammars": []}));
+    assert_eq!(errors(&index_validator(), &index), Vec::<String>::new());
+    let bytes = serde_json::to_vec(&index).unwrap();
+    searchfor::grammars::index::Index::parse(&bytes).unwrap();
+}
+
+#[test]
+fn the_schema_accepts_an_entry_and_refuses_broken_ones() {
+    let v = index_validator();
+    let sha = "0123456789abcdef".repeat(4);
+    let wrap = |e: Value| json!({"version": 1, "grammars": [e]});
+    let ok = [
+        entry(
+            "lua",
+            "linux-x86_64",
+            "https://example.org/sfor-grammar-lua",
+            &sha,
+        ),
+        entry("lua", "macos-aarch64", "file:///tmp/sfor-grammar-lua", &sha),
+    ];
+    for e in ok {
+        let index = wrap(e);
+        assert_eq!(errors(&v, &index), Vec::<String>::new(), "{index}");
+    }
+    let mut no_license = entry("lua", "linux-x86_64", "https://example.org/x", &sha);
+    no_license.as_object_mut().unwrap().remove("license");
+    let bad = [
+        (
+            "a name outside [a-z0-9_]",
+            entry("Lua", "linux-x86_64", "https://example.org/x", &sha),
+        ),
+        (
+            "a path in the name",
+            entry("../lua", "linux-x86_64", "https://example.org/x", &sha),
+        ),
+        (
+            "an http URL",
+            entry("lua", "linux-x86_64", "http://example.org/x", &sha),
+        ),
+        (
+            "a short SHA-256",
+            entry("lua", "linux-x86_64", "https://example.org/x", "abc"),
+        ),
+        (
+            "an upper-case SHA-256",
+            entry(
+                "lua",
+                "linux-x86_64",
+                "https://example.org/x",
+                &sha.to_uppercase(),
+            ),
+        ),
+        (
+            "a system without an arch",
+            entry("lua", "linux", "https://example.org/x", &sha),
+        ),
+        ("no license", no_license),
+    ];
+    for (why, e) in bad {
+        assert!(!v.is_valid(&wrap(e)), "accepted {why}");
+    }
+    assert!(
+        !v.is_valid(&json!({"version": 2, "grammars": []})),
+        "accepted version 2"
+    );
+    assert!(!v.is_valid(&json!({"version": 1})), "accepted no grammars");
+}
+
+/// Task 8.2: the build script's entry, wrapped as an index, validates against the schema, and
+/// the binary it names is a working Lua Grammar Helper for this system. It rebuilds the helper
+/// in release, so it runs only with `SFOR_TEST_BUILD_SCRIPT=1`.
+#[test]
+fn the_build_script_prints_a_valid_index_entry() {
+    if std::env::var_os("SFOR_TEST_BUILD_SCRIPT").is_none() {
+        eprintln!("skipped: set SFOR_TEST_BUILD_SCRIPT=1 to run scripts/build-grammar-helper.sh");
+        return;
+    }
+    let out = std::env::temp_dir().join(format!("sfor-gh-{}", std::process::id()));
+    let o = Command::new("scripts/build-grammar-helper.sh")
+        .arg("lua")
+        .arg(&out)
+        .current_dir(root())
+        .stderr(Stdio::inherit())
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{:?}", o.status);
+    let e: Value = serde_json::from_slice(&o.stdout).unwrap();
+    eprintln!("{e:#}");
+    let index = json!({"version": 1, "grammars": [e]});
+    assert_eq!(errors(&index_validator(), &index), Vec::<String>::new());
+    let bytes = serde_json::to_vec(&index).unwrap();
+    let parsed = searchfor::grammars::index::Index::parse(&bytes).unwrap();
+    let lua = parsed.get("lua").unwrap();
+    let def = std::fs::read_to_string(root().join("helpers/grammar/definitions/lua.toml")).unwrap();
+    assert_eq!(lua.definition, def);
+    assert_eq!(lua.version, "0.2.0");
+    let system = searchfor::grammars::index::system();
+    let bin = lua
+        .binaries
+        .get(&system)
+        .unwrap_or_else(|| panic!("no {system} in {e}"));
+    let path = bin.url.strip_prefix("file://").unwrap();
+    let sha = Command::new("sha256sum").arg(path).output().unwrap();
+    let sha = String::from_utf8(sha.stdout).unwrap();
+    assert_eq!(sha.split_whitespace().next(), Some(bin.sha256.as_str()));
+    let mut child = Command::new(path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut h = H {
+        stdin: child.stdin.take(),
+        out: BufReader::new(child.stdout.take().unwrap()),
+        child,
+    };
+    assert_eq!(h.hello(1)["name"], "sfor-grammar-lua");
+    drop(h);
+    let _ = std::fs::remove_dir_all(out);
+}
