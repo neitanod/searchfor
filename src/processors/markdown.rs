@@ -90,22 +90,26 @@ impl OutlineProcessor for Markdown {
         let mut meta: Option<usize> = None;
 
         for (ev, r) in Parser::new_ext(text, opts).into_offset_iter() {
-            // A block that starts inside an item's first line (a tight item has no paragraph)
-            // is joined to its name by a space (code review r3, Fable #6).
-            if let Event::Start(
-                Tag::Heading { .. }
-                | Tag::BlockQuote(_)
-                | Tag::CodeBlock(_)
-                | Tag::Paragraph
-                | Tag::Table(_)
-                | Tag::HtmlBlock,
-            ) = ev
-                && let Some(it) = items.last_mut()
+            // A heading or paragraph that starts inside an item's first line (a tight item has
+            // no paragraph) is joined to its name by a space (code review r3, Fable #6). A code
+            // block, table, quote or HTML block after the item's text ends the name instead: it
+            // is a Segment of its own (code review r4, Fable #3); an item that starts with one
+            // takes its first line as its name.
+            if let Some(it) = items.last_mut()
                 && !it.done
                 && !it.text.is_empty()
-                && !it.text.ends_with(' ')
             {
-                it.text.push(' ');
+                match ev {
+                    Event::Start(
+                        Tag::BlockQuote(_) | Tag::CodeBlock(_) | Tag::Table(_) | Tag::HtmlBlock,
+                    ) => it.done = true,
+                    Event::Start(Tag::Heading { .. } | Tag::Paragraph)
+                        if !it.text.ends_with(' ') =>
+                    {
+                        it.text.push(' ')
+                    }
+                    _ => {}
+                }
             }
             match ev {
                 Event::Start(Tag::MetadataBlock(MetadataBlockKind::YamlStyle)) => {
@@ -505,11 +509,37 @@ mod tests {
         };
         let s = b"- item one\n  ## B in item\n  text b\n";
         assert_eq!(name(s, b"text b"), "item:item one B in item");
-        let s = b"- item\n  > quoted\n  text b\n";
-        assert_eq!(name(s, b"text b"), "item:item quoted");
-        let s = b"- item\n  ```\n  code\n  more\n  ```\n  text b\n";
-        assert_eq!(name(s, b"text b"), "item:item code");
         assert_eq!(name(b"- # Head\n  text b\n", b"text b"), "item:Head");
+        // An item that starts with a block takes the block's first line as its name.
+        let s = b"- ```\n  code\n  more\n  ```\n  text b\n";
+        assert_eq!(name(s, b"text b"), "item:code");
+        let s = b"- > quoted\n  text b\n";
+        assert_eq!(name(s, b"text b"), "item:quoted");
+    }
+
+    /// Code review r4, Fable #3 and #4: a code block, table, quote or HTML block after an
+    /// item's text ends the item's name; the block is a Segment of its own.
+    #[test]
+    fn a_block_after_an_items_text_ends_its_name() {
+        let name = |src: &[u8], needle: &[u8]| {
+            let at = src.windows(needle.len()).position(|w| w == needle).unwrap();
+            let t = Markdown
+                .trails(&input(src), &toml::Table::new(), &[at])
+                .unwrap();
+            kinds(&t[0])[0].clone()
+        };
+        let s = b"- Estructura relevante:\n  ```json\n  {\n  \"a\": 1\n  }\n  ```\n  text b\n";
+        assert_eq!(name(s, b"text b"), "item:Estructura relevante:");
+        let s = b"- [ ] Commit 3: Final launch prep\n  ```\n  docs: prepare for open-source launch\n  ```\n  text b\n";
+        assert_eq!(name(s, b"text b"), "item:[ ] Commit 3: Final launch prep");
+        let s = b"- item\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n  text b\n";
+        assert_eq!(name(s, b"text b"), "item:item");
+        let s = b"- item\n  > quoted\n  text b\n";
+        assert_eq!(name(s, b"text b"), "item:item");
+        let s = b"- item\n  ```\n  code\n  more\n  ```\n  text b\n";
+        assert_eq!(name(s, b"text b"), "item:item");
+        let s = b"- item\n  <div>\n  html\n  </div>\n- next\n";
+        assert_eq!(name(s, b"html"), "item:item");
     }
 
     #[test]
