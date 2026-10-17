@@ -138,6 +138,25 @@ fn names_list_the_functions() {
 }
 
 #[test]
+fn a_file_over_max_bytes_is_not_parsed() {
+    // Spec §5.3 (review m2-code-r1, Codex #2): sfor stops such a file before the request, and
+    // the helper refuses it too, for `trails` and `names`.
+    let mut h = H::start();
+    let mut params = lua_params();
+    params["max_bytes"] = json!(1);
+    h.hello_with(params, 4);
+    h.trails(1, &fixture(), &[60]);
+    h.send(json!({"op":"names","id":2,"path":fixture()}));
+    for id in [1, 2] {
+        let r = h.recv();
+        assert_eq!(r["id"], id, "{r}");
+        assert!(r["trails"].is_null() && r["names"].is_null(), "{r}");
+        let e = r["error"].as_str().unwrap_or_else(|| panic!("{r}"));
+        assert!(e.contains("max_bytes"), "{e}");
+    }
+}
+
+#[test]
 fn a_query_that_does_not_compile_is_an_error_naming_the_query() {
     let mut h = H::start();
     let mut params = lua_params();

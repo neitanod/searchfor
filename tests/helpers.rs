@@ -386,6 +386,11 @@ fn sha256(bytes: &[u8]) -> String {
 /// A `file://` index in `dir` with one entry, `lua`, whose binary for this system is the Lua
 /// Grammar Helper copied to `dir/payload`; `sha256` replaces its checksum when given.
 fn lua_index(dir: &Path, sha256_override: Option<&str>) -> String {
+    lua_index_with(dir, sha256_override, "")
+}
+
+/// `lua_index`, with `params` appended to the `[params]` of its Definition.
+fn lua_index_with(dir: &Path, sha256_override: Option<&str>, params: &str) -> String {
     let bin = common::workspace_bin("sfor-grammar", "sfor-grammar", &["lua"]);
     let payload = dir.join("payload");
     std::fs::copy(&bin, &payload).unwrap();
@@ -394,7 +399,8 @@ fn lua_index(dir: &Path, sha256_override: Option<&str>) -> String {
         env!("CARGO_MANIFEST_DIR"),
         "/helpers/grammar/definitions/lua.toml"
     ))
-    .unwrap();
+    .unwrap()
+        + params;
     let mut binaries = serde_json::Map::new();
     binaries.insert(
         searchfor::grammars::index::system(),
@@ -460,6 +466,43 @@ fn h14_install_a_grammar_and_use_it() {
     assert_eq!(lines.len(), 2, "{out}");
     assert!(lines[0].starts_with("4: Player:update │ "), "{out}");
     assert!(lines[1].starts_with("8: helper │ "), "{out}");
+}
+
+#[test]
+fn h15b_a_grammar_helper_keeps_max_bytes() {
+    // Spec §5.3: a file over `max_bytes` is Plain, with one warning per Format, also when a
+    // Grammar Helper serves the Format (review m2-code-r1, Codex #2). Both `trails` and
+    // `names` stop before the helper.
+    let fx = Fixture::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let index = lua_index_with(tmp.path(), None, "max_bytes = 10\n");
+    let sfor = |args: &[&str]| run(fx.sfor(args).env("SFOR_GRAMMAR_INDEX", &index));
+    let o = sfor(&["--install-grammar", "lua"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let player = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/helpers/grammar/tests/fixtures/player.lua"
+    );
+    std::fs::create_dir(fx.file("lua")).unwrap();
+    for f in ["a.lua", "b.lua"] {
+        std::fs::copy(player, fx.file("lua").join(f)).unwrap();
+    }
+    let o = sfor(&["needle", "lua", "--flat", "--sort", "path"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(
+        stdout(&o),
+        "lua/a.lua:4:   self.x = self.x + dt -- needle\n\
+         lua/a.lua:8:   return \"needle\"\n\
+         lua/b.lua:4:   self.x = self.x + dt -- needle\n\
+         lua/b.lua:8:   return \"needle\"\n"
+    );
+    assert_eq!(
+        stderr(&o),
+        "sfor: lua/a.lua: larger than `max_bytes` (10); files this large are not parsed (this warning is shown once)\n"
+    );
+    let o = sfor(&["--in-headings", "update", "lua", "--flat", "--sort", "path"]);
+    assert_eq!(code(&o), 1, "{}", stdout(&o));
+    assert_eq!(stderr(&o).matches("max_bytes").count(), 1, "{}", stderr(&o));
 }
 
 #[test]

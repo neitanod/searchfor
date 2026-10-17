@@ -6,6 +6,8 @@
 pub struct HelperProcessor {
     host: crate::helper::host::Host,
     tmp: std::sync::Arc<RunTemp>,
+    /// A Grammar Helper's `max_bytes` (spec §5.3), checked before the request.
+    limit: Option<super::treesitter::SizeLimit>,
 }
 
 impl HelperProcessor {
@@ -18,6 +20,22 @@ impl HelperProcessor {
         Self {
             host: crate::helper::host::Host::new(cfg, launcher, warn),
             tmp,
+            limit: None,
+        }
+    }
+
+    /// A Grammar Helper: a file over the Definition's `max_bytes` is Plain without a request,
+    /// with the compiled-in treesitter's one warning per Format (review m2-code-r1, Codex #2).
+    pub fn with_size_limit(mut self) -> Self {
+        self.limit = Some(super::treesitter::SizeLimit::default());
+        self
+    }
+
+    /// Err(`Unavailable`) for a file over the limit, after the warning of the first one.
+    fn check_size(&self, input: &crate::model::Input, params: &toml::Table) -> anyhow::Result<()> {
+        match &self.limit {
+            Some(l) if l.over(input, params)? => Err(crate::helper::Unavailable.into()),
+            _ => Ok(()),
         }
     }
 
@@ -45,13 +63,14 @@ impl super::Processor for HelperProcessor {
     fn trails(
         &self,
         input: &crate::model::Input,
-        _: &toml::Table,
+        params: &toml::Table,
         anchors: &[usize],
     ) -> anyhow::Result<Vec<crate::model::Trail>> {
         use crate::helper::{
             HelperError,
             protocol::{MatchPos, Request},
         };
+        self.check_size(input, params)?;
         let (path, _tmp) = self.path_for(input)?;
         let lines = crate::trail::LineIndex::new(input.bytes);
         let matches = anchors
@@ -83,9 +102,10 @@ impl super::Processor for HelperProcessor {
     fn names(
         &self,
         input: &crate::model::Input,
-        _: &toml::Table,
+        params: &toml::Table,
     ) -> anyhow::Result<Vec<crate::model::Name>> {
         use crate::helper::{HelperError, protocol::Request};
+        self.check_size(input, params)?;
         let (path, _tmp) = self.path_for(input)?;
         let f = self.host.format();
         match self.host.request(|id| Request::Names { id, path }) {
@@ -209,6 +229,7 @@ mod tests {
         let p = HelperProcessor {
             host,
             tmp: Arc::new(RunTemp::new()),
+            limit: None,
         };
         (p, warnings)
     }

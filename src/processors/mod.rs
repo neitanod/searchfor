@@ -257,12 +257,18 @@ impl Processors {
                 let launcher = Box::new(crate::helper::host::CommandLauncher {
                     argv: cfg.command.clone(),
                 });
-                let h = std::sync::Arc::new(external::HelperProcessor::new(
+                let h = external::HelperProcessor::new(
                     cfg,
                     launcher,
                     self.tmp.clone(),
                     self.warn.clone(),
-                ));
+                );
+                // A Grammar Helper keeps the treesitter's `max_bytes` (spec §5.3).
+                let h = std::sync::Arc::new(if def.processor == "treesitter" {
+                    h.with_size_limit()
+                } else {
+                    h
+                });
                 map.insert(def.name.clone(), h.clone());
                 Some(ProcessorRef::Helper(h))
             }

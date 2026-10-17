@@ -165,8 +165,35 @@ pub struct TreeSitter {
     /// One slot per Definition, initialized once even under concurrent first calls: the
     /// compiled query, or None after a failure, which only the initializing call reports.
     queries: Mutex<HashMap<String, Slot>>,
-    /// Formats already warned about a file over `max_bytes`.
-    big: Mutex<HashSet<String>>,
+    /// Files over `max_bytes`, and the Formats already warned about them.
+    big: SizeLimit,
+}
+
+/// D21: a file over its Definition's `max_bytes` is not parsed, with one warning per Format
+/// per run. Shared by the compiled-in treesitter and the Grammar Helpers (spec §5.3).
+#[derive(Default)]
+pub struct SizeLimit {
+    /// Formats already warned about.
+    warned: Mutex<HashSet<String>>,
+}
+
+impl SizeLimit {
+    /// True when the file is over `max_bytes`; the first time per Format it is an error.
+    pub fn over(&self, input: &Input, params: &toml::Table) -> anyhow::Result<bool> {
+        let max = params
+            .get("max_bytes")
+            .and_then(|v| v.as_integer())
+            .unwrap_or(DEFAULT_MAX_BYTES);
+        if (input.bytes.len() as i64) <= max {
+            return Ok(false);
+        }
+        if self.warned.lock().unwrap().insert(input.format.to_string()) {
+            anyhow::bail!(
+                "larger than `max_bytes` ({max}); files this large are not parsed (this warning is shown once)"
+            );
+        }
+        Ok(true)
+    }
 }
 
 impl TreeSitter {
@@ -204,19 +231,7 @@ impl TreeSitter {
 
     /// D21: true when the file is over `max_bytes`; the first time per Format it is an error.
     fn too_big(&self, input: &Input, params: &toml::Table) -> anyhow::Result<bool> {
-        let max = params
-            .get("max_bytes")
-            .and_then(|v| v.as_integer())
-            .unwrap_or(DEFAULT_MAX_BYTES);
-        if (input.bytes.len() as i64) <= max {
-            return Ok(false);
-        }
-        if self.big.lock().unwrap().insert(input.format.to_string()) {
-            anyhow::bail!(
-                "larger than `max_bytes` ({max}); files this large are not parsed (this warning is shown once)"
-            );
-        }
-        Ok(true)
+        self.big.over(input, params)
     }
 }
 
