@@ -1,0 +1,19 @@
+# Deploy settings
+server:
+  name: "ñandú"
+  ports:
+    - host: a.example
+      port: 80
+    - host: b.example
+      port: 443
+    - host: needle.example
+      port: 8443
+  motd: |
+    line one
+    a needle in a block
+
+defaults: &defaults
+  retries: 3
+worker:
+  <<: *defaults
+  tag: needle

@@ -1,0 +1,20 @@
+title = "shop"
+owner.name = "needle owner"
+
+[server]
+host = "example.org"
+ports = [80, 443, 8443]
+
+[[products]]
+name = "first"
+
+[[products]]
+name = "second"
+tags = ["a", "needle"]
+
+[[products.variants]]
+sku = "needle-sku"
+
+[database.replica]
+url = "postgres://needle"
+inline = { user = "needle" }

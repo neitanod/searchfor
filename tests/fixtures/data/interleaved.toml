@@ -1,0 +1,23 @@
+[a.b]
+k = "needle 1"
+
+[x]
+k = "needle 2"
+
+[a.c]
+k = "needle 3"
+
+["a.b"]
+k = "needle 4"
+
+[site."x[0]"]
+k = "needle 5"
+
+[p]
+k = "needle 6"
+
+[q]
+k = 1
+
+[p.r]
+k = "needle 7"

@@ -1,0 +1,8 @@
+# formats/json.toml — JSON key paths (spec §5.2). Comments and trailing commas are accepted.
+name       = "json"
+extensions = ["json", "jsonc", "jsonl", "geojson", "webmanifest"]
+names      = [".babelrc", ".eslintrc"]
+processor  = "keypath"
+
+[params]
+syntax = "json"

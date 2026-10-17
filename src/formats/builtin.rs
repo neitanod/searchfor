@@ -16,4 +16,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("go.toml", include_str!("../../formats/go.toml")),
     ("rust.toml", include_str!("../../formats/rust.toml")),
     ("python.toml", include_str!("../../formats/python.toml")),
+    ("json.toml", include_str!("../../formats/json.toml")),
+    ("toml.toml", include_str!("../../formats/toml.toml")),
+    ("yaml.toml", include_str!("../../formats/yaml.toml")),
 ];

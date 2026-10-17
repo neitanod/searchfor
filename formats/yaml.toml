@@ -1,0 +1,7 @@
+# formats/yaml.toml — YAML key paths (spec §5.2).
+name       = "yaml"
+extensions = ["yaml", "yml"]
+processor  = "keypath"
+
+[params]
+syntax = "yaml"
