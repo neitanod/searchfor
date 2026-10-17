@@ -997,3 +997,49 @@ fn vtt_reads_at_fifty_megabytes_a_second() {
         ": cue {n} 00:00:01.000",
     );
 }
+
+/// M3 code review r1, Codex #1: a header cell is cut at 40 characters, so its size must not
+/// cost memory per escape or per invalid byte. Before the fix an 8 MB cell of `""` cost 446 MiB
+/// and one of Latin-1 bytes 327 MiB, against 14 MiB with `--no-trail`. What stays is linear: the
+/// Source and csv-core's decoded header, whose buffer doubles.
+#[test]
+#[ignore]
+fn a_huge_header_cell_costs_no_memory_per_escape() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let size = 8 * 1024 * 1024;
+    let cells = [
+        (
+            "escapes.csv",
+            [&b"\""[..], &b"\"\"".repeat(size / 2), b"\"\nneedle\n"].concat(),
+        ),
+        (
+            "latin1.csv",
+            [&[0xe9u8].repeat(size)[..], b"\nneedle\n"].concat(),
+        ),
+    ];
+    for (file, body) in &cells {
+        std::fs::write(fx.file(file), body).unwrap();
+        let Some((_, base)) = measure(&sfor_bin(), &fx, &["--no-trail", "needle", file]) else {
+            eprintln!("skipping: /usr/bin/time not found");
+            return;
+        };
+        for mode in [&["--flat"][..], &["--in-headings", "zzz"]] {
+            let mut args = mode.to_vec();
+            if mode.len() == 1 {
+                args.push("needle");
+            }
+            args.push(file);
+            let (t, rss) = measure(&sfor_bin(), &fx, &args).unwrap();
+            eprintln!(
+                "{file} {args:?}: {t:?}, RSS {} MiB; --no-trail: {} MiB",
+                rss / 1_048_576,
+                base / 1_048_576
+            );
+            assert!(
+                rss < base + 3 * size as u64,
+                "{file} {args:?}: RSS {rss} is not below {base} + 3 × {size}"
+            );
+        }
+    }
+}

@@ -258,73 +258,65 @@ fn header_name(
     quote: Option<u8>,
     name_chars: usize,
 ) -> Option<HeaderName> {
-    let raw = &src[f.raw.clone()];
-    // (decoded bytes, their Source range): verbatim runs, and one entry per `""`.
-    let mut runs: Vec<(Vec<u8>, Range<usize>)> = Vec::new();
-    match quote {
-        Some(q) if raw.len() >= 2 && raw[0] == q && raw[raw.len() - 1] == q => {
-            let (s0, s1) = (f.raw.start + 1, f.raw.end - 1);
-            let mut i = s0;
-            let mut run = s0;
-            while i < s1 {
-                if src[i] == q && i + 1 < s1 && src[i + 1] == q {
-                    if run < i {
-                        runs.push((src[run..i].to_vec(), run..i));
-                    }
-                    runs.push((vec![q], i..i + 2));
-                    i += 2;
-                    run = i;
-                } else {
-                    i += 1;
-                }
-            }
-            if run < s1 {
-                runs.push((src[run..s1].to_vec(), run..s1));
-            }
+    let raw = f.raw.clone();
+    // The cell's content, and the quote whose `""` it decodes.
+    let (body, q) = match quote {
+        Some(q) if raw.len() >= 2 && src[raw.start] == q && src[raw.end - 1] == q => {
+            (raw.start + 1..raw.end - 1, Some(q))
         }
-        _ => runs.push((raw.to_vec(), f.raw.clone())),
-    }
-    let mine: Vec<u8> = runs.iter().flat_map(|(b, _)| b.iter().copied()).collect();
-    let searchable = mine == decoded;
-    // Trim the white space at both ends, which only verbatim runs hold.
-    while let Some((b, r)) = runs.first_mut() {
-        let lead = b.len() - b.trim_ascii_start().len();
-        if lead == b.len() && b.len() == r.len() {
-            runs.remove(0);
-            continue;
-        }
-        if b.len() == r.len() {
-            b.drain(..lead);
-            r.start += lead;
-        }
-        break;
-    }
-    while let Some((b, r)) = runs.last_mut() {
-        let trail = b.len() - b.trim_ascii_end().len();
-        if trail == b.len() && b.len() == r.len() {
-            runs.pop();
-            continue;
-        }
-        if b.len() == r.len() {
-            b.truncate(b.len() - trail);
-            r.end -= trail;
-        }
-        break;
-    }
+        _ => (raw, None),
+    };
+    // One character past the cut tells that there is a cut: nothing after it is kept, so a cell
+    // of megabytes costs no memory per escape or per invalid byte (M3 code review r1, Codex #1).
+    let budget = name_chars.saturating_add(1);
     let mut text = String::new();
     let mut pieces = Vec::new();
-    for (b, r) in &runs {
-        if b.len() == r.len() {
-            crate::text::push_lossy(&mut text, &mut pieces, src, r.clone());
-        } else {
+    if !decodes_to(src, body.clone(), q, decoded) {
+        let d = decoded.trim_ascii();
+        push_lossy_upto(&mut text, &mut pieces, d, 0..d.len(), budget);
+        pieces.clear();
+        if text.is_empty() {
+            return None;
+        }
+        crate::text::cut_name(&mut text, &mut pieces, name_chars);
+        return Some(HeaderName {
+            text,
+            pieces,
+            searchable: false,
+        });
+    }
+    // Trim the white space at both ends; an escape is never white space.
+    let space = |b: u8| b.is_ascii_whitespace() && Some(b) != q;
+    let (mut a, mut b) = (body.start, body.end);
+    while a < b && space(src[a]) {
+        a += 1;
+    }
+    while b > a && space(src[b - 1]) {
+        b -= 1;
+    }
+    // Verbatim runs and `""` escapes, in order, until the budget is spent.
+    let mut chars = 0;
+    let (mut i, mut run) = (a, a);
+    while i < b && chars < budget {
+        if q.is_some_and(|q| src[i] == q && i + 1 < b && src[i + 1] == q) {
+            if run < i {
+                chars += push_lossy_upto(&mut text, &mut pieces, src, run..i, budget - chars);
+                if chars == budget {
+                    break;
+                }
+            }
             let at = text.len();
-            text.push_str(&String::from_utf8_lossy(b));
-            pieces.push((at..text.len(), r.clone()));
+            text.push(src[i] as char);
+            pieces.push((at..text.len(), i..i + 2));
+            chars += 1;
+            i += 2;
+            run = i;
+        } else {
+            i += 1;
         }
     }
-    if !searchable {
-        text = String::from_utf8_lossy(decoded).trim_ascii().to_string();
-        pieces.clear();
+    if run < i && chars < budget {
+        push_lossy_upto(&mut text, &mut pieces, src, run..i, budget - chars);
     }
     if text.is_empty() {
         return None;
@@ -333,8 +325,73 @@ fn header_name(
     Some(HeaderName {
         text,
         pieces,
-        searchable,
+        searchable: true,
     })
+}
+
+/// Whether the cell `src[body]`, with `""` as `q` when quoted, decodes to what csv-core read:
+/// false for a lenient reading of stray quotes, which the pieces cannot map.
+fn decodes_to(src: &[u8], body: Range<usize>, q: Option<u8>, decoded: &[u8]) -> bool {
+    let Some(q) = q else {
+        return &src[body] == decoded;
+    };
+    let mut j = 0;
+    let mut i = body.start;
+    while i < body.end {
+        let b = src[i];
+        i += if b == q && i + 1 < body.end && src[i + 1] == q {
+            2
+        } else {
+            1
+        };
+        if decoded.get(j) != Some(&b) {
+            return false;
+        }
+        j += 1;
+    }
+    j == decoded.len()
+}
+
+/// `crate::text::push_lossy` of at most `max` characters of `src[r]`: the pieces are the same
+/// up to there. Returns how many characters it pushed.
+fn push_lossy_upto(
+    text: &mut String,
+    pieces: &mut Pieces,
+    src: &[u8],
+    r: Range<usize>,
+    max: usize,
+) -> usize {
+    let mut at = r.start;
+    let mut n = 0;
+    for chunk in src[r].utf8_chunks() {
+        let valid = chunk.valid();
+        if n == max {
+            return n;
+        }
+        if !valid.is_empty() {
+            let take = valid
+                .char_indices()
+                .nth(max - n)
+                .map_or(valid.len(), |(k, _)| k);
+            let t = text.len();
+            text.push_str(&valid[..take]);
+            n += valid[..take].chars().count();
+            pieces.push((t..text.len(), at..at + take));
+            if take < valid.len() {
+                return n;
+            }
+            at += take;
+        }
+        let invalid = chunk.invalid();
+        if !invalid.is_empty() && n < max {
+            let t = text.len();
+            text.push('\u{FFFD}');
+            pieces.push((t..text.len(), at..at + invalid.len()));
+            at += invalid.len();
+            n += 1;
+        }
+    }
+    n
 }
 
 impl Csv {
@@ -630,6 +687,38 @@ mod tests {
             ]
         );
         assert_eq!(n[0].trail_at(1), Vec::new());
+    }
+
+    #[test]
+    fn a_long_header_cell_keeps_only_its_visible_pieces() {
+        // Built up to the cut (M3 code review r1, Codex #1): the pieces map what stays.
+        let mut src = b"\"ab\"\"".to_vec();
+        src.extend(b"c".repeat(50));
+        src.extend(b"\"\n1\n");
+        let input = Input {
+            bytes: &src,
+            path: Path::new("x.csv"),
+            format: "csv",
+            disk: None,
+        };
+        let n = Csv.names(&input, &table("")).unwrap();
+        assert_eq!(n[0].text, format!("ab\"{}…", "c".repeat(36)));
+        assert_eq!(
+            n[0].pieces,
+            vec![(0..2, 1..3), (2..3, 3..5), (3..39, 5..41)]
+        );
+        // A Latin-1 byte is one character, before the cut or past it.
+        let mut src = vec![0xe9];
+        src.extend(b"d".repeat(45));
+        src.push(0xe9);
+        src.extend(b"\n1\n");
+        let input = Input {
+            bytes: &src,
+            ..input
+        };
+        let n = Csv.names(&input, &table("")).unwrap();
+        assert_eq!(n[0].text, format!("\u{FFFD}{}…", "d".repeat(38)));
+        assert_eq!(n[0].pieces, vec![(0..3, 0..1), (3..41, 1..39)]);
     }
 
     #[test]
