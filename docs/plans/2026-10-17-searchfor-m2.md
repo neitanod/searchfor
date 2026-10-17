@@ -2583,23 +2583,29 @@ mod tests {
   1. `std::str::from_utf8` or an empty Outline. Parse with
      `text.parse::<toml_edit::Document<String>>()`. **On an error** (`TomlError::span()`,
      verified in toml_edit 0.25.17's source; `None` counts as the end of the file), cut `text`
-     at a **statement start** — a line that begins in column 0 with `[`, or with a key character
-     (alphanumeric, `"`, `'`, `_`, `-`) and contains `=`; line 1 always counts — and try only
+     at a **statement start** — a line whose first non-blank character (`line.trim_start()`:
+     TOML allows indentation, as `netlify.toml` and Hugo's `config.toml` use under their
+     headers; review r5, Fable #1) is `[`, or a key character (alphanumeric, `"`, `'`, `_`,
+     `-`) on a line that contains `=`; line 1 always counts — and try only
      such cuts: every proposed cut moves up to the nearest statement start at or before it. A
      cut inside an open string or array (`dependencies = [ … ]`, an unclosed `"""`) is then
      never tried, and those are most of the cuts in a Cargo.lock (review r4, Fable #1). In
      order, within one budget of bytes parsed — 64 times the file's size, and never more than
      32 MiB (review r2, Fable #4; without the size bound a 60 KB file would spend the whole
      32 MiB in step c, 628 parses):
-     a. **back off:** from the error's line, step back 1, 2, 4, 8… lines (snapped) until a
-        prefix parses — the candidate — or line 1 is reached;
+     a. **back off:** from the error's line — the last line of the file when the error is at
+        its end (toml_edit's span for an unclosed `"""` or array, or `None`), since the whole
+        text already failed (review r5, Fable #7) — step back 1, 2, 4, 8… lines (snapped) until
+        a prefix parses — the candidate — or line 1 is reached;
      b. **bisect** between the candidate and the nearest cut that failed, over snapped cuts,
-        keeping the longest prefix that parsed;
+        keeping the longest prefix that parsed. When the snapped midpoint is a cut already
+        tried, take the first statement start after the midpoint and before the failed cut; if
+        there is none, the bisection is over (review r5, Fable #3);
      c. **sweep:** with the budget that is left, try every statement start between the best
         prefix and the error's line that a and b did not try, starting from the one nearest the
         error and going towards the start of the file; the first that parses wins (valid
         prefixes are not monotone — review r3, Codex #3).
-     The best prefix found is used; if none parses, an empty Outline. Verified with Fable's
+     No cut is parsed twice in a, b and c. The best prefix found is used; if none parses, an empty Outline. Verified with Fable's
      probe (`/tmp/subtask/m2-plan-r4-fable/tomlrec`, rerun with the size-bounded budget in
      `/tmp/subtask/m2-plan/snap`, output `r4-snapped-size-budget.txt`): the 5 000-line fixture
      of `an_open_string_deep_in_a_lock_file_keeps_the_line_before_it` recovers exactly to its
@@ -3432,6 +3438,8 @@ struct Conn {
     /// Its failure was counted (several requests in flight see the same crash).
     counted: AtomicBool,
     closed: AtomicBool,
+    /// D42: set by `abort`; silences the stderr relay.
+    aborted: Arc<AtomicBool>,
     /// Reaped already: `abort` and `close` may both run (Ctrl-C during a failure).
     reaped: AtomicBool,
     control: Mutex<Box<dyn Control>>,
@@ -3494,11 +3502,18 @@ impl Conn {
             }
             fail_all(&pend, &live, &why);
         }));
+        // Set by `abort` before its kill: a helper's dying words on Ctrl-C (Python's
+        // KeyboardInterrupt traceback) are not relayed, as ripgrep prints nothing then. Not
+        // `alive`: `close` clears that too, and a helper may legitimately write on the EOF of a
+        // shutdown (review r5, Fable #2).
+        let aborted = Arc::new(AtomicBool::new(false));
         if let Some(err) = p.stderr {
-            let (warn, format) = (warn.clone(), format.to_string());
+            let (warn, format, quiet) = (warn.clone(), format.to_string(), aborted.clone());
             thread(Box::new(move || {
                 for l in BufReader::new(err).lines().map_while(Result::ok) {
-                    warn(format!("sfor: {format}: {l}"));
+                    if !quiet.load(SeqCst) {
+                        warn(format!("sfor: {format}: {l}"));
+                    }
                 }
             }));
         }
@@ -3509,6 +3524,7 @@ impl Conn {
             alive,
             counted: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            aborted,
             reaped: AtomicBool::new(false),
             control: Mutex::new(p.control),
             ends: Mutex::new(ends),
@@ -3535,6 +3551,7 @@ impl Conn {
 
     /// D42: kill and reap now, without the grace or the pipe wait of `close` (Ctrl-C).
     fn abort(&self) {
+        self.aborted.store(true, SeqCst);
         self.alive.store(false, SeqCst);
         let mut c = self.control.lock().unwrap();
         c.kill();
@@ -3887,15 +3904,15 @@ pub(crate) mod cancel {
             Ok(started)
         }
 
-        /// Marks the lifecycle cancelled — every later `launch` is refused — and kills and reaps
-        /// every registered process, in parallel. Processes being started hold the lock, so
-        /// they finish registering first and are in the list.
         /// The run was cancelled: hosts stop warning, since sfor is about to die by the signal
         /// and ripgrep prints nothing on Ctrl-C (review r4, Fable #3).
         pub(crate) fn cancelled(&self) -> bool {
             self.state.lock().unwrap().cancelled
         }
 
+        /// Marks the lifecycle cancelled — every later `launch` is refused — and kills and reaps
+        /// every registered process, in parallel. Processes being started hold the lock, so
+        /// they finish registering first and are in the list.
         pub(crate) fn cancel(&self) {
             let live: Vec<Arc<Conn>> = {
                 let mut st = self.state.lock().unwrap();
@@ -6686,11 +6703,35 @@ exit "$fail"
   RSS is at most rg's plus 32 MiB (the collector keeps three stacks, not the keys).
 - [ ] `treesitter_skips_files_over_max_bytes`: a 20 MB generated JavaScript file with one
   `needle`: one warning naming `max_bytes`, Plain output, and at most 2 × rg's wall time.
-- [ ] `broken_toml_recovers_in_bounded_time`: a 1 MB TOML shaped like a Cargo.lock (Fable's
-  generator in `/tmp/subtask/m2-plan-r4-fable/tomlrec/src/main.rs`) with a `"""` left open
-  300 lines before its end, and the `needle` on the line just before the open `"""` (where
-  the round 3 algorithm lost it, 209 lines short): the `needle`'s Trail survives, and sfor's
-  wall time is at most rg's plus 2 s (review r2, Fable #4; r4, Fable #1).
+- [ ] `broken_toml_recovers_in_bounded_time` (review r2, Fable #4; r4, Fable #1; r5, Fable #4):
+  a 1 MB TOML shaped like a Cargo.lock, broken as the unit test of Task 3.2 is, 300 lines
+  before its end, where the round 3 algorithm lost the `needle` 209 lines short. The `needle`'s
+  Trail ends in `note`, and sfor's wall time is at most rg's plus 2 s. The generator:
+
+```rust
+let mut lock = String::from("# This file is automatically @generated by Cargo.\nversion = 4\n\n");
+let mut i = 0;
+while lock.len() < 1_000_000 {
+    i += 1;
+    lock.push_str(&format!(
+        "[[package]]\nname = \"crate-{i}\"\nversion = \"1.0.{i}\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"{:064x}\"\ndependencies = [\n \"crate-{}\",\n \"crate-{}\",\n]\n\n",
+        i * 7919, i + 1, i + 2
+    ));
+}
+let lines: Vec<&str> = lock.lines().collect();
+// The `[[package]]` line nearest to 300 lines before the end, so the insertion falls between
+// two tables, never inside a `dependencies` array.
+let at = (0..lines.len() - 300).rev().find(|&k| lines[k] == "[[package]]").unwrap();
+let mut broken = String::new();
+for (k, l) in lines.iter().enumerate() {
+    if k == at {
+        broken.push_str("note = \"needle\"\n");
+        broken.push_str("description = \"\"\"\n");
+    }
+    broken.push_str(l);
+    broken.push('\n');
+}
+```
 - [ ] `yaml_beyond_the_tree_sitter_limit`: a 40 000-line YAML with a `needle` at the end gets
   its Trail end to end, in at most rg's time plus 1 s.
 - [ ] Commit «Add the M2 performance ceilings».
