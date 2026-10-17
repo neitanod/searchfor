@@ -41,6 +41,10 @@ fn params(t: &toml::Table) -> anyhow::Result<Params> {
         "" => None,
         q => Some(one_byte(q, "quote")?),
     };
+    if delimiter.is_some() && delimiter == quote {
+        // csv-core cannot tell them apart (M3 code review r1, Fable #7).
+        anyhow::bail!("csv: `delimiter` and `quote` must differ");
+    }
     Ok(Params {
         delimiter,
         quote,
@@ -56,12 +60,20 @@ fn params(t: &toml::Table) -> anyhow::Result<Params> {
 /// The delimiter of a CSV file (D4): of `,`, `;`, tab and `|`, the one that appears most often
 /// in its first line outside quotes; `,` on a tie or when none appears. Each candidate is
 /// counted as csv-core reads the line with it as the delimiter (M3 code review r1, Codex #2).
+/// A candidate that is the quote is never picked (Fable #7): then the first other one is the
+/// default.
 pub fn sniff(src: &[u8], quote: Option<u8>) -> u8 {
     const CANDIDATES: [u8; 4] = [b',', b';', b'\t', b'|'];
     let line = &src[..memchr::memchr(b'\n', src).unwrap_or(src.len())];
-    let counts = CANDIDATES.map(|d| delimiters(line, d, quote));
-    let mut best = 0;
-    for k in 1..4 {
+    let counts = CANDIDATES.map(|d| {
+        if Some(d) == quote {
+            0
+        } else {
+            delimiters(line, d, quote)
+        }
+    });
+    let mut best = usize::from(Some(CANDIDATES[0]) == quote);
+    for k in best + 1..4 {
         if counts[k] > counts[best] {
             best = k;
         }
@@ -683,6 +695,17 @@ mod tests {
             needles(b"Size\";Plan;Note\n1;needle;ok\n", ""),
             [vec!["row 1:2-2", "Plan:2-2"]]
         );
+    }
+
+    #[test]
+    fn the_delimiter_is_never_the_quote() {
+        // M3 code review r1, Fable #7: a Definition that makes them one is an error, and
+        // `auto` never picks the quote.
+        let e = params(&table("delimiter = \";\"\nquote = \";\"")).unwrap_err();
+        assert!(e.to_string().contains("delimiter"), "{e}");
+        assert_eq!(sniff(b"a;b;c\n", Some(b';')), b',');
+        assert_eq!(sniff(b"a,b,c\n", Some(b',')), b';');
+        assert_eq!(sniff(b"a,b|c\n", Some(b',')), b'|');
     }
 
     #[test]
