@@ -45,20 +45,52 @@ pub fn title(block: &str, base: usize) -> Option<(String, Pieces)> {
 }
 
 /// The bytes before the value of a top-level `title` key on `line` (code review r2, Codex #6):
-/// the key plain, `"title"` or `'title'`, blanks before the `:`, and a blank or the line's end
-/// after it. None for any other line.
+/// the key plain, or quoted and `title` once decoded (code review r3, Codex #4), blanks before
+/// the `:`, and a blank or the line's end after it. None for any other line.
 fn title_key(line: &str) -> Option<usize> {
-    let key = ["title", "\"title\"", "'title'"]
-        .into_iter()
-        .find(|k| line.starts_with(k))?;
-    let after = &line[key.len()..];
+    let (key, len) = match line.as_bytes().first() {
+        Some(&q @ (b'"' | b'\'')) => quoted_key(&line[1..], q == b'"').map(|(k, n)| (k, n + 1))?,
+        _ if line.starts_with("title") => ("title".to_string(), "title".len()),
+        _ => return None,
+    };
+    if key != "title" {
+        return None;
+    }
+    let after = &line[len..];
     let blanks = after.len() - after.trim_start_matches([' ', '\t']).len();
-    let colon = key.len() + blanks;
+    let colon = len + blanks;
     if !line[colon..].starts_with(':') {
         return None;
     }
     let value = &line[colon + 1..];
     (value.is_empty() || value.starts_with([' ', '\t'])).then_some(colon + 1)
+}
+
+/// A quoted key decoded (`s` starts after its opening quote) and the bytes it takes up to its
+/// closing quote, included; None when it does not close on the line.
+fn quoted_key(s: &str, double: bool) -> Option<(String, usize)> {
+    let mut key = String::new();
+    let mut k = 0;
+    while let Some(c) = s[k..].chars().next() {
+        match c {
+            '"' if double => return Some((key, k + 1)),
+            '\\' if double => {
+                let (decoded, len) = escape(&s[k + 1..]);
+                key.push_str(&decoded);
+                k += 1 + len;
+            }
+            '\'' if !double && s[k + 1..].starts_with('\'') => {
+                key.push('\'');
+                k += 2;
+            }
+            '\'' if !double => return Some((key, k + 1)),
+            _ => {
+                key.push(c);
+                k += c.len_utf8();
+            }
+        }
+    }
+    None
 }
 
 /// The bytes before the value in `s` (what follows the key's `:`): blanks, and the anchors
@@ -376,6 +408,18 @@ mod tests {
         assert!(title("title2: x\n", 0).is_none());
         assert!(title("title x: y\n", 0).is_none());
         assert!(title("\"titles\": x\n", 0).is_none());
+    }
+
+    /// Code review r3, Codex #4: a quoted key is compared once decoded.
+    #[test]
+    fn a_quoted_title_key_is_decoded() {
+        assert_eq!(title_of("\"ti\\u0074le\": Hello\n").0, "Hello");
+        assert_eq!(hit("\"ti\\u0074le\": Hello\n", "Hello"), "Hello");
+        assert_eq!(title_of("\"\\x74itle\" : Hi\n").0, "Hi");
+        assert_eq!(title_of("'ti''tle': x\ntitle: Real\n").0, "Real");
+        assert!(title("\"ti\\u0074les\": x\n", 0).is_none());
+        assert!(title("\"title: x\n", 0).is_none());
+        assert!(title("'title: x\n", 0).is_none());
     }
 
     /// Code review r2, Codex #6: an anchor or a tag before the value is not part of it.
