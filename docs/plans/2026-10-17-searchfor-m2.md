@@ -2605,16 +2605,18 @@ mod tests {
         prefix and the error's line that a and b did not try, starting from the one nearest the
         error and going towards the start of the file; the first that parses wins (valid
         prefixes are not monotone — review r3, Codex #3).
-     No cut is parsed twice in a, b and c. The best prefix found is used; if none parses, an empty Outline. Verified with Fable's
-     probe (`/tmp/subtask/m2-plan-r4-fable/tomlrec`, rerun with the size-bounded budget in
-     `/tmp/subtask/m2-plan/snap`, output `r4-snapped-size-budget.txt`): the 5 000-line fixture
-     of `an_open_string_deep_in_a_lock_file_keeps_the_line_before_it` recovers exactly to its
-     open string's line in 72 parses (0.14 s in release); on a 1 MB Cargo.lock-shaped file
-     with a `"""` left open 300 lines before the end, the prefix ends exactly at the open
-     string's line (34 parses, 0.96 s); with it in the middle of the file, again exactly at its
-     line (43 parses, 0.80 s); and Codex's counterexample (a valid multi-line string on lines
-     1–13, `k = "needle"` on 14, one left open on 15–19) recovers the cut at line 15, which
-     keeps `k`, in 2 parses. For `[a]\nb="needle"\nx=[\n[c]\nd="needle"\n` toml_edit reports
+     No cut is parsed twice in a, b and c. The best prefix found is used; if none parses, an empty Outline. Verified as written here (trim_start,
+     the bisection rule, the start at the last line for an error at the end of the file) in
+     `/tmp/subtask/m2-plan/snap6`, output `/tmp/subtask/m2-plan/outputs/r5-b38092a-recovery.txt`,
+     on eleven fixtures, every `needle` kept: the 5 000-line fixture of
+     `an_open_string_deep_in_a_lock_file_keeps_the_line_before_it` recovers exactly to its open
+     string's line in 72 parses (0.14 s in release); Task 11.4's 1 MB generator, open 300 lines
+     before the end, exactly at that line in 34 parses (0.92 s), and with the insertion in the
+     middle of the file, exactly in 42 parses (0.80 s); Fable's netlify-style file with indented
+     keys keeps its `needle` in 4 parses; Fable's array of arrays with `[` in column 0 and his two
+     «fake statements inside a valid string» files, in 1 and 4 parses; and Codex's
+     counterexample (a valid multi-line string on lines 1–13, `k = "needle"` on 14, one left open
+     on 15–19) recovers the cut at line 15, which keeps `k`, in 1 parse. For `[a]\nb="needle"\nx=[\n[c]\nd="needle"\n` toml_edit reports
      byte 23 (line 5), and the recovery reaches the 15-byte prefix `[a]\nb="needle"\n`.
      toml_edit's own recursion limit («max recursion depth met») is such an error too.
   2. **Paths are components.** A path is `Vec<Step>`, `enum Step { Key(String), Index(usize) }`,
