@@ -221,6 +221,18 @@ With `--within`, `-m` counts the Matches the filter keeps, so the search cannot 
 stopped searching binary file after match` with `--within '' -m1`, which rg 14.1.1 never
 reaches with `-m1`, as it stops before the NUL. The `end` and `summary` statistics of `--json`
 count that whole search (spec §6.4) (code review r3, Fable #5).
+
+### A closed pipe in the tree layout
+
+rg 14.1.1 prints while it searches: when the reader closes the pipe (`| head -1`), rg stops
+and exits 1. The tree layout, which rg does not have, holds each file's output until the file
+ends, as the blank line between two files goes between whole outputs; by the time the print
+finds the pipe closed, the file has matched, and sfor exits 0. A file of 300000 lines that
+match (code review r3, Fable #3):
+
+```sh
+sfor --tree needle many.txt | head -1   # exit 0; rg needle many.txt | head -1, exit 1
+```
 ";
 
 #[cfg(test)]
