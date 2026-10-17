@@ -102,6 +102,10 @@ pub struct Processors {
     tmp: std::sync::Arc<external::RunTemp>,
     /// The run's treesitter (D39).
     treesitter: treesitter::TreeSitter,
+    /// The Grammar directory (spec §7); None: no Grammar is installed.
+    grammars: Option<std::path::PathBuf>,
+    /// The Grammar Helpers installed there, read once per run (review r1, Codex #5).
+    installed: std::sync::OnceLock<Vec<crate::grammars::Installed>>,
 }
 
 impl Processors {
@@ -113,7 +117,73 @@ impl Processors {
             disabled: Default::default(),
             tmp: std::sync::Arc::new(external::RunTemp::new()),
             treesitter: treesitter::TreeSitter::default(),
+            grammars: None,
+            installed: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The Grammar directory whose Grammar Helpers serve the Grammars not compiled in.
+    pub fn with_grammars(mut self, dir: Option<std::path::PathBuf>) -> Self {
+        self.grammars = dir;
+        self.installed = std::sync::OnceLock::new();
+        self
+    }
+
+    /// The binary of the installed Grammar Helper of `grammar`, from the run's one reading of
+    /// the Grammar directory.
+    fn installed_binary(&self, grammar: &str) -> Option<&std::path::Path> {
+        self.installed
+            .get_or_init(|| {
+                self.grammars
+                    .as_deref()
+                    .map(crate::grammars::installed)
+                    .unwrap_or_default()
+            })
+            .iter()
+            .find(|i| i.name == grammar)
+            .map(|i| i.binary.as_path())
+    }
+
+    fn grammar_of(def: &crate::formats::definition::FormatDefinition) -> &str {
+        def.params
+            .get("grammar")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+    }
+
+    /// Whether `grammar` is compiled in or installed.
+    fn has_grammar(&self, grammar: &str) -> bool {
+        treesitter::grammars::language(grammar).is_some()
+            || self.installed_binary(grammar).is_some()
+    }
+
+    /// False only for a `treesitter` Definition whose Grammar is neither compiled in nor
+    /// installed (`--list-formats` marks it unavailable, spec §7). Never warns.
+    pub fn available(&self, def: &crate::formats::definition::FormatDefinition) -> bool {
+        def.processor != "treesitter" || self.has_grammar(Self::grammar_of(def))
+    }
+
+    /// The Host of the installed Grammar Helper of `grammar` (design note 8): `concurrent`,
+    /// with the Definition's `params` in `hello` and its `timeout_ms` if positive. None when
+    /// the Grammar is not installed.
+    fn grammar_helper_config(
+        &self,
+        def: &crate::formats::definition::FormatDefinition,
+        grammar: &str,
+    ) -> Option<crate::helper::HostConfig> {
+        let bin = self.installed_binary(grammar)?;
+        let timeout = match def.params.get("timeout_ms").and_then(|v| v.as_integer()) {
+            Some(ms) if ms > 0 => std::time::Duration::from_millis(ms as u64),
+            _ => crate::helper::DEFAULT_TIMEOUT,
+        };
+        Some(crate::helper::HostConfig {
+            format: def.name.clone(),
+            command: vec![bin.to_string_lossy().into_owned()],
+            mode: crate::helper::Mode::Concurrent,
+            timeout,
+            params: def.params.clone(),
+            threads: self.threads,
+        })
     }
 
     /// The Processor names a Format Definition may use (`Registry::load`).
@@ -122,19 +192,12 @@ impl Processors {
     }
 
     /// Whether files of `def` may get Trails, without building anything or warning: for
-    /// `complete_input`, which runs before the search (design note 2). C9 adds installed
-    /// Grammars.
+    /// `complete_input`, which runs before the search (design note 2). A Grammar describes
+    /// when it is compiled in or installed.
     pub fn describes(&self, def: &crate::formats::definition::FormatDefinition) -> bool {
         match def.processor.as_str() {
             "external" => !self.disabled.lock().unwrap().contains(&def.name),
-            "treesitter" => {
-                let grammar = def
-                    .params
-                    .get("grammar")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                treesitter::grammars::language(grammar).is_some()
-            }
+            "treesitter" => self.has_grammar(Self::grammar_of(def)),
             p => by_name(p).is_some(),
         }
     }
@@ -154,15 +217,14 @@ impl Processors {
                 crate::helper::HostConfig::external(&def.name, &def.params, self.threads)
             }),
             "treesitter" => {
-                let grammar = def
-                    .params
-                    .get("grammar")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let grammar = Self::grammar_of(def);
                 if treesitter::grammars::language(grammar).is_some() {
                     return Some(ProcessorRef::BuiltIn(&self.treesitter));
                 }
-                // C9: an installed Grammar Helper serves it here.
+                // Not compiled in: its installed Grammar Helper serves it (spec §7).
+                if let Some(cfg) = self.grammar_helper_config(def, grammar) {
+                    return self.helper(def, || Ok(cfg));
+                }
                 self.disable(
                     def,
                     format!(
@@ -366,6 +428,87 @@ mod tests {
         )));
         assert!(seen.lock().unwrap().is_empty());
         assert!(ps.helpers.lock().unwrap().is_empty());
+    }
+
+    /// A complete install of the Lua Grammar Helper under a new Grammar directory.
+    fn lua_installed() -> tempfile::TempDir {
+        let grammars = tempfile::tempdir().unwrap();
+        let lua = grammars.path().join("lua");
+        std::fs::create_dir(&lua).unwrap();
+        std::fs::write(lua.join(crate::grammars::binary_name("lua")), "").unwrap();
+        std::fs::write(lua.join("lua.toml"), "name='lua'\nprocessor='treesitter'").unwrap();
+        std::fs::write(lua.join("installed.json"), r#"{"version":"0.2.0"}"#).unwrap();
+        grammars
+    }
+
+    #[test]
+    fn an_installed_grammar_is_served_by_its_helper() {
+        let grammars = lua_installed();
+        let (w, seen) = collecting();
+        let ps = Processors::new(4, w).with_grammars(Some(grammars.path().to_path_buf()));
+        let d = def("name='lua'\nprocessor='treesitter'\n[params]\ngrammar='lua'\nquery=''");
+        assert!(matches!(
+            ps.for_definition(&d),
+            Some(ProcessorRef::Helper(_))
+        ));
+        assert!(ps.available(&d));
+        assert!(ps.describes(&d));
+        assert!(seen.lock().unwrap().is_empty());
+        let missing =
+            def("name='cobol'\nprocessor='treesitter'\n[params]\ngrammar='cobol'\nquery=''");
+        assert!(!ps.available(&missing));
+        assert!(ps.available(&def(
+            "name='php2'\nprocessor='treesitter'\n[params]\ngrammar='php'\nquery=''"
+        )));
+    }
+
+    #[test]
+    fn installed_grammars_are_read_once_per_run() {
+        let grammars = lua_installed();
+        let (w, seen) = collecting();
+        let ps = Processors::new(4, w).with_grammars(Some(grammars.path().to_path_buf()));
+        let d = def("name='lua'\nprocessor='treesitter'\n[params]\ngrammar='lua'\nquery=''");
+        assert!(ps.available(&d));
+        std::fs::remove_dir_all(grammars.path().join("lua")).unwrap();
+        assert!(ps.describes(&d));
+        assert!(matches!(
+            ps.for_definition(&d),
+            Some(ProcessorRef::Helper(_))
+        ));
+        assert!(seen.lock().unwrap().is_empty());
+        // Without a Grammar directory nothing is installed.
+        let (w, _) = collecting();
+        assert!(!Processors::new(4, w).with_grammars(None).available(&d));
+    }
+
+    #[test]
+    fn a_grammar_helper_runs_concurrent_with_the_definitions_params() {
+        let grammars = lua_installed();
+        let (w, _) = collecting();
+        let ps = Processors::new(3, w).with_grammars(Some(grammars.path().to_path_buf()));
+        let d = def(
+            "name='lua'\nprocessor='treesitter'\n[params]\ngrammar='lua'\nquery=''\ntimeout_ms=700",
+        );
+        let cfg = ps.grammar_helper_config(&d, "lua").unwrap();
+        assert_eq!(
+            cfg.command,
+            [grammars
+                .path()
+                .join("lua")
+                .join(crate::grammars::binary_name("lua"))
+                .to_string_lossy()
+                .into_owned()]
+        );
+        assert_eq!(cfg.mode, crate::helper::Mode::Concurrent);
+        assert_eq!(cfg.timeout, std::time::Duration::from_millis(700));
+        assert_eq!(cfg.params, d.params);
+        assert_eq!((cfg.format.as_str(), cfg.threads), ("lua", 3));
+        let plain = def("name='lua'\nprocessor='treesitter'\n[params]\ngrammar='lua'\nquery=''");
+        assert_eq!(
+            ps.grammar_helper_config(&plain, "lua").unwrap().timeout,
+            crate::helper::DEFAULT_TIMEOUT
+        );
+        assert!(ps.grammar_helper_config(&plain, "cobol").is_none());
     }
 
     #[test]
