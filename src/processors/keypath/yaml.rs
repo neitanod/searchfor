@@ -11,6 +11,9 @@ use std::ops::Range;
 /// A complex key (`? [a, b]`) is named by its first 40 characters (spec §5.2).
 const COMPLEX_KEY_CHARS: usize = 40;
 
+/// `Name::pieces`: (range in the name's text, range in the Source).
+type Pieces = Vec<(Range<usize>, Range<usize>)>;
+
 enum Frame {
     /// A mapping; `key` is true between a key and the end of its value.
     Map {
@@ -233,12 +236,7 @@ fn end_value(frames: &mut [Frame], c: &mut Collector, end: usize) {
 /// source is the value, plain or inside its quotes; otherwise the scalar's source decoded line
 /// by line, one piece per line, so a Match maps to the line it is on; and when that decoding
 /// does not give saphyr's `value`, one decoded piece over the whole span.
-fn name_pieces(
-    text: &str,
-    span: Range<usize>,
-    value: &str,
-    style: ScalarStyle,
-) -> Vec<(Range<usize>, Range<usize>)> {
+fn name_pieces(text: &str, span: Range<usize>, value: &str, style: ScalarStyle) -> Pieces {
     let (s, e) = (span.start, span.end);
     let raw = &text[s..e];
     let quoted = matches!(style, ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted);
@@ -275,11 +273,7 @@ enum Quote {
 /// its indentation and, before a line break, without its trailing blanks; escapes decoded;
 /// lines joined by one space, an empty line by a line break, and an escaped line break (a
 /// double-quoted line ending in `\`) by nothing. Returns the text and one piece per line.
-fn by_lines(
-    text: &str,
-    inner: Range<usize>,
-    quote: Quote,
-) -> (String, Vec<(Range<usize>, Range<usize>)>) {
+fn by_lines(text: &str, inner: Range<usize>, quote: Quote) -> (String, Pieces) {
     let body = &text[inner.clone()];
     let mut out = String::new();
     let mut pieces = Vec::new();
