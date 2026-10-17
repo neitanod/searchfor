@@ -1,0 +1,11 @@
+---
+source: tests/cli_m3.rs
+expression: out
+---
+subs/talk.vtt
+  1:WEBVTT - needle talk
+  3:NOTE needle in a note
+  cue 2 00:02.500 --> 00:05.000
+    10:<v Ana>The needle is here.
+  cue 3 01:00:00.000 --> 01:00:01.000
+    13:needle at one hour

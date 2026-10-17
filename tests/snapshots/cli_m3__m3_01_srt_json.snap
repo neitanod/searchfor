@@ -1,0 +1,10 @@
+---
+source: tests/cli_m3.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"subs/movie.srt"}}}
+{"type":"match","data":{"path":{"text":"subs/movie.srt"},"lines":{"text":"Where is the needle?\r\n"},"line_number":3,"absolute_offset":34,"submatches":[{"match":{"text":"needle"},"start":13,"end":19}],"format":"srt","trail":[{"kind":"cue","name":"cue 1 00:00:01,000","line":1,"end_line":3,"signature":"cue 1 00:00:01,000 --> 00:00:03,500"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"subs/movie.srt"},"lines":{"text":"- A needle, in there?\r\n"},"line_number":8,"absolute_offset":112,"submatches":[{"match":{"text":"needle"},"start":4,"end":10}],"format":"srt","trail":[{"kind":"cue","name":"cue 2 00:00:04,000","line":5,"end_line":8,"signature":"cue 2 00:00:04,000 --> 00:00:06,000"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"subs/movie.srt"},"lines":{"text":"<i>needle</i>\r\n"},"line_number":12,"absolute_offset":171,"submatches":[{"match":{"text":"needle"},"start":3,"end":9}],"format":"srt","trail":[{"kind":"cue","name":"cue 3 00:01:02,500","line":10,"end_line":12,"signature":"cue 3 00:01:02,500 --> 00:01:04,000"}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"subs/movie.srt"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":186,"bytes_printed":1132,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1132,"bytes_searched":186,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

@@ -1,0 +1,7 @@
+---
+source: tests/cli_m3.rs
+expression: out
+---
+3: cue 1 00:00:01,000 │ Where is the needle?
+8: cue 2 00:00:04,000 │ - A needle, in there?
+12: cue 3 00:01:02,500 │ <i>needle</i>

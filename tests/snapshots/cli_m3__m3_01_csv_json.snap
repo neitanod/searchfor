@@ -1,0 +1,10 @@
+---
+source: tests/cli_m3.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"table/plans.csv"}}}
+{"type":"match","data":{"path":{"text":"table/plans.csv"},"lines":{"text":"2,Bea,needle,\"likes \"\"quotes\"\", and commas\"\n"},"line_number":3,"absolute_offset":40,"submatches":[{"match":{"text":"needle"},"start":6,"end":12}],"format":"csv","trail":[{"kind":"row","name":"row 2","line":3,"end_line":3},{"kind":"column","name":"Plan","line":3,"end_line":3}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"table/plans.csv"},"lines":{"text":"lines with needle\"\n"},"line_number":5,"absolute_offset":101,"submatches":[{"match":{"text":"needle"},"start":11,"end":17}],"format":"csv","trail":[{"kind":"row","name":"row 3","line":4,"end_line":5},{"kind":"column","name":"Notes","line":4,"end_line":5}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"table/plans.csv"},"lines":{"text":"4,Dan,team,needle at the end,extra\n"},"line_number":7,"absolute_offset":121,"submatches":[{"match":{"text":"needle"},"start":11,"end":17}],"format":"csv","trail":[{"kind":"row","name":"row 4","line":7,"end_line":7},{"kind":"column","name":"Notes","line":7,"end_line":7}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"table/plans.csv"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":156,"bytes_printed":1152,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1152,"bytes_searched":156,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

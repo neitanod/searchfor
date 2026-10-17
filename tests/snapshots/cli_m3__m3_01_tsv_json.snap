@@ -1,0 +1,9 @@
+---
+source: tests/cli_m3.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"table/people.tsv"}}}
+{"type":"match","data":{"path":{"text":"table/people.tsv"},"lines":{"text":"\"Ana\tadmin\tneedle \"quoted\n"},"line_number":2,"absolute_offset":15,"submatches":[{"match":{"text":"needle"},"start":11,"end":17}],"format":"tsv","trail":[{"kind":"row","name":"row 1","line":2,"end_line":2},{"kind":"column","name":"Note","line":2,"end_line":2}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"table/people.tsv"},"lines":{"text":"Bea\tneedle\tok\n"},"line_number":3,"absolute_offset":41,"submatches":[{"match":{"text":"needle"},"start":4,"end":10}],"format":"tsv","trail":[{"kind":"row","name":"row 2","line":3,"end_line":3},{"kind":"column","name":"Role","line":3,"end_line":3}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"table/people.tsv"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":55,"bytes_printed":764,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":764,"bytes_searched":55,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

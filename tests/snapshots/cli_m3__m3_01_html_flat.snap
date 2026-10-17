@@ -1,0 +1,11 @@
+---
+source: tests/cli_m3.rs
+expression: out
+---
+4: head › title │   <title>Pricing needle</title>
+5: head › script │   <script>if (a < b) { label = "</div> needle"; }</script>
+12: nav.top.menu › ul › li[3] │       <li><a href="/needle">Needle</a>
+19: main#content › section#pricing.card.wide › p.note[2] │       <p class="note">The needle plan is free.
+23: main#content › section#pricing.card.wide › table › tr[3] › td[2] │         <tr><td>Pro<td>needle 9
+26: main#content › div › div › div │     <div><div><div>deep needle</div></div></div>
+27: main#content │     <img src="needle.png" alt="">

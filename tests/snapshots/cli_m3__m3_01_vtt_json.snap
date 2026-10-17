@@ -1,0 +1,11 @@
+---
+source: tests/cli_m3.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"subs/talk.vtt"}}}
+{"type":"match","data":{"path":{"text":"subs/talk.vtt"},"lines":{"text":"WEBVTT - needle talk\n"},"line_number":1,"absolute_offset":0,"submatches":[{"match":{"text":"needle"},"start":9,"end":15}],"format":"vtt","trail":[],"fragment":null}}
+{"type":"match","data":{"path":{"text":"subs/talk.vtt"},"lines":{"text":"NOTE needle in a note\n"},"line_number":3,"absolute_offset":22,"submatches":[{"match":{"text":"needle"},"start":5,"end":11}],"format":"vtt","trail":[],"fragment":null}}
+{"type":"match","data":{"path":{"text":"subs/talk.vtt"},"lines":{"text":"<v Ana>The needle is here.\n"},"line_number":10,"absolute_offset":121,"submatches":[{"match":{"text":"needle"},"start":11,"end":17}],"format":"vtt","trail":[{"kind":"cue","name":"cue 2 00:02.500","line":9,"end_line":10,"signature":"cue 2 00:02.500 --> 00:05.000"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"subs/talk.vtt"},"lines":{"text":"needle at one hour\n"},"line_number":13,"absolute_offset":179,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"vtt","trail":[{"kind":"cue","name":"cue 3 01:00:00.000","line":12,"end_line":13,"signature":"cue 3 01:00:00.000 --> 01:00:01.000"}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"subs/talk.vtt"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":198,"bytes_printed":1252,"matched_lines":4,"matches":4}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1252,"bytes_searched":198,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":4,"matches":4,"searches":1,"searches_with_match":1}},"type":"summary"}
