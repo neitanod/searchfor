@@ -371,3 +371,32 @@ fn m2_15_a_block_scalar_key_stays_on_one_line() {
     assert!(o.starts_with("3: "), "{o}");
     assert!(o.contains("\n4: "), "{o}");
 }
+
+#[test]
+fn m2_16_a_function_value_signature_ends_at_its_body() {
+    // Review m2-code-r2, Fable #2: `f = () => needle` showed the whole line as its signature.
+    let fx = Fixture::new();
+    std::fs::write(
+        fx.file("sig.js"),
+        "const o = { n: function () { return 'needle'; } };\nconst f = () => needle;\n",
+    )
+    .unwrap();
+    let o = run(&mut fx.sfor(["needle", "sig.js", "--tree"]));
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let tree = stdout(&o);
+    assert!(tree.contains("  n: function ()\n"), "{tree}");
+    assert!(tree.contains("  f = () =>\n"), "{tree}");
+    let o = stdout(&run(&mut fx.sfor(["needle", "sig.js", "--json"])));
+    let sigs: Vec<String> = o
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .filter(|v| v["type"] == "match")
+        .map(|v| {
+            v["data"]["trail"][0]["signature"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(sigs, ["n: function ()", "f = () =>"], "{o}");
+}

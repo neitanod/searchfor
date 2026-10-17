@@ -85,10 +85,16 @@ pub fn parse(c: &Compiled, src: &[u8]) -> Option<Tree> {
 }
 
 /// The first line of a Segment, without a trailing `{` (spec §5.3), and without its body when
-/// the body starts on that line (`fn top() -> u32 { needle }`, review m2-code-r1, Fable #2).
+/// the body starts on that line (`fn top() -> u32 { needle }`, review m2-code-r1, Fable #2), or
+/// the body of its value (`f = () => needle`).
 fn first_line(src: &[u8], n: Node) -> String {
-    let end = n
-        .child_by_field_name("body")
+    // A Segment without a body (a pair, a declarator, a class field) ends where the body of its
+    // function value starts: after an arrow function's `=>` (review m2-code-r2, Fable #2).
+    let body = n.child_by_field_name("body").or_else(|| {
+        n.child_by_field_name("value")
+            .and_then(|v| v.child_by_field_name("body"))
+    });
+    let end = body
         .map_or(n.end_byte(), |b| b.start_byte())
         .clamp(n.start_byte(), n.end_byte());
     let text = String::from_utf8_lossy(&src[n.start_byte()..end]);
@@ -373,6 +379,31 @@ mod tests {
         assert_eq!(needles_in("python", "x.py", py), [t(1, "f", "def f():")]);
         let go = b"package p\nfunc g() int { return needle }\n";
         assert_eq!(needles_in("go", "x.go", go), [t(2, "g", "func g() int")]);
+    }
+
+    #[test]
+    fn a_function_value_body_stays_out_of_the_signature() {
+        // Review m2-code-r2, Fable #2: a Segment without a body field (a pair, a declarator, a
+        // class field) ends its signature where the body of its function value starts, and an
+        // arrow function with an expression body after its `=>`.
+        let src = b"const o = { n: function () { return 'needle'; }, \"m\": async (a) => { return 'needle'; } };\nconst f = () => needle, g = function () { return needle; };\nclass A { static x = () => needle; y = function () { return 'needle'; }; }\n";
+        for format in ["javascript", "typescript", "tsx"] {
+            let got = needles_in(format, "x", src);
+            let want = [
+                t(1, "n", "n: function ()"),
+                t(1, "m", "\"m\": async (a) =>"),
+                t(2, "f", "f = () =>"),
+                t(2, "g", "g = function ()"),
+                t(3, "A › x", "class A ‖ static x = () =>"),
+                t(3, "A › y", "class A ‖ y = function ()"),
+            ];
+            assert_eq!(got, want, "{format}");
+        }
+        let ts = b"const make = (n: number): string => `needle${n}`;\n";
+        assert_eq!(
+            needles_in("typescript", "x.ts", ts),
+            [t(1, "make", "make = (n: number): string =>")]
+        );
     }
 
     #[test]
