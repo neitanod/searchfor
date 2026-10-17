@@ -1381,3 +1381,54 @@ fn the_separator_with_one_thread_waits_for_a_line() {
     }
     r.assert_empty();
 }
+
+/// The deviation «A binary file or stdin with a context» of docs/rg-compat.md (code review r5,
+/// Fable #3): when the first line after the NUL is a context line, rg 14.1.1 and `--no-trail`
+/// print nothing and exit 1, and the Trail layouts print the binary message, as `rg --json`
+/// reports the Match; when it is a Match line, all print the message.
+#[test]
+fn a_binary_file_with_a_context_deviates_as_documented() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::write(fx.file("nul.txt"), "one\nneedle\n\0\n").unwrap();
+    let msg = "binary file matches (found \"\\0\" byte around offset 11)\n";
+    let mut r = Report(Vec::new());
+    for (args, input, rg_prints) in [
+        (&["-B1", "needle", "nul.txt"][..], In::Null, false),
+        (&["-B1", "needle"], In::File("nul.txt"), false),
+        (&["-v", "-C1", "one"], In::File("nul.txt"), false),
+        (&["-A1", "needle", "nul.txt"], In::Null, true),
+    ] {
+        let want = if rg_prints {
+            (0, msg.to_string())
+        } else {
+            (1, String::new())
+        };
+        let o = rg(&fx, args, input);
+        r.check(format!("rg {args:?}"), want.clone(), (code(&o), stdout(&o)));
+        let mut j = vec!["--json"];
+        j.extend_from_slice(args);
+        let o = rg(&fx, &j, input);
+        assert!(stdout(&o).contains("\"type\":\"match\""), "rg {j:?}");
+        for mode in ["--no-trail", "--flat", "--tree"] {
+            let mut s = vec![mode];
+            s.extend_from_slice(args);
+            let o = sfor(&fx, &s, input);
+            let got = (
+                code(&o),
+                stdout(&o)
+                    .replace("<stdin>\n  ", "")
+                    .replace("nul.txt\n  ", ""),
+            );
+            let want = if mode == "--no-trail" {
+                want.clone()
+            } else {
+                (0, msg.to_string())
+            };
+            r.check(format!("{s:?}"), want, got);
+        }
+    }
+    r.assert_empty();
+}

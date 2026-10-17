@@ -202,15 +202,20 @@ pub fn render_markdown() -> String {
 const DEVIATIONS: &str = "
 ## Known deviations
 
-### Binary stdin with `-v` and a context, in the Trail layouts
+### A binary file or stdin with a context, in the Trail layouts
 
-On stdin with a NUL, `-v` and a context (`-C1`), rg 14.1.1 prints nothing and exits 1: its
-standard printer gives up at the first context line once it has seen the NUL (grep-printer
-0.2.2, `standard.rs:867`), so no Match counts. `--no-trail` does the same. `--flat` and
-`--tree` print `binary file matches (found \"\\0\" byte around offset N)` and exit 0, as
-`rg --json` reports the Match (code review r3, Fable #4):
+On a file named on the command line or on stdin, with a NUL and a context (`-A`, `-B`, `-C`),
+rg 14.1.1's standard printer gives up at the first line it gets once the searcher has seen the
+NUL, which for a small file is before its first line (grep-printer 0.2.2, `standard.rs:842` and
+`:867`). A Match line still counts, and rg prints the binary message; a context line counts
+nothing, so when the first line is a context line (the before context of the first Match, or,
+with `-v`, a line with the pattern) rg prints nothing and exits 1. `--no-trail` does the same.
+`--flat` and `--tree` print `binary file matches (found \"\\0\" byte around offset N)` and
+exit 0, as `rg --json` reports the Match (code review r3, Fable #4; code review r5, Fable #3):
 
 ```sh
+printf 'one\\nneedle\\n\\0\\n' > nul.txt
+sfor --flat -B1 needle nul.txt
 printf 'needle first\\nmore\\0binary needle\\nneedle again\\n' | sfor --flat -v -C1 needle
 ```
 
