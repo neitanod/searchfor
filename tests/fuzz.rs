@@ -1,4 +1,5 @@
-//! A small fuzz of the keypath and treesitter Processors (review m2-code-r1): generated inputs
+//! A small fuzz of the keypath, treesitter, markup, csv and subtitles Processors (review
+//! m2-code-r1; M3 plan, Task 6.2): generated inputs
 //! with lone CRs, CRLF, BOMs, multi-byte keys and values, and truncated files, looking for
 //! panics and for name pieces outside their text, outside their Source, or over other bytes.
 //! The generator is seeded, so a failure reproduces; `SFOR_FUZZ_SEED` and `SFOR_FUZZ_N` (inputs
@@ -7,7 +8,10 @@ mod common;
 
 use searchfor::model::{Input, Name};
 use searchfor::processors::Processor;
+use searchfor::processors::csv::Csv;
 use searchfor::processors::keypath::Keypath;
+use searchfor::processors::markup::Markup;
+use searchfor::processors::subtitles::Subtitles;
 use searchfor::processors::treesitter::TreeSitter;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
@@ -71,6 +75,26 @@ const CODE: &[&str] = &[
     "}", ":", ";", "=>", "->", "=", ".", "::", "<", ">", "//", "/*", "*/", r#""s""#, "'c'", "`t`",
     "<div>", "</div>", "export ", "async ", "self", "return ", "if ", "then\n", "fi\n", "() {",
     r#""a\u0062""#, r#"'\x41'"#, "\\\n", r#""\uD83D""#, r#"{ "k\u{31}": () => needle }"#,
+];
+
+#[rustfmt::skip]
+const MARKUP: &[&str] = &[
+    "<", ">", "</", "/>", "<div>", "</div>", "<li>", "<ul>", "</ul>", "<p class=\"a b\">", "<td>",
+    "<tr>", "<table>", "<br>", "<script>", "</script>", "<style>", "<!--", "-->", "<![CDATA[",
+    "]]>", "<?xml version=\"1.0\"?>", "<!DOCTYPE x [", "]>", "<x:y>", "</x:y>", "<a id='ñ'>",
+    "</a>", " id=", "\"", "'", "=", "<é>", "</é>", "<b/>", "&lt;", "<html>", "<body>",
+];
+
+#[rustfmt::skip]
+const TABLE: &[&str] = &[
+    ",", ";", "\t", "|", "\"", "\"\"", "\n", "\r\n", "a", "ñandú", "1", "needle", "\"x,y\"",
+    "\"a\nb\"", " ", "\u{feff}",
+];
+
+#[rustfmt::skip]
+const SUBS: &[&str] = &[
+    "1", "12", "00:00:01,000", "00:01.500", " --> ", "-->", "00:00:02,000", "WEBVTT", "NOTE ",
+    "\n", "\r\n", "\n\n", "<i>", "</i>", "needle", "ñ", " align:start", ":", ",", ".",
 ];
 
 /// Key spellings, plain and multi-byte; the generators quote and escape some.
@@ -241,6 +265,78 @@ fn code_doc(rng: &mut Rng) -> String {
     s
 }
 
+/// Nested elements with attributes, text and the constructs the scanner skips.
+fn markup_doc(rng: &mut Rng, depth: usize) -> String {
+    let mut s = String::new();
+    for _ in 0..1 + rng.below(4) {
+        let tag = rng.pick(&["div", "li", "p", "td", "tr", "x:y", "é", "b", "script"]);
+        let attrs = match rng.below(4) {
+            0 => format!(" id=\"{}\"", rng.pick(KEYS)),
+            1 => format!(" class='{} {}'", rng.pick(KEYS), rng.pick(KEYS)),
+            2 => " a=b".to_string(),
+            _ => String::new(),
+        };
+        let inner = if depth < 4 && rng.below(2) == 0 {
+            markup_doc(rng, depth + 1)
+        } else {
+            rng.pick(VALUES).to_string()
+        };
+        let close = if rng.below(4) == 0 {
+            String::new()
+        } else {
+            format!("</{tag}>")
+        };
+        s.push_str(&format!("<{tag}{attrs}>{inner}{close}{}", rng.br()));
+        if rng.below(5) == 0 {
+            s.push_str(rng.pick(&["<!-- c -->", "<![CDATA[ < ]]>", "<br>", "<?p?>"]));
+        }
+    }
+    s
+}
+
+/// A header and rows, quoted fields with delimiters, `""` and line breaks.
+fn table_doc(rng: &mut Rng) -> String {
+    let d = rng.pick(&[",", ";", "\t"]);
+    let mut s = String::new();
+    for _ in 0..1 + rng.below(6) {
+        let cells: Vec<String> = (0..1 + rng.below(4))
+            .map(|_| match rng.below(4) {
+                0 => format!("\"{}{d}\"\"{}\"", rng.pick(VALUES), rng.pick(KEYS)),
+                1 => format!("\"{}{}x\"", rng.pick(VALUES), rng.br()),
+                _ => rng.pick(VALUES).to_string(),
+            })
+            .collect();
+        s.push_str(&cells.join(d));
+        s.push_str(rng.br());
+    }
+    s
+}
+
+/// Cues with and without identifiers, settings and blank lines, SubRip or WebVTT timing.
+fn subs_doc(rng: &mut Rng) -> String {
+    let mut s = if rng.below(2) == 0 {
+        String::from("WEBVTT\n\n")
+    } else {
+        String::new()
+    };
+    for i in 0..1 + rng.below(5) {
+        let br = rng.br();
+        if rng.below(2) == 0 {
+            s.push_str(&format!("{}{br}", i + 1));
+        }
+        let ts = rng.pick(&[
+            "00:00:01,000 --> 00:00:02,000",
+            "00:01.000 --> 00:02.000 align:end",
+            "1:2:3.4 --> 5:6:7.8",
+        ]);
+        s.push_str(&format!("{ts}{br}{}{br}", rng.pick(VALUES)));
+        if rng.below(3) > 0 {
+            s.push_str(br);
+        }
+    }
+    s
+}
+
 /// The structured generator of a target.
 #[derive(Clone, Copy)]
 enum Shape {
@@ -248,6 +344,9 @@ enum Shape {
     Json,
     Toml,
     Code,
+    Markup,
+    Table,
+    Subs,
 }
 
 fn structured(rng: &mut Rng, shape: Shape) -> Vec<u8> {
@@ -256,6 +355,9 @@ fn structured(rng: &mut Rng, shape: Shape) -> Vec<u8> {
         Shape::Json => json_value(rng, 0),
         Shape::Toml => toml_doc(rng),
         Shape::Code => code_doc(rng),
+        Shape::Markup => markup_doc(rng, 0),
+        Shape::Table => table_doc(rng),
+        Shape::Subs => subs_doc(rng),
     }
     .into_bytes()
 }
@@ -329,7 +431,11 @@ fn params(format: &str) -> toml::Table {
     )
     .unwrap();
     let t: toml::Table = toml::from_str(&src).unwrap();
-    t["params"].as_table().unwrap().clone()
+    // srt and vtt have no [params].
+    t.get("params")
+        .and_then(|p| p.as_table())
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn fixtures(dir: &str, ext: &[&str]) -> Vec<Vec<u8>> {
@@ -437,18 +543,28 @@ fn seed() -> u64 {
 struct Target {
     format: &'static str,
     ext: &'static str,
-    treesitter: bool,
+    proc: Proc,
     shape: Shape,
     pool: &'static [&'static str],
     seeds: Vec<Vec<u8>>,
     params: toml::Table,
 }
 
-/// (format, extension, treesitter, shape, token pool, fixture directory, fixture extensions).
+/// The Processor a target runs.
+#[derive(Clone, Copy)]
+enum Proc {
+    Keypath,
+    TreeSitter,
+    Markup,
+    Csv,
+    Subtitles,
+}
+
+/// (format, extension, Processor, shape, token pool, fixture directory, fixture extensions).
 type Row = (
     &'static str,
     &'static str,
-    bool,
+    Proc,
     Shape,
     &'static [&'static str],
     &'static str,
@@ -457,24 +573,30 @@ type Row = (
 
 fn targets() -> Vec<Target> {
     #[rustfmt::skip]
-    let list: [Row; 11] = [
-        ("yaml", "yaml", false, Shape::Yaml, YAML, "data", &["yaml"]),
-        ("json", "json", false, Shape::Json, JSON, "data", &["json", "jsonl"]),
-        ("toml", "toml", false, Shape::Toml, TOML, "data", &["toml"]),
-        ("rust", "rs", true, Shape::Code, CODE, "code", &["rs"]),
-        ("python", "py", true, Shape::Code, CODE, "code", &["py"]),
-        ("javascript", "js", true, Shape::Code, CODE, "code", &["js"]),
-        ("typescript", "ts", true, Shape::Code, CODE, "code", &["ts"]),
-        ("tsx", "tsx", true, Shape::Code, CODE, "code", &["tsx"]),
-        ("go", "go", true, Shape::Code, CODE, "code", &["go"]),
-        ("php", "php", true, Shape::Code, CODE, "code", &["php"]),
-        ("bash", "sh", true, Shape::Code, CODE, "code", &["sh"]),
+    let list: [Row; 17] = [
+        ("yaml", "yaml", Proc::Keypath, Shape::Yaml, YAML, "data", &["yaml"]),
+        ("json", "json", Proc::Keypath, Shape::Json, JSON, "data", &["json", "jsonl"]),
+        ("toml", "toml", Proc::Keypath, Shape::Toml, TOML, "data", &["toml"]),
+        ("rust", "rs", Proc::TreeSitter, Shape::Code, CODE, "code", &["rs"]),
+        ("python", "py", Proc::TreeSitter, Shape::Code, CODE, "code", &["py"]),
+        ("javascript", "js", Proc::TreeSitter, Shape::Code, CODE, "code", &["js"]),
+        ("typescript", "ts", Proc::TreeSitter, Shape::Code, CODE, "code", &["ts"]),
+        ("tsx", "tsx", Proc::TreeSitter, Shape::Code, CODE, "code", &["tsx"]),
+        ("go", "go", Proc::TreeSitter, Shape::Code, CODE, "code", &["go"]),
+        ("php", "php", Proc::TreeSitter, Shape::Code, CODE, "code", &["php"]),
+        ("bash", "sh", Proc::TreeSitter, Shape::Code, CODE, "code", &["sh"]),
+        ("html", "html", Proc::Markup, Shape::Markup, MARKUP, "markup", &["html"]),
+        ("xml", "xml", Proc::Markup, Shape::Markup, MARKUP, "markup", &["xml"]),
+        ("csv", "csv", Proc::Csv, Shape::Table, TABLE, "table", &["csv"]),
+        ("tsv", "tsv", Proc::Csv, Shape::Table, TABLE, "table", &["tsv"]),
+        ("srt", "srt", Proc::Subtitles, Shape::Subs, SUBS, "subs", &["srt"]),
+        ("vtt", "vtt", Proc::Subtitles, Shape::Subs, SUBS, "subs", &["vtt"]),
     ];
     list.into_iter()
-        .map(|(format, ext, treesitter, shape, pool, dir, exts)| Target {
+        .map(|(format, ext, proc, shape, pool, dir, exts)| Target {
             format,
             ext,
-            treesitter,
+            proc,
             shape,
             pool,
             seeds: fixtures(dir, exts),
@@ -502,7 +624,13 @@ fn generated_inputs_do_not_panic_the_processors() {
     std::panic::set_hook(Box::new(|_| {}));
     for (t, set) in targets.iter().zip(inputs(&targets, count())) {
         let ts = TreeSitter::default();
-        let p: &dyn Processor = if t.treesitter { &ts } else { &Keypath };
+        let p: &dyn Processor = match t.proc {
+            Proc::Keypath => &Keypath,
+            Proc::TreeSitter => &ts,
+            Proc::Markup => &Markup,
+            Proc::Csv => &Csv,
+            Proc::Subtitles => &Subtitles,
+        };
         for bytes in &set {
             tried += 1;
             if let Err(e) = run(t, p, bytes, &mut rng) {
