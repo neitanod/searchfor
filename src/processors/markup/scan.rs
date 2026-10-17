@@ -30,6 +30,8 @@ pub struct Scanner<'a> {
     src: &'a [u8],
     pos: usize,
     xml: bool,
+    /// No start tag yet: the XML declaration may still come.
+    prolog: bool,
 }
 
 fn is_space(b: u8) -> bool {
@@ -103,7 +105,12 @@ fn name_start(b: u8, xml: bool) -> bool {
 
 impl<'a> Scanner<'a> {
     pub fn new(src: &'a [u8], xml: bool) -> Self {
-        Self { src, pos: 0, xml }
+        Self {
+            src,
+            pos: 0,
+            xml,
+            prolog: true,
+        }
     }
 
     /// The byte after `pat`, searched from `from`; None when the file ends first.
@@ -139,7 +146,9 @@ impl<'a> Scanner<'a> {
                 return Some((i + 1, slash));
             } else if b == b'=' {
                 after_eq = true;
-            } else if !is_space(b) {
+            } else {
+                // A space clears it: only a `/` right before `>` counts (M3 code review r1,
+                // Fable #3).
                 slash = b == b'/';
             }
             i += 1;
@@ -160,10 +169,10 @@ impl<'a> Scanner<'a> {
                     i = memchr::memchr(q, &s[i + 1..]).map(|k| i + 1 + k)?;
                 }
                 b'<' if subset && s[i..].starts_with(b"<!--") => {
-                    i = self.after(i + 4, b"-->")? - 1;
+                    i = self.xml_comment_end(i).ok()? - 1;
                 }
                 b'<' if subset && s[i..].starts_with(b"<?") => {
-                    i = self.after(i + 2, b"?>")? - 1;
+                    i = self.xml_pi_end(i).ok()? - 1;
                 }
                 b'[' if !subset => subset = true,
                 b']' if subset => subset = false,
@@ -173,6 +182,61 @@ impl<'a> Scanner<'a> {
             i += 1;
         }
         None
+    }
+
+    /// HTML: the byte after a comment whose `<!--` is at `lt`, ended as HTML ends it (M3 code
+    /// review r1, Fable #1 and #2): `<!-->` and `<!--->` are empty, and `--` with any more
+    /// dashes closes it before `>` or `!>`. None when the file ends first.
+    fn html_comment_end(&self, lt: usize) -> Option<usize> {
+        let s = self.src;
+        let mut p = lt + 4;
+        if s[p..].starts_with(b">") {
+            return Some(p + 1);
+        }
+        if s[p..].starts_with(b"->") {
+            return Some(p + 2);
+        }
+        loop {
+            let mut j = self.after(p, b"--")?;
+            while s.get(j) == Some(&b'-') {
+                j += 1;
+            }
+            if s[j..].starts_with(b">") {
+                return Some(j + 1);
+            }
+            if s[j..].starts_with(b"!>") {
+                return Some(j + 2);
+            }
+            p = j;
+        }
+    }
+
+    /// XML: the byte after a well-formed comment whose `<!--` is at `lt`; its first `--` must
+    /// be its `-->` (M3 code review r1, Codex #3). Err when it is not one or never ends.
+    fn xml_comment_end(&self, lt: usize) -> Result<usize, ()> {
+        let k = self.after(lt + 4, b"--").ok_or(())?;
+        if self.src.get(k) == Some(&b'>') {
+            Ok(k + 1)
+        } else {
+            Err(())
+        }
+    }
+
+    /// XML: the byte after a well-formed processing instruction whose `<?` is at `lt`: a
+    /// target that is an XML Name, then `?>` or white space and any text up to `?>`. A target
+    /// named `xml` in any case is the XML declaration, only in the prolog (M3 code review r1,
+    /// Codex #3). Err when it is not one or never ends.
+    fn xml_pi_end(&self, lt: usize) -> Result<usize, ()> {
+        let s = self.src;
+        let ne = xml_name_end(s, lt + 2)?;
+        if s[lt + 2..ne].eq_ignore_ascii_case(b"xml") && !self.prolog {
+            return Err(());
+        }
+        match s.get(ne) {
+            Some(b'?') if s.get(ne + 1) == Some(&b'>') => Ok(ne + 2),
+            Some(b' ' | b'\t' | b'\n' | b'\r') => self.after(ne, b"?>").ok_or(()),
+            _ => Err(()),
+        }
     }
 
     /// XML: the byte after a well-formed tag whose name starts at `ns` (`<name (S attr S? =
@@ -284,7 +348,12 @@ impl<'a> Scanner<'a> {
                 if me.xml { Step::Error(lt) } else { Step::Eof }
             };
             if rest.starts_with(b"<!--") {
-                match self.after(lt + 4, b"-->") {
+                let end = if self.xml {
+                    self.xml_comment_end(lt).ok()
+                } else {
+                    self.html_comment_end(lt)
+                };
+                match end {
                     Some(e) => self.pos = e,
                     None => return unfinished(self),
                 }
@@ -298,9 +367,9 @@ impl<'a> Scanner<'a> {
                 continue;
             }
             if rest.starts_with(b"<?") && self.xml {
-                match self.after(lt + 2, b"?>") {
-                    Some(e) => self.pos = e,
-                    None => return unfinished(self),
+                match self.xml_pi_end(lt) {
+                    Ok(e) => self.pos = e,
+                    Err(()) => return unfinished(self),
                 }
                 continue;
             }
@@ -366,6 +435,7 @@ impl<'a> Scanner<'a> {
             if close {
                 return Step::Tag(Tag::End { name, tag });
             }
+            self.prolog = false;
             return Step::Tag(Tag::Start {
                 name,
                 tag,
@@ -481,6 +551,26 @@ mod tests {
         // The file ends inside a comment or a tag: what came before stays.
         assert_eq!(tags("<p>x<!-- open", false), ["<p"]);
         assert_eq!(tags("<p>x<a href='", false), ["<p"]);
+        // Comments end as HTML ends them (M3 code review r1, Fable #1 and #2): `<!-->` and
+        // `<!--->` are empty, `--!>` and `--->` close.
+        for c in [
+            "<!-->",
+            "<!--->",
+            "<!-- x --!>",
+            "<!-- x --->",
+            "<!-- a -- b -->",
+        ] {
+            assert_eq!(
+                tags(&format!("<div>{c}<p>x</p>--><span>"), false),
+                ["<div", "<p", "</p", "<span"],
+                "{c}"
+            );
+        }
+        // Only a `/` right before `>` makes a tag self-closing (Fable #3).
+        assert_eq!(
+            tags("<section / ><p></section><br/ ><x a=1 />", false),
+            ["<section", "<p", "</section", "<br", "<x/"]
+        );
     }
 
     #[test]
@@ -499,6 +589,42 @@ mod tests {
         assert_eq!(tags("<r>a < b</r>", true), ["<r", "error at 5"]);
         assert_eq!(tags("<r><!-- open", true), ["<r", "error at 3"]);
         assert_eq!(tags("<r><!ELEMENT x></r>", true), ["<r", "error at 3"]);
+    }
+
+    #[test]
+    fn xml_comments_and_pis_must_be_well_formed() {
+        // M3 code review r1, Codex #3: no `--` inside a comment, a PI names its target, and
+        // only the XML declaration, in the prolog, is named `xml`.
+        for bad in [
+            "<!-- bad -- comment -->",
+            "<!-- a --->",
+            "<!--->",
+            "<??>",
+            "<? p?>",
+            "<?p©?>",
+            "<?xml version='1.0'?>",
+            "<?XmL x?>",
+            "<?p",
+        ] {
+            assert_eq!(
+                tags(&format!("<r>{bad}<a/></r>"), true),
+                ["<r", "error at 3"],
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            tags(
+                "<?xml version='1.0'?><!----><?p?><r><!-- a - b --><?p x?><?xml-css a?><a/></r>",
+                true
+            ),
+            ["<r", "<a/", "</r"]
+        );
+        // The same inside a doctype's internal subset.
+        assert_eq!(
+            tags("<!DOCTYPE r [<!-- a -- b -->]><r/>", true),
+            ["error at 0"]
+        );
+        assert_eq!(tags("<!DOCTYPE r [<??>]><r/>", true), ["error at 0"]);
     }
 
     #[test]

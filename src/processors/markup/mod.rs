@@ -613,6 +613,19 @@ mod tests {
     }
 
     #[test]
+    fn xml_keeps_the_trails_before_a_malformed_comment_or_pi() {
+        // M3 code review r1, Codex #3.
+        for bad in ["<!-- bad -- comment -->", "<??>"] {
+            let src = format!("<r><ok>needle</ok>{bad}<a>needle</a></r>");
+            assert_eq!(
+                needles(src.as_bytes(), "xml"),
+                pairs(&[(1, "r › ok"), (1, "")]),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
     fn an_optgroup_ends_the_open_option() {
         // M3 review r1, Codex #9.
         let src = b"<select><option>first<optgroup label=x><option>needle</optgroup><optgroup><option>needle</select>";
