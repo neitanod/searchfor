@@ -351,10 +351,10 @@ impl<R: Read> Read for Tee<R> {
     }
 }
 
-enum Printer {
-    Standard(Standard<Buffer>),
-    Summary(Summary<Buffer>),
-    Json(JSON<Buffer>),
+enum Printer<'a> {
+    Standard(Standard<SpillLines<'a>>),
+    Summary(Summary<SpillLines<'a>>),
+    Json(JSON<SpillLines<'a>>),
 }
 
 struct Ctx<'a> {
@@ -558,7 +558,7 @@ impl Ctx<'_> {
     }
 
     /// grep-printer's printer for the mode, with ripgrep's defaults (design note 9).
-    fn printer(&self, heading: bool) -> Printer {
+    fn printer(&self, heading: bool) -> Printer<'_> {
         let specs = ColorSpecs::new(&grep_printer::default_color_specs());
         if let Some(mode) = self.summary {
             let kind = match mode {
@@ -574,11 +574,11 @@ impl Ctx<'_> {
                     .path(self.with_filename)
                     .exclude_zero(true)
                     .separator_field(b":".to_vec())
-                    .build(self.out.buffer()),
+                    .build(self.spill_lines()),
             );
         }
         if self.args.json {
-            return Printer::Json(JSONBuilder::new().build(self.out.buffer()));
+            return Printer::Json(JSONBuilder::new().build(self.spill_lines()));
         }
         Printer::Standard(
             StandardBuilder::new()
@@ -586,8 +586,18 @@ impl Ctx<'_> {
                 .heading(heading)
                 .path(self.with_filename)
                 .max_columns(self.args.max_columns)
-                .build(self.out.buffer()),
+                .build(self.spill_lines()),
         )
+    }
+
+    /// The writer of grep-printer's printers: one file's output, printed as it grows where
+    /// `Ctx::spill` allows it (code review r3, Fable #3).
+    fn spill_lines(&self) -> SpillLines<'_> {
+        SpillLines {
+            buf: self.out.buffer(),
+            out: self.spill.then_some(&self.out),
+            line_end: 0,
+        }
     }
 
     fn passthrough_file(&self, searcher: &mut Searcher, printer: &mut Printer, t: &Target) {
@@ -600,7 +610,7 @@ impl Ctx<'_> {
                 let stop = sink.max.stop();
                 let r = self.search_raw(searcher, t, &mut sink, stop);
                 let m = sink.inner.has_match();
-                (r, m, p.get_mut())
+                (r, m, &p.get_mut().buf)
             }
             Printer::Summary(p) => {
                 p.get_mut().clear();
@@ -609,7 +619,7 @@ impl Ctx<'_> {
                 let stop = sink.max.stop();
                 let r = self.search_raw(searcher, t, &mut sink, stop);
                 let m = sink.inner.has_match();
-                (r, m, p.get_mut())
+                (r, m, &p.get_mut().buf)
             }
             Printer::Json(p) => {
                 p.get_mut().clear();
@@ -633,13 +643,20 @@ impl Ctx<'_> {
                 let byte_count = sink.byte_count;
                 drop(sink);
                 if searched != byte_count {
-                    patch_bytes_searched(p.get_mut(), byte_count, searched);
+                    patch_bytes_searched(&mut p.get_mut().buf, byte_count, searched);
                 }
-                (r, m, p.get_mut())
+                (r, m, &p.get_mut().buf)
             }
         };
-        if let Err(e) = result {
-            self.msgs.error(format_args!("{}: {e}", path.display()));
+        match result {
+            // A closed pipe while the printer printed: the run ends quietly, as in `print`,
+            // and the file does not count as matched (rg 14.1.1 exits 1).
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                self.quit.store(true, Relaxed);
+                return;
+            }
+            Err(e) => self.msgs.error(format_args!("{}: {e}", path.display())),
+            Ok(()) => {}
         }
         if has_match {
             self.matched.store(true, Relaxed);
@@ -1480,6 +1497,68 @@ impl Write for Spill<'_> {
 }
 
 impl WriteColor for Spill<'_> {
+    fn supports_color(&self) -> bool {
+        self.buf.supports_color()
+    }
+
+    fn set_color(&mut self, spec: &termcolor::ColorSpec) -> std::io::Result<()> {
+        self.buf.set_color(spec)
+    }
+
+    fn reset(&mut self) -> std::io::Result<()> {
+        self.buf.reset()
+    }
+}
+
+/// A file's output from grep-printer's printers that, with `out`, prints the complete lines
+/// it held before a write once it holds `SPILL` bytes: the line being written stays until the
+/// file ends, so the JSON `end` message can still be patched (`patch_bytes_searched`). Only
+/// where nothing can come between the pieces (`Ctx::spill`).
+struct SpillLines<'a> {
+    buf: Buffer,
+    out: Option<&'a BufferWriter>,
+    /// The end of the last complete line in `buf`.
+    line_end: usize,
+}
+
+impl SpillLines<'_> {
+    /// For the next file.
+    fn clear(&mut self) {
+        self.buf.clear();
+        self.line_end = 0;
+    }
+}
+
+impl Write for SpillLines<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let flushable = self.line_end;
+        let start = self.buf.as_slice().len();
+        let n = self.buf.write(bytes)?;
+        if let Some(j) = memchr::memrchr(b'\n', &bytes[..n]) {
+            self.line_end = start + j + 1;
+        }
+        if let Some(out) = self.out
+            && flushable > 0
+            && self.buf.as_slice().len() >= SPILL
+        {
+            let held = self.buf.as_slice();
+            let mut head = out.buffer();
+            head.write_all(&held[..flushable])?;
+            let mut rest = out.buffer();
+            rest.write_all(&held[flushable..])?;
+            out.print(&head)?;
+            self.buf = rest;
+            self.line_end -= flushable;
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl WriteColor for SpillLines<'_> {
     fn supports_color(&self) -> bool {
         self.buf.supports_color()
     }

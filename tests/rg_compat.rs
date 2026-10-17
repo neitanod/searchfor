@@ -1058,3 +1058,46 @@ fn inverted_max_count_in_memory_stops_at_the_binary_data() {
     }
     r.assert_empty();
 }
+
+/// Code review r3, Fable #3: a reader that closes the pipe after the first line. rg 14.1.1
+/// prints while it searches, stops at the closed pipe and exits 1; so does sfor through
+/// grep-printer's printers (`--no-trail`), which print one file's output as it grows.
+#[test]
+fn a_closed_pipe_exits_as_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::write(
+        fx.file("big100k.txt"),
+        "line of text here\n".repeat(100_000),
+    )
+    .unwrap();
+    let first_line = |mut c: Command| {
+        c.stdout(Stdio::piped());
+        let mut child = c.spawn().unwrap();
+        let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut out, &mut line).unwrap();
+        drop(out);
+        (child.wait().unwrap().code().unwrap_or(-1), line.is_empty())
+    };
+    let mut r = Report(Vec::new());
+    for args in [
+        &["text", "big100k.txt"][..],
+        &["--json", "text", "big100k.txt"],
+    ] {
+        let want = first_line(fx.rg(args));
+        for mode in [&["--no-trail"][..], &["--flat"]] {
+            let mut s = mode.to_vec();
+            s.extend_from_slice(args);
+            let got = first_line(fx.sfor(&s));
+            r.check(
+                format!("{s:?}"),
+                (want.0, format!("{:?}", want.1)),
+                (got.0, format!("{:?}", got.1)),
+            );
+        }
+    }
+    r.assert_empty();
+}
