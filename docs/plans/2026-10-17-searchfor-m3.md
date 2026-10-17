@@ -139,7 +139,7 @@ ones it describes marked «M3 plan».
 
 Outputs in `/tmp/subtask/m3-plan/outputs/`; probes in `/tmp/subtask/m3-plan/realtree` (the
 repository at `f7cccfe` plus the candidate dependencies) and, for this plan's code, the frozen
-copy `/tmp/subtask/m3-plan/m3tree-<commit>`: the repository at `f7cccfe` plus the code of this
+copy `/tmp/subtask/m3-plan/m3tree-a27ea91`: the repository at `f7cccfe` plus the code of this
 version of the plan, named after the commit that wrote that code into the plan. The working copy
 `/tmp/subtask/m3-plan/m3tree` keeps changing with the reviews; the frozen one does not (review
 r2, Fable #2).
