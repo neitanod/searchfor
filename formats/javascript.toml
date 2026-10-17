@@ -14,6 +14,6 @@ query = '''
 (generator_function_declaration name: (identifier) @name) @segment
 (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)]) @segment
 (field_definition property: (property_identifier) @name value: [(arrow_function) (function_expression)]) @segment
-(pair key: [(property_identifier) @name (string (string_fragment) @name)] value: [(arrow_function) (function_expression)]) @segment
+(pair key: [(property_identifier) @name (string) @name] value: [(arrow_function) (function_expression)]) @segment
 '''
 kinds = { class_declaration = "class", class = "class", method_definition = "method", function_declaration = "function", generator_function_declaration = "function", variable_declarator = "function", field_definition = "method", pair = "method" }

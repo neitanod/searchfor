@@ -2,6 +2,7 @@
 //! `compile`, `parse` and `outline` take any Language, so the Grammar Helper template (C8)
 //! reuses them for a Grammar that is not compiled in.
 pub mod grammars;
+mod quoted;
 
 use super::Processor;
 use crate::model::{Input, Name, Trail};
@@ -134,17 +135,24 @@ pub fn outline(c: &Compiled, tree: &Tree, src: &[u8], range: Option<Range<usize>
         let (Some(node), Some(name)) = (seg, name) else {
             continue;
         };
-        let (own, own_src) = first_line_of(src, name);
+        let (own, own_pieces) = quoted::string_name(src, name).unwrap_or_else(|| {
+            let (own, own_src) = first_line_of(src, name);
+            let len = own.len();
+            (own, vec![(0..len, own_src)])
+        });
         let (label, pieces) = match prefix {
             Some(p) => {
                 let (pt, pt_src) = first_line_of(src, p);
                 let at = pt.len() + 1;
-                (
-                    format!("{pt}.{own}"),
-                    vec![(0..pt.len(), pt_src), (at..at + own.len(), own_src)],
-                )
+                let mut pieces = vec![(0..pt.len(), pt_src)];
+                pieces.extend(
+                    own_pieces
+                        .into_iter()
+                        .map(|(t, s)| (at + t.start..at + t.end, s)),
+                );
+                (format!("{pt}.{own}"), pieces)
             }
-            None => (own.clone(), vec![(0..own.len(), own_src)]),
+            None => (own, own_pieces),
         };
         let kind = c
             .kinds
@@ -413,6 +421,85 @@ mod tests {
         }
     }
 
+    /// The Trail of every `needle` in `src`, one Vec of names per Match.
+    fn trails_in(format: &str, src: &[u8]) -> Vec<Vec<String>> {
+        let anchors: Vec<usize> = memchr::memmem::find_iter(src, b"needle").collect();
+        let input = Input {
+            bytes: src,
+            path: Path::new("x"),
+            format,
+            disk: None,
+        };
+        TreeSitter::default()
+            .trails(&input, &params(format), &anchors)
+            .unwrap()
+            .iter()
+            .map(|t| t.iter().map(|s| s.name.clone()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_quoted_key_is_one_name_with_its_escapes_decoded() {
+        // Review m2-code-r2, Codex #1: every string_fragment was a Segment of its own, so an
+        // escape split one key into nested Segments (`a › c`), and a key of escapes only, or an
+        // empty one, had none.
+        let src = "const o = {\n  \"a\\u0062c\": () => \"needle\",\n  \"\\u0078\\x79\": () => 'needle',\n  \"\": () => 'needle',\n  'it\\'s': () => 'needle',\n  \"\\uD83D\\uDE00 \\101\\\n!\": () => 'needle',\n  \"\\u{1F600}\\q\": function () { return 'needle'; },\n};\nclass K { \"m\\u0031\"() { return 'needle'; } }\n";
+        for format in ["javascript", "typescript", "tsx"] {
+            assert_eq!(
+                trails_in(format, src.as_bytes()),
+                [
+                    vec!["abc"],
+                    vec!["xy"],
+                    vec![""],
+                    vec!["it's"],
+                    vec!["😀 A!"],
+                    vec!["😀q"],
+                    vec!["K", "m1"],
+                ],
+                "{format}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_quoted_key_maps_each_piece_to_its_own_bytes() {
+        // A verbatim fragment maps byte for byte, an escape to its whole Source; the label is the
+        // whole string, quotes included.
+        let src = b"const o = { \"a\\u0062c\": () => 1, \"\": () => 2, \"x\\\ny\": () => 3 };\n";
+        let input = Input {
+            bytes: src,
+            path: Path::new("x.js"),
+            format: "javascript",
+            disk: None,
+        };
+        let names = TreeSitter::default()
+            .names(&input, &params("javascript"))
+            .unwrap();
+        let texts: Vec<&str> = names.iter().map(|n| n.text.as_str()).collect();
+        assert_eq!(texts, ["abc", "", "xy"]);
+        let abc = &names[0];
+        let at = memchr::memmem::find(src, b"\"a\\u").unwrap();
+        assert_eq!(
+            abc.pieces,
+            [
+                (0..1, at + 1..at + 2),
+                (1..2, at + 2..at + 8),
+                (2..3, at + 8..at + 9)
+            ]
+        );
+        assert_eq!(abc.labels.last(), Some(&(at..at + 10)));
+        assert_eq!(
+            abc.source_ranges(0..3),
+            [at + 1..at + 2, at + 2..at + 8, at + 8..at + 9]
+        );
+        let empty = &names[1];
+        let at = memchr::memmem::find(src, b"\"\"").unwrap();
+        assert_eq!(empty.pieces, [(0..0, at + 1..at + 1)]);
+        let xy = &names[2];
+        let at = memchr::memmem::find(src, b"\"x\\").unwrap();
+        assert_eq!(xy.pieces, [(0..1, at + 1..at + 2), (1..2, at + 4..at + 5)]);
+    }
+
     #[test]
     fn typescript_and_tsx() {
         assert_eq!(
@@ -565,6 +652,8 @@ mod tests {
             (b"function a\xc3() {\n  echo needle\n}\n", "bash"),
             (b"fn x\xf0\x9f\x98() {}", "rust"),
             (b"package p\nfunc (s *S\xc3) M\xc3() {}\n", "go"),
+            // A quoted key: an invalid run, a fragment and an escape, each its own piece.
+            (b"const o = { \"\xffa\\u0062\": () => 1 };\n", "javascript"),
         ] {
             let input = Input {
                 bytes: src,

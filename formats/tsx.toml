@@ -16,6 +16,6 @@ query = '''
 (function_declaration name: (identifier) @name) @segment
 (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)]) @segment
 (public_field_definition name: (_) @name value: [(arrow_function) (function_expression)]) @segment
-(pair key: [(property_identifier) @name (string (string_fragment) @name)] value: [(arrow_function) (function_expression)]) @segment
+(pair key: [(property_identifier) @name (string) @name] value: [(arrow_function) (function_expression)]) @segment
 '''
 kinds = { internal_module = "namespace", class_declaration = "class", abstract_class_declaration = "class", interface_declaration = "interface", method_definition = "method", abstract_method_signature = "method", method_signature = "method", function_declaration = "function", variable_declarator = "function", public_field_definition = "method", pair = "method" }

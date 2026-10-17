@@ -302,3 +302,41 @@ fn m2_11_json_carries_signatures() {
     );
     common::assert_valid_json_schema(&o);
 }
+
+#[test]
+fn m2_14_a_quoted_key_with_escapes_is_one_segment() {
+    // Review m2-code-r2, Codex #1: `"abc"` printed the Trail `a › c`.
+    let fx = Fixture::new();
+    for ext in ["js", "ts", "tsx"] {
+        let file = format!("keys.{ext}");
+        std::fs::write(
+            fx.file(&file),
+            "const o = { \"a\\u0062c\": () => \"needle\", \"\": () => 'needle' };\n",
+        )
+        .unwrap();
+        let o = run(&mut fx.sfor(["needle", file.as_str(), "--flat"]));
+        assert_eq!(code(&o), 0, "{}", stderr(&o));
+        let lines: Vec<String> = stdout(&o).lines().map(String::from).collect();
+        assert_eq!(lines.len(), 2, "{ext}: {lines:?}");
+        assert!(lines[0].starts_with("1: abc │ "), "{ext}: {lines:?}");
+        let o = stdout(&run(&mut fx.sfor([
+            "--in-headings",
+            "^abc$",
+            file.as_str(),
+            "--json",
+        ])));
+        let m: serde_json::Value = o
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .find(|v| v["type"] == "match")
+            .unwrap_or_else(|| panic!("{ext}: no match in {o}"));
+        // One submatch per piece, as Markdown's entities: `a`, the escape, `c`.
+        let subs: Vec<(u64, u64)> = m["data"]["submatches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| (s["start"].as_u64().unwrap(), s["end"].as_u64().unwrap()))
+            .collect();
+        assert_eq!(subs, [(13, 14), (14, 20), (20, 21)], "{ext}: {o}");
+    }
+}
