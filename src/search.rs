@@ -432,13 +432,17 @@ impl Sink for CollectSink<'_> {
     }
 }
 
-/// Where a search detects binary data, keeping no line (code review r7, Codex #4): the end of
-/// the last line reported before the detection, and the searcher's `binary_offset` and
-/// `bytes_searched`.
+/// Where a reader search detects binary data, keeping no line (code review r7, Codex #4): the end
+/// of the bytes it searched before the buffer that brings the NUL, and the searcher's
+/// `binary_offset` and `bytes_searched`.
 #[derive(Debug, Default)]
 pub struct BinarySink {
-    /// The end of the last line reported before `binary_data`.
+    /// The end of the bytes searched before the buffer with the binary data: rg reads the names
+    /// in them, also those of lines the pattern does not find (code review r9, Codex #1).
     pub cut: u64,
+    /// The end of the last line reported before `binary_data`: the cut of an input whose reads
+    /// `Reads` cannot follow (UTF-16).
+    reported: u64,
     detected: bool,
     pub binary_offset: Option<u64>,
     pub bytes_searched: u64,
@@ -447,7 +451,7 @@ pub struct BinarySink {
 impl BinarySink {
     fn line(&mut self, offset: u64, len: usize) {
         if !self.detected {
-            self.cut = offset + len as u64;
+            self.reported = offset + len as u64;
         }
     }
 }
@@ -477,19 +481,87 @@ impl Sink for BinarySink {
     }
 }
 
+/// The reads of a reader search under grep-searcher 0.1.14's decoder, which follow where its
+/// search stands when it detects the first NUL. `LineBuffer::fill` reads until a read brings a
+/// line terminator and the search takes the buffer up to the last one, so the bytes searched
+/// before the buffer with the NUL end at the last line terminator read before the read that
+/// brings it. With a context, `Core::roll` carries the last lines of a buffer into the next:
+/// they were searched, and rg's `bytes_searched` stops before them. The decoder, sniffing a
+/// BOM, gives the first three bytes in a read of their own, strips a UTF-8 BOM, and transcodes
+/// UTF-16 in reads of its own.
+struct Reads<R> {
+    inner: R,
+    /// The first three bytes, for the BOM.
+    head: Vec<u8>,
+    /// The bytes read so far.
+    read: u64,
+    /// The end of the last line terminator read before the read with the first NUL.
+    line_end: u64,
+    /// `line_end` when the read with the first NUL came.
+    before_nul: Option<u64>,
+}
+
+impl<R: std::io::Read> std::io::Read for Reads<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        let bytes = &buf[..n];
+        if self.before_nul.is_none() {
+            if memchr::memchr(0, bytes).is_some() {
+                // The bytes read for the BOM are the search's first read.
+                self.before_nul = Some(if self.read < 3 { 0 } else { self.line_end });
+            } else if let Some(i) = memchr::memrchr(b'\n', bytes) {
+                self.line_end = self.read + i as u64 + 1;
+            }
+        }
+        let head = 3usize.saturating_sub(self.head.len()).min(n);
+        self.head.extend_from_slice(&bytes[..head]);
+        self.read += n as u64;
+        Ok(n)
+    }
+}
+
+impl<R> Reads<R> {
+    /// Where the bytes searched before the first NUL end, in the decoded bytes. None: UTF-16.
+    fn cut(&self) -> Option<u64> {
+        let at = self.before_nul?;
+        match self.head.as_slice() {
+            [0xEF, 0xBB, 0xBF] => Some(at.saturating_sub(3)),
+            [0xFF, 0xFE, ..] | [0xFE, 0xFF, ..] => None,
+            _ => Some(at),
+        }
+    }
+}
+
 /// Searches `reader` with `BinarySink`: a Source's bytes, as `search_source` would, or the
-/// input itself when it cannot be read twice, so that its reads are rg's. `matcher` and the
-/// searcher's context are rg's: grep-searcher's `Core::roll` keeps the context lines after the
-/// last line it reported for the next buffer, so the lines it reports decide where each buffer
-/// ends (code review r8, Fable #1). The lines of the last buffer before the binary data that
-/// come after `cut` hold no Match and are in no context.
+/// input itself when it cannot be read twice, so that its reads are rg's. `searcher` sniffs
+/// BOMs, as rg's. `matcher` and the searcher's context are rg's: grep-searcher's `Core::roll`
+/// keeps the context lines after the last line it reported for the next buffer, so the lines it
+/// reports decide where each buffer ends (code review r8, Fable #1). The cut is where the bytes
+/// it searched before the buffer with the NUL end, which the lines the pattern finds do not
+/// decide (code review r9, Codex #1).
 pub fn binary_probe(
     searcher: &mut Searcher,
     matcher: &RegexMatcher,
     reader: impl std::io::Read,
 ) -> Result<BinarySink> {
     let mut sink = BinarySink::default();
-    searcher.search_reader(matcher, reader, &mut sink)?;
+    let mut reads = Reads {
+        inner: reader,
+        head: Vec::with_capacity(3),
+        read: 0,
+        line_end: 0,
+        before_nul: None,
+    };
+    searcher.search_reader(matcher, &mut reads, &mut sink)?;
+    sink.cut = match reads.cut() {
+        Some(cut) => cut,
+        // UTF-16: where the search stopped at the binary data, past the last line reported, or
+        // that line. The context lines carried into the buffer with the NUL are left out.
+        None if searcher.binary_detection().quit_byte().is_some() => {
+            sink.reported.max(sink.bytes_searched)
+        }
+        None => sink.reported,
+    };
     Ok(sink)
 }
 
@@ -1172,5 +1244,59 @@ mod tests {
             walk_names(&a, &[d.path().join("sub")], d.path()),
             ["sub/x.md"]
         );
+    }
+
+    /// `binary_probe` of a walked file with `argv`'s pattern and context: its cut, and where it
+    /// detects the binary data.
+    fn probe(argv: &[&str], raw: &[u8]) -> (u64, Option<u64>) {
+        let a = args(argv);
+        let m = matcher(&a, &a.patterns().unwrap().patterns).unwrap();
+        let mut s = streaming_searcher(&a, false, false);
+        let p = binary_probe(&mut s, &m, std::io::Cursor::new(raw)).unwrap();
+        (p.cut, p.binary_offset)
+    }
+
+    /// Code review r9, Codex #1: the cut is where the bytes searched before the buffer with the
+    /// NUL end, also when the pattern finds no line before it (`^needle` on `# needle`) and with
+    /// a context, whose last two lines grep-searcher carries into that buffer.
+    #[test]
+    fn binary_probe_cuts_where_the_bytes_searched_end() {
+        let edge = b"# needle edge\n";
+        let mut v = b"# needle 0\n".to_vec();
+        v.extend_from_slice(&b"y".repeat(65_536 - edge.len() - v.len() - 1));
+        v.push(b'\n');
+        v.extend_from_slice(edge);
+        v.extend_from_slice(b"x\0x\n");
+        for argv in [
+            &["sfor", "^needle"][..],
+            &["sfor", "-A1", "^needle"],
+            &["sfor", "y"],
+        ] {
+            assert_eq!(probe(argv, &v), (65_536, Some(65_537)), "{argv:?}");
+        }
+        // A UTF-8 BOM, stripped: the same bytes searched.
+        let bom = [&b"\xEF\xBB\xBF"[..], &v].concat();
+        assert_eq!(
+            probe(&["sfor", "-A1", "^needle"], &bom),
+            (65_536, Some(65_537))
+        );
+        // The decoder reads the first three bytes for a BOM: grep-searcher searches `a\n` and
+        // detects the NUL in its next read, or in the first.
+        assert_eq!(probe(&["sfor", "^needle"], b"a\nb\0\n"), (2, Some(3)));
+        assert_eq!(probe(&["sfor", "^needle"], b"a\n\0\n"), (0, Some(2)));
+        assert_eq!(probe(&["sfor", "^needle"], b"# a\nb\0\n"), (0, Some(5)));
+    }
+
+    /// UTF-16, whose reads the decoder transcodes: the cut is the last line reported, or at a
+    /// walked file's binary data the bytes searched.
+    #[test]
+    fn binary_probe_of_utf16_cuts_at_the_bytes_searched() {
+        let mut raw = vec![0xFF, 0xFE];
+        for c in "a\nb\n\0\n".encode_utf16() {
+            raw.extend_from_slice(&c.to_le_bytes());
+        }
+        let (cut, offset) = probe(&["sfor", "^needle"], &raw);
+        assert_eq!(offset, Some(4));
+        assert!(cut <= 4, "{cut}");
     }
 }

@@ -2052,6 +2052,305 @@ fn binary_data_with_a_context_is_detected_where_ripgrep_does() {
     r.assert_empty();
 }
 
+/// 3 000 lines of 49 bytes, a heading `heading(i)` every 97 lines from the first, and a NUL in
+/// the first filler line from byte `nul` on.
+fn headings_with_a_nul(heading: fn(usize) -> String, nul: usize) -> Vec<u8> {
+    let mut v = Vec::new();
+    for i in 0..3_000 {
+        if i % 97 == 0 {
+            v.extend_from_slice(heading(i).as_bytes());
+        } else {
+            v.extend_from_slice(format!("{}\n", "x".repeat(48)).as_bytes());
+        }
+    }
+    let at = nul + v[nul..].iter().position(|&b| b == b'x').unwrap();
+    v[at] = 0;
+    v
+}
+
+fn plain_heading(i: usize) -> String {
+    format!("# needle {i}\n")
+}
+
+/// A heading whose name, `needle N`, the line does not hold.
+fn emphasized_heading(i: usize) -> String {
+    format!("# **nee**dle {i}\n")
+}
+
+/// The patterns of `--in-headings` that find in a name what the line does not hold (`^`, `$`,
+/// `-x`, emphasis) or what it holds, and rg's pattern for the same lines: on headings only, the
+/// Matches of rg's search are the Matches in names.
+const NAME_PATTERNS: [(&[&str], &[&str], bool); 6] = [
+    (&["^needle"], &["^# needle"], false),
+    (&["needle 0$"], &["needle 0$"], false),
+    (&["-x", "needle 0"], &["-x", "# needle 0"], false),
+    (&["-w", "needle"], &["-w", "needle"], false),
+    (&["-i", "^NEEDLE"], &["-i", "^# NEEDLE"], false),
+    (&["needle"], &[r"\*\*nee\*\*dle"], true),
+];
+
+/// The flags of the cases of `names_are_searched_up_to_where_ripgrep_detects_binary_data`.
+const NAME_FLAGS: [&[&str]; 10] = [
+    &[],
+    &["-m1"],
+    &["-q"],
+    &["-l"],
+    &["-c"],
+    &["-c", "-m1"],
+    &["--json"],
+    &["--json", "-m1"],
+    &["-A1"],
+    &["-m1", "-A1"],
+];
+
+/// The arguments of rg and of sfor for one case: `--in-headings` with the flat layout, and the
+/// line numbers of both unless `--json`.
+fn name_case_args<'a>(
+    flags: &[&'a str],
+    sfor_pattern: &[&'a str],
+    rg_pattern: &[&'a str],
+    path: &'a str,
+) -> (Vec<&'a str>, Vec<&'a str>) {
+    let json = flags.contains(&"--json");
+    let mut a = if json { vec![] } else { vec!["-n"] };
+    a.extend_from_slice(flags);
+    let mut want = a.clone();
+    want.extend_from_slice(rg_pattern);
+    want.push(path);
+    let mut got = vec!["--in-headings", "--format", "markdown"];
+    if !json {
+        got.push("--flat");
+    }
+    got.extend_from_slice(&a);
+    got.extend_from_slice(sfor_pattern);
+    got.push(path);
+    (want, got)
+}
+
+/// `binary_rows` without the `--` that rg prints before the binary message of stdin, the NIT of
+/// code review r8, Fable #3.
+fn name_rows(o: &Output) -> String {
+    binary_rows(o)
+        .into_iter()
+        .filter(|r| r != "? --")
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Code review r9, Codex #1: `--in-headings` searches the names in the bytes rg's search of the
+/// lines reads before the buffer where it detects the NUL, also when the pattern finds no line
+/// there (`^needle` on `# needle 0`). With a NUL in the first buffer a walked file has none; with
+/// a NUL past it, a walk prints the headings before it, and `-m1`, `-q` and `-l` stop at the
+/// first. Walked, explicit and on stdin from a file, early and late NUL.
+#[test]
+fn names_are_searched_up_to_where_ripgrep_detects_binary_data() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    // (directory, emphasized headings, NUL from)
+    let files: [(&'static str, bool, usize); 4] = [
+        ("ih-plain-early", false, 1_000),
+        ("ih-plain-late", false, 120_000),
+        ("ih-emph-early", true, 1_000),
+        ("ih-emph-late", true, 120_000),
+    ];
+    let stdins: [In; 4] = [
+        In::File("ih-plain-early/big.md"),
+        In::File("ih-plain-late/big.md"),
+        In::File("ih-emph-early/big.md"),
+        In::File("ih-emph-late/big.md"),
+    ];
+    let mut r = Report(Vec::new());
+    for ((dir, emph, nul), stdin) in files.into_iter().zip(stdins) {
+        let heading = if emph {
+            emphasized_heading
+        } else {
+            plain_heading
+        };
+        std::fs::create_dir(fx.file(dir)).unwrap();
+        std::fs::write(
+            fx.file(&format!("{dir}/big.md")),
+            headings_with_a_nul(heading, nul),
+        )
+        .unwrap();
+        let explicit = format!("{dir}/big.md");
+        for (sfor_pattern, rg_pattern, for_emph) in NAME_PATTERNS {
+            if for_emph != emph {
+                continue;
+            }
+            for flags in NAME_FLAGS {
+                for (path, input) in [(dir, In::Null), (&explicit[..], In::Null), ("-", stdin)] {
+                    let (a, s) = name_case_args(flags, sfor_pattern, rg_pattern, path);
+                    let want = rg(&fx, &a, input);
+                    let got = sfor(&fx, &s, input);
+                    r.check(
+                        format!("{s:?}"),
+                        (code(&want), name_rows(&want)),
+                        (code(&got), name_rows(&got)),
+                    );
+                }
+            }
+        }
+    }
+    // The case of Codex: a walk whose file starts with `# needle 0`, NUL past the first buffer.
+    let got = sfor(
+        &fx,
+        &["--in-headings", "--flat", "-m1", "^needle", "ih-plain-late"],
+        In::Null,
+    );
+    assert_eq!(
+        (code(&got), stdout(&got)),
+        (0, "ih-plain-late/big.md:1: # needle 0\n".to_string())
+    );
+    r.assert_empty();
+}
+
+/// Code review r9, Codex #1, on stdin through a pipe: the NUL in the read of the heading, or in a
+/// later read.
+#[test]
+fn names_on_a_pipe_are_searched_up_to_where_ripgrep_detects_binary_data() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let producers = |emph: bool| {
+        let h = if emph { "# **nee**dle" } else { "# needle" };
+        [
+            (format!("{h} 0\\n\\000\\n{h} 1\\n"), "x\\n".to_string()),
+            (format!("{h} 0\\nx\\n"), format!("\\000\\n{h} 1\\n")),
+        ]
+    };
+    let flags: [&[&str]; 7] = [
+        &[],
+        &["-m1"],
+        &["-q"],
+        &["-l"],
+        &["-c"],
+        &["--json", "-m1"],
+        &["-m1", "-A1"],
+    ];
+    let mut cases = Vec::new();
+    for (sfor_pattern, rg_pattern, emph) in NAME_PATTERNS {
+        if !matches!(sfor_pattern, ["^needle"] | ["-x", _] | ["needle"]) {
+            continue;
+        }
+        for (first, then) in producers(emph) {
+            for fl in flags {
+                cases.push((sfor_pattern, rg_pattern, first.clone(), then.clone(), fl));
+            }
+        }
+    }
+    // Each case waits for its pipe: they run side by side.
+    let results: Vec<_> = std::thread::scope(|sc| {
+        let handles: Vec<_> = cases
+            .iter()
+            .map(|(sp, rp, first, then, fl)| {
+                let fx = &fx;
+                sc.spawn(move || {
+                    let (a, s) = name_case_args(fl, sp, rp, "-");
+                    let want = through_a_slow_pipe(fx.rg(&a), first, then);
+                    let got = through_a_slow_pipe(fx.sfor(&s), first, then);
+                    (format!("{first}|{then} {s:?}"), want, got)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let mut r = Report(Vec::new());
+    for (case, want, got) in results {
+        r.check(
+            case,
+            (code(&want), name_rows(&want)),
+            (code(&got), name_rows(&got)),
+        );
+    }
+    r.assert_empty();
+}
+
+/// The lines of `rg -n` and of `--flat -n` on one file, `file` when the walk prints it: the line
+/// number and `:` of a Match, `-` of a context line, and the binary messages.
+fn kinds_of_rows(o: &Output, file: &str) -> Vec<String> {
+    stdout(o)
+        .lines()
+        .filter(|l| *l != "--")
+        .map(|l| {
+            if let Some(at) = l.find("WARNING").or_else(|| l.find("binary file")) {
+                return l[at..].to_string();
+            }
+            let l = match l.strip_prefix(file) {
+                Some(rest) if !file.is_empty() => &rest[1..],
+                _ => l,
+            };
+            let n = l.chars().take_while(char::is_ascii_digit).count();
+            l[..(n + 1).min(l.len())].to_string()
+        })
+        .collect()
+}
+
+/// Code review r9, Codex #1, at the end of rg's first buffer of 64 KiB: with `-A1`,
+/// grep-searcher keeps the last two lines of the buffer for the next one, which brings the NUL,
+/// so the bytes rg searches end after them, past its `bytes_searched`. `# needle edge` ends the
+/// buffer and is in no line rg's `^needle` finds: `--in-headings` finds it, and the headings
+/// before it, as rg finds their lines with `^# needle`; the line after it is past the bytes
+/// searched. On stdin, rg's search goes on past the NUL: the same headings before the message.
+#[test]
+fn names_at_the_end_of_the_last_buffer_before_binary_data_are_searched() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let mut v = b"# needle 0\n".to_vec();
+    for i in 1..1_337 {
+        let line = if i % 97 == 0 {
+            format!("# needle {i}\n")
+        } else {
+            format!("{}\n", "x".repeat(48))
+        };
+        v.extend_from_slice(line.as_bytes());
+    }
+    let edge = b"# needle edge\n";
+    v.extend_from_slice(&b"y".repeat(65_536 - edge.len() - v.len() - 1));
+    v.push(b'\n');
+    v.extend_from_slice(edge);
+    assert_eq!(v.len(), 65_536);
+    let edge_line = v.iter().filter(|&&b| b == b'\n').count();
+    for i in 0..100 {
+        v.extend_from_slice(format!("x{i}\n").as_bytes());
+    }
+    v.extend_from_slice(b"x\0x\n# needle after\nx\n");
+    std::fs::create_dir(fx.file("edge")).unwrap();
+    std::fs::write(fx.file("edge/big.md"), &v).unwrap();
+    let mut r = Report(Vec::new());
+    for (path, input) in [("edge", In::Null), ("-", In::File("edge/big.md"))] {
+        let want = rg(&fx, &["-n", "^# needle", path], input);
+        let s = [
+            "--in-headings",
+            "--format",
+            "markdown",
+            "--flat",
+            "-n",
+            "-A1",
+            "^needle",
+            path,
+        ];
+        let got = sfor(&fx, &s, input);
+        let file = if path == "-" { "" } else { "edge/big.md" };
+        let rows = kinds_of_rows(&got, file);
+        let matches: Vec<String> = rows.iter().filter(|r| !r.ends_with('-')).cloned().collect();
+        r.check(
+            format!("{s:?}"),
+            (code(&want), kinds_of_rows(&want, file).join("\n")),
+            (code(&got), matches.join("\n")),
+        );
+        if path == "edge" {
+            let last = rows.iter().rfind(|r| !r.starts_with("WARNING"));
+            assert_eq!(last, Some(&format!("{edge_line}:")), "{rows:?}");
+        }
+    }
+    r.assert_empty();
+}
+
 /// Code review r7, Codex #1: `-q --json` (grep-printer 0.2.2's summary printer with statistics,
 /// which reads past the first Match) drops the Matches of a walked file whose search quit at
 /// binary data, so a walk with only that file exits 1, as rg; with `-m1` the search stops

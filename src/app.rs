@@ -21,7 +21,7 @@ use grep_printer::{
     SummaryKind,
 };
 use grep_regex::RegexMatcher;
-use grep_searcher::{Searcher, Sink, SinkContext, SinkFinish, SinkMatch};
+use grep_searcher::{BinaryDetection, Searcher, Sink, SinkContext, SinkFinish, SinkMatch};
 use ignore::{DirEntry, WalkState};
 use std::ffi::OsString;
 use std::fs::File;
@@ -1471,7 +1471,9 @@ impl Ctx<'_> {
                 bytes_searched: 0,
             }));
         }
-        st.stream.set_binary_detection(detection);
+        // Stopped at the binary data also where rg converts it: the buffers before it are the
+        // same (`search::binary_probe`).
+        st.stream.set_binary_detection(BinaryDetection::quit(b'\0'));
         let probe = match search::binary_probe(
             &mut st.stream,
             &self.matcher,
@@ -1517,7 +1519,8 @@ impl Ctx<'_> {
         let quit = detection.quit_byte().is_some();
         let mut probe = None;
         if quit || detection.convert_byte().is_some() {
-            st.stream.set_binary_detection(detection);
+            // Stopped at the binary data, as `binary_probe`; `tee` keeps the rest for the Source.
+            st.stream.set_binary_detection(BinaryDetection::quit(b'\0'));
             match search::binary_probe(&mut st.stream, &self.matcher, &mut tee) {
                 Ok(p) => probe = Some(p),
                 Err(e) => {
@@ -1699,7 +1702,8 @@ struct BinaryProbe {
     /// rg's `binary_offset` when its search detects the binary data at `cut`. None: a search in
     /// memory, which detects it only in a line it reports.
     offset: Option<u64>,
-    /// The byte where rg detects the binary data: the lines before it are searched first.
+    /// Where the bytes rg searches before the buffer with the binary data end: their names are
+    /// searched, also in lines its pattern does not find (code review r9, Codex #1).
     cut: usize,
     /// Walked: rg stops at `cut` (`BinaryDetection::quit`). Otherwise it converts.
     quit: bool,
@@ -1713,7 +1717,7 @@ impl BinaryProbe {
     /// What a reader search of `src` (`search::binary_probe`) found. None: no binary data.
     fn read(probe: search::BinarySink, quit: bool, src: &Source) -> Option<Self> {
         let offset = probe.binary_offset?;
-        // The end of the last line searched before the binary data was detected.
+        // The end of the bytes searched before the buffer with the binary data.
         let cut = usize::try_from(probe.cut).unwrap_or(usize::MAX);
         Some(Self {
             offset: Some(offset),
