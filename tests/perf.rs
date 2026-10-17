@@ -38,13 +38,18 @@ fn sfor_bin() -> std::path::PathBuf {
 /// Wall time and peak RSS in bytes of `sfor args`, stdout discarded, measured by
 /// `/usr/bin/time -v`. None when /usr/bin/time is missing.
 fn measure(fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
+    measure_bin(&sfor_bin(), fx, args)
+}
+
+/// `measure` for any program: sfor or rg.
+fn measure_bin(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
     let time = Path::new("/usr/bin/time");
     if !time.exists() {
         return None;
     }
     let mut c = Command::new(time);
     c.arg("-v")
-        .arg(sfor_bin())
+        .arg(bin)
         .args(args)
         .current_dir(fx.path())
         .env("SFOR_FORMATS_DIR", fx.formats.path())
@@ -70,9 +75,13 @@ fn measure(fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
 
 /// The fastest of three runs and the largest RSS seen.
 fn best_of_three(fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
+    best_of_three_bin(&sfor_bin(), fx, args)
+}
+
+fn best_of_three_bin(bin: &Path, fx: &Fixture, args: &[&str]) -> Option<(Duration, u64)> {
     let mut best: Option<(Duration, u64)> = None;
     for _ in 0..3 {
-        let (t, rss) = measure(fx, args)?;
+        let (t, rss) = measure_bin(bin, fx, args)?;
         best = Some(match best {
             None => (t, rss),
             Some((bt, br)) => (bt.min(t), br.max(rss)),
@@ -276,4 +285,36 @@ fn json_of_a_big_markdown_file_stays_under_the_ceilings() {
         t <= parse + raw * 3 / 2,
         "{t:?} is more than {parse:?} + 1.5 × {raw:?}"
     );
+}
+
+/// Code review r4, Fable #1: grep-printer's JSON printer writes each message in many pieces,
+/// and the output printed as it grows looks for the last line break only when it prints: on
+/// 10 MB of Match lines, `--json --no-trail` takes at most 1.1 × rg's `--json` (before the
+/// fix: 1.51 s against 1.11 s).
+#[test]
+#[ignore]
+fn json_without_trails_of_a_big_file_is_as_fast_as_ripgrep() {
+    let rg = Path::new("/usr/bin/rg");
+    if !common::reference_rg() || !rg.exists() {
+        return;
+    }
+    let fx = Fixture::new();
+    let line = "line of text here\n";
+    let file = repeated(&fx, "ten.txt", line, 10 * 1024 * 1024 / line.len());
+    for pattern in [&["-v", "zzz"][..], &["text"][..]] {
+        let mut args = vec!["--json"];
+        args.extend(pattern);
+        args.push(&file);
+        let Some((base, _)) = best_of_three_bin(rg, &fx, &args) else {
+            eprintln!("skipping: /usr/bin/time not found");
+            return;
+        };
+        args.insert(1, "--no-trail");
+        let (t, _) = best_of_three(&fx, &args).unwrap();
+        eprintln!("10 MB {pattern:?}: --json --no-trail {t:?}, rg --json {base:?}");
+        assert!(
+            t.as_secs_f64() <= base.as_secs_f64() * 1.1,
+            "{t:?} is more than 1.1 × the {base:?} of rg --json"
+        );
+    }
 }

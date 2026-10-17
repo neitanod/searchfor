@@ -595,6 +595,7 @@ impl Ctx<'_> {
             buf: self.out.buffer(),
             out: self.spill.then_some(&self.out),
             line_end: 0,
+            scanned: 0,
         }
     }
 
@@ -1423,8 +1424,12 @@ impl WriteColor for Spill<'_> {
 struct SpillLines<'a> {
     buf: Buffer,
     out: Option<&'a BufferWriter>,
-    /// The end of the last complete line in `buf`.
+    /// The end of the last complete line found in `buf[..scanned]`. The line breaks are looked
+    /// for only once `buf` holds `SPILL` bytes: grep-printer's JSON printer writes a message in
+    /// many pieces (code review r4, Fable #1).
     line_end: usize,
+    /// How much of `buf` was looked through for a line break.
+    scanned: usize,
 }
 
 impl SpillLines<'_> {
@@ -1432,21 +1437,27 @@ impl SpillLines<'_> {
     fn clear(&mut self) {
         self.buf.clear();
         self.line_end = 0;
+        self.scanned = 0;
     }
 }
 
 impl Write for SpillLines<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let flushable = self.line_end;
         let start = self.buf.as_slice().len();
         let n = self.buf.write(bytes)?;
-        if let Some(j) = memchr::memrchr(b'\n', &bytes[..n]) {
-            self.line_end = start + j + 1;
+        let Some(out) = self.out else {
+            return Ok(n);
+        };
+        if self.buf.as_slice().len() < SPILL {
+            return Ok(n);
         }
-        if let Some(out) = self.out
-            && flushable > 0
-            && self.buf.as_slice().len() >= SPILL
-        {
+        // What was written before this piece: the line being written stays.
+        if let Some(j) = memchr::memrchr(b'\n', &self.buf.as_slice()[self.scanned..start]) {
+            self.line_end = self.scanned + j + 1;
+        }
+        self.scanned = start;
+        let flushable = self.line_end;
+        if flushable > 0 {
             let held = self.buf.as_slice();
             let mut head = out.buffer();
             head.write_all(&held[..flushable])?;
@@ -1454,7 +1465,8 @@ impl Write for SpillLines<'_> {
             rest.write_all(&held[flushable..])?;
             out.print(&head)?;
             self.buf = rest;
-            self.line_end -= flushable;
+            self.line_end = 0;
+            self.scanned -= flushable;
         }
         Ok(n)
     }
