@@ -411,17 +411,13 @@ impl Host {
                 self.disable(refusal(&r));
                 Err(HelperError::Disabled)
             }
-            // Codex r2 #5: no answer to hello is a handshake failure, as in `start`.
-            Err(CallError::Timeout) => {
+            // No answer to hello, a process that exits or writes a broken line before it, is
+            // a handshake failure, as in `start` (Codex r2 #5; m2-code-r1, Codex #5).
+            Err(e) => {
                 conn.close(true);
-                self.disable(format!(
-                    "did not answer hello within {} ms",
-                    self.cfg.timeout.as_millis()
-                ));
+                self.disable(self.no_hello(e));
                 Err(HelperError::Disabled)
             }
-            // A script that dies before writing anything is a failure of this file.
-            Err(e) => self.outcome(&conn, Err(e)),
         };
         conn.close(false);
         if out.is_err() && self.sup.cancelled() {
@@ -526,17 +522,22 @@ impl Host {
         ) {
             Ok(r) if r.protocol == Some(PROTOCOL) && r.error.is_none() => return Ok(conn),
             Ok(r) => refusal(&r),
-            Err(CallError::Timeout) => format!(
-                "did not answer hello within {} ms",
-                self.cfg.timeout.as_millis()
-            ),
-            Err(CallError::Gone(w)) | Err(CallError::Malformed(w)) => {
-                format!("{w} before answering hello")
-            }
+            Err(e) => self.no_hello(e),
         };
         conn.close(true);
         self.disable(why);
         Err(HelperError::Disabled)
+    }
+
+    /// The warning for a process that gave no answer to `hello`.
+    fn no_hello(&self, e: CallError) -> String {
+        match e {
+            CallError::Timeout => format!(
+                "did not answer hello within {} ms",
+                self.cfg.timeout.as_millis()
+            ),
+            CallError::Gone(w) | CallError::Malformed(w) => format!("{w} before answering hello"),
+        }
     }
 
     /// A crash, a timeout or an unattributable line: close (kill, reap) the copy and count it
@@ -1451,6 +1452,30 @@ mod tests {
         assert_eq!(r.launches.load(SeqCst), 1);
         assert_eq!(r.reaps.load(SeqCst), 1);
         assert_eq!(r.warnings.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn oneshot_disables_a_helper_that_exits_or_garbles_before_hello() {
+        // Review m2-code-r1, Codex #5: spec §4.4 disables the Definition at the first process
+        // that exits (or writes a broken line) before answering `hello`, with one warning.
+        let exits: Body = Arc::new(|_lines, _out, _| {});
+        let garbles: Body = Arc::new(|_lines, out, _| {
+            out.write_all(b"not json\n").unwrap();
+        });
+        for body in [exits, garbles] {
+            let r = run(Mode::Oneshot, 1, 2000, body);
+            for f in ["a.ini", "b.ini", "c.ini", "d.ini"] {
+                assert_eq!(
+                    trails(&r.host, f),
+                    Err(crate::helper::HelperError::Disabled),
+                    "{f}"
+                );
+            }
+            assert_eq!(r.launches.load(SeqCst), 1);
+            let w = r.warnings.lock().unwrap();
+            assert_eq!(w.len(), 1, "{w:?}");
+            assert!(w[0].contains("before answering hello"), "{w:?}");
+        }
     }
 
     #[test]

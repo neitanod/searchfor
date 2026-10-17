@@ -263,6 +263,24 @@ fn h08_a_missing_command_is_one_warning() {
     assert_eq!(stdout(&o), ini_plain());
 }
 
+#[test]
+fn h08b_a_oneshot_helper_that_exits_before_hello_is_one_warning() {
+    // Spec §4.4 (review m2-code-r1, Codex #5): the first process that exits before answering
+    // `hello` disables the Definition, in `oneshot` as in the other modes: one start, one
+    // warning, Plain output.
+    let fx = Fixture::new();
+    let log = fx.file("starts.log");
+    let script = format!("echo start >> '{}'; exit 1", log.display());
+    ini_command(&fx, &["/bin/sh", "-c", &script], "oneshot", 2000);
+    let o = flat_ini(&fx, &[], &[]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let err = stderr(&o);
+    assert_eq!(err.lines().count(), 1, "{err}");
+    assert!(err.contains("before answering hello"), "{err}");
+    assert_eq!(stdout(&o), ini_plain());
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1);
+}
+
 /// The entries of `dir` named `sfor-*`.
 fn sfor_dirs(dir: &Path) -> Vec<String> {
     let mut v: Vec<_> = std::fs::read_dir(dir)
