@@ -680,3 +680,31 @@ fn yaml_beyond_the_tree_sitter_limit() {
         "{t:?} is more than rg's {base:?} + 1 s"
     );
 }
+
+/// Review m2-code-r1, Codex #3: 40 000 `[[a]]` tables, each with a `[[a.b]]`, and a `needle`
+/// in the last one keep the TOML Outline linear: within rg's time + 1 s (it took 7 s when every
+/// header searched every other one for the table that covers it).
+#[test]
+#[ignore]
+fn many_arrays_of_tables_stay_linear() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let mut v = String::new();
+    for _ in 0..40_000 {
+        v.push_str("[[a]]\nx = \"none\"\n[[a.b]]\ny = 1\n");
+    }
+    v.push_str("[[a]]\nx = \"needle\"\n");
+    std::fs::write(fx.file("many.toml"), &v).unwrap();
+    let args = ["--flat", "needle", "many.toml"];
+    let (out, err) = sfor_output(&fx, &args);
+    assert_eq!(err, "");
+    assert_eq!(out, "160002: a[40000] › x │ x = \"needle\"\n");
+    let Some(((t, _), (base, _))) = against_rg(&fx, &args) else {
+        return;
+    };
+    eprintln!("40 000 [[a]] tables: sfor {t:?}, rg {base:?}");
+    assert!(
+        t <= base + Duration::from_secs(1),
+        "{t:?} is more than rg's {base:?} + 1 s"
+    );
+}

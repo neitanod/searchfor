@@ -5,7 +5,7 @@
 //! lists of components, never dotted strings. On a syntax error the longest prefix found that
 //! parses, ending at a statement start, is used (D3, Task 3.2).
 use crate::trail::{Outline, OutlineSegment};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use toml_edit::{Array, InlineTable, Item, Key, Table, Value};
 
@@ -17,7 +17,7 @@ const BUDGET_MAX: usize = 32 << 20;
 type Pieces = Vec<(Range<usize>, Range<usize>)>;
 
 /// One component of a key path: `["a.b"]` is one `Key("a.b")`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Step {
     Key(String),
     Index(usize),
@@ -377,6 +377,23 @@ impl Build<'_> {
             let from = self.headers[i].span.start;
             self.headers[i].section = from..to.max(from);
         }
+        // The Sections of each path, by start: a prefix is covered when the Section of a
+        // header with that path holds the header (review m2-code-r1, Codex #3: searching every
+        // header for each prefix was quadratic in `[[a]]` tables).
+        let mut by_path: HashMap<&[Step], Vec<Range<usize>>> = HashMap::new();
+        for h in &self.headers {
+            by_path
+                .entry(h.path.as_slice())
+                .or_default()
+                .push(h.section.clone());
+        }
+        let covers = |prefix: &[Step], at: usize| {
+            by_path.get(prefix).is_some_and(|sections| {
+                // Sorted by start, as the headers; the last one starting at or before `at`.
+                let k = sections.partition_point(|s| s.start <= at);
+                sections[..k].iter().rev().any(|s| s.contains(&at))
+            })
+        };
         for h in &self.headers {
             let mut parts = h.parts.iter();
             for p in 1..=h.path.len() {
@@ -386,12 +403,7 @@ impl Build<'_> {
                 };
                 let own = p == h.path.len();
                 if !own {
-                    let prefix = &h.path[..p];
-                    let covered = self
-                        .headers
-                        .iter()
-                        .any(|o| o.path == prefix && o.section.contains(&h.span.start));
-                    if covered {
+                    if covers(&h.path[..p], h.span.start) {
                         continue;
                     }
                 }
