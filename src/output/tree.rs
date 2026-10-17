@@ -18,7 +18,7 @@ pub fn label(s: &Segment) -> String {
         "code" => format!("```{name}"),
         "item" => format!("• {name}"),
         "column" => format!("column «{name}»"),
-        "document" => name.clone(),
+        "document" | "key" | "element" => name.clone(),
         kind => format!("{kind} {name}"),
     }
 }
@@ -240,6 +240,22 @@ mod tests {
             ],
         );
         insta::assert_snapshot!("nested", plain(&d, &s, &opts()));
+    }
+
+    #[test]
+    fn key_and_element_segments_show_their_names() {
+        // Spec §5.2: `server › ports[2] › host` reads as the three names, without a kind word.
+        let s = src(&["server:", "  ports:", "    - host: needle"]);
+        let trail = vec![
+            seg("key", "server", 1, 3),
+            seg("element", "ports[2]", 3, 3),
+            seg("key", "host", 3, 3),
+        ];
+        let d = described(&s, vec![mat(&s, 3)], vec![vec![trail]]);
+        let out = plain(&d, &s, &opts());
+        assert!(!out.contains("key "), "{out}");
+        assert!(!out.contains("element "), "{out}");
+        insta::assert_snapshot!("key_path", out);
     }
 
     #[test]

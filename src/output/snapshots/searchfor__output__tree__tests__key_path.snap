@@ -1,0 +1,9 @@
+---
+source: src/output/tree.rs
+expression: out
+---
+docs/a.md
+  server
+    ports[2]
+      host
+        3:    - host: needle
