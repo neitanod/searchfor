@@ -1,0 +1,13 @@
+# formats/python.toml — Python: classes, functions and methods (spec §5.3).
+name       = "python"
+extensions = ["py", "pyi", "pyw"]
+shebangs   = ["python", "python3", "python2"]
+processor  = "treesitter"
+
+[params]
+grammar = "python"
+query = '''
+(class_definition name: (identifier) @name) @segment
+(function_definition name: (identifier) @name) @segment
+'''
+kinds = { class_definition = "class", function_definition = "function" }

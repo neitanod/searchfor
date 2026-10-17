@@ -1,0 +1,13 @@
+# formats/bash.toml — Bash and POSIX shell: classes, functions and methods (spec §5.3).
+name       = "bash"
+extensions = ["sh", "bash", "bats"]
+names      = [".bashrc", ".bash_profile", ".bash_aliases", ".profile"]
+shebangs   = ["bash", "sh", "dash", "ksh"]
+processor  = "treesitter"
+
+[params]
+grammar = "bash"
+query = '''
+(function_definition name: (word) @name) @segment
+'''
+kinds = { function_definition = "function" }

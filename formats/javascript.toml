@@ -1,0 +1,19 @@
+# formats/javascript.toml — JavaScript (and JSX): classes, functions and methods (spec §5.3).
+name       = "javascript"
+extensions = ["js", "mjs", "cjs", "jsx"]
+shebangs   = ["node", "deno", "bun"]
+processor  = "treesitter"
+
+[params]
+grammar = "javascript"
+query = '''
+(class_declaration name: (identifier) @name) @segment
+(class name: (identifier) @name) @segment
+(method_definition name: (_) @name) @segment
+(function_declaration name: (identifier) @name) @segment
+(generator_function_declaration name: (identifier) @name) @segment
+(variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)]) @segment
+(field_definition property: (property_identifier) @name value: [(arrow_function) (function_expression)]) @segment
+(pair key: (property_identifier) @name value: [(arrow_function) (function_expression)]) @segment
+'''
+kinds = { class_declaration = "class", class = "class", method_definition = "method", function_declaration = "function", generator_function_declaration = "function", variable_declarator = "function", field_definition = "method", pair = "method" }

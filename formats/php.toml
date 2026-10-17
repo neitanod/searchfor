@@ -1,0 +1,18 @@
+# formats/php.toml — PHP: classes, functions and methods (spec §5.3).
+name       = "php"
+extensions = ["php", "phtml"]
+shebangs   = ["php"]
+processor  = "treesitter"
+
+[params]
+grammar = "php"
+query = '''
+(namespace_definition name: (namespace_name) @name) @segment
+(class_declaration name: (name) @name) @segment
+(interface_declaration name: (name) @name) @segment
+(trait_declaration name: (name) @name) @segment
+(enum_declaration name: (name) @name) @segment
+(method_declaration name: (name) @name) @segment
+(function_definition name: (name) @name) @segment
+'''
+kinds = { namespace_definition = "namespace", class_declaration = "class", interface_declaration = "interface", trait_declaration = "trait", enum_declaration = "enum", method_declaration = "method", function_definition = "function" }
