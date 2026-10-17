@@ -147,10 +147,19 @@ pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder>
     if args.sort.as_deref() == Some("path") {
         w.sort_by_file_path(|a, b| a.cmp(b));
     }
-    if let Some(j) = args.threads {
-        w.threads(j);
-    }
+    w.threads(walker_threads(args));
     Ok(w)
+}
+
+/// The walker's threads: `-j N`, or ripgrep 14.1.1's default when `-j` is absent or 0, the
+/// available parallelism up to 12; ignore 0.4.23 alone would use 2.
+fn walker_threads(args: &Args) -> usize {
+    match args.threads {
+        Some(j) if j > 0 => j,
+        _ => std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(12),
+    }
 }
 
 /// ripgrep 14.1.1's file types, as `rg --type-list` prints them: `name: glob, glob`.
@@ -507,6 +516,18 @@ mod tests {
             .map(|d| format!("{}: {}\n", d.name(), d.globs().join(", ")))
             .collect();
         assert_eq!(printed, RG_TYPES);
+    }
+
+    /// ignore 0.4.23 walks with 2 threads when given none; ripgrep 14.1.1 picks its own default,
+    /// and `-j0` means that default.
+    #[test]
+    fn walker_threads_default_as_ripgrep() {
+        let rg_default = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(12);
+        assert_eq!(walker_threads(&args(&["sfor", "needle"])), rg_default);
+        assert_eq!(walker_threads(&args(&["sfor", "-j0", "needle"])), rg_default);
+        assert_eq!(walker_threads(&args(&["sfor", "-j3", "needle"])), 3);
     }
     fn fixture(p: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
