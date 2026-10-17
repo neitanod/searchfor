@@ -1173,3 +1173,38 @@ fn a_huge_name_costs_no_memory_per_piece() {
         );
     }
 }
+
+/// M3 code review r2, Fable #3: `trails` builds the names of the columns some anchor is in, not
+/// of every header cell. Before the fix a header of a million columns (4 MB) cost 270 MiB, about
+/// 270 bytes per cell, against 13 MiB with `--no-trail`; what stays is the header's fields and
+/// decoded text, 40 bytes per cell.
+#[test]
+#[ignore]
+fn a_header_of_a_million_columns_names_only_the_columns_matched() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let n = 1_000_000;
+    let mut body = (1..=n)
+        .map(|k| format!("c{k}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    body.push_str("\nneedle,x\n");
+    std::fs::write(fx.file("wide.csv"), &body).unwrap();
+    let Some((_, base)) = measure(&sfor_bin(), &fx, &["--no-trail", "needle", "wide.csv"], 0)
+    else {
+        eprintln!("skipping: /usr/bin/time not found");
+        return;
+    };
+    let args = ["--color", "never", "--flat", "needle", "wide.csv"];
+    let (t, rss, out) = measure_out(&sfor_bin(), &fx, &args, 0).unwrap();
+    assert_eq!(out, "2: row 1 › c1 │ needle,x\n");
+    eprintln!(
+        "a million columns: {t:?}, RSS {} MiB; --no-trail: {} MiB",
+        rss / 1_048_576,
+        base / 1_048_576
+    );
+    assert!(
+        rss < base + 64 * n as u64,
+        "RSS {rss} is not below {base} + 64 × {n}"
+    );
+}

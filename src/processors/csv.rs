@@ -373,31 +373,26 @@ fn decodes_to(src: &[u8], body: Range<usize>, q: Option<u8>, decoded: &[u8]) -> 
     j == decoded.len()
 }
 
-impl Csv {
-    /// The header names (`None` for an empty cell), the header's fields and the line range of
-    /// the header row.
-    #[allow(clippy::type_complexity)]
-    fn header(
-        recs: &mut Records,
-        p: &Params,
-        lines: &mut Lines,
-    ) -> Option<(Vec<Option<HeaderName>>, Vec<Field>, (u64, u64))> {
+/// The header row: its fields, the decoded text of each (`decoded`, split at `ends`) and its
+/// line range. A name is built when asked for, so `trails` names only the columns some anchor
+/// is in (M3 code review r2, Fable #3: a header of a million cells cost 270 MiB).
+struct Header {
+    fields: Vec<Field>,
+    decoded: Vec<u8>,
+    ends: Vec<usize>,
+    lines: (u64, u64),
+}
+
+impl Header {
+    /// Reads the header row; None when the file has no record.
+    fn read(recs: &mut Records, lines: &mut Lines) -> Option<Self> {
         let mut fields = Vec::new();
         if !matches!(recs.next(&mut fields, true), Next::Record) {
             return None;
         }
-        let mut names = Vec::new();
-        let mut from = 0;
-        for (f, &to) in fields.iter().zip(&recs.ends) {
-            names.push(header_name(
-                recs.src,
-                f,
-                &recs.out[from..to],
-                p.quote,
-                p.name_chars,
-            ));
-            from = to;
-        }
+        // Taken, not copied: the next records decode into a new buffer.
+        let ends = std::mem::take(&mut recs.ends);
+        let decoded = std::mem::replace(&mut recs.out, vec![0; 1024]);
         let first = lines.of(fields[0].raw.start);
         let last = lines.of(fields
             .last()
@@ -406,7 +401,24 @@ impl Csv {
             .end
             .saturating_sub(1)
             .max(fields[0].raw.start));
-        Some((names, fields, (first, last)))
+        Some(Self {
+            fields,
+            decoded,
+            ends,
+            lines: (first, last),
+        })
+    }
+
+    /// The name of column `k` (0-based); None for an empty cell.
+    fn name(&self, src: &[u8], k: usize, p: &Params) -> Option<HeaderName> {
+        let from = if k == 0 { 0 } else { self.ends[k - 1] };
+        header_name(
+            src,
+            &self.fields[k],
+            &self.decoded[from..self.ends[k]],
+            p.quote,
+            p.name_chars,
+        )
     }
 }
 
@@ -440,20 +452,22 @@ impl Processor for Csv {
             at: 0,
             line: 1,
         };
-        let mut names: Vec<Option<String>> = Vec::new();
+        let mut header = None;
         if p.headers {
-            match Csv::header(&mut recs, &p, &mut lines) {
-                Some((n, fields, _)) => {
-                    names = n.into_iter().map(|n| n.map(|h| h.text)).collect();
+            match Header::read(&mut recs, &mut lines) {
+                Some(h) => {
                     // Matches in the header row are in a column's name: no Trail (spec §5.5).
-                    let end = fields.last().unwrap().end;
+                    let end = h.fields.last().unwrap().end;
                     while next < order.len() && anchors[order[next]] < end {
                         next += 1;
                     }
+                    header = Some(h);
                 }
                 None => return Ok(out),
             }
         }
+        // The names of the columns asked for so far.
+        let mut names: std::collections::HashMap<usize, Option<String>> = Default::default();
         let mut fields = Vec::new();
         let mut row = 0u64;
         while next < order.len() {
@@ -476,10 +490,15 @@ impl Processor for Csv {
                     while k + 1 < fields.len() && a >= fields[k].end {
                         k += 1;
                     }
-                    let col = names
-                        .get(k)
-                        .cloned()
-                        .flatten()
+                    let col = header
+                        .as_ref()
+                        .filter(|h| k < h.fields.len())
+                        .and_then(|h| {
+                            names
+                                .entry(k)
+                                .or_insert_with(|| h.name(src, k, &p).map(|n| n.text))
+                                .clone()
+                        })
                         .unwrap_or_else(|| format!("column {}", k + 1));
                     out[order[next]] = vec![
                         seg("row", format!("row {row}"), lines_of),
@@ -504,16 +523,17 @@ impl Processor for Csv {
             at: 0,
             line: 1,
         };
-        let Some((names, fields, header_lines)) = Csv::header(&mut recs, &p, &mut lines) else {
+        let Some(header) = Header::read(&mut recs, &mut lines) else {
             return Ok(Vec::new());
         };
-        Ok(names
-            .into_iter()
-            .zip(&fields)
-            .filter_map(|(n, f)| {
-                let h = n.filter(|h| h.searchable)?;
+        Ok(header
+            .fields
+            .iter()
+            .enumerate()
+            .filter_map(|(k, f)| {
+                let h = header.name(src, k, &p).filter(|h| h.searchable)?;
                 Some(Name {
-                    trail: vec![seg("column", h.text.clone(), header_lines)],
+                    trail: vec![seg("column", h.text.clone(), header.lines)],
                     labels: vec![f.raw.clone()],
                     anchor: f.raw.start,
                     text: h.text,
