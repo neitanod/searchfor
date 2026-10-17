@@ -278,6 +278,11 @@ impl MaxCount {
         self.stop.clone()
     }
 
+    /// The search runs over a slice in memory (`in_slice`).
+    pub fn is_slice(&self) -> bool {
+        self.slice.is_some()
+    }
+
     /// For a sink's `begin`: a new search with the searcher's after context.
     pub fn begin(&mut self, s: &Searcher) {
         *self = Self {
@@ -610,6 +615,29 @@ pub fn search_source(
     quiet: bool,
     limit: Option<u64>,
 ) -> Result<Option<FileMatches>> {
+    Ok(search_with(searcher, matcher, src, in_memory, quiet, limit)?.0)
+}
+
+/// `search_source` without `quiet`, with the file's stats also when nothing matched (for the
+/// summary of `--json -q`).
+pub fn search_source_stats(
+    searcher: &mut Searcher,
+    matcher: &RegexMatcher,
+    src: &Source,
+    in_memory: bool,
+    limit: Option<u64>,
+) -> Result<(Option<FileMatches>, FileStats)> {
+    search_with(searcher, matcher, src, in_memory, false, limit)
+}
+
+fn search_with(
+    searcher: &mut Searcher,
+    matcher: &RegexMatcher,
+    src: &Source,
+    in_memory: bool,
+    quiet: bool,
+    limit: Option<u64>,
+) -> Result<(Option<FileMatches>, FileStats)> {
     let started = std::time::Instant::now();
     let mut sink = CollectSink::new(matcher, searcher.invert_match(), quiet).limit(limit);
     if in_memory {
@@ -619,16 +647,18 @@ pub fn search_source(
         let rdr = UntilStopped::new(std::io::Cursor::new(src.bytes()), sink.stop());
         searcher.search_reader(matcher, rdr, &mut sink)?;
     }
-    if !sink.items.iter().any(|i| matches!(i, Item::Match(_))) {
-        return Ok(None);
-    }
     sink.stats.elapsed = started.elapsed();
-    Ok(Some(FileMatches {
+    let stats = sink.stats.clone();
+    if !sink.items.iter().any(|i| matches!(i, Item::Match(_))) {
+        return Ok((None, stats));
+    }
+    let fm = FileMatches {
         path: src.path.clone(),
         explicit: src.explicit,
         items: sink.items,
         stats: sink.stats,
-    }))
+    };
+    Ok((Some(fm), stats))
 }
 
 #[cfg(test)]

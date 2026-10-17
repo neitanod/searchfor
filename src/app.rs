@@ -170,7 +170,9 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         None
     };
     let context = args.before() > 0 || args.after() > 0;
-    let mode = if args.quiet && !args.structural() {
+    let mode = if args.quiet && args.json && !args.structural() {
+        Mode::QuietJson
+    } else if args.quiet && !args.structural() {
         Mode::Quiet
     } else if !args.quiet && (args.no_trail || (summary_mode.is_some() && !args.structural())) {
         Mode::Passthrough
@@ -226,6 +228,13 @@ fn main(args: &Args) -> anyhow::Result<i32> {
             || search::streaming_searcher(args, false, ctx.in_memory),
             |s, t| ctx.quiet_file(s, &t),
         )?,
+        Mode::QuietJson => {
+            ctx.walk(
+                || search::streaming_searcher(args, false, ctx.in_memory),
+                |s, t| ctx.quiet_json_file(s, &t),
+            )?;
+            ctx.print_summary();
+        }
         Mode::Passthrough => {
             let line_number = if args.line_number {
                 true
@@ -270,7 +279,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
                 },
                 |st, t| ctx.trail_file(st, &t, &detector, &ro),
             )?;
-            if layout == Layout::Json && summary_mode.is_none() && !args.quiet {
+            if layout == Layout::Json && summary_mode.is_none() {
                 ctx.print_summary();
             }
         }
@@ -290,6 +299,9 @@ fn main(args: &Args) -> anyhow::Result<i32> {
 enum Mode {
     /// `-q` without structural flags: no Source, stop at the first Match (step 10).
     Quiet,
+    /// `--json -q` without structural flags: every file searched for the `summary` only, as
+    /// ripgrep 14.1.1's summary printer with statistics (code review r2, Codex #7).
+    QuietJson,
     /// grep-printer's own output (design note 9).
     Passthrough,
     /// Sources, Processors, filters and our printers.
@@ -497,6 +509,49 @@ impl Ctx<'_> {
         }
     }
 
+    /// `--json -q`: the file's statistics for the summary, as grep-printer 0.2.2's summary
+    /// printer (summary.rs:648 and 726) counts them: every Match line and Match, up to `-m`, and
+    /// every file searched. A walked file whose binary data stopped the search counts its
+    /// Matches but has none (summary.rs:760).
+    fn quiet_json_file(&self, searcher: &mut Searcher, t: &Target) {
+        let reader = !self.in_memory || t.fs.as_deref().is_none_or(starts_with_bom);
+        let max = MaxCount::summary(search::max_count(self.args));
+        let max = if reader {
+            max
+        } else {
+            max.in_slice(&self.matcher)
+        };
+        let mut sink = StatsSink {
+            matcher: &self.matcher,
+            invert: self.args.invert_match,
+            max,
+            stats: FileStats::default(),
+            lines: 0,
+            started: Instant::now(),
+        };
+        let stop = sink.max.stop();
+        if let Err(e) = self.search_raw(searcher, t, &mut sink, stop) {
+            self.msgs.error(format_args!("{}: {e}", t.path.display()));
+            return;
+        }
+        let quit = search::binary_detection(self.args, t.explicit)
+            .quit_byte()
+            .is_some();
+        if sink.lines > 0 && !(quit && sink.stats.binary_offset.is_some()) {
+            self.matched.store(true, Relaxed);
+        }
+        self.count_quiet_json(&sink.stats, sink.lines > 0);
+    }
+
+    /// `--json -q`: adds a searched file to the summary.
+    fn count_quiet_json(&self, s: &FileStats, matched: bool) {
+        if self.args.json && self.args.quiet {
+            let mut stats = output::json::file_stats(s, 0);
+            stats.searches_with_match = u64::from(matched);
+            *self.stats.lock().expect("stats") += &stats;
+        }
+    }
+
     /// grep-printer's printer for the mode, with ripgrep's defaults (design note 9).
     fn printer(&self, heading: bool) -> Printer {
         let specs = ColorSpecs::new(&grep_printer::default_color_specs());
@@ -612,7 +667,10 @@ impl Ctx<'_> {
         if self.args.quiet {
             if kept {
                 self.matched.store(true, Relaxed);
-                self.quit.store(true, Relaxed);
+                // With --json the run goes on, for the summary (`quiet_json_file`).
+                if !self.args.json {
+                    self.quit.store(true, Relaxed);
+                }
             }
             return;
         }
@@ -882,15 +940,17 @@ impl Ctx<'_> {
             st.source
                 .set_binary_detection(search::binary_detection(self.args, t.explicit));
             let in_memory = !src.had_bom;
-            return match search::search_source(
+            return match search::search_source_stats(
                 &mut st.source,
                 &self.matcher,
                 &src,
                 in_memory,
-                false,
                 search::max_count(self.args),
             ) {
-                Ok(fm) => Ok(fm.map(|fm| (src, fm))),
+                Ok((fm, stats)) => {
+                    self.count_quiet_json(&stats, fm.is_some());
+                    Ok(fm.map(|fm| (src, fm)))
+                }
                 Err(e) => {
                     report(&format_args!("{e:#}"));
                     Err(())
@@ -934,7 +994,11 @@ impl Ctx<'_> {
             report(&e);
             return Err(());
         }
-        if !sink.items.iter().any(|i| matches!(i, Item::Match(_))) {
+        let mut stats = sink.stats;
+        stats.elapsed = started.elapsed();
+        let found = sink.items.iter().any(|i| matches!(i, Item::Match(_)));
+        self.count_quiet_json(&stats, found);
+        if !found {
             return Ok(None);
         }
         let src = match (kept, &t.fs) {
@@ -942,8 +1006,6 @@ impl Ctx<'_> {
             (None, Some(p)) => open(p)?,
             (None, None) => unreachable!("stdin is always kept"),
         };
-        let mut stats = sink.stats;
-        stats.elapsed = started.elapsed();
         let fm = FileMatches {
             path: t.path.clone(),
             explicit: t.explicit,
@@ -1055,22 +1117,29 @@ impl Ctx<'_> {
                 return Err(());
             }
         };
-        Ok(self
-            .heading_matches(&src, &names)
-            .map(|(file, trails, sections)| {
-                let d = Described {
-                    file,
-                    format: Some(def.name.clone()),
-                    trails,
-                    // With --expand, the Section of each named Segment (code review r1, Fable #4).
-                    sections: if self.args.expand {
-                        sections
-                    } else {
-                        Vec::new()
-                    },
-                };
-                (src, d)
-            }))
+        let found = self.heading_matches(&src, &names);
+        let stats = found.as_ref().map_or_else(
+            || FileStats {
+                bytes_searched: src.bytes().len() as u64,
+                ..FileStats::default()
+            },
+            |f| f.0.stats.clone(),
+        );
+        self.count_quiet_json(&stats, found.is_some());
+        Ok(found.map(|(file, trails, sections)| {
+            let d = Described {
+                file,
+                format: Some(def.name.clone()),
+                trails,
+                // With --expand, the Section of each named Segment (code review r1, Fable #4).
+                sections: if self.args.expand {
+                    sections
+                } else {
+                    Vec::new()
+                },
+            };
+            (src, d)
+        }))
     }
 
     /// `trails[i][k]` from the Processor's one Trail per anchor; a failing Processor is a
@@ -1338,6 +1407,55 @@ impl<S: Sink<Error = std::io::Error>> Sink for Limited<S> {
 /// A regular file, which can be opened again and read the same: not `/dev/stdin` or a FIFO.
 fn rewindable(p: &Path) -> bool {
     std::fs::metadata(p).is_ok_and(|m| m.is_file())
+}
+
+/// The counting part of grep-printer 0.2.2's summary sink with statistics, for `--json -q`.
+struct StatsSink<'m> {
+    matcher: &'m RegexMatcher,
+    invert: bool,
+    max: MaxCount,
+    stats: FileStats,
+    /// Match lines, the summary printer's `match_count`.
+    lines: u64,
+    started: Instant,
+}
+
+impl Sink for StatsSink<'_> {
+    type Error = std::io::Error;
+
+    fn begin(&mut self, s: &Searcher) -> std::io::Result<bool> {
+        self.max.begin(s);
+        self.started = Instant::now();
+        Ok(true)
+    }
+
+    fn matched(&mut self, _s: &Searcher, m: &SinkMatch<'_>) -> std::io::Result<bool> {
+        if !self.max.matched(m) {
+            return Ok(false);
+        }
+        self.lines += 1;
+        self.stats.matched_lines += m.lines().count() as u64;
+        let subs = search::match_submatches(self.matcher, self.invert, m);
+        self.stats.matches += subs.len() as u64;
+        Ok(self.max.go_on())
+    }
+
+    fn context(&mut self, _s: &Searcher, c: &SinkContext<'_>) -> std::io::Result<bool> {
+        if !self.max.context(c) {
+            return Ok(false);
+        }
+        Ok(self.max.go_on())
+    }
+
+    fn finish(&mut self, _s: &Searcher, f: &SinkFinish) -> std::io::Result<()> {
+        self.stats.elapsed = self.started.elapsed();
+        self.stats.binary_offset = f.binary_byte_offset();
+        // A search in memory is a slice for `MaxCount` (`quiet_json_file`).
+        self.stats.bytes_searched = self
+            .max
+            .bytes_searched(f.byte_count(), !self.max.is_slice());
+        Ok(())
+    }
 }
 
 /// The file starts with a byte-order mark that makes grep-searcher read it through a reader

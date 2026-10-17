@@ -859,3 +859,56 @@ fn documented_bytes_searched_deviation() {
     let (want, got) = run(&late, "misc");
     assert_eq!((want[0], got[0]), (65213, 65313));
 }
+
+/// Code review r2, Codex #7: `--json -q` prints no message per file and ends with rg 14.1.1's
+/// `summary`, which counts every file searched; the search does not stop at the first Match.
+#[test]
+fn json_quiet_equals_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let mut r = Report(Vec::new());
+    let n = In::Null;
+    let cases: Vec<(Vec<&str>, In)> = vec![
+        (vec!["needle"], In::File("md/guide.md")),
+        (vec!["absent"], In::File("md/guide.md")),
+        (vec!["needle", "md/guide.md"], n),
+        (vec!["absent", "md/guide.md"], n),
+        (vec!["needle", "md"], n),
+        (vec!["needle"], n),
+        (vec!["-m1", "needle", "md"], n),
+        (vec!["-m2", "-A1", "needle", "md/guide.md"], n),
+        (vec!["-v", "needle", "md/guide.md"], n),
+        (vec!["-g", "late-nul*", "needle", "misc"], n),
+        (vec!["binary", "misc/bin.dat"], n),
+    ];
+    for (args, input) in &cases {
+        let mut a = vec!["--sort", "path", "--json", "-q"];
+        a.extend_from_slice(args);
+        let want = rg(&fx, &a, *input);
+        let want = (code(&want), json_lines(&want, false));
+        for mode in [&["--no-trail"][..], &[]] {
+            let mut s = mode.to_vec();
+            s.extend_from_slice(&a);
+            let got = sfor(&fx, &s, *input);
+            r.check(
+                format!("{s:?}"),
+                want.clone(),
+                (code(&got), json_lines(&got, false)),
+            );
+        }
+    }
+    // With --within the summary counts the search (spec §6.4); the exit code, the filter.
+    let want = rg(&fx, &["--json", "-q", "needle", "md/guide.md"], n);
+    for (within, exit) in [("linux", 0), ("nowhere", 1)] {
+        let a = ["--json", "-q", "--within", within, "needle", "md/guide.md"];
+        let got = sfor(&fx, &a, n);
+        r.check(
+            format!("{a:?}"),
+            (exit, json_lines(&want, false)),
+            (code(&got), json_lines(&got, false)),
+        );
+    }
+    r.assert_empty();
+}
