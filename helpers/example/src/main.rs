@@ -10,7 +10,9 @@
 //! - `SFOR_EXAMPLE_GARBAGE`: write `not json` instead of an answer.
 //! - `SFOR_EXAMPLE_ERROR`: answer an `error`.
 //!
-//! And at start: `SFOR_EXAMPLE_LOG` (a file to append `start <pid>` to), `SFOR_EXAMPLE_STDERR`
+//! And at start: `SFOR_EXAMPLE_LOG` (a file to append `start <pid>` to), `SFOR_EXAMPLE_TRACE`
+//! (a file to append `begin <pid> <path>` and `end <pid> <path>` to around each request, the
+//! `end` before the answer), `SFOR_EXAMPLE_STDERR`
 //! (a line to write to stderr), `SFOR_EXAMPLE_FORK` (when set, start `sleep 30` with this
 //! process's stdout and stderr, as a careless helper's child would).
 use anyhow::Context;
@@ -149,6 +151,8 @@ fn trim_end(b: &[u8]) -> &[u8] {
 
 struct Ini {
     knobs: Knobs,
+    /// `SFOR_EXAMPLE_TRACE`.
+    trace: Option<std::path::PathBuf>,
 }
 
 impl Ini {
@@ -157,25 +161,50 @@ impl Ini {
         self.knobs.apply(path)?;
         Ok(src)
     }
+
+    /// Appends `<what> <pid> <path>` to the trace file, in one write.
+    fn trace(&self, what: &str, path: &Path) {
+        let Some(t) = &self.trace else { return };
+        let line = format!("{what} {} {}\n", std::process::id(), path.display());
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(t)
+        {
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
+
+    /// `f` between a `begin` and an `end` line of the trace.
+    fn traced<T>(&self, path: &Path, f: impl FnOnce() -> T) -> T {
+        self.trace("begin", path);
+        let out = f();
+        self.trace("end", path);
+        out
+    }
 }
 
 impl Handler for Ini {
     fn trails(&self, path: &Path, matches: &[MatchPos]) -> anyhow::Result<Vec<Trail>> {
-        let src = self.read(path)?;
-        let o = outline(&src);
-        let mut cursor = TrailCursor::new(&o);
-        Ok(matches
-            .iter()
-            .map(|m| cursor.trail(m.byte as usize))
-            .collect())
+        self.traced(path, || {
+            let src = self.read(path)?;
+            let o = outline(&src);
+            let mut cursor = TrailCursor::new(&o);
+            Ok(matches
+                .iter()
+                .map(|m| cursor.trail(m.byte as usize))
+                .collect())
+        })
     }
 
     fn names(&self, path: &Path) -> anyhow::Result<Vec<WireName>> {
-        let src = self.read(path)?;
-        Ok(names_of(&outline(&src))
-            .iter()
-            .map(WireName::from)
-            .collect())
+        self.traced(path, || {
+            let src = self.read(path)?;
+            Ok(names_of(&outline(&src))
+                .iter()
+                .map(WireName::from)
+                .collect())
+        })
     }
 }
 
@@ -204,12 +233,13 @@ fn start_up() {
 fn main() {
     start_up();
     let knobs = Knobs::from_env();
+    let trace = std::env::var_os("SFOR_EXAMPLE_TRACE").map(Into::into);
     let info = Info {
         name: "sfor-example-helper",
         version: env!("CARGO_PKG_VERSION"),
     };
     if let Err(e) = serve(std::io::stdin().lock(), std::io::stdout(), info, |_| {
-        Ok(Ini { knobs })
+        Ok(Ini { knobs, trace })
     }) {
         eprintln!("sfor-example-helper: {e:#}");
         std::process::exit(1);

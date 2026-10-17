@@ -99,39 +99,147 @@ fn h01_every_mode_gives_the_same_trails() {
     }
 }
 
+/// One request in the trace of the example helper (`SFOR_EXAMPLE_TRACE`).
+#[derive(Debug, Clone)]
+struct Event {
+    begin: bool,
+    pid: u32,
+    path: String,
+}
+
+fn trace(log: &Path) -> Vec<Event> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| {
+            let mut f = l.splitn(3, ' ');
+            let (what, pid, path) = (f.next().unwrap(), f.next().unwrap(), f.next().unwrap());
+            Event {
+                begin: what == "begin",
+                pid: pid.parse().unwrap(),
+                path: path.to_string(),
+            }
+        })
+        .collect()
+}
+
+/// The most requests in flight at once over the trace: across every process, and in one.
+fn in_flight(events: &[Event]) -> (usize, usize) {
+    let mut all = 0usize;
+    let mut per: std::collections::HashMap<u32, usize> = Default::default();
+    let (mut max_all, mut max_one) = (0, 0);
+    for e in events {
+        let n = per.entry(e.pid).or_default();
+        if e.begin {
+            all += 1;
+            *n += 1;
+        } else {
+            all -= 1;
+            *n -= 1;
+        }
+        max_all = max_all.max(all);
+        max_one = max_one.max(*n);
+    }
+    (max_all, max_one)
+}
+
+/// stdout's lines, sorted: a search without `--sort` prints files in any order.
+fn sorted_lines(o: &Output) -> Vec<String> {
+    let mut v: Vec<String> = stdout(o).lines().map(String::from).collect();
+    v.sort();
+    v
+}
+
 #[test]
 fn h02_a_pool_runs_at_most_the_thread_count() {
-    for (mode, low, high) in [("pool", 1, 3), ("concurrent", 1, 1), ("oneshot", 12, 12)] {
+    // Without `--sort` the search runs on `-j 3` threads (review m2-code-r1, Codex #4): every
+    // request takes 300 ms, so the trace shows requests in flight at once, never more than 3,
+    // and as many per process as its mode allows.
+    for (mode, low, high, per_process) in [
+        ("pool", 2, 3, 1),
+        ("concurrent", 1, 1, 3),
+        ("oneshot", 12, 12, 1),
+    ] {
         let fx = Fixture::new();
         generate(&fx, 12);
         ini(&fx, mode, 2000);
         let log = fx.file("helper.log");
+        let tr = fx.file("trace.log");
         let o = run(fx
-            .sfor(["needle", "gen", "--flat", "--sort", "path", "-j", "3"])
+            .sfor(["needle", "gen", "--flat", "-j", "3"])
             .env("SFOR_EXAMPLE_SLOW", "/gen/")
-            .env("SFOR_EXAMPLE_LOG", &log));
+            .env("SFOR_EXAMPLE_LOG", &log)
+            .env("SFOR_EXAMPLE_TRACE", &tr));
         assert_eq!(code(&o), 0, "{mode}: {}", stderr(&o));
         let n = starts(&log);
         assert!(
             (low..=high).contains(&n),
             "{mode}: {n} processes, expected {low}..={high}"
         );
-        let out = stdout(&o);
-        for i in 1..=12 {
-            let line = format!("gen/g{i:02}.ini:2: s › k │ k = needle\n");
-            assert!(out.contains(&line), "{mode}: no {line:?} in:\n{out}");
-        }
+        let events = trace(&tr);
+        assert_eq!(events.len(), 24, "{mode}: {events:?}");
+        let (all, one) = in_flight(&events);
+        assert!(
+            (2..=3).contains(&all),
+            "{mode}: {all} requests in flight at most"
+        );
+        assert_eq!(one, per_process.min(all), "{mode}: {one} in one process");
+        let want: Vec<String> = (1..=12)
+            .map(|i| format!("gen/g{i:02}.ini:2: s › k │ k = needle"))
+            .collect();
+        assert_eq!(sorted_lines(&o), want, "{mode}");
     }
 }
 
 #[test]
 fn h03_out_of_order_answers_reach_their_files() {
-    // app.ini answers last: every other file's answer overtakes it.
+    // One `concurrent` process, `-j 4`, no `--sort`: the `s*` files answer after 300 ms, the
+    // `f*` files at once, so a request sent after a slow one is answered before it, and each
+    // answer still reaches its own file (review m2-code-r1, Codex #4). The files are created
+    // alternating, so no directory order puts every fast one first.
     let fx = Fixture::new();
+    let dir = fx.file("gen");
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 1..=8 {
+        for kind in ["s", "f"] {
+            let body = format!("[{kind}{i}]\nk = needle\n");
+            std::fs::write(dir.join(format!("{kind}{i}.ini")), body).unwrap();
+        }
+    }
     ini(&fx, "concurrent", 2000);
-    let o = flat_ini(&fx, &["-j", "4"], &[("SFOR_EXAMPLE_SLOW", "app.ini")]);
+    let log = fx.file("helper.log");
+    let tr = fx.file("trace.log");
+    let o = run(fx
+        .sfor(["needle", "gen", "--flat", "-j", "4"])
+        .env("SFOR_EXAMPLE_SLOW", "/gen/s")
+        .env("SFOR_EXAMPLE_LOG", &log)
+        .env("SFOR_EXAMPLE_TRACE", &tr));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    assert_eq!(stdout(&o), INI_TRAILS);
+    assert_eq!(starts(&log), 1);
+    let events = trace(&tr);
+    let begins: Vec<&str> = events
+        .iter()
+        .filter(|e| e.begin)
+        .map(|e| e.path.as_str())
+        .collect();
+    let ends: Vec<&str> = events
+        .iter()
+        .filter(|e| !e.begin)
+        .map(|e| e.path.as_str())
+        .collect();
+    assert_eq!(begins.len(), 16, "{events:?}");
+    let pos = |v: &[&str], p: &str| v.iter().position(|x| *x == p).unwrap();
+    let overtaken = begins.iter().any(|a| {
+        begins
+            .iter()
+            .any(|b| pos(&begins, a) < pos(&begins, b) && pos(&ends, b) < pos(&ends, a))
+    });
+    assert!(overtaken, "no answer overtook another: {events:?}");
+    let mut want: Vec<String> = (1..=8)
+        .flat_map(|i| ["s", "f"].map(|k| format!("gen/{k}{i}.ini:2: {k}{i} › k │ k = needle")))
+        .collect();
+    want.sort();
+    assert_eq!(sorted_lines(&o), want);
 }
 
 #[test]
