@@ -532,7 +532,10 @@ The `csv` Processor reads both, with four Definition parameters (M3 plan): `deli
 `headers` and `name_chars`.
 
 - **Dialects.** CSV: `delimiter = "auto"`, which picks the most frequent of `,`, `;`, tab and `|`
-  in the first line, outside quotes (`,` on a tie or when none appears), so the `;` files that a
+  in the first non-blank record, outside quoted fields (`,` on a tie or when none appears; a
+  record ends at `\n` or `\r` outside quotes, as csv-core reads it; only the file's first MiB is
+  read, so a first record that never ends, as an unclosed quote at its first byte, costs at most
+  that MiB), so the `;` files that a
   spreadsheet exports in many locales read as they are; `quote = "\""`. TSV: `delimiter = "\t"`
   and `quote = ""`, so quotes are text, as in IANA's TSV, and a stray `"` cannot swallow the
   rest of the file.
@@ -1120,7 +1123,7 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
     `nav.top.menu › ul › li[3]`; in XML, a Match in the title of the second `book` gets
     `catalog › book[2] › title`, and the Matches after an XML syntax error get an empty Trail.
 19. A Match in the `Plan` column of the second record of a CSV file gets `row 2 › Plan`; a CSV
-    file whose first line is separated by `;` is read with `;`.
+    file whose first non-blank record is separated by `;` is read with `;`.
 20. A Match in an SRT cue gets `cue 2 00:00:04,000` in the one-line output and
     `cue 2 00:00:04,000 --> 00:00:06,000` in the tree, the same with a BOM and CRLF line ends.
 21. A key `"a\nb"` in JSON, TOML, YAML or JavaScript prints `a\nb` on one row in tree and one-line

@@ -1208,3 +1208,34 @@ fn a_header_of_a_million_columns_names_only_the_columns_matched() {
         "RSS {rss} is not below {base} + 64 × {n}"
     );
 }
+
+/// M3 code review r3, Fable #1: the rows of one line, one per Trail, cost the line once and not
+/// once per row. Before the fix 20 000 Matches in one CSV row took 6.3 s with `--flat`, against
+/// 0.03 s for the same line in a `.txt` file.
+#[test]
+#[ignore]
+fn the_rows_of_one_wide_line_cost_the_line_once() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let n = 20_000;
+    let header = (0..n).map(|k| format!("h{k}")).collect::<Vec<_>>();
+    let row = vec!["needle"; n];
+    let body = format!("{}\n{}\n", header.join(","), row.join(","));
+    std::fs::write(fx.file("wide.csv"), &body).unwrap();
+    std::fs::write(fx.file("wide.txt"), &body).unwrap();
+    let (out, _) = sfor_output(&fx, &["--flat", "needle", "wide.csv"]);
+    assert_eq!(out.lines().count(), n, "{out:.200}");
+    assert!(out.starts_with("2: row 1 › h0 │ needle,"), "{out:.100}");
+    for layout in ["--flat", "--tree"] {
+        let Some((base, _)) = best_of_three(&fx, &[layout, "needle", "wide.txt"], 0) else {
+            eprintln!("skipping: /usr/bin/time not found");
+            return;
+        };
+        let (t, _) = best_of_three(&fx, &[layout, "needle", "wide.csv"], 0).unwrap();
+        eprintln!("{n} Matches in one CSV row, {layout}: {t:?}; as .txt: {base:?}");
+        assert!(
+            t <= base * 5 + Duration::from_millis(250),
+            "{layout}: {t:?} is more than 5 × the {base:?} of the .txt + 0.25 s"
+        );
+    }
+}

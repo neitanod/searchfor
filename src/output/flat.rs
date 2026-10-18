@@ -151,15 +151,6 @@ impl<'a> Head<'a> {
     }
 }
 
-/// Width in characters of a line's text as printed (without its terminator).
-fn text_width(bytes: &[u8]) -> usize {
-    let raw = text::strip_terminator(bytes);
-    match std::str::from_utf8(raw) {
-        Ok(t) => width(t),
-        Err(_) => width(&text::lossy_with_map(raw).0),
-    }
-}
-
 /// One row: `--` first when it opens a group after a gap, then `path:line: Trail │ text`.
 pub(crate) fn write_row(
     w: &mut dyn WriteColor,
@@ -174,20 +165,20 @@ pub(crate) fn write_row(
     if !r.is_match {
         let prefix = |w: &mut dyn WriteColor| head.write(w);
         let avail = o.width.saturating_sub(head.width());
-        return super::write_line(w, &prefix, r.bytes, &r.subs, false, avail, o);
+        return super::write_line_text(w, &prefix, &r.line, &r.subs, false, avail, o);
     }
     let space = usize::from(!head.is_empty());
     let trail = if r.trail.is_empty() {
         None
     } else {
-        let text_width = if super::omitted(r.bytes, o) {
+        let text_width = if super::omitted(r.line.bytes, o) {
             width(&super::omission_message(
                 r.subs.len(),
                 true,
                 w.supports_color(),
             ))
         } else {
-            text_width(r.bytes)
+            r.line.width()
         };
         // The text keeps up to half the width for itself; the Trail gets what is left.
         let reserve = text_width.min(o.width.div_ceil(2));
@@ -207,7 +198,7 @@ pub(crate) fn write_row(
         Ok(())
     };
     let avail = o.width.saturating_sub(used);
-    super::write_line(w, &prefix, r.bytes, &r.subs, true, avail, o)
+    super::write_line_text(w, &prefix, &r.line, &r.subs, true, avail, o)
 }
 
 /// ripgrep's binary message line, after a file's rows.

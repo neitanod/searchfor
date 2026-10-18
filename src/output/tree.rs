@@ -81,6 +81,20 @@ pub(crate) fn write_row(
     is_match: bool,
     o: &RenderOptions,
 ) -> std::io::Result<()> {
+    let line = super::LineText::new(bytes);
+    write_row_text(w, depth, line_number, &line, subs, is_match, o)
+}
+
+/// `write_row` for a line whose text the rows before may have worked out already.
+fn write_row_text(
+    w: &mut dyn WriteColor,
+    depth: usize,
+    line_number: u64,
+    line: &super::LineText,
+    subs: &[(usize, usize)],
+    is_match: bool,
+    o: &RenderOptions,
+) -> std::io::Result<()> {
     let digits = line_number.checked_ilog10().map_or(1, |d| d as usize + 1);
     let sep = if is_match { ":" } else { "-" };
     let used = 2 * (depth + 1) + if o.line_numbers { digits + 1 } else { 0 };
@@ -94,10 +108,10 @@ pub(crate) fn write_row(
         }
         Ok(())
     };
-    super::write_line(
+    super::write_line_text(
         w,
         &prefix,
-        bytes,
+        line,
         subs,
         is_match,
         o.width.saturating_sub(used),
@@ -150,7 +164,7 @@ impl TreeState {
             write_trail(w, &self.printed, r.trail, &self.seen)?;
             self.printed = r.trail.to_vec();
         }
-        write_row(w, depth, r.line_number, r.bytes, &r.subs, r.is_match, o)?;
+        write_row_text(w, depth, r.line_number, &r.line, &r.subs, r.is_match, o)?;
         if self.seen.len() == SEEN {
             self.seen.pop_front();
         }

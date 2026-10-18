@@ -30,6 +30,8 @@ pub struct Scanner<'a> {
     src: &'a [u8],
     pos: usize,
     xml: bool,
+    /// XML: still in the prolog, before the doctype and the root, where a doctype may come.
+    prolog: bool,
 }
 
 fn is_space(b: u8) -> bool {
@@ -103,7 +105,12 @@ fn name_start(b: u8, xml: bool) -> bool {
 
 impl<'a> Scanner<'a> {
     pub fn new(src: &'a [u8], xml: bool) -> Self {
-        Self { src, pos: 0, xml }
+        Self {
+            src,
+            pos: 0,
+            xml,
+            prolog: true,
+        }
     }
 
     /// The byte after `pat`, searched from `from`; None when the file ends first.
@@ -431,11 +438,25 @@ impl<'a> Scanner<'a> {
                 continue;
             }
             if rest.starts_with(b"<!") && self.xml {
-                // A doctype, with its internal subset in brackets.
-                if !rest[2..].starts_with(b"DOCTYPE") {
+                // A doctype, with its internal subset in brackets: `DOCTYPE`, XML white space
+                // and a Name (M3 code review r3, Codex #1), then white space, `[` or `>` (r4,
+                // Codex #1: `<!DOCTYPE r©>` is none).
+                let xml_space = |b: &u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r');
+                let mut name = lt + 9;
+                while s.get(name).is_some_and(xml_space) {
+                    name += 1;
+                }
+                let named = name > lt + 9
+                    && xml_name_end(s, name).is_ok_and(|ne| {
+                        s.get(ne)
+                            .is_some_and(|b| xml_space(b) || matches!(b, b'[' | b'>'))
+                    });
+                // One doctype, before the root (r4, Fable #2).
+                if !rest[2..].starts_with(b"DOCTYPE") || !named || !self.prolog {
                     self.pos = s.len();
                     return Step::Error(lt);
                 }
+                self.prolog = false;
                 match self.doctype_end(lt + 9) {
                     Some(e) => self.pos = e,
                     None => return unfinished(self),
@@ -487,6 +508,7 @@ impl<'a> Scanner<'a> {
                 }
             };
             self.pos = end;
+            self.prolog = false;
             let name = ns..ne;
             let tag = lt..end;
             if close {
@@ -724,6 +746,62 @@ mod tests {
         ] {
             assert_eq!(tags(good, true), ["<r/"], "{good}");
         }
+    }
+
+    #[test]
+    fn a_doctype_has_white_space_and_a_name() {
+        // M3 code review r3, Codex #1: `<!DOCTYPE` is followed by XML white space and a Name.
+        for bad in [
+            "<!DOCTYPEjunk><r/>",
+            "<!DOCTYPE><r/>",
+            "<!DOCTYPE ><r/>",
+            "<!DOCTYPE\x0cr><r/>",
+            "<!DOCTYPE 1r><r/>",
+            "<!DOCTYPE",
+            // M3 code review r4, Codex #1: the whole Name, then white space, `[` or `>`.
+            "<!DOCTYPE r©><r/>",
+            "<!DOCTYPE r=><r/>",
+            "<!DOCTYPE r",
+        ] {
+            assert_eq!(tags(bad, true), ["error at 0"], "{bad:?}");
+        }
+        for good in [
+            "<!DOCTYPE r><r/>",
+            "<!DOCTYPE\n\t r ><r/>",
+            "<!DOCTYPE x:r-1 SYSTEM 'r.dtd'><r/>",
+            "<!DOCTYPE r[<!ENTITY e 'x'>]><r/>",
+            "<!DOCTYPE ñandú·1\r\n><r/>",
+        ] {
+            assert_eq!(tags(good, true), ["<r/"], "{good:?}");
+        }
+    }
+
+    #[test]
+    fn a_doctype_comes_once_and_before_the_root() {
+        // M3 code review r4, Fable #2: XML 1.0 has one doctype, in the prolog.
+        for (bad, out) in [
+            ("<!DOCTYPE r><!DOCTYPE r><r/>", &["error at 12"][..]),
+            (
+                "<!DOCTYPE r>\n<!-- c -->\n<!DOCTYPE r><r/>",
+                &["error at 24"],
+            ),
+            ("<r><!DOCTYPE r><a/></r>", &["<r", "error at 3"]),
+            ("<r/><!DOCTYPE r>", &["<r/", "error at 4"]),
+        ] {
+            assert_eq!(tags(bad, true), out, "{bad:?}");
+        }
+        assert_eq!(
+            tags(
+                "<?xml version='1.0'?><!-- c --><?p?>\n<!DOCTYPE r><?q?><r/>",
+                true
+            ),
+            ["<r/"]
+        );
+        // HTML keeps skipping any doctype.
+        assert_eq!(
+            tags("<!DOCTYPE html><p><!DOCTYPE html></p>", false),
+            ["<p", "</p"]
+        );
     }
 
     #[test]

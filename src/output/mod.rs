@@ -9,7 +9,10 @@ pub mod tree;
 
 use crate::cli::BinaryChoice;
 use crate::model::{Described, Item, Line, Segment, Submatch};
+use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 use termcolor::WriteColor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +62,65 @@ pub(crate) fn omission_message(subs: usize, is_match: bool, color: bool) -> Stri
     }
 }
 
+/// A line's text as tree and flat print it, worked out once for all the rows of the line: a
+/// line with Matches under many Trails prints one row per Trail, and decoding the line and
+/// indexing its characters for each row made those rows cost rows × line (M3 code review r3,
+/// Fable #1). Each part is computed when a row first needs it.
+pub(crate) struct LineText<'a> {
+    /// The raw line, terminator included.
+    pub bytes: &'a [u8],
+    /// The text, and for a line that is not valid UTF-8 the map from its bytes to the text's.
+    decoded: OnceCell<(Cow<'a, str>, Option<Vec<usize>>)>,
+    chars: OnceCell<usize>,
+    index: OnceCell<Vec<usize>>,
+}
+
+impl<'a> LineText<'a> {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
+        LineText {
+            bytes,
+            decoded: OnceCell::new(),
+            chars: OnceCell::new(),
+            index: OnceCell::new(),
+        }
+    }
+
+    fn raw(&self) -> &'a [u8] {
+        crate::text::strip_terminator(self.bytes)
+    }
+
+    /// Valid UTF-8 is its own text, without the offset map, which costs a word per byte.
+    fn decoded(&self) -> &(Cow<'a, str>, Option<Vec<usize>>) {
+        self.decoded.get_or_init(|| {
+            let raw = self.raw();
+            match std::str::from_utf8(raw) {
+                Ok(text) => (Cow::Borrowed(text), None),
+                Err(_) => {
+                    let (text, map) = crate::text::lossy_with_map(raw);
+                    (Cow::Owned(text), Some(map))
+                }
+            }
+        })
+    }
+
+    /// The text as printed, without its terminator, invalid bytes as U+FFFD.
+    pub(crate) fn text(&self) -> &str {
+        &self.decoded().0
+    }
+
+    /// The characters of `text`.
+    pub(crate) fn width(&self) -> usize {
+        *self.chars.get_or_init(|| match self.index.get() {
+            Some(index) => *index.last().expect("never empty"),
+            None => fragment::char_count(self.text()),
+        })
+    }
+
+    fn index(&self) -> &[usize] {
+        self.index.get_or_init(|| fragment::char_index(self.text()))
+    }
+}
+
 /// Writes the text of one line for tree and flat: whole, as Fragments (one per output line,
 /// each preceded by `prefix`), or ripgrep's omission message with -M.
 /// `bytes` is the raw line; `subs` are byte ranges in it; `avail` is the width left after the
@@ -72,36 +134,51 @@ pub fn write_line(
     avail: usize,
     o: &RenderOptions,
 ) -> std::io::Result<()> {
-    if omitted(bytes, o) {
+    write_line_text(w, prefix, &LineText::new(bytes), subs, is_match, avail, o)
+}
+
+/// `write_line` for a line whose text the rows before may have worked out already.
+pub(crate) fn write_line_text(
+    w: &mut dyn WriteColor,
+    prefix: &dyn Fn(&mut dyn WriteColor) -> std::io::Result<()>,
+    line: &LineText,
+    subs: &[(usize, usize)],
+    is_match: bool,
+    avail: usize,
+    o: &RenderOptions,
+) -> std::io::Result<()> {
+    if omitted(line.bytes, o) {
         prefix(w)?;
         let msg = omission_message(subs.len(), is_match, w.supports_color());
         w.write_all(msg.as_bytes())?;
         return w.write_all(b"\n");
     }
-    let raw = crate::text::strip_terminator(bytes);
-    // Valid UTF-8 is its own text, without the offset map, which costs a word per byte.
-    let (text, subs) = match std::str::from_utf8(raw) {
+    let raw = line.raw();
+    let (text, map) = line.decoded();
+    let subs: Cow<[(usize, usize)]> = match map {
         // The common case: it fits (its bytes are at least as many as its characters, and
         // Fragments start beyond `avail` characters).
-        Ok(text) if raw.len() <= avail => {
+        None if raw.len() <= avail => {
             prefix(w)?;
             style::write_highlighted(w, text, subs)?;
             return w.write_all(b"\n");
         }
-        Ok(text) => (std::borrow::Cow::Borrowed(text), subs.to_vec()),
-        Err(_) => {
-            let (text, map) = crate::text::lossy_with_map(raw);
-            let subs = subs
-                .iter()
+        None => Cow::Borrowed(subs),
+        Some(map) => Cow::Owned(
+            subs.iter()
                 .map(|&(s, e)| (map[s.min(raw.len())], map[e.min(raw.len())]))
-                .collect();
-            (std::borrow::Cow::Owned(text), subs)
-        }
+                .collect(),
+        ),
     };
-    match fragment::fragments(&text, &subs, avail) {
+    let frags = if line.width() <= avail {
+        None
+    } else {
+        fragment::fragments_indexed(text, line.index(), &subs, avail)
+    };
+    match frags {
         None => {
             prefix(w)?;
-            style::write_highlighted(w, &text, &subs)?;
+            style::write_highlighted(w, text, &subs)?;
             w.write_all(b"\n")
         }
         Some(frags) => {
@@ -128,7 +205,8 @@ type Subs = Vec<(usize, usize)>;
 pub(crate) struct Row<'a> {
     pub trail: &'a [Segment],
     pub line_number: u64,
-    pub bytes: &'a [u8],
+    /// The line, shared by the rows of a Match line.
+    pub line: Rc<LineText<'a>>,
     pub subs: Vec<(usize, usize)>,
     pub is_match: bool,
     /// Context is on and this line does not follow the previous one: print `--` first.
@@ -166,6 +244,61 @@ fn subs_of(subs: &[Submatch]) -> Vec<(usize, usize)> {
     subs.iter().map(|s| (s.start, s.end)).collect()
 }
 
+/// A hash of a Trail's Segments, consistent with their equality.
+fn trail_hash(trail: &[Segment]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for s in trail {
+        s.kind.hash(&mut h);
+        s.name.hash(&mut h);
+        s.line.hash(&mut h);
+        s.end_line.hash(&mut h);
+        s.level.hash(&mut h);
+        s.signature.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// The submatches of a line grouped by Trail, the groups in the order their Trails first come.
+/// A submatch under the Trail of the one before joins its group at once; any other finds its
+/// group by the Trail's hash, so a line with a Trail per submatch costs one lookup per
+/// submatch and not one comparison per group (M3 code review r3, Fable #1).
+pub(crate) fn group_by_trail<T>(subs: impl Iterator<Item = (T, (usize, usize))>) -> Vec<(T, Subs)>
+where
+    T: std::ops::Deref<Target = [Segment]>,
+{
+    let mut groups: Vec<(T, Subs)> = Vec::new();
+    let mut by_hash: HashMap<u64, Vec<usize>> = HashMap::new();
+    let mut last = 0;
+    for (t, sub) in subs {
+        let Some(g) = groups.get_mut(last) else {
+            groups.push((t, vec![sub]));
+            continue;
+        };
+        if (g.0.as_ptr() == t.as_ptr() && g.0.len() == t.len()) || *g.0 == *t {
+            g.1.push(sub);
+            continue;
+        }
+        // The index is built once a second Trail comes.
+        if groups.len() == 1 {
+            by_hash.insert(trail_hash(&groups[0].0), vec![0]);
+        }
+        let ids = by_hash.entry(trail_hash(&t)).or_default();
+        match ids.iter().find(|&&g| *groups[g].0 == *t) {
+            Some(&g) => {
+                groups[g].1.push(sub);
+                last = g;
+            }
+            None => {
+                last = groups.len();
+                ids.push(last);
+                groups.push((t, vec![sub]));
+            }
+        }
+    }
+    groups
+}
+
 /// The rows of Match `i`: one per distinct Trail of its submatches, each with only its own
 /// submatches, except when -M omits the line: then one row under its first Trail with every
 /// submatch (design note 5).
@@ -177,24 +310,23 @@ fn match_rows<'a>(
     o: &RenderOptions,
 ) -> Vec<Row<'a>> {
     let bytes = m.bytes(src);
-    let mut groups: Vec<(&'a [Segment], Subs)> = Vec::new();
-    if m.submatches.is_empty() || omitted(bytes, o) {
-        groups.push((trail_of(d, i, 0), subs_of(&m.submatches)));
+    let groups: Vec<(&'a [Segment], Subs)> = if m.submatches.is_empty() || omitted(bytes, o) {
+        vec![(trail_of(d, i, 0), subs_of(&m.submatches))]
     } else {
-        for (k, s) in m.submatches.iter().enumerate() {
-            let t = trail_of(d, i, k);
-            match groups.iter_mut().find(|g| g.0 == t) {
-                Some(g) => g.1.push((s.start, s.end)),
-                None => groups.push((t, vec![(s.start, s.end)])),
-            }
-        }
-    }
+        group_by_trail(
+            m.submatches
+                .iter()
+                .enumerate()
+                .map(|(k, s)| (trail_of(d, i, k), (s.start, s.end))),
+        )
+    };
+    let line = Rc::new(LineText::new(bytes));
     groups
         .into_iter()
         .map(|(trail, subs)| Row {
             trail,
             line_number: m.line_number,
-            bytes,
+            line: line.clone(),
             subs,
             is_match: true,
             gap_before: false,
@@ -252,7 +384,7 @@ impl<'a> Rows<'a> {
                 let row = Row {
                     trail: self.last.unwrap_or(&[]),
                     line_number: c.line_number,
-                    bytes: c.bytes(self.src),
+                    line: Rc::new(LineText::new(c.bytes(self.src))),
                     subs: subs_of(&c.submatches),
                     is_match: false,
                     gap_before,
@@ -607,6 +739,30 @@ pub(crate) mod tests {
             w.into_inner()
         };
         String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn submatches_group_by_trail_in_the_order_their_trails_come() {
+        use super::fixture::seg;
+        let t = |n: &str| vec![seg("row", "row 1", 1, 2), seg("column", n, 1, 2)];
+        let (a, b, c) = (t("a"), t("b"), t("c"));
+        let subs = [
+            (&a, 0),
+            (&b, 1),
+            (&a.clone(), 2),
+            (&c, 3),
+            (&b, 4),
+            (&b.clone(), 5),
+        ];
+        let groups = group_by_trail(subs.iter().map(|(t, k)| (t.as_slice(), (*k, k + 1))));
+        let got: Vec<(&str, Vec<usize>)> = groups
+            .iter()
+            .map(|(t, s)| (t[1].name.as_str(), s.iter().map(|x| x.0).collect()))
+            .collect();
+        assert_eq!(
+            got,
+            [("a", vec![0, 2]), ("b", vec![1, 4, 5]), ("c", vec![3])]
+        );
     }
 
     #[test]

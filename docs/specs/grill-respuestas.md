@@ -247,3 +247,15 @@ is a decision; the agent's measurements are the reasons given at the time.
   ceiling on the release binary (`target/release/sfor`, Linux x86-64) moves from the 20 MB the
   M3 plan set to 23 MB: one or two megabytes more make no real difference. M4's dependencies
   are measured against 23 MB.
+
+---
+
+# Follow-up decision in the Hilo (17/10/2026): Plain files in the Trail layouts
+
+- **Question** (code review m3-code-r2, Codex #4): a Plain file prints `line: text` (`path:line: text`
+  with several files) in `--flat` and `--tree` (spec §6.2), where ripgrep prints `text` (or
+  `path:text`), with no line number unless `-n`. Option A: print Plain files exactly as ripgrep. Option B: keep the uniform layout and
+  document it as a deviation.
+- **Decision**: «La B». Plain files keep the line number and the separator in the Trail layouts, so every file of
+  a search prints the same way; `--no-trail` is the output that is byte-for-byte ripgrep's. The
+  deviation is written in `docs/rg-compat.md`.
