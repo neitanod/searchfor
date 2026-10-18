@@ -172,7 +172,7 @@ impl RunTemp {
             .dir
             .get_or_init(|| {
                 tempfile::Builder::new()
-                    .prefix("sfor-")
+                    .prefix("searchfor-")
                     .tempdir()
                     .map_err(|e| e.to_string())
             })

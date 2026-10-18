@@ -9,7 +9,7 @@
 #     reported, not bounded (D16); s4 must still exit 0 and print every line rg prints.
 # Usage: scripts/bench-m3.sh [CORPUS_DIR]  (generated there when missing; a temporary one by
 # default). Needs hyperfine, jq, awk, GNU stat and /usr/bin/time. SEARCHFOR_BIN replaces the s4
-# under test (SEARCHFOR_BIN=scripts/fake-sfor-exit-2.sh must make it exit 1). The reference is
+# under test (SEARCHFOR_BIN=scripts/fake-s4-exit-2.sh must make it exit 1). The reference is
 # SEARCHFOR_RG, else /usr/bin/rg, which must be ripgrep 14.1.1 (M3 review r1, Codex #8): another rg
 # may come first on PATH.
 set -euo pipefail
@@ -30,7 +30,7 @@ unset RIPGREP_CONFIG_PATH
 threads=$(nproc); [ "$threads" -gt 12 ] && threads=12
 dir="${1:-$iso/corpus}"
 # `none` is split in two, so no file holds it, this script included (M3 code review r1).
-sparse='zqsparse'; none='zzqq-sfor-bench-''absent'; dense='^.'
+sparse='zqsparse'; none='zzqq-searchfor-bench-''absent'; dense='^.'
 fail=0
 
 # gen DIR: small files (every 200th holds the sparse word) and one big file (9–19 MB) per

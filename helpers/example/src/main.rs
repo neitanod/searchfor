@@ -1,4 +1,4 @@
-//! sfor-example-helper: the example Helper Processor (M2 plan, D11). It describes INI files
+//! searchfor-example-helper: the example Helper Processor (M2 plan, D11). It describes INI files
 //! over protocol v1 (spec §4.4): a `[name]` line opens a `section` up to the next section line,
 //! and a `key = value` or `key: value` line is a `key`. Lines starting with `;` or `#` are
 //! comments. Environment variables, read once at start, make it misbehave on purpose for
@@ -313,7 +313,7 @@ fn main() {
         });
     let overtake = std::env::var("SEARCHFOR_EXAMPLE_OVERTAKE").ok();
     let info = Info {
-        name: "sfor-example-helper",
+        name: "searchfor-example-helper",
         version: env!("CARGO_PKG_VERSION"),
     };
     if let Err(e) = serve(std::io::stdin().lock(), std::io::stdout(), info, |_| {
@@ -324,7 +324,7 @@ fn main() {
             overtake,
         })
     }) {
-        eprintln!("sfor-example-helper: {e:#}");
+        eprintln!("searchfor-example-helper: {e:#}");
         std::process::exit(1);
     }
     if std::env::var_os("SEARCHFOR_EXAMPLE_NOEXIT").is_some() {

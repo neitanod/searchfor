@@ -24,7 +24,7 @@ fn lua_params() -> Value {
 
 impl H {
     fn start() -> H {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_sfor-grammar"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_searchfor-grammar"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -90,7 +90,7 @@ fn hello_answers_protocol_one_and_the_helper_name() {
     let r = h.hello(4);
     assert_eq!(r["id"], 0, "{r}");
     assert_eq!(r["protocol"], 1, "{r}");
-    assert_eq!(r["name"], "sfor-grammar-lua", "{r}");
+    assert_eq!(r["name"], "searchfor-grammar-lua", "{r}");
 }
 
 #[test]
@@ -183,7 +183,7 @@ fn another_grammar_is_an_error_naming_both() {
 
 /// 8458: memory does not grow from one file to the next (D23). Linux only. It takes 266 s in
 /// release (each request parses 140 KB), so it runs with the ceilings:
-/// `cargo test --release -p sfor-grammar -- --ignored`.
+/// `cargo test --release -p searchfor-grammar -- --ignored`.
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore]
@@ -282,10 +282,15 @@ fn the_schema_accepts_an_entry_and_refuses_broken_ones() {
         entry(
             "lua",
             "linux-x86_64",
-            "https://example.org/sfor-grammar-lua",
+            "https://example.org/searchfor-grammar-lua",
             &sha,
         ),
-        entry("lua", "macos-aarch64", "file:///tmp/sfor-grammar-lua", &sha),
+        entry(
+            "lua",
+            "macos-aarch64",
+            "file:///tmp/searchfor-grammar-lua",
+            &sha,
+        ),
     ];
     for e in ok {
         let index = wrap(e);
@@ -346,7 +351,7 @@ fn the_build_script_prints_a_valid_index_entry() {
         );
         return;
     }
-    let out = std::env::temp_dir().join(format!("sfor-gh-{}", std::process::id()));
+    let out = std::env::temp_dir().join(format!("searchfor-gh-{}", std::process::id()));
     let o = Command::new("scripts/build-grammar-helper.sh")
         .arg("lua")
         .arg(&out)
@@ -385,7 +390,7 @@ fn the_build_script_prints_a_valid_index_entry() {
         out: BufReader::new(child.stdout.take().unwrap()),
         child,
     };
-    assert_eq!(h.hello(1)["name"], "sfor-grammar-lua");
+    assert_eq!(h.hello(1)["name"], "searchfor-grammar-lua");
     drop(h);
     let _ = std::fs::remove_dir_all(out);
 }

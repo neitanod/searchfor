@@ -5,7 +5,7 @@
 #   - a dense pattern: reported only.
 # Usage: scripts/bench-code.sh [DIR_A [SPARSE_A [DIR_B [SPARSE_B]]]]
 # Needs hyperfine, jq and GNU stat. SEARCHFOR_BIN replaces the s4 under test (to check that a
-# broken one fails the script: SEARCHFOR_BIN=scripts/fake-sfor-exit-2.sh must make it exit 1).
+# broken one fails the script: SEARCHFOR_BIN=scripts/fake-s4-exit-2.sh must make it exit 1).
 set -euo pipefail
 # Decimal points in awk's output, whatever the user's locale.
 export LC_ALL=C
@@ -14,7 +14,7 @@ dir_a="${1:-$registry}"; sparse_a="${2:-impl Drop for}"
 dir_b="${3:-$HOME/robotin/apps}"; sparse_b="${4:-TODO}"
 # Built at run time, so no file holds it, this script included (M3 code review r1): split in
 # two, the corpus ~/robotin/apps never matches it.
-none='zzqq-sfor-bench-''absent'
+none='zzqq-searchfor-bench-''absent'
 cargo build --release --quiet
 s4="${SEARCHFOR_BIN:-./target/release/s4}"
 export SEARCHFOR_BIN_PATH="$s4"
@@ -32,9 +32,9 @@ fail=0
 
 # median NAME CMD_RG CMD_S4 → prints s4/rg and sets RG_S, SEARCHFOR_S (seconds).
 median() {
-  hyperfine --ignore-failure --warmup 3 --runs 20 --export-json "/tmp/sfor-bench-code-$1.json" "$2" "$3" >/dev/null
-  RG_S=$(jq '.results[0].median' "/tmp/sfor-bench-code-$1.json")
-  SEARCHFOR_S=$(jq '.results[1].median' "/tmp/sfor-bench-code-$1.json")
+  hyperfine --ignore-failure --warmup 3 --runs 20 --export-json "/tmp/searchfor-bench-code-$1.json" "$2" "$3" >/dev/null
+  RG_S=$(jq '.results[0].median' "/tmp/searchfor-bench-code-$1.json")
+  SEARCHFOR_S=$(jq '.results[1].median' "/tmp/searchfor-bench-code-$1.json")
   awk -v a="$SEARCHFOR_S" -v b="$RG_S" -v n="$1" 'BEGIN { printf "%-22s rg %.3f s  s4 %.3f s  ratio %.2f\n", n, b, a, a / b }'
 }
 

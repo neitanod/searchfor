@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 /// The example helper, built once per test run.
 fn example_helper() -> PathBuf {
-    common::workspace_bin("sfor-example-helper", "sfor-example-helper", &[])
+    common::workspace_bin("searchfor-example-helper", "searchfor-example-helper", &[])
 }
 
 /// Writes `ini.toml` into the fixture's formats directory: the example helper as an `external`
@@ -431,12 +431,12 @@ fn h08b_a_oneshot_helper_that_exits_before_hello_is_one_warning() {
     assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1);
 }
 
-/// The entries of `dir` named `sfor-*`.
+/// The entries of `dir` named `searchfor-*`.
 fn sfor_dirs(dir: &Path) -> Vec<String> {
     let mut v: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n.starts_with("sfor-"))
+        .filter(|n| n.starts_with("searchfor-"))
         .collect();
     v.sort();
     v
@@ -559,7 +559,7 @@ fn lua_index(dir: &Path, sha256_override: Option<&str>) -> String {
 
 /// `lua_index`, with `params` appended to the `[params]` of its Definition.
 fn lua_index_with(dir: &Path, sha256_override: Option<&str>, params: &str) -> String {
-    let bin = common::workspace_bin("sfor-grammar", "sfor-grammar", &["lua"]);
+    let bin = common::workspace_bin("searchfor-grammar", "searchfor-grammar", &["lua"]);
     let payload = dir.join("payload");
     std::fs::copy(&bin, &payload).unwrap();
     let sum = sha256(&std::fs::read(&payload).unwrap());

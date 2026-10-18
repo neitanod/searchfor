@@ -285,7 +285,7 @@ extensions = ["ini"]
 processor  = "external"
 
 [params]
-command    = ["sfor-example-helper"]
+command    = ["searchfor-example-helper"]
 mode       = "pool"
 ```
 
@@ -307,7 +307,7 @@ aviso más.
 
 [`helpers/example/`](helpers/example) es la implementación de referencia, un helper en Rust
 que describe archivos INI. Con la Definición de arriba en el directorio de formatos y
-`sfor-example-helper` en el `PATH` (`cargo build --release -p sfor-example-helper`), sobre un
+`searchfor-example-helper` en el `PATH` (`cargo build --release -p searchfor-example-helper`), sobre un
 archivo `app.ini` escrito para este ejemplo:
 
 ```

@@ -224,7 +224,7 @@ mod tests {
         let mut i = index(src.path(), b"x", None);
         for url in [
             format!("file://{}", src.path().join("absent").display()),
-            "http://127.0.0.1:9/sfor-grammar-lua".to_string(),
+            "http://127.0.0.1:9/searchfor-grammar-lua".to_string(),
         ] {
             i.grammars[0].binaries.values_mut().next().unwrap().url = url;
             assert!(install(&i, "lua", dir.path()).is_err());

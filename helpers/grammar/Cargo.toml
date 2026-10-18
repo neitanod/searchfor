@@ -1,5 +1,5 @@
 [package]
-name = "sfor-grammar"
+name = "searchfor-grammar"
 version = "0.2.0-dev"
 edition = "2024"
 rust-version = "1.90"

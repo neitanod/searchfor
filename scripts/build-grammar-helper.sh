@@ -14,9 +14,9 @@ arch="$(uname -m)"; [ "$arch" = arm64 ] && arch=aarch64
 system="$os-$arch"
 definition="helpers/grammar/definitions/$lang.toml"
 [ -f "$definition" ] || { echo "no $definition" >&2; exit 2; }
-cargo build --release --quiet -p sfor-grammar --no-default-features --features "$lang"
-file="sfor-grammar-$lang-$system"
-cp target/release/sfor-grammar "$out/$file"
+cargo build --release --quiet -p searchfor-grammar --no-default-features --features "$lang"
+file="searchfor-grammar-$lang-$system"
+cp target/release/searchfor-grammar "$out/$file"
 sha=$( (sha256sum "$out/$file" 2>/dev/null || shasum -a 256 "$out/$file") | cut -d' ' -f1)
 version=$(cargo metadata --format-version 1 --quiet \
   | jq -r --arg l "tree-sitter-$lang" '.packages[] | select(.name == $l) | .version' | head -1)

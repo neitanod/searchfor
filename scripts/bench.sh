@@ -22,17 +22,17 @@ bench() {
   hits=$(rg -l -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR" | wc -l || true)
   echo "== $name: $SEARCHFOR_BENCH_DIR, files: $total, matching: $hits"
   awk -v h="$hits" -v t="$total" 'BEGIN { if (h * 20 >= t) { print "pattern matches 5% or more of the files"; exit 1 } }'
-  hyperfine --ignore-failure --warmup 5 --runs 30 --export-json "/tmp/sfor-bench-$name.json" \
+  hyperfine --ignore-failure --warmup 5 --runs 30 --export-json "/tmp/searchfor-bench-$name.json" \
     'rg --color never -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"' \
     './target/release/s4 --color never --flat -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"'
-  jq -r '.results | "trail mode / rg: \(.[1].median / .[0].median)"' "/tmp/sfor-bench-$name.json"
-  jq -e '.results[1].median / .results[0].median <= 1.5' "/tmp/sfor-bench-$name.json" >/dev/null
+  jq -r '.results | "trail mode / rg: \(.[1].median / .[0].median)"' "/tmp/searchfor-bench-$name.json"
+  jq -e '.results[1].median / .results[0].median <= 1.5' "/tmp/searchfor-bench-$name.json" >/dev/null
   # Hilo 8386: the search itself must be as fast as ripgrep; --no-trail runs only ripgrep's engine.
-  hyperfine --ignore-failure --warmup 5 --runs 30 --export-json "/tmp/sfor-bench-$name-nt.json" \
+  hyperfine --ignore-failure --warmup 5 --runs 30 --export-json "/tmp/searchfor-bench-$name-nt.json" \
     'rg --color never -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"' \
     './target/release/s4 --color never --no-trail -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"'
-  jq -r '.results | "--no-trail / rg: \(.[1].median / .[0].median)"' "/tmp/sfor-bench-$name-nt.json"
-  jq -e '.results[1].median / .results[0].median <= 1.1' "/tmp/sfor-bench-$name-nt.json" >/dev/null
+  jq -r '.results | "--no-trail / rg: \(.[1].median / .[0].median)"' "/tmp/searchfor-bench-$name-nt.json"
+  jq -e '.results[1].median / .results[0].median <= 1.1' "/tmp/searchfor-bench-$name-nt.json" >/dev/null
 }
 
 bench notes "$notes_dir" "$notes_pattern"

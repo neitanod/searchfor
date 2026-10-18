@@ -1,4 +1,4 @@
-//! sfor-grammar: the Grammar Helper template (spec §7, D12). One build carries one Grammar,
+//! searchfor-grammar: the Grammar Helper template (spec §7, D12). One build carries one Grammar,
 //! chosen by a cargo feature, and serves it over protocol v1 with searchfor's own treesitter
 //! code, in concurrent mode.
 use searchfor::helper::protocol::{MatchPos, WireName};
@@ -61,7 +61,7 @@ impl Handler for Grammar {
 
 fn main() {
     let (name, language) = grammar();
-    let helper = format!("sfor-grammar-{name}");
+    let helper = format!("searchfor-grammar-{name}");
     let info = Info {
         name: Box::leak(helper.into_boxed_str()),
         version: env!("CARGO_PKG_VERSION"),

@@ -18,7 +18,7 @@ pub fn index_url() -> String {
 }
 
 pub fn binary_name(lang: &str) -> String {
-    format!("sfor-grammar-{lang}{}", std::env::consts::EXE_SUFFIX)
+    format!("searchfor-grammar-{lang}{}", std::env::consts::EXE_SUFFIX)
 }
 
 /// An installed Grammar Helper.
@@ -125,7 +125,7 @@ mod tests {
     fn the_binary_name_carries_the_platform_suffix() {
         assert_eq!(
             binary_name("lua"),
-            format!("sfor-grammar-lua{}", std::env::consts::EXE_SUFFIX)
+            format!("searchfor-grammar-lua{}", std::env::consts::EXE_SUFFIX)
         );
     }
 }

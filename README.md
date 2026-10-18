@@ -277,7 +277,7 @@ extensions = ["ini"]
 processor  = "external"
 
 [params]
-command    = ["sfor-example-helper"]
+command    = ["searchfor-example-helper"]
 mode       = "pool"
 ```
 
@@ -298,7 +298,7 @@ Format prints as Plain for the rest of the run, with one more warning.
 
 [`helpers/example/`](helpers/example) is the reference implementation, a Rust helper that
 describes INI files. With the Definition above in the formats directory and
-`sfor-example-helper` on the `PATH` (`cargo build --release -p sfor-example-helper`), over a
+`searchfor-example-helper` on the `PATH` (`cargo build --release -p searchfor-example-helper`), over a
 file `app.ini` written for this example:
 
 ```
