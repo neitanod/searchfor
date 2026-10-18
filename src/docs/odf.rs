@@ -283,11 +283,30 @@ pub fn odt(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     Ok(())
 }
 
+/// The `presentation:class` of the placeholders a slide's notes leave out (spec §5.8): the
+/// slide image, its number, the date, the header and the footer (Codex M4 code r2 #4).
+fn left_out_of_notes(attrs: &str) -> bool {
+    matches!(
+        attr(attrs, "class").as_deref(),
+        Some("page" | "page-number" | "date-time" | "header" | "footer")
+    )
+}
+
 pub fn odp(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     let (xml, _) = content(bytes)?;
     let mut flow = Flow::new(HashMap::new());
     let (mut n, mut slide, mut notes) = (0, None, None);
+    // Depth inside a placeholder of the notes that is left out.
+    let mut hidden = 0usize;
     for ev in Pull::new(&xml) {
+        if hidden > 0 {
+            match &ev {
+                Ev::Start { empty: false, .. } => hidden += 1,
+                Ev::End { .. } => hidden -= 1,
+                _ => {}
+            }
+            continue;
+        }
         match &ev {
             Ev::Start {
                 name,
@@ -317,6 +336,11 @@ pub fn odp(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
             } if local(name) == "notes" => {
                 if let Some(s) = notes.take() {
                     b.close(s);
+                }
+            }
+            Ev::Start { attrs, empty, .. } if notes.is_some() && left_out_of_notes(attrs) => {
+                if !empty {
+                    hidden = 1;
                 }
             }
             _ if slide.is_some() => flow.event(&ev, b),
@@ -738,6 +762,22 @@ mod tests {
         assert_eq!(trail(Kind::Odp, &d, "margin"), ["slide 1"]);
         assert_eq!(trail(Kind::Odp, &d, "joke"), ["slide 1", "notes"]);
         assert_eq!(trail(Kind::Odp, &d, "find"), ["slide 2"]);
+    }
+
+    /// Codex M4 code r2 #4: the notes of a slide leave out the placeholders of the slide
+    /// image, its number, the date, the header and the footer (spec §5.8), as PowerPoint's do.
+    #[test]
+    fn odp_notes_leave_out_their_placeholders() {
+        let d = odf_with(
+            "application/vnd.oasis.opendocument.presentation",
+            format!(
+                r#"<office:document-content xmlns:office="{OFFICE}" xmlns:draw="{DRAW}" xmlns:presentation="{PRES}" xmlns:text="{TEXT}"><office:body><office:presentation><draw:page draw:name="p1"><draw:frame><draw:text-box><text:p>slide text</text:p></draw:text-box></draw:frame><presentation:notes><draw:page-thumbnail presentation:class="page" draw:page-number="1"/><draw:frame presentation:class="page"><draw:text-box><text:p>image needle</text:p></draw:text-box></draw:frame><draw:frame presentation:class="header"><draw:text-box><text:p>header needle</text:p></draw:text-box></draw:frame><draw:frame presentation:class="notes"><draw:text-box><text:p>the real needle</text:p></draw:text-box></draw:frame><draw:frame presentation:class="date-time"><draw:text-box><text:p>2026-10-18 needle</text:p></draw:text-box></draw:frame><draw:frame presentation:class="footer"><draw:text-box><text:p>needle footer</text:p></draw:text-box></draw:frame><draw:frame presentation:class="page-number"><draw:text-box><text:p><text:page-number>42</text:page-number></text:p></draw:text-box></draw:frame><draw:frame><draw:text-box><text:p>plain needle</text:p></draw:text-box></draw:frame></presentation:notes></draw:page></office:presentation></office:body></office:document-content>"#
+            ),
+        );
+        let e = extract(Kind::Odp, &d).unwrap();
+        assert_eq!(e.text, b"slide text\nthe real needle\nplain needle\n");
+        assert_eq!(trail(Kind::Odp, &d, "real"), ["slide 1", "notes"]);
+        assert_eq!(trail(Kind::Odp, &d, "plain"), ["slide 1", "notes"]);
     }
 
     #[test]
