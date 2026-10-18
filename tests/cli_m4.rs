@@ -406,6 +406,23 @@ fn m4_08_pre_and_z_as_ripgrep() {
             "m4/pre/a.txt".into(),
         ],
     ];
+    // Values that start with a dash, after a space or `=` (code review r2, Codex #3): the
+    // glob picks only `-x.txt` for the command, and `-cat` is a command that does not start.
+    let dash = fx.path().join("m4/pre-dash");
+    std::fs::create_dir_all(&dash).unwrap();
+    std::fs::write(dash.join("-x.txt"), "dash needle\n").unwrap();
+    std::fs::write(dash.join("y.txt"), "plain needle\n").unwrap();
+    for glob in [["--pre-glob", "-*.txt"], ["--pre-glob=-*.txt", "-i"]] {
+        let mut v: Vec<String> = vec!["--pre".into(), up.clone()];
+        v.extend(glob.map(String::from));
+        v.extend(["--sort", "path", "NEEDLE", "m4/pre-dash"].map(String::from));
+        cases.push(v);
+    }
+    for pre in [&["--pre", "-cat"][..], &["--pre=-cat"]] {
+        let mut v: Vec<String> = pre.iter().map(|a| a.to_string()).collect();
+        v.extend(["needle", "m4/pre/a.txt"].map(String::from));
+        cases.push(v);
+    }
     if have_gzip {
         cases.push(vec!["-z".into(), "needle".into(), "m4/pre/a.txt.gz".into()]);
         cases.push(vec![
