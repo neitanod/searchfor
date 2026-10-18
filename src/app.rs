@@ -665,16 +665,12 @@ impl Ctx<'_> {
             t.regular = rewindable(&fs);
             t
         };
-        let src = match Source::open(&fs, t.explicit) {
-            Ok(s) => s,
-            // The search opens it again and reports the error as ripgrep would.
-            Err(_) => return as_is(t),
-        };
-        if !kind.looks_like(src.as_read()) {
+        // Its first bytes only, which tell its Format; the reader reads the rest (code review
+        // r1, Fable #4). On an error the search opens it again and reports it as ripgrep would.
+        if !kind.looks_like(&head_of(&fs)) {
             return as_is(t);
         }
         // In a child process with limits of its own (M4 plan, D30).
-        drop(src);
         match docs::isolated::extract(kind, &fs, docs::MAX_TEXT) {
             Ok(e) => {
                 if e.cut {
@@ -2248,8 +2244,8 @@ fn empty_trails(fm: &FileMatches) -> Vec<Vec<Trail>> {
         .collect()
 }
 
-/// The first 16 bytes of the file at `p`, enough for every object magic; empty on an error,
-/// which the search reports.
+/// The first 16 bytes of the file at `p`, enough for every object magic and document
+/// signature; empty on an error, which the search reports.
 fn head_of(p: &Path) -> Vec<u8> {
     let mut head = Vec::with_capacity(16);
     let _ = File::open(p).and_then(|f| f.take(16).read_to_end(&mut head));
