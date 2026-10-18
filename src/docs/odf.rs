@@ -249,8 +249,9 @@ impl Flow {
 }
 
 /// The text of `text:s` (its `text:c` spaces, at most 100), `text:tab` and `text:line-break`:
-/// a tab and a line break are written as themselves, and the Builder makes each a space, so a
-/// paragraph or a cell is one line (spec §5.8; Codex M4 code r3 #3).
+/// a tab and a line break are a space each, so a paragraph or a cell is one line (spec §5.8;
+/// Codex M4 code r3 #3), and the white space of the text after them collapses with it (Fable
+/// M4 code r4 #4).
 fn control(local: &str, attrs: &str) -> String {
     match local {
         "s" => {
@@ -259,8 +260,7 @@ fn control(local: &str, attrs: &str) -> String {
                 .unwrap_or(1);
             " ".repeat(n.min(100))
         }
-        "tab" => "\t".into(),
-        _ => "\n".into(),
+        _ => " ".into(),
     }
 }
 
@@ -902,6 +902,19 @@ mod tests {
             ),
         );
         assert_eq!(extract(Kind::Odp, &d).unwrap().text, b"a   b c d e\n");
+    }
+
+    /// Code review r4, Fable #4: the space a `text:tab` or a `text:line-break` is collapses with
+    /// a space right after it, in a text's paragraph and in a spreadsheet's cell.
+    #[test]
+    fn a_tab_or_a_line_break_collapses_with_the_space_after_it() {
+        const P: &str = "<text:p>a<text:tab/> b</text:p><text:p>c<text:line-break/> d</text:p>";
+        let d = odt_of(P, "");
+        assert_eq!(extract(Kind::Odt, &d).unwrap().text, b"a b\nc d\n");
+        let d = ods_of(&format!(
+            r#"<table:table-row><table:table-cell office:value-type="string">{P}</table:table-cell></table:table-row>"#
+        ));
+        assert_eq!(extract(Kind::Ods, &d).unwrap().text, b"a b c d\n");
     }
 
     /// Fable M4 code r3 #1: a cell's comment (`office:annotation`) is not the cell's text, as
