@@ -1454,14 +1454,16 @@ fn documents_extract_within_their_ceilings() {
 }
 
 /// D17: a document whose part decompresses past 256 MiB is refused with a warning, quickly and
-/// within 256 MiB plus rg's memory and 64 MiB, and is then searched as rg searches it.
+/// within 256 MiB plus rg's memory and 64 MiB, and is then searched as rg searches it. The part
+/// is 512 MiB, past that bound: read whole, a part of 300 MiB stayed under it (RSS 304 MiB
+/// without `Zip::bytes`' `take`; M4 plan, Task 13.1, Step 2).
 #[test]
 #[ignore]
 fn a_zip_bomb_is_refused_within_its_limit() {
     let _alone = alone();
     let fx = Fixture::new();
     let mut xml = String::from("<w:document><w:body><w:p><w:r><w:t>");
-    xml.push_str(&" ".repeat(300 << 20));
+    xml.push_str(&" ".repeat(512 << 20));
     xml.push_str("needle</w:t></w:r></w:p></w:body></w:document>");
     let bomb = doc::zip(&[("word/document.xml", xml.into_bytes())], &[]);
     std::fs::write(fx.file("bomb.docx"), &bomb).unwrap();
