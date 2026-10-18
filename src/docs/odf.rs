@@ -95,6 +95,9 @@ struct Flow {
     /// Depth inside elements whose text is not shown (a note's citation, an annotation,
     /// tracked deletions).
     skip: usize,
+    /// Depth inside `draw:frame`s: a text box's headings are lines of the box, never headings
+    /// of the document (Fable M4 code r2 #6).
+    frames: usize,
 }
 
 impl Flow {
@@ -106,6 +109,7 @@ impl Flow {
             count: 0,
             table_seg: None,
             skip: 0,
+            frames: 0,
         }
     }
 
@@ -131,12 +135,16 @@ impl Flow {
                     return;
                 }
                 match (ns, l) {
+                    (Ns::Draw, "frame") if !empty => self.frames += 1,
                     (Ns::Text, "p" | "h") if !empty => {
-                        let level = if l == "h" {
+                        let level = if self.frames > 0 {
+                            None
+                        } else if l == "h" {
+                            // Outside 1–10, the nearest level (Fable M4 code r2 #6).
                             Some(
                                 attr(attrs, "outline-level")
-                                    .and_then(|v| v.parse().ok())
-                                    .unwrap_or(1),
+                                    .and_then(|v| v.trim().parse::<u64>().ok())
+                                    .map_or(1, |v| v.clamp(1, 10) as u8),
                             )
                         } else {
                             attr(attrs, "style-name").and_then(|s| {
@@ -187,6 +195,7 @@ impl Flow {
                     return;
                 }
                 match (ns, local(name)) {
+                    (Ns::Draw, "frame") => self.frames = self.frames.saturating_sub(1),
                     (Ns::Text, "p" | "h") => {
                         let Some(para) = self.paras.pop() else {
                             return;
@@ -778,6 +787,40 @@ mod tests {
         assert_eq!(e.text, b"slide text\nthe real needle\nplain needle\n");
         assert_eq!(trail(Kind::Odp, &d, "real"), ["slide 1", "notes"]);
         assert_eq!(trail(Kind::Odp, &d, "plain"), ["slide 1", "notes"]);
+    }
+
+    /// Fable M4 code r2 #6: a `text:h` level past 1–10 is taken to the nearest one, as for the
+    /// styles, and a heading inside a frame (a text box anchored in a paragraph) is a line of
+    /// that box, not a heading of the document.
+    #[test]
+    fn odt_heading_levels_stay_in_range_and_frames_hold_no_headings() {
+        let d = odt_of(
+            concat!(
+                r#"<text:h text:outline-level="0">Zero</text:h>"#,
+                r#"<text:h text:outline-level="1">One</text:h><text:p>one needle</text:p>"#,
+                r#"<text:h text:outline-level="10">Ten</text:h>"#,
+                r#"<text:h text:outline-level="11">Eleven</text:h><text:p>eleven needle</text:p>"#,
+            ),
+            "",
+        );
+        // Level 0 is 1, so `One` follows `Zero` instead of falling under it; 11 is 10.
+        assert_eq!(trail(Kind::Odt, &d, "one needle"), ["One"]);
+        assert_eq!(trail(Kind::Odt, &d, "eleven needle"), ["One", "Eleven"]);
+        let d = odt_of(
+            concat!(
+                r#"<text:h text:outline-level="1">H1</text:h>"#,
+                r#"<text:p>anchor<draw:frame><draw:text-box><text:h text:outline-level="2">Box heading</text:h><text:p>box needle</text:p></draw:text-box></draw:frame></text:p>"#,
+                r#"<text:p>after needle</text:p>"#,
+            ),
+            "",
+        );
+        let e = extract(Kind::Odt, &d).unwrap();
+        assert_eq!(
+            e.text,
+            b"H1\nanchor\nBox heading\nbox needle\nafter needle\n"
+        );
+        assert_eq!(trail(Kind::Odt, &d, "after needle"), ["H1"]);
+        assert_eq!(trail(Kind::Odt, &d, "box needle"), ["H1"]);
     }
 
     #[test]
