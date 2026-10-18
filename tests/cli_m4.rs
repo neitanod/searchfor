@@ -1058,37 +1058,54 @@ fn m4_19_a_signal_to_sfor_ends_its_readers() {
     }
 }
 
-/// Fable r5 #1: a reader's own time limit holds for each document, never for its life: with
-/// it lowered to 1 s (`SEARCHFOR_READER_SECONDS`), one reader (`-j1`) reads 24 workbooks that take
-/// less each and more together. Fable r6 #4: each takes about an eighth of the limit here,
-/// so a slower or busier machine keeps a margin, and three limits together, so a faster one
-/// still passes the limit over the reader's life.
+/// Fable r5 #1: a reader's own time limit holds for each document, never for its life: one
+/// reader (`-j1`) reads workbooks that take less than the limit each and more together.
+/// Fable r1 #8 (M4 code): the limit (`SEARCHFOR_READER_SECONDS`) is six times what one
+/// workbook takes on this machine now, so a busy machine keeps its margin, and the workbooks
+/// double until together they take longer than it, so a fast one still passes it.
 #[test]
 fn m4_20_the_readers_time_limit_is_per_document() {
-    const BOOKS: usize = 24;
     let fx = fixture();
     let row: &[&str] = &["needle in a sheet"];
     let rows: Vec<&[&str]> = vec![row; 3_500];
     let book = doc::xlsx(&[("S", &rows)]);
-    let mut args = ["--docs", "-j1", "-c", "--sort", "path", "needle"]
-        .map(String::from)
-        .to_vec();
-    let mut expected = String::new();
-    for i in 0..BOOKS {
-        let p = format!("m4/w{i:02}.xlsx");
-        std::fs::write(fx.path().join(&p), &book).unwrap();
-        expected.push_str(&format!("{p}:3500\n"));
-        args.push(p);
-    }
+    let path = |i: usize| format!("m4/w{i:03}.xlsx");
+    std::fs::write(fx.path().join(path(0)), &book).unwrap();
     let started = std::time::Instant::now();
-    let o = run(fx.s4(&args).env("SEARCHFOR_READER_SECONDS", "1"));
-    let took = started.elapsed();
-    eprintln!(
-        "{BOOKS} workbooks in {took:?}, {:?} each, against a limit of 1 s",
-        took / BOOKS as u32
-    );
-    assert_eq!(stderr(&o), "");
-    assert_eq!(stdout(&o), expected);
+    let o = run(&mut fx.s4(["--docs", "-c", "needle", &path(0)]));
+    let one = started.elapsed();
+    assert_eq!((stdout(&o), stderr(&o)), ("3500\n".into(), String::new()));
+    let limit = std::time::Duration::from_secs((one.as_secs_f64() * 6.0).ceil().max(1.0) as u64);
+    let mut books = 24;
+    loop {
+        let mut args = ["--docs", "-j1", "-c", "--sort", "path", "needle"]
+            .map(String::from)
+            .to_vec();
+        let mut expected = String::new();
+        for i in 0..books {
+            let p = path(i);
+            std::fs::write(fx.path().join(&p), &book).unwrap();
+            expected.push_str(&format!("{p}:3500\n"));
+            args.push(p);
+        }
+        let started = std::time::Instant::now();
+        let o = run(fx
+            .s4(&args)
+            .env("SEARCHFOR_READER_SECONDS", limit.as_secs().to_string()));
+        let took = started.elapsed();
+        eprintln!(
+            "{books} workbooks in {took:?}, {:?} each, one alone in {one:?}, against a limit of \
+             {limit:?}",
+            took / books as u32
+        );
+        assert_eq!(stderr(&o), "");
+        assert_eq!(stdout(&o), expected);
+        if took > limit {
+            break;
+        }
+        assert!(books < 400, "{books} workbooks took less than {limit:?}");
+        books *= 2;
+    }
 }
 
 /// Codex r6 #2: the reader's own limit ends the document that passes it, counted from that
