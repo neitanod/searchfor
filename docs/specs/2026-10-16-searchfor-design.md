@@ -813,7 +813,8 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
     table's `CREATE TABLE`, in that order (a `WITHOUT ROWID` table stores its key's columns
     first; they print in their place). Values print as the `sqlite3` shell shows them: an `INTEGER PRIMARY
     KEY` is the rowid, an integral value of a REAL column `3.0`, NULL empty, a blob
-    `[blob N bytes]`, a `VIRTUAL` generated column (not stored) empty; UTF-16 databases are
+    `[blob N bytes]`, a `VIRTUAL` generated column (not stored) empty, a column added by
+    `ALTER TABLE ADD COLUMN` its `DEFAULT` in the rows written before; UTF-16 databases are
     transcoded. Indexes, views and triggers are not read,
     nor a `-wal` file beside the database, so changes not yet checkpointed into it are not found
     (D15, D16).
