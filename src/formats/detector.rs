@@ -1,6 +1,7 @@
 //! The Detector (spec §4.1): override, exact name, extension, magic bytes, shebang.
 use super::{Registry, definition::FormatDefinition};
 use globset::{Glob, GlobMatcher};
+use std::collections::HashSet;
 use std::path::Path;
 
 enum Override {
@@ -11,6 +12,13 @@ enum Override {
 pub struct Detector<'r> {
     registry: &'r Registry,
     overrides: Vec<Override>,
+    /// `--docs`: without it the document Formats (`processor = "docs"`) are never detected,
+    /// so their files are Plain, as ripgrep reads them (spec §5.8).
+    docs: bool,
+    /// With `--docs`, the exact names and the extensions (lowercase) the document Formats
+    /// claim (`may_be_document`).
+    doc_names: HashSet<String>,
+    doc_extensions: HashSet<String>,
 }
 
 impl<'r> Detector<'r> {
@@ -33,7 +41,57 @@ impl<'r> Detector<'r> {
         Ok(Self {
             registry,
             overrides,
+            docs: false,
+            doc_names: HashSet::new(),
+            doc_extensions: HashSet::new(),
         })
+    }
+
+    /// Detects the document Formats too (`--docs`).
+    pub fn with_docs(mut self, on: bool) -> Self {
+        self.docs = on;
+        if on {
+            for d in self.registry.all().iter().filter(|d| d.processor == "docs") {
+                self.doc_names.extend(d.names.iter().cloned());
+                self.doc_extensions
+                    .extend(d.extensions.iter().map(|e| e.to_ascii_lowercase()));
+            }
+        }
+        self
+    }
+
+    /// False when `path` cannot be a document, which a set lookup tells for most files, before
+    /// `detect` walks every Definition: --docs asks it of every file (M4 plan r1, Fable #5).
+    /// True with an override, for a name without an extension (its first bytes decide), and
+    /// for a name or extension a document Format claims.
+    pub fn may_be_document(&self, path: &Path) -> bool {
+        if !self.docs {
+            return false;
+        }
+        let (Some(name), Some(ext)) = (
+            path.file_name().and_then(|n| n.to_str()),
+            path.extension().and_then(|e| e.to_str()),
+        ) else {
+            return true;
+        };
+        !self.overrides.is_empty()
+            || self.doc_names.contains(name)
+            || self.doc_extensions.contains(&ext.to_ascii_lowercase())
+    }
+
+    /// Whether `d` takes part in detection: a document Format only with `--docs`.
+    fn active(&self, d: &FormatDefinition) -> bool {
+        self.docs || d.processor != "docs"
+    }
+
+    /// The object Format whose magic bytes start `head`, whatever the file's name: binaries are
+    /// often named without a telling extension (`libc.so.6`, `ls`), so for a binary file with a
+    /// Match the magic decides (spec §4.1, M4 plan D5).
+    pub fn object(&self, head: &[u8]) -> Option<&'r FormatDefinition> {
+        self.registry
+            .all()
+            .iter()
+            .find(|d| d.processor == "object" && d.magic_at(head))
     }
 
     /// `detect` before reading the file: Some when the path alone decides (an override, an
@@ -51,7 +109,7 @@ impl<'r> Detector<'r> {
             .registry
             .all()
             .iter()
-            .any(|d| !d.magic_bytes().is_empty() || !d.shebangs.is_empty());
+            .any(|d| self.active(d) && (!d.magic.is_empty() || !d.shebangs.is_empty()));
         (!by_content).then_some(None)
     }
 
@@ -69,14 +127,16 @@ impl<'r> Detector<'r> {
         }
         // A file name that is not UTF-8 skips the name and extension signals only.
         if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
-            && let Some(d) = defs.iter().find(|d| d.names.iter().any(|n| n == file_name))
+            && let Some(d) = defs
+                .iter()
+                .find(|d| self.active(d) && d.names.iter().any(|n| n == file_name))
         {
             return Some(d);
         }
         if let Some(ext) = path.extension().and_then(|e| e.to_str())
-            && let Some(d) = defs
-                .iter()
-                .find(|d| d.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)))
+            && let Some(d) = defs.iter().find(|d| {
+                self.active(d) && d.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext))
+            })
         {
             return Some(d);
         }
@@ -84,11 +144,7 @@ impl<'r> Detector<'r> {
         if path.extension().is_some() {
             return None;
         }
-        if let Some(d) = defs.iter().find(|d| {
-            d.magic_bytes()
-                .iter()
-                .any(|(off, bytes)| head.get(*off..off + bytes.len()) == Some(bytes.as_slice()))
-        }) {
+        if let Some(d) = defs.iter().find(|d| self.active(d) && d.magic_at(head)) {
             return Some(d);
         }
         let interp = shebang_interpreter(head)?;
@@ -115,11 +171,35 @@ fn shebang_interpreter(head: &[u8]) -> Option<&str> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn only_some_names_may_be_documents() {
+        let r = registry();
+        let d = Detector::new(&r, &[]).unwrap().with_docs(true);
+        let p = Path::new;
+        for (path, may) in [
+            ("a.txt", false),
+            ("src/main.rs", false),
+            ("r.pdf", true),
+            ("R.PDF", true),
+            ("app.db", true),
+            ("Makefile", true),
+            ("bin/ls", true),
+        ] {
+            assert_eq!(d.may_be_document(p(path)), may, "{path}");
+        }
+        assert!(!Detector::new(&r, &[]).unwrap().may_be_document(p("r.pdf")));
+        let forced = Detector::new(&r, &["*.txt=pdf".into()])
+            .unwrap()
+            .with_docs(true);
+        assert!(forced.may_be_document(p("a.txt")));
+    }
+
     fn known(p: &str) -> bool {
         crate::processors::Processors::known(p)
     }
 
-    /// The built-ins plus `bashy` (shebang), `elfy` (magic) and `makey` (exact name).
+    /// The built-ins plus `bashy` (shebang), `myfy` (magic) and `makey` (exact name). `myfy`'s
+    /// magic is not ELF's, which the built-in `elf` claims since M4.
     fn registry() -> Registry {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -128,8 +208,8 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            d.path().join("elfy.toml"),
-            "name='elfy'\nmagic=[{hex='7f454c46'}]\nprocessor='markdown'",
+            d.path().join("myfy.toml"),
+            "name='myfy'\nmagic=[{hex='7f4d5946'}]\nprocessor='markdown'",
         )
         .unwrap();
         std::fs::write(
@@ -155,8 +235,8 @@ mod tests {
             "makey"
         );
         assert_eq!(
-            det.detect(Path::new("prog"), b"\x7fELF\x02").unwrap().name,
-            "elfy"
+            det.detect(Path::new("prog"), b"\x7fMYF\x02").unwrap().name,
+            "myfy"
         );
         assert_eq!(
             det.detect(Path::new("run"), b"#!/usr/bin/env -S fish -e\n")
@@ -174,7 +254,7 @@ mod tests {
         let name = |p: &str| det.detect_by_path(Path::new(p)).map(|d| d.map(|d| &d.name));
         assert_eq!(name("a.md"), Some(Some(&"markdown".to_string())));
         assert_eq!(name("Makefile"), Some(Some(&"makey".to_string())));
-        // elfy (magic) and bashy (shebang) need the first bytes of a name without extension.
+        // myfy (magic) and bashy (shebang) need the first bytes of a name without extension.
         assert_eq!(name("data"), None);
         let (builtin, _) = Registry::load(None, &known);
         let det = Detector::new(&builtin, &[]).unwrap();
@@ -198,12 +278,12 @@ mod tests {
             det.detect(Path::new("run.txt"), b"#!/usr/bin/env fish\n")
                 .is_none()
         );
-        assert!(det.detect(Path::new("prog.bin"), b"\x7fELF\x02").is_none());
+        assert!(det.detect(Path::new("prog.bin"), b"\x7fMYF\x02").is_none());
         assert_eq!(
-            det.detect(Path::new(".bashrc_like"), b"\x7fELF")
+            det.detect(Path::new(".bashrc_like"), b"\x7fMYF")
                 .unwrap()
                 .name,
-            "elfy"
+            "myfy"
         );
         // So a file with an unclaimed extension is Plain from its path alone.
         assert_eq!(det.detect_by_path(Path::new("data.txt")), Some(None));
@@ -216,11 +296,11 @@ mod tests {
         let det = Detector::new(&reg, &[]).unwrap();
         // Exact name beats extension, extension beats magic, magic beats shebang.
         assert_eq!(
-            det.detect(Path::new("Makefile"), b"\x7fELF").unwrap().name,
+            det.detect(Path::new("Makefile"), b"\x7fMYF").unwrap().name,
             "makey"
         );
         assert_eq!(
-            det.detect(Path::new("x.md"), b"\x7fELF").unwrap().name,
+            det.detect(Path::new("x.md"), b"\x7fMYF").unwrap().name,
             "markdown"
         );
         assert_eq!(
@@ -250,7 +330,7 @@ mod tests {
         let det = Detector::new(&reg, &["makey".into()]).unwrap();
         assert_eq!(det.detect(Path::new("x.md"), b"").unwrap().name, "makey");
         assert_eq!(
-            det.detect(Path::new("data.bin"), b"\x7fELF").unwrap().name,
+            det.detect(Path::new("data.bin"), b"\x7fMYF").unwrap().name,
             "makey"
         );
     }
@@ -263,8 +343,8 @@ mod tests {
         let det = Detector::new(&reg, &[]).unwrap();
         let name = std::ffi::OsStr::from_bytes(b"\xff\xfe");
         assert_eq!(
-            det.detect(Path::new(name), b"\x7fELF").unwrap().name,
-            "elfy"
+            det.detect(Path::new(name), b"\x7fMYF").unwrap().name,
+            "myfy"
         );
         assert_eq!(
             det.detect(Path::new(name), b"#!/usr/bin/fish\n")

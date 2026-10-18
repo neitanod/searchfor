@@ -1,0 +1,7 @@
+# formats/pptx.toml — PowerPoint presentations: `slide 3 › notes` with --docs (spec §5.8).
+name       = "pptx"
+extensions = ["pptx", "pptm", "potx", "potm", "ppsx", "ppsm"]
+processor  = "docs"
+
+[params]
+extractor = "pptx"

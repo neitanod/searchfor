@@ -181,8 +181,9 @@ fn m2_07_list_and_export_the_new_formats() {
     );
     assert_eq!(
         std::fs::read_dir(&target).unwrap().count(),
-        // Markdown, M2's Formats, and M3's html, xml, csv, tsv, srt and vtt.
-        1 + FORMATS.len() + 6
+        // Markdown, M2's Formats, M3's html, xml, csv, tsv, srt and vtt, and M4's elf, pe,
+        // macho and nine document Formats.
+        1 + FORMATS.len() + 6 + 12
     );
 }
 

@@ -1,0 +1,6 @@
+# formats/elf.toml — ELF object files (spec §5.7): `ELF x86-64 › .rodata › main.version+0x10`.
+# An object Format is told by its magic in every binary file with a Match, whatever its name
+# (`libc.so.6`, `/bin/ls`): spec §4.1, M4 plan D5.
+name      = "elf"
+magic     = [{ hex = "7f454c46" }]
+processor = "object"

@@ -70,18 +70,20 @@ impl FormatDefinition {
         Ok(d)
     }
 
-    /// Each magic entry as (offset, bytes). `parse` has already checked the hex strings.
-    pub fn magic_bytes(&self) -> Vec<(usize, Vec<u8>)> {
-        self.magic
-            .iter()
-            .map(|m| {
-                let bytes = (0..m.hex.len())
-                    .step_by(2)
-                    .map(|i| u8::from_str_radix(&m.hex[i..i + 2], 16).unwrap())
-                    .collect();
-                (m.offset, bytes)
-            })
-            .collect()
+    /// True when the bytes of one magic entry are at its offset in `head`. Compared as they
+    /// are read, so a file's detection allocates nothing (M4 plan r1, Fable #5: --docs looks
+    /// at the first bytes of every file named without an extension).
+    pub fn magic_at(&self, head: &[u8]) -> bool {
+        self.magic.iter().any(|m| {
+            let hex = m.hex.as_bytes();
+            let want = (0..hex.len() / 2).map(|i| {
+                std::str::from_utf8(&hex[2 * i..2 * i + 2])
+                    .ok()
+                    .and_then(|h| u8::from_str_radix(h, 16).ok())
+            });
+            head.get(m.offset..m.offset + hex.len() / 2)
+                .is_some_and(|got| got.iter().zip(want).all(|(b, w)| w == Some(*b)))
+        })
     }
 }
 
@@ -126,6 +128,8 @@ mod tests {
             known,
         )
         .unwrap();
-        assert_eq!(d.magic_bytes(), vec![(0, vec![0x7f, b'E', b'L', b'F'])]);
+        assert!(d.magic_at(b"\x7fELF\x02"));
+        assert!(!d.magic_at(b"\x7fEL"));
+        assert!(!d.magic_at(b"\x7fELG"));
     }
 }

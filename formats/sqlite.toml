@@ -1,0 +1,8 @@
+# formats/sqlite.toml — SQLite databases with --docs (spec §5.8): `users › row 12 › email`.
+name       = "sqlite"
+extensions = ["sqlite", "sqlite3", "db", "db3", "s3db", "sl3"]
+magic      = [{ hex = "53514c69746520666f726d6174203300" }]
+processor  = "docs"
+
+[params]
+extractor = "sqlite"
