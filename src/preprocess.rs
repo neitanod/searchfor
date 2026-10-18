@@ -3,7 +3,9 @@
 //! takes from it with `--docs`. `--pre` and `-z` behave as in ripgrep 14.1.1 (crates/core/
 //! search.rs): `--pre` first, when its globs allow it, then `-z`; stdin is never transformed.
 //! `--docs` comes last, so a file `--pre` or `-z` takes is never extracted (M4 plan, D21).
-use grep_cli::{CommandReader, CommandReaderBuilder, DecompressionReaderBuilder};
+use grep_cli::{
+    CommandReader, CommandReaderBuilder, DecompressionReader, DecompressionReaderBuilder,
+};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -75,7 +77,7 @@ impl Preprocess {
     /// The reader of a file `through` says to transform (`Pre` or `Zip`). Its errors are
     /// ripgrep's: `preprocessor command could not start: '<command>': <error>` and, while it is
     /// read, `preprocessor command failed: '<command>': <error and stderr>`.
-    pub fn open(&self, how: &Through, path: &Path) -> std::io::Result<Box<dyn Read + Send>> {
+    pub fn open(&self, how: &Through, path: &Path) -> std::io::Result<Transformed> {
         match how {
             Through::Pre => {
                 let bin = self.pre.as_deref().expect("Through::Pre needs --pre");
@@ -88,32 +90,69 @@ impl Preprocess {
                         "preprocessor command could not start: '{shown}': {e}"
                     ))
                 })?;
-                Ok(Box::new(PreReader {
-                    inner: reader,
-                    cmd: shown,
-                }))
+                Ok(Transformed {
+                    inner: Inner::Pre(reader),
+                    cmd: Some(shown),
+                })
             }
             Through::Zip => {
                 let z = self.zip.as_ref().expect("Through::Zip needs -z");
-                Ok(Box::new(z.build(path).map_err(std::io::Error::from)?))
+                Ok(Transformed {
+                    inner: Inner::Zip(z.build(path).map_err(std::io::Error::from)?),
+                    cmd: None,
+                })
             }
             Through::Docs(..) => unreachable!("documents are extracted, not read"),
         }
     }
 }
 
-/// `--pre`'s output, whose errors name the command (the stderr of a command that fails comes
-/// at the end of its output, when `CommandReader` closes it).
-struct PreReader {
-    inner: CommandReader,
-    cmd: String,
+/// The output of `--pre` or of a decompressor. A command's failure comes when its output is
+/// closed: at its end, as an error of the read that reaches it, or from `close`, which the
+/// search calls after it stops, as ripgrep 14.1.1 (crates/core/search.rs, `search_preprocessor`
+/// and `search_decompress`; code review r1, Codex #2).
+pub struct Transformed {
+    inner: Inner,
+    /// `--pre`'s command as its errors name it while it is read; None for a decompressor, whose
+    /// errors rg gives as they are, and once the search is done (`rest`).
+    cmd: Option<String>,
 }
 
-impl Read for PreReader {
+enum Inner {
+    Pre(CommandReader),
+    Zip(DecompressionReader),
+}
+
+impl Transformed {
+    /// Waits for the command, and returns its failure, as ripgrep's `close`: its stderr, without
+    /// naming the command. A command whose output was not read to its end and that wrote
+    /// nothing on stderr succeeded (grep-cli's rule for the broken pipe it was given).
+    pub fn close(&mut self) -> std::io::Result<()> {
+        match &mut self.inner {
+            Inner::Pre(r) => r.close(),
+            Inner::Zip(r) => r.close(),
+        }
+    }
+
+    /// From now on, what is read is past the search, which ripgrep would have closed here: a
+    /// failure at its end is `close`'s, without naming the command.
+    pub fn rest(&mut self) {
+        self.cmd = None;
+    }
+}
+
+impl Read for Transformed {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.inner.read(buf).map_err(|e| {
-            std::io::Error::other(format!("preprocessor command failed: '{}': {e}", self.cmd))
-        })
+        let r = match &mut self.inner {
+            Inner::Pre(r) => r.read(buf),
+            Inner::Zip(r) => r.read(buf),
+        };
+        match &self.cmd {
+            Some(cmd) => r.map_err(|e| {
+                std::io::Error::other(format!("preprocessor command failed: '{cmd}': {e}"))
+            }),
+            None => r,
+        }
     }
 }
 
@@ -168,7 +207,7 @@ mod tests {
     /// `--pre`'s reader of `file`. Another test thread that forks while a script is open for
     /// writing keeps it busy (ETXTBSY) until its child execs: that alone is tried again.
     #[cfg(unix)]
-    fn open_busy(p: &Preprocess, file: &Path) -> Box<dyn Read + Send> {
+    fn open_busy(p: &Preprocess, file: &Path) -> Transformed {
         for _ in 0..50 {
             match p.open(&Through::Pre, file) {
                 Err(e) if e.to_string().contains("os error 26") => {
@@ -221,5 +260,28 @@ mod tests {
         assert!(e.starts_with(&shown), "{e}");
         assert!(e.contains("boom"), "{e}");
         assert_eq!(out, b"out\n");
+    }
+
+    /// A command read only in part, as by `-q` or `-m`, fails at `close`, with its stderr and
+    /// without naming the command, as ripgrep's close (code review r1, Codex #2).
+    #[cfg(unix)]
+    #[test]
+    fn closing_a_command_read_in_part_gives_its_failure() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("a.txt");
+        std::fs::write(&f, "abc\n").unwrap();
+        let script = script(d.path(), "late.sh", "cat \"$1\"\necho boom >&2\nexit 3");
+        let p = pre(&["--pre", script.to_str().unwrap()]);
+        let mut r = open_busy(&p, &f);
+        let mut first = [0u8; 2];
+        r.read_exact(&mut first).unwrap();
+        let e = r.close().unwrap_err().to_string();
+        assert!(e.contains("boom"), "{e}");
+        assert!(!e.contains("preprocessor command failed"), "{e}");
+        // Read past the search (`rest`), its end fails the same way.
+        let mut r = open_busy(&p, &f);
+        r.rest();
+        let e = r.read_to_end(&mut Vec::new()).unwrap_err().to_string();
+        assert!(e.contains("boom") && !e.contains("preprocessor"), "{e}");
     }
 }

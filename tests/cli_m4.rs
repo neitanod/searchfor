@@ -1290,3 +1290,139 @@ fn m4_23_a_reader_refused_memory_it_went_on_without_warns() {
     let o = run(&mut fx.s4(["--docs", "-c", "AAAAAAAA", "m4/long.pdf"]));
     assert_eq!((stdout(&o), stderr(&o)), ("1\n".to_string(), String::new()));
 }
+
+/// Code review r1, Codex #2 and #3: a `--pre` command that prints its output and then fails is
+/// an error, exit 2, also where the search stops before the end of its output (-q, -m, -l); the
+/// lines it found before are printed as rg 14.1.1 prints them: with one thread, as they come,
+/// and with more, never (rg drops the file's buffer). The Trail layouts print them too.
+#[cfg(unix)]
+#[test]
+fn m4_25_a_command_that_fails_late_is_an_error_after_its_lines() {
+    use std::os::unix::fs::PermissionsExt;
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = fixture();
+    let d = fx.path().join("m4/late");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("a.txt"), "needle one\nother\n").unwrap();
+    std::fs::write(d.join("b.txt"), "needle two\n").unwrap();
+    let late = d.join("late.sh");
+    std::fs::write(&late, "#!/bin/sh\ncat \"$1\"\necho boom >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&late, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let late = late.to_string_lossy().into_owned();
+    let pre = |rest: &[&str]| -> Vec<String> {
+        ["--pre", late.as_str()]
+            .iter()
+            .chain(rest)
+            .map(|s| s.to_string())
+            .collect()
+    };
+    let a = "m4/late/a.txt";
+    let b = "m4/late/b.txt";
+    for args in [
+        pre(&["needle", a]),
+        pre(&["-q", "needle", a]),
+        pre(&["-m1", "needle", a]),
+        pre(&["-c", "needle", a]),
+        pre(&["-l", "needle", a]),
+        pre(&["-v", "needle", a]),
+        pre(&["--json", "needle", a]),
+        pre(&["-m1", "--json", "needle", a]),
+        pre(&["-j1", "needle", a, b]),
+        pre(&["-q", "-j1", "needle", a, b]),
+        pre(&["-l", "-j1", "needle", a, b]),
+    ] {
+        let s = run(&mut fx.s4(args.iter().map(String::as_str).chain(["--no-trail"])));
+        let r = run(&mut fx.rg(&args));
+        let json = args.contains(&"--json".to_string());
+        let mask = |o: &std::process::Output| match json {
+            true => common::mask_json_times(&stdout(o)),
+            false => stdout(o),
+        };
+        assert_eq!(mask(&s), mask(&r), "{args:?}");
+        assert_eq!(code(&s), 2, "{args:?}");
+        assert_eq!(code(&s), code(&r), "{args:?}");
+        assert_eq!(stderr(&s).replace("s4: ", "rg: "), stderr(&r), "{args:?}");
+    }
+    // With threads rg prints nothing of a file whose search failed; its two errors come in
+    // either order.
+    let args = pre(&["-j4", "needle", a, b]);
+    let s = run(&mut fx.s4(args.iter().map(String::as_str).chain(["--no-trail"])));
+    let r = run(&mut fx.rg(&args));
+    assert_eq!((stdout(&s), code(&s)), (stdout(&r), code(&r)), "{args:?}");
+    assert_eq!(stdout(&s), "");
+    assert_eq!(stderr(&s).matches("boom").count(), 2, "{}", stderr(&s));
+    // The Trail layouts: the rows found, then the error.
+    let err = |path: &str, prefixed: bool| {
+        let cmd = if prefixed {
+            format!("preprocessor command failed: '\"{late}\" \"{path}\"': ")
+        } else {
+            String::new()
+        };
+        format!("s4: {path}: {cmd}\n{0}\nboom\n{0}\n", "-".repeat(79))
+    };
+    for (args, out, prefixed) in [
+        (pre(&["--flat", "needle", a]), "1: needle one\n", true),
+        (
+            pre(&["--flat", "-m1", "needle", a]),
+            "1: needle one\n",
+            false,
+        ),
+        (
+            pre(&["--flat", "-j1", "needle", a, b]),
+            "m4/late/a.txt:1: needle one\nm4/late/b.txt:1: needle two\n",
+            true,
+        ),
+        (pre(&["--flat", "-j4", "needle", a, b]), "", true),
+    ] {
+        let s = run(&mut fx.s4(&args));
+        assert_eq!(stdout(&s), out, "{args:?}");
+        assert_eq!(code(&s), 2, "{args:?}");
+        if args.contains(&"-j4".to_string()) {
+            assert_eq!(stderr(&s).matches("boom").count(), 2, "{}", stderr(&s));
+        } else if args.contains(&"-j1".to_string()) {
+            assert_eq!(stderr(&s), err(a, prefixed) + &err(b, prefixed), "{args:?}");
+        } else {
+            assert_eq!(stderr(&s), err(a, prefixed), "{args:?}");
+        }
+    }
+    // --json: the file's begin and match, without its end, and nothing in the summary, as rg.
+    let s = run(&mut fx.s4(pre(&["--json", "needle", a])));
+    assert_eq!(code(&s), 2);
+    assert_eq!(stderr(&s), err(a, true));
+    let types: Vec<String> = stdout(&s)
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["type"].to_string())
+        .collect();
+    assert_eq!(types, ["\"begin\"", "\"match\"", "\"summary\""]);
+    let summary: serde_json::Value =
+        serde_json::from_str(stdout(&s).lines().last().unwrap()).unwrap();
+    assert_eq!(summary["data"]["stats"]["matches"], 0);
+    assert_eq!(summary["data"]["stats"]["searches"], 0);
+    // A truncated gzip file: its decompressor fails after the lines it gave.
+    let text: String = (0..50_000).map(|i| format!("needle {i}\n")).collect();
+    std::fs::write(d.join("big.txt"), text).unwrap();
+    let zipped = std::process::Command::new("gzip")
+        .arg("-k")
+        .arg(d.join("big.txt"))
+        .status();
+    if !zipped.is_ok_and(|s| s.success()) {
+        return;
+    }
+    let gz = std::fs::read(d.join("big.txt.gz")).unwrap();
+    std::fs::write(d.join("cut.gz"), &gz[..gz.len() / 2]).unwrap();
+    let args = ["-z", "needle", "m4/late/cut.gz"];
+    let s = run(&mut fx.s4(args.iter().chain(&["--no-trail"])));
+    let r = run(&mut fx.rg(args));
+    assert_eq!(code(&r), 2);
+    assert!(stdout(&r).lines().count() > 1000);
+    assert_eq!((stdout(&s), code(&s)), (stdout(&r), code(&r)));
+    assert_eq!(stderr(&s).replace("s4: ", "rg: "), stderr(&r));
+    let s = run(&mut fx.s4(args.iter().chain(&["--flat"])));
+    assert_eq!(stdout(&s).lines().count(), stdout(&r).lines().count());
+    assert_eq!(
+        (code(&s), stderr(&s).replace("s4: ", "rg: ")),
+        (2, stderr(&r))
+    );
+}
