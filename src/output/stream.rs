@@ -4,7 +4,7 @@
 //! open a group wait for the Match after them. Prints exactly what the printers print from a
 //! Described file.
 use super::json::{JsonFile, JsonOptions, RunStats};
-use super::{Layout, RenderOptions, Row, flat, tree};
+use super::{Layout, LineText, RenderOptions, Row, flat, tree};
 use crate::model::{FileStats, Line, Segment, Submatch};
 use crate::search::{MaxCount, context_submatches, match_submatches};
 use crate::trail::{Outline, TrailCursor};
@@ -154,7 +154,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             let row = Row {
                 trail: &trail,
                 line_number: p.line.line_number,
-                bytes: p.line.bytes(src),
+                line: Rc::new(LineText::new(p.line.bytes(src))),
                 subs,
                 is_match: false,
                 gap_before: p.gap_before,
@@ -233,31 +233,31 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         }
         // The rows of the line, as `output::match_rows`: one per distinct Trail, or one under
         // the first Trail when -M omits the line.
-        let mut groups: Vec<RowGroup> = Vec::new();
-        if line.submatches.is_empty() || super::omitted(bytes, self.o) {
+        let groups: Vec<RowGroup> = if line.submatches.is_empty() || super::omitted(bytes, self.o) {
             let subs = line.submatches.iter().map(|s| (s.start, s.end)).collect();
-            groups.push((trails[0].clone(), subs));
+            vec![(trails[0].clone(), subs)]
         } else {
-            for (s, t) in line.submatches.iter().zip(&trails) {
-                match groups.iter_mut().find(|g| Rc::ptr_eq(&g.0, t) || g.0 == *t) {
-                    Some(g) => g.1.push((s.start, s.end)),
-                    None => groups.push((t.clone(), vec![(s.start, s.end)])),
-                }
-            }
-        }
+            super::group_by_trail(
+                trails
+                    .into_iter()
+                    .zip(line.submatches.iter().map(|s| (s.start, s.end))),
+            )
+        };
         self.flush(Some(&groups[0].0))?;
         let gap_before = gap && self.o.context;
-        for (n, (trail, subs)) in groups.into_iter().enumerate() {
+        // One text for every row of the line, which outlives none of the Trails it is under.
+        let text = Rc::new(LineText::new(bytes));
+        for (n, (trail, subs)) in groups.iter().enumerate() {
             let row = Row {
-                trail: &trail,
+                trail,
                 line_number: line.line_number,
-                bytes,
-                subs,
+                line: text.clone(),
+                subs: subs.clone(),
                 is_match: true,
                 gap_before: gap_before && n == 0,
             };
             self.row(&row)?;
-            self.group = Some(trail);
+            self.group = Some(trail.clone());
         }
         Ok(())
     }
@@ -299,7 +299,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
                 let row = Row {
                     trail: &trail,
                     line_number: line.line_number,
-                    bytes,
+                    line: Rc::new(LineText::new(bytes)),
                     subs,
                     is_match: false,
                     gap_before,

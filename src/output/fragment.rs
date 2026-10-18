@@ -39,7 +39,7 @@ struct Chars<'a> {
     bytes: &'a [u8],
     /// `before[k]`: the characters that start before byte `k * BLOCK`; the last entry is the
     /// line's character count.
-    before: Vec<usize>,
+    before: std::borrow::Cow<'a, [usize]>,
 }
 
 /// The characters that start in `bytes`: the bytes that are not UTF-8 continuation bytes
@@ -58,17 +58,40 @@ fn starts(bytes: &[u8]) -> usize {
     in_words + rest.iter().filter(|&&b| (b as i8) >= -0x40).count()
 }
 
-impl<'a> Chars<'a> {
-    fn new(line: &'a str) -> Self {
-        let bytes = line.as_bytes();
-        let mut before = Vec::with_capacity(bytes.len() / BLOCK + 2);
-        let mut n = 0;
-        for block in bytes.chunks(BLOCK) {
-            before.push(n);
-            n += starts(block);
-        }
+/// The characters of `line`.
+pub(crate) fn char_count(line: &str) -> usize {
+    starts(line.as_bytes())
+}
+
+/// The index `Chars` converts offsets through, built once per line and shared by the rows of
+/// the line (M3 code review r3, Fable #1).
+pub(crate) fn char_index(line: &str) -> Vec<usize> {
+    let bytes = line.as_bytes();
+    let mut before = Vec::with_capacity(bytes.len() / BLOCK + 2);
+    let mut n = 0;
+    for block in bytes.chunks(BLOCK) {
         before.push(n);
-        Self { bytes, before }
+        n += starts(block);
+    }
+    before.push(n);
+    before
+}
+
+impl<'a> Chars<'a> {
+    #[cfg(test)]
+    fn new(line: &'a str) -> Self {
+        Self {
+            bytes: line.as_bytes(),
+            before: char_index(line).into(),
+        }
+    }
+
+    /// `line` with the index `char_index` built for it.
+    fn indexed(line: &'a str, index: &'a [usize]) -> Self {
+        Self {
+            bytes: line.as_bytes(),
+            before: index.into(),
+        }
     }
 
     fn total(&self) -> usize {
@@ -104,7 +127,17 @@ impl<'a> Chars<'a> {
 /// Splits `line` (valid UTF-8, without terminator) into Fragments around `subs` (byte ranges
 /// on char boundaries). Returns None when the line fits in `width` characters.
 pub fn fragments(line: &str, subs: &[(usize, usize)], width: usize) -> Option<Vec<Fragment>> {
-    let chars = Chars::new(line);
+    fragments_indexed(line, &char_index(line), subs, width)
+}
+
+/// `fragments` with the line's `char_index` already built.
+pub(crate) fn fragments_indexed(
+    line: &str,
+    index: &[usize],
+    subs: &[(usize, usize)],
+    width: usize,
+) -> Option<Vec<Fragment>> {
+    let chars = Chars::indexed(line, index);
     let total = chars.total();
     if total <= width {
         return None;
