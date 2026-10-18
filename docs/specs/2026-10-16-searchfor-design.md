@@ -854,15 +854,16 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
   Whatever path a reader takes, each document is read in a worker process: `sfor` itself, run
   again for that, never an external program (M4 plan, D30). A worker may allocate 1 024 MiB and
   spend 60 s on one document; past either it is ended, and the document gets one warning and
-  is searched as ripgrep searches it:
+  is searched as ripgrep searches it. A SIGINT or SIGTERM to sfor ends its workers with it, and
+  a worker ends when sfor does:
 
   ```
   sfor: big.pdf: pdf: reading it needed more than the 1024 MiB a reader may use
   sfor: slow.pdf: pdf: reading it took more than 60 s
   ```
 
-  At most 512 MiB of text are extracted from one document, and past that the text is cut, with
-  the warning `sfor: <path>: <format>: the text is cut at 512 MiB`; a PDF string writes at most
+  At most 256 MiB of text are extracted from one document, and past that the text is cut, with
+  the warning `sfor: <path>: <format>: the text is cut at 256 MiB`; a PDF string writes at most
   8 bytes of text for each of its bytes, whatever its ToUnicode map says. A malformed part ends the
   text of that part where the reader stops, and a PDF stream that does not decompress draws
   nothing; nothing in a document makes sfor panic (the fuzz of §11 #27).
