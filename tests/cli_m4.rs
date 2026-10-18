@@ -422,6 +422,16 @@ fn m4_08_pre_and_z_as_ripgrep() {
             "NEEDLE".into(),
             "m4/pre/a.txt.gz".into(),
         ]);
+        // A negation turns off only its own flag: what the other flag turned off stays off
+        // (code review r1, Codex #4, Fable #2).
+        for (flags, pattern) in [
+            (["-z", "--pre", &up, "--no-pre"], "needle"),
+            (["--pre", &up, "-z", "--no-search-zip"], "NEEDLE"),
+        ] {
+            let mut v: Vec<String> = flags.iter().map(|f| f.to_string()).collect();
+            v.extend(["--sort", "path", pattern, "m4/pre"].map(String::from));
+            cases.push(v);
+        }
     }
     for args in cases {
         let s = run(&mut fx.s4(args.iter().map(String::as_str).chain(["--no-trail"])));
