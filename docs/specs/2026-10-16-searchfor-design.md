@@ -796,10 +796,18 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
     image, its number, the date, the header and the footer.
   - **EPUB**: the documents of the spine in reading order, each a chapter (`kind = "chapter"`)
     named by its first entry in the table of contents (the EPUB 3 navigation document, else
-    the EPUB 2 NCX), or `chapter N` without one; inside, `h1`–`h6` are headings. A line per block
+    the EPUB 2 NCX), or `chapter N` without one; inside, `h1`–`h6` are headings, and a heading
+    whose text is the chapter's name holds only its own line, so the Trail names the chapter
+    once (`Arrival`, never `Arrival › Arrival`). A line per block
     element (`p`, `div`, `li`, `td`…); `script`, `style` and the `head` are not text. XML's
     entities, character references and the common HTML entities (`&nbsp;`, `&mdash;`, `&copy;`…)
     are decoded.
+  - **The XML parts** of Word, Excel, PowerPoint, OpenDocument and EPUB files are read in their
+    encoding: UTF-8, UTF-16 (by its BOM or its first bytes), ASCII, ISO-8859-1 and
+    Windows-1252. A part in any other encoding makes the document `broken` (`<part> is in X, an
+    encoding the reader does not read`), and the file is then searched as ripgrep searches it.
+    A manual line break inside a paragraph (`w:br`, `text:line-break`) is a space: a paragraph
+    is one line.
   - **PDF**: `3 Results › 3.2 Costs › page 42`. Each page is `page N` (`kind = "page"`, its
     1-based position, not its label). The bookmarks are chapters (`kind = "chapter"`, with their
     `level`) that hold pages: a bookmark starts at the line of the page it points to that starts
