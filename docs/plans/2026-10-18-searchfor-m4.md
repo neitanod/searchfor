@@ -36,17 +36,15 @@ where it is.
 **Reference ripgrep:** 14.1.1 at `/usr/bin/rg` (another `rg`, such as 15.x, may come first on
 `PATH`), as M3 (M3 plan, D33).
 
-**Branch:** work branch `t-768-searchfor-m4`, which starts from `t-768-searchfor-m3` (M3 is
-finishing its code review rounds there; M1 and M2 are on `main`), worktree
-`/home/sebas/robotin/apps/mdgrep/.workspace/t-768-mdgrep/wt/m4`. Before chunk 1, merge the
-final `t-768-searchfor-m3` into the work branch, then run the whole suite: the diffs below
-are against `1610a50` of `t-768-searchfor-m3`, and a hunk that does not apply after M3's last
-rounds is adapted and reported. Each chunk branches `t-768-searchfor-m4-c<N>` from the work
+**Branch:** work branch `t-768-searchfor-m4`, worktree
+`/home/sebas/robotin/apps/mdgrep/.workspace/t-768-mdgrep/wt/m4`, which holds M3's final code
+since `191dbaf` (the merge of `t-768-searchfor` at `0126a3f`; M1 and M2 are on `main`). The
+diffs below are against `191dbaf`. Each chunk branches `t-768-searchfor-m4-c<N>` from the work
 branch and is merged back after its tanda, as `ciclo` stage 7 describes
 (`using-git-worktrees`, `finishing-a-development-branch`). Line numbers in the diffs are those
-of `1610a50` and only hints: locate code by the names given. The code of this plan was built
+of `191dbaf` and only hints: locate code by the names given. The code of this plan was built
 and tested in a probe copy of the repository, frozen as
-`/tmp/subtask/m4-plan/m4tree-7134553` (see «Verified for this plan»).
+`/tmp/subtask/m4-plan/m4tree-57edf0f` (see «Verified for this plan»).
 
 ---
 
@@ -133,7 +131,7 @@ ones it describes marked «M4 plan».
 | D21 | Order: `--pre` (when its globs take the file), then `-z` (when the extension has a decompressor), then `--docs`; a file `--pre` or `-z` reads is never extracted; stdin is never transformed; `--pre`'s output gets the Trails of the Format its path says (Plain for a document or object Format) | ripgrep's order for the first two; a decompressed stream has no name of its own to say what it is |
 | D22 | `--docs` also changes `--no-trail`, `-c`, `-l` and `-q`: they work on the extracted text, in ripgrep's layout | `--docs` is sfor's flag, not ripgrep's; a script that counts Matches with `--docs -c` wants the documents' |
 | D23 | Benchmark (`scripts/bench-m4.sh`) and ceilings (`tests/perf.rs`) as in §11 #26: 1.1 × rg where M4 adds nothing; objects at 100 MB/s; documents at 2 MB/s of text per thread on top of rg's search of their text; per-format rates in `tests/perf.rs` about a third of the probe's | The rates measured in the probe (MB/s of text): docx 41, odt 36, epub 66, PDF 23 (generated) and 1.2–1.8 (real), xlsx 5.6, ods 3.4, pptx 4.0, SQLite 16–17; a third leaves room for a loaded machine, as M3's ceilings did. Memory: rg's plus six times the text, plus 400 bytes per cell Segment of a spreadsheet, plus 64 MiB (the probe: 228 MiB for the 600 000 cells of an XLSX with 18 MB of text) |
-| D24 | The binary's growth is measured and reported: 16.6 MB (16 583 992 bytes at `1610a50`) → 19.0 MB (19 000 368 bytes), under 23 MB (8612) | Spec §11 #22 |
+| D24 | The binary's growth is measured and reported: 16.6 MB (16 598 640 bytes at `191dbaf`) → 19.0 MB (19 015 120 bytes), under 23 MB (8612) | Spec §11 #22 |
 | D25 | Extracted text never holds a control character (line breaks inside a cell, tabs inside a paragraph, NUL become spaces) and has no empty lines | A row of a table stays one line, and the searcher never sees binary data in a document |
 | D26 | The JSON statistics of an object file count the whole search (`bytes_searched` = file size, `matched_lines` = rows, `binary_offset` null), documented in `docs/rg-compat.md` | rg stops at the first Match of a binary; sfor reads on to describe each one |
 | D27 | Without `--docs` the document Formats are never detected (`Detector::with_docs`); `--list-formats` lists them; `--format pdf` without `--docs` prints the file as Plain | 8395 «without --docs those files are treated as ripgrep does», at no cost |
@@ -141,11 +139,13 @@ ones it describes marked «M4 plan».
 
 ## Verified for this plan (2026-10-17 and 2026-10-18)
 
-Outputs in `/tmp/subtask/m4-plan/outputs/`. The probe is a copy of the repository at `1610a50`
-with git history of its own; the frozen copy `/tmp/subtask/m4-plan/m4tree-7134553` is that probe at
-its commit `7134553`, the code of this version of the plan; every code block below was
-generated from it (`/tmp/subtask/m4-plan/plan/gen.py`). The working probe
-`/tmp/subtask/m4-plan/m4tree` may change with the reviews; the frozen one does not.
+Outputs in `/tmp/subtask/m4-plan/outputs/`. The probe `/tmp/subtask/m4-plan/m4v2` is a git
+repository of its own with three commits: the repository at `1610a50`, the repository at
+`191dbaf`, and M4's code over the latter (cherry-picked from the first probe, see «Rebase on
+M3's final code»). The frozen copy `/tmp/subtask/m4-plan/m4tree-57edf0f` is that probe at its commit
+`57edf0f`; every code block below was generated from it
+(`/tmp/subtask/m4-plan/plan/gen.py`, diffs against its commit `05699bc`, which is `191dbaf`).
+The working probe may change with the reviews; the frozen one does not.
 
 - `rustc 1.90.0`, `cargo 1.90.0`, `/usr/bin/rg` 14.1.1 (also first on `PATH` here), 20 cores;
   for the probes, Python 3.13.3 with SQLite 3.46.1, pdftotext (poppler) 25.03.0, qpdf 12.0.0,
@@ -159,8 +159,9 @@ generated from it (`/tmp/subtask/m4-plan/plan/gen.py`). The working probe
   `wasm-bindgen` and `ureq-proto`, as any build without the lock gets. With the lock,
   `cargo check --offline --workspace --all-targets` passes from the local cache. quick-xml
   0.42.0, the M3 plan's candidate, also resolved, and was dropped (D12).
-- **Binary.** `target/release/sfor` of `1610a50`: 16 583 992 bytes (15 368 144 stripped); of the
-  frozen copy: 19 000 368 bytes (17 601 584 stripped), 2.4 MB more, under 23 MB (8612).
+- **Binary.** `target/release/sfor` of `191dbaf`: 16 598 640 bytes (15 381 072 stripped); of the
+  frozen copy: 19 015 120 bytes (17 614 608 stripped), 2.4 MB more, under 23 MB (8612). Over
+  `1610a50` the probe had measured 16 583 992 and 19 000 368.
 - **Object files.** Over binaries built from one C file (`version_string` and a second string
   literal): gcc's ELF gives `ELF x86-64 › .rodata › version_string+0xe` and, for the second
   string, past the symbol's size, `ELF x86-64 › .rodata`; the stripped ELF, `ELF x86-64 ›
@@ -183,21 +184,29 @@ generated from it (`/tmp/subtask/m4-plan/plan/gen.py`). The working probe
   ones, faster than pdftotext), xlsx 5.6 and ods 3.4 (600 000 cells), pptx 4.0 then 5.3 (5 000
   slides, after the relationships by id; 20 000 slides took 1.7 s before), SQLite 16–17
   (16 and 86 MB databases).
-- **Every tanda builds** (`/tmp/subtask/m4-plan/states/build.py`, run at `9187999`, whose code
-  differs from the frozen copy's only in four NUL bytes of two object tests, written as `\0`
-  since, and in three comments): the repository at `1610a50`
+- **Every tanda builds** (`/tmp/subtask/m4-plan/states/build.py`, run over `1610a50` with the
+  code of `9187999`, which differs from the frozen copy's only in four NUL bytes of two object
+  tests, written as `\0` since, three comments and the rebase): the repository at `1610a50`
   with only what tanda 1, then 1–2, 1–3 and 1–4 write (the later files as their stubs, and the
   `offsets: false` literals) passes `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --lib` (403, 437, 464 and 464 tests) and `cargo test --test cli --test cli_m2
   --test cli_m3` (42, 16, 17), and after tanda 4 also `--test cli_m4` (11). The first run of this
   check found that the shared writer helpers, `pub(crate)` then, are dead code to clippy while the
   format writers are stubs; they are `pub` now (Task 4.3).
-- **Frozen copy, whole suite** (run at its parent commit `6a35728`; `7134553` only renumbers
-  three test comments): `cargo build --workspace`, `cargo clippy --workspace
+- **Frozen copy, whole suite:** `cargo build --workspace`, `cargo clippy --workspace
   --all-targets -- -D warnings` (no findings), `cargo fmt --check` and
-  `SFOR_REQUIRE_REFERENCE=1 cargo test --workspace` pass: 464 unit tests and 2 ignored, `cli` 42,
-  `cli_m2` 16 (with `m2_07` updated), `cli_m3` 17, `cli_m4` 11, `fuzz` 4, `helpers` 22,
+  `SFOR_REQUIRE_REFERENCE=1 cargo test --workspace` pass: 469 unit tests and 2 ignored, `cli` 42,
+  `cli_m2` 16 (with `m2_07` updated), `cli_m3` 19, `cli_m4` 11, `fuzz` 4, `helpers` 22,
   `rg_compat` 37, and the helpers' own.
+- **Rebase on M3's final code.** The probe was first built over `1610a50` (frozen then as
+  `m4tree-7134553`, removed). Its changes were cherry-picked onto `191dbaf`: every diff applied
+  but those of `src/output/{mod,tree,stream}.rs`, where M3's final code had turned `Row::bytes`
+  into a shared `Row::line` (`LineText`) and split `tree::write_row_text` out of `write_row`;
+  the resolution keeps M3's structure and adds `Row::offset` beside `line` and an `offset`
+  argument to `write_row_text`. Only the diff of `src/output/tree.rs` differs from the earlier
+  plan's; the others apply as they were, at other line numbers. The measurements below (states,
+  RED, fuzz, perf, benchmark) were taken over `1610a50`; none involves the conflicting code but
+  the tree printer's offset, which `m4_01`'s tree snapshots check over `191dbaf`.
 - **RED** over the stubs of C1 and C4 with each module's tests (`/tmp/subtask/m4-plan/red/run.py`,
   at `9187999`): object
   `mod.rs` does not compile (`demangle`), `rows.rs` 6 FAIL, `preprocess.rs` 2 FAIL, `ooxml.rs` does
@@ -1047,7 +1056,7 @@ diff --git a/src/cli/rg_flags.rs b/src/cli/rg_flags.rs
      RgFlag { long: "smart-case", short: Some('S'), takes_value: false, status: Implemented },
      RgFlag { long: "sort", short: None, takes_value: true, status: Implemented },
      RgFlag { long: "sort-files", short: None, takes_value: false, status: NotYet },
-@@ -270,6 +270,29 @@ searched before the read that brings the NUL. For UTF-16 that cut cannot follow
+@@ -284,6 +284,29 @@ searched before the read that brings the NUL. For UTF-16 that cut cannot follow
  through the decoder, so it is the larger of the last reported line and `bytes_searched`: with a
  context (`-A`, `-B`, `-C`) on a UTF-16 file that holds U+0000, the names of the last lines of
  that buffer can be missing (fix after code review r9).
@@ -1077,7 +1086,7 @@ diff --git a/src/cli/rg_flags.rs b/src/cli/rg_flags.rs
  ";
  
  #[cfg(test)]
-@@ -438,6 +461,12 @@ mod tests {
+@@ -452,6 +475,12 @@ mod tests {
              "version",
              "with-filename",
              "word-regexp",
@@ -1312,8 +1321,9 @@ impl Preprocess {
 
 - [ ] **Step 1:** `cargo test --lib -- the_m4_definitions z_and_pre object_is_built_in
   implemented_flags rg_compat_doc_is_current` and `cargo test --test cli_m2`: GREEN.
-- [ ] **Step 2:** the whole suite (the probe's state after C1: 403 unit tests, `cli` 42, `cli_m2`
-  16, `cli_m3` 17), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt`, and one
+- [ ] **Step 2:** the whole suite (the probe's state after C1, measured over `1610a50`: 403 unit
+  tests, `cli` 42, `cli_m2` 16, `cli_m3` 17; M3's final code adds 5 unit tests and 2 of
+  `cli_m3`), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt`, and one
   commit per task (`git add -- <files>`).
 
 ## Chunk 2: the `object` Processor
@@ -4179,7 +4189,8 @@ db.close()
 
 ### Task 4.5: green, and the commit
 
-- [ ] **Step 1:** the whole suite (the probe's state after tanda 2: 437 unit tests), clippy,
+- [ ] **Step 1:** the whole suite (the probe's state after tanda 2, measured over `1610a50`: 437 unit
+  tests; 442 with M3's final code), clippy,
   fmt, one commit per task.
 
 ## Chunk 5: object rows and the new kinds in the printers
@@ -4197,25 +4208,26 @@ db.close()
   code).
 
 - [ ] **Step 2:** `Row::offset`, filled by `match_rows` when `Described::offsets`, no `--`
-  between object rows, flat's `Head` with the offset in hex, tree's `write_row` with it, the
-  labels of the new kinds, and `offset: None` in the three `Row` literals of `stream.rs`. The
+  between object rows, flat's `Head` with the offset in hex, tree's `write_row` and
+  `write_row_text` (M3's final code split the latter out for `LineText`) with it, the labels of
+  the new kinds, and `offset: None` in the three `Row` literals of `stream.rs`. The
   `offsets: false` lines in these diffs are C1's:
 
 ```diff
 diff --git a/src/output/mod.rs b/src/output/mod.rs
 --- a/src/output/mod.rs
 +++ b/src/output/mod.rs
-@@ -128,6 +128,9 @@ type Subs = Vec<(usize, usize)>;
+@@ -205,6 +205,9 @@ type Subs = Vec<(usize, usize)>;
  pub(crate) struct Row<'a> {
      pub trail: &'a [Segment],
      pub line_number: u64,
 +    /// An object file's row (`Described::offsets`): the hex offset printed in place of the
 +    /// line number.
 +    pub offset: Option<u64>,
-     pub bytes: &'a [u8],
+     /// The line, shared by the rows of a Match line.
+     pub line: Rc<LineText<'a>>,
      pub subs: Vec<(usize, usize)>,
-     pub is_match: bool,
-@@ -192,6 +195,9 @@ fn match_rows<'a>(
+@@ -324,6 +327,9 @@ fn match_rows<'a>(
      groups
          .into_iter()
          .map(|(trail, subs)| Row {
@@ -4224,8 +4236,8 @@ diff --git a/src/output/mod.rs b/src/output/mod.rs
 +                .then(|| m.absolute_offset + subs.first().map_or(0, |s| s.0) as u64),
              trail,
              line_number: m.line_number,
-             bytes,
-@@ -239,7 +245,8 @@ impl<'a> Rows<'a> {
+             line: line.clone(),
+@@ -371,7 +377,8 @@ impl<'a> Rows<'a> {
          let line = match item {
              Item::Match(m) | Item::Context(m) => m,
          };
@@ -4235,15 +4247,15 @@ diff --git a/src/output/mod.rs b/src/output/mod.rs
          if gap {
              // A group without a Match keeps an empty Trail.
              self.ready.extend(self.pending.drain(..));
-@@ -252,6 +259,7 @@ impl<'a> Rows<'a> {
+@@ -384,6 +391,7 @@ impl<'a> Rows<'a> {
                  let row = Row {
                      trail: self.last.unwrap_or(&[]),
                      line_number: c.line_number,
 +                    offset: None,
-                     bytes: c.bytes(self.src),
+                     line: Rc::new(LineText::new(c.bytes(self.src))),
                      subs: subs_of(&c.submatches),
                      is_match: false,
-@@ -514,6 +522,34 @@ pub(crate) mod fixture {
+@@ -646,6 +654,34 @@ pub(crate) mod fixture {
          (line, bytes)
      }
  
@@ -4278,7 +4290,7 @@ diff --git a/src/output/mod.rs b/src/output/mod.rs
      /// Line `n` as a Match, with one submatch per occurrence of `needle`.
      pub fn mat(src: &[u8], n: u64) -> Item {
          let (line, bytes) = ranged(src, n);
-@@ -563,6 +599,7 @@ pub(crate) mod fixture {
+@@ -695,6 +731,7 @@ pub(crate) mod fixture {
              format: Some("markdown".into()),
              trails,
              sections: Vec::new(),
@@ -4353,7 +4365,7 @@ diff --git a/src/output/flat.rs b/src/output/flat.rs
              w.reset()?;
              w.write_all(self.sep.as_bytes())?;
          }
-@@ -170,7 +194,7 @@ pub(crate) fn write_row(
+@@ -161,7 +185,7 @@ pub(crate) fn write_row(
      if r.gap_before {
          w.write_all(b"--\n")?;
      }
@@ -4362,7 +4374,7 @@ diff --git a/src/output/flat.rs b/src/output/flat.rs
      if !r.is_match {
          let prefix = |w: &mut dyn WriteColor| head.write(w);
          let avail = o.width.saturating_sub(head.width());
-@@ -314,6 +338,34 @@ mod tests {
+@@ -305,6 +329,34 @@ mod tests {
          String::from_utf8(w.into_inner()).unwrap()
      }
  
@@ -4415,7 +4427,7 @@ diff --git a/src/output/tree.rs b/src/output/tree.rs
          kind => format!("{kind} {name}"),
      }
  }
-@@ -71,24 +74,30 @@ fn write_trail(
+@@ -71,38 +74,46 @@ fn write_trail(
      Ok(())
  }
  
@@ -4429,6 +4441,23 @@ diff --git a/src/output/tree.rs b/src/output/tree.rs
      line_number: u64,
 +    offset: Option<u64>,
      bytes: &[u8],
+     subs: &[(usize, usize)],
+     is_match: bool,
+     o: &RenderOptions,
+ ) -> std::io::Result<()> {
+     let line = super::LineText::new(bytes);
+-    write_row_text(w, depth, line_number, &line, subs, is_match, o)
++    write_row_text(w, depth, line_number, offset, &line, subs, is_match, o)
+ }
+ 
+ /// `write_row` for a line whose text the rows before may have worked out already.
++#[allow(clippy::too_many_arguments)]
+ fn write_row_text(
+     w: &mut dyn WriteColor,
+     depth: usize,
+     line_number: u64,
++    offset: Option<u64>,
+     line: &super::LineText,
      subs: &[(usize, usize)],
      is_match: bool,
      o: &RenderOptions,
@@ -4450,17 +4479,17 @@ diff --git a/src/output/tree.rs b/src/output/tree.rs
              w.reset()?;
              w.write_all(sep.as_bytes())?;
          }
-@@ -150,7 +159,16 @@ impl TreeState {
+@@ -164,7 +175,16 @@ impl TreeState {
              write_trail(w, &self.printed, r.trail, &self.seen)?;
              self.printed = r.trail.to_vec();
          }
--        write_row(w, depth, r.line_number, r.bytes, &r.subs, r.is_match, o)?;
-+        write_row(
+-        write_row_text(w, depth, r.line_number, &r.line, &r.subs, r.is_match, o)?;
++        write_row_text(
 +            w,
 +            depth,
 +            r.line_number,
 +            r.offset,
-+            r.bytes,
++            &r.line,
 +            &r.subs,
 +            r.is_match,
 +            o,
@@ -4468,7 +4497,7 @@ diff --git a/src/output/tree.rs b/src/output/tree.rs
          if self.seen.len() == SEEN {
              self.seen.pop_front();
          }
-@@ -174,7 +192,7 @@ impl TreeState {
+@@ -188,7 +208,7 @@ impl TreeState {
          for (n, line) in super::section_lines(src, start, end) {
              let subs = kept.get(&n);
              let s = subs.map_or(&[][..], |v| v.as_slice());
@@ -4477,7 +4506,7 @@ diff --git a/src/output/tree.rs b/src/output/tree.rs
          }
          Ok(())
      }
-@@ -230,6 +248,25 @@ mod tests {
+@@ -244,6 +264,25 @@ mod tests {
          assert_eq!(label(&sig), "fn m(\\u{1b})");
      }
  
@@ -4516,15 +4545,15 @@ diff --git a/src/output/stream.rs b/src/output/stream.rs
 +                offset: None,
                  trail: &trail,
                  line_number: p.line.line_number,
-                 bytes: p.line.bytes(src),
+                 line: Rc::new(LineText::new(p.line.bytes(src))),
 @@ -249,6 +250,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
-         let gap_before = gap && self.o.context;
-         for (n, (trail, subs)) in groups.into_iter().enumerate() {
+         let text = Rc::new(LineText::new(bytes));
+         for (n, (trail, subs)) in groups.iter().enumerate() {
              let row = Row {
 +                offset: None,
-                 trail: &trail,
+                 trail,
                  line_number: line.line_number,
-                 bytes,
+                 line: text.clone(),
 @@ -297,6 +299,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
                  let trail = group.unwrap_or_else(|| self.last.1.clone());
                  let subs = line.submatches.iter().map(|s| (s.start, s.end)).collect();
@@ -4532,7 +4561,7 @@ diff --git a/src/output/stream.rs b/src/output/stream.rs
 +                    offset: None,
                      trail: &trail,
                      line_number: line.line_number,
-                     bytes,
+                     line: Rc::new(LineText::new(bytes)),
 @@ -557,6 +560,7 @@ mod tests {
                  format: format.map(Into::into),
                  trails,
@@ -9589,9 +9618,9 @@ diff --git a/tests/fuzz.rs b/tests/fuzz.rs
 diff --git a/tests/perf.rs b/tests/perf.rs
 --- a/tests/perf.rs
 +++ b/tests/perf.rs
-@@ -1208,3 +1208,253 @@ fn a_header_of_a_million_columns_names_only_the_columns_matched() {
-         "RSS {rss} is not below {base} + 64 × {n}"
-     );
+@@ -1239,3 +1239,253 @@ fn the_rows_of_one_wide_line_cost_the_line_once() {
+         );
+     }
  }
 +
 +// M4 (plan, Task 13.1): object files and documents.
@@ -10120,7 +10149,7 @@ exit "$fail"
 
 - [ ] **Step 1:** `cargo build --release && ls -l target/release/sfor`: at most 23 000 000
   bytes (spec §11 #22); report the size, and the stripped size (`strip -o /tmp/sfor.s
-  target/release/sfor`). The probe: 19 000 368 bytes, 17 601 584 stripped (16 583 992 and 15 368 144 at `1610a50`).
+  target/release/sfor`). The probe: 19 015 120 bytes, 17 614 608 stripped (16 598 640 and 15 381 072 at `191dbaf`).
 
 ## Chunk 14: documentation
 
