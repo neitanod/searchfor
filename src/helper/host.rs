@@ -393,6 +393,7 @@ impl Host {
                 Err(HelperError::Timeout(self.cfg.timeout.as_millis()))
             }
             Err(CallError::Gone(why)) => {
+                self.sup.settle();
                 self.failed(conn);
                 Err(HelperError::Crashed(format!("the helper {why}")))
             }
@@ -422,6 +423,7 @@ impl Host {
             // No answer to hello, a process that exits or writes a broken line before it, is
             // a handshake failure, as in `start` (Codex r2 #5; m2-code-r1, Codex #5).
             Err(e) => {
+                self.sup.settle();
                 conn.close(true);
                 self.disable(self.no_hello(e));
                 Err(HelperError::Disabled)
@@ -630,10 +632,52 @@ impl Host {
 /// its SIGINT/SIGTERM watcher before the first spawn; on a signal it cancels, kills and reaps
 /// every helper — one that ignores SIGINT, or a signal sent to s4's pid alone, included — and
 /// then s4 dies by that signal with its default disposition, as ripgrep would. A run that
-/// launches no helper installs nothing.
+/// launches no helper installs nothing, and a signal s4 was started ignoring is not watched.
 pub(crate) mod cancel {
     use super::Conn;
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
     use std::sync::{Arc, Mutex, Weak};
+
+    /// Set the moment a SIGINT or SIGTERM reaches s4, by the signal handler itself, before
+    /// the watcher cancels the run. From then on s4 prints nothing, as ripgrep, which dies by
+    /// the signal at once: a file whose reader or helper the signal ended would otherwise be
+    /// printed as it is, without its Trail (pending of the M4 code review r1, lote A).
+    static STOPPED: AtomicBool = AtomicBool::new(false);
+
+    /// A SIGINT or SIGTERM reached s4 and it is about to die by it: nothing more is printed.
+    pub(crate) fn stopped() -> bool {
+        STOPPED.load(SeqCst)
+    }
+
+    /// Called where a reader or a helper just failed. The terminal's Ctrl-C reaches s4's
+    /// whole group, and on a busy machine the reader or helper it ended may be seen before
+    /// s4's handler runs: a SIGINT or SIGTERM still pending for s4 stops it already.
+    pub(crate) fn settle() {
+        if !STOPPED.load(SeqCst) && pending() {
+            STOPPED.store(true, SeqCst);
+        }
+    }
+
+    /// Whether a SIGINT or SIGTERM is pending for s4 and not handled yet: its shared pending
+    /// set, `ShdPnd` in /proc/self/status (sigpending(2) only reports blocked signals).
+    #[cfg(target_os = "linux")]
+    fn pending() -> bool {
+        let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
+            return false;
+        };
+        let mask = status
+            .lines()
+            .find_map(|l| l.strip_prefix("ShdPnd:"))
+            .and_then(|m| u64::from_str_radix(m.trim(), 16).ok())
+            .unwrap_or(0);
+        let bit = |sig: libc::c_int| 1u64 << (sig - 1);
+        mask & (bit(libc::SIGINT) | bit(libc::SIGTERM)) != 0
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn pending() -> bool {
+        false
+    }
 
     pub(crate) struct Supervisor {
         state: Mutex<Lifecycle>,
@@ -709,6 +753,13 @@ pub(crate) mod cancel {
             Ok(started)
         }
 
+        /// `settle`, for the process-wide Supervisor alone.
+        pub(crate) fn settle(&self) {
+            if self.signals {
+                settle();
+            }
+        }
+
         /// The run was cancelled: hosts stop warning, since s4 is about to die by the signal
         /// and ripgrep prints nothing on Ctrl-C (review r4, Fable #3).
         pub(crate) fn cancelled(&self) -> bool {
@@ -721,6 +772,9 @@ pub(crate) mod cancel {
         /// watcher alone (`watch`).
         #[cfg_attr(not(unix), allow(dead_code))]
         pub(crate) fn cancel(&self) {
+            if self.signals {
+                STOPPED.store(true, SeqCst);
+            }
             let (live, readers): (Vec<Arc<Conn>>, Vec<_>) = {
                 let mut st = self.state.lock().unwrap();
                 st.cancelled = true;
@@ -770,10 +824,26 @@ pub(crate) mod cancel {
         static WATCHER: OnceLock<()> = OnceLock::new();
         WATCHER.get_or_init(|| {
             use signal_hook::consts::{SIGINT, SIGTERM};
+            // A signal s4 was started ignoring stays ignored, as POSIX asks and as rg, which
+            // installs no handler, leaves it (code review r2, Fable #2): `trap '' INT`, nohup,
+            // a background job of a non-interactive shell.
+            let watched: Vec<_> = [SIGINT, SIGTERM]
+                .into_iter()
+                .filter(|&s| !ignored(s))
+                .collect();
+            if watched.is_empty() {
+                return;
+            }
             // If the handler cannot be installed, Ctrl-C keeps M1's behaviour.
-            let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGINT, SIGTERM]) else {
+            let Ok(mut signals) = signal_hook::iterator::Signals::new(&watched) else {
                 return;
             };
+            for &sig in &watched {
+                // SAFETY: the action only stores into an atomic, which is async-signal-safe.
+                let _ = unsafe {
+                    signal_hook::low_level::register(sig, || STOPPED.store(true, SeqCst))
+                };
+            }
             std::thread::spawn(move || {
                 if let Some(sig) = signals.forever().next() {
                     GLOBAL.cancel();
@@ -782,6 +852,17 @@ pub(crate) mod cancel {
                 }
             });
         });
+    }
+
+    /// Whether s4 was started with `sig` ignored.
+    #[cfg(unix)]
+    fn ignored(sig: libc::c_int) -> bool {
+        // SAFETY: with no new action, sigaction only reads the current one into `old`.
+        unsafe {
+            let mut old: libc::sigaction = std::mem::zeroed();
+            libc::sigaction(sig, std::ptr::null(), &mut old) == 0
+                && old.sa_sigaction == libc::SIG_IGN
+        }
     }
 
     /// Windows' console Ctrl-C is M5's.

@@ -68,16 +68,22 @@ struct Messages {
 impl Messages {
     fn error(&self, msg: impl std::fmt::Display) {
         self.errored.store(true, Relaxed);
-        if !self.silent {
+        if !self.silent && !stopped() {
             eprintln!("s4: {msg}");
         }
     }
 
     fn warn(&self, msg: impl std::fmt::Display) {
-        if !self.silent {
+        if !self.silent && !stopped() {
             eprintln!("{msg}");
         }
     }
+}
+
+/// A SIGINT or SIGTERM reached s4, which is about to die by it: from then on it prints
+/// nothing, neither on stdout nor on stderr, as rg prints nothing after Ctrl-C.
+fn stopped() -> bool {
+    crate::helper::host::cancel::stopped()
 }
 
 /// The built-in Definitions, those of the installed Grammar Helpers and the user's (D26).
@@ -97,7 +103,7 @@ fn load_registry(msgs: &Messages, user_dir: Option<&Path>) -> Registry {
 fn run_processors(args: &Args, threads: usize) -> processors::Processors {
     let silent = args.no_messages;
     let warn: crate::helper::Warn = std::sync::Arc::new(move |m: String| {
-        if !silent {
+        if !silent && !stopped() {
             eprintln!("{m}");
         }
     });
@@ -682,8 +688,9 @@ impl Ctx<'_> {
     fn document(&self, p: &Path) -> Option<Through> {
         let det = self.docs.filter(|d| d.may_be_document(p))?;
         // `/dev/stdin` redirected from a file is a regular file, which the reader would open
-        // as its own stdin (code review r1, Codex #1).
-        if names_a_stream(p) {
+        // as its own stdin (code review r1, Codex #1), and so is a file under a directory
+        // named by a descriptor (code review r2, Codex #2).
+        if through_descriptors(p) {
             return None;
         }
         let def = match det.detect_by_path(p) {
@@ -745,6 +752,8 @@ impl Ctx<'_> {
             // ripgrep prints nothing then (spec §4.4, §5.8; M4 plan r6, Fable #1).
             Err(_) if crate::helper::host::cancel::GLOBAL.cancelled() => as_is(t),
             Err(e) => {
+                // A Ctrl-C that ended the reader before s4 saw it stops s4 here.
+                crate::helper::host::cancel::GLOBAL.settle();
                 self.msgs
                     .warn(format_args!("s4: {}: {name}: {e}", t.path.display()));
                 as_is(t)
@@ -794,6 +803,10 @@ impl Ctx<'_> {
     }
 
     fn print(&self, buf: &Buffer) {
+        if stopped() {
+            self.quit.store(true, Relaxed);
+            return;
+        }
         if !buf.as_slice().is_empty() {
             self.printed.store(true, Relaxed);
         }
@@ -2402,32 +2415,93 @@ fn head_of(p: &Path) -> Vec<u8> {
     head
 }
 
-/// Whether `p` names a file through /dev or /proc (`/dev/stdin`, `/dev/fd/0`,
-/// `/proc/self/fd/0`), itself or by a link on the way: a name another process resolves to its
-/// own descriptors (spec §5.8, "Only a regular file is a document"). Followed link by link, as
-/// `canonicalize` would go past /proc to the redirected file; true past 40 links.
-fn names_a_stream(p: &Path) -> bool {
-    let Ok(mut cur) = std::path::absolute(p) else {
+/// Whether `p` names a file through this process's own descriptors, in any of its parts,
+/// itself or by a link on the way: `/proc/<pid>/fd`, `/proc/self/fd`, `/proc/thread-self/fd`,
+/// `/proc/<pid>/task/<tid>/fd`, `/dev/fd`, `/dev/stdin`, `/dev/stdout` or `/dev/stderr`. A
+/// reader opens a document again by its name in another process, which would open its own
+/// descriptors by such a name (spec §5.8, "Only a regular file is a document"; code review r2,
+/// Codex #2); a regular file anywhere else, `/dev/shm` included, is read by name (Fable #1).
+/// The name is resolved part by part, each part looked at before its link is followed, since
+/// a descriptor's link leads out of /proc to the file it is; true past 40 links, which no open
+/// survives either.
+#[cfg(unix)]
+fn through_descriptors(p: &Path) -> bool {
+    use std::ffi::OsString;
+    // The parts of `q` after its root, last first, to be taken with `pop`.
+    let parts = |q: &Path| -> Vec<OsString> {
+        let mut v: Vec<OsString> = q
+            .components()
+            .filter(|c| !matches!(c, std::path::Component::RootDir))
+            .map(|c| c.as_os_str().to_owned())
+            .collect();
+        v.reverse();
+        v
+    };
+    let Ok(abs) = std::path::absolute(p) else {
         return false;
     };
-    let in_streams = |q: &Path| q.starts_with("/dev") || q.starts_with("/proc");
-    for _ in 0..40 {
-        let (Some(dir), Some(name)) = (cur.parent(), cur.file_name()) else {
-            return in_streams(&cur);
-        };
-        let Ok(dir) = std::fs::canonicalize(dir) else {
-            return false;
-        };
-        let full = dir.join(name);
-        if in_streams(&full) {
+    let mut todo = parts(&abs);
+    let mut at = PathBuf::from("/");
+    let mut links = 0;
+    while let Some(part) = todo.pop() {
+        if part == ".." {
+            at.pop();
+            continue;
+        }
+        if part == "." {
+            continue;
+        }
+        at.push(&part);
+        if a_descriptor(&at) {
             return true;
         }
-        match std::fs::read_link(&full) {
-            Ok(to) => cur = dir.join(to),
+        match std::fs::read_link(&at) {
+            Ok(to) => {
+                links += 1;
+                if links > 40 {
+                    return true;
+                }
+                at.pop();
+                if to.is_absolute() {
+                    at = PathBuf::from("/");
+                }
+                todo.extend(parts(&to));
+            }
+            // Not a link.
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {}
+            // Missing or unreadable: opening it fails too, and the search reports it.
             Err(_) => return false,
         }
     }
-    true
+    false
+}
+
+/// No Windows path names a descriptor of its own.
+#[cfg(not(unix))]
+fn through_descriptors(_: &Path) -> bool {
+    false
+}
+
+/// Whether the link-free absolute `at` is, or is under, a name of this process's descriptors
+/// (`through_descriptors`).
+#[cfg(unix)]
+fn a_descriptor(at: &Path) -> bool {
+    let id = |s: &std::ffi::OsStr| {
+        s == "self"
+            || s == "thread-self"
+            || s.to_str()
+                .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+    };
+    let c: Vec<&std::ffi::OsStr> = at.iter().skip(1).collect();
+    match c.as_slice() {
+        [dev, fd, ..] if *dev == "dev" && *fd == "fd" => true,
+        [dev, s] if *dev == "dev" && (*s == "stdin" || *s == "stdout" || *s == "stderr") => true,
+        [proc, pid, fd, ..] if *proc == "proc" && id(pid) && *fd == "fd" => true,
+        [proc, pid, task, tid, fd, ..] => {
+            *proc == "proc" && id(pid) && *task == "task" && id(tid) && *fd == "fd"
+        }
+        _ => false,
+    }
 }
 
 /// A regular file, which can be opened again and read the same: not `/dev/stdin` or a FIFO.
@@ -2453,6 +2527,10 @@ impl Write for Spill<'_> {
         if let Some(out) = self.out
             && self.buf.as_slice().len() >= SPILL
         {
+            if stopped() {
+                self.buf.clear();
+                return Ok(n);
+            }
             self.printed.store(true, Relaxed);
             out.print(self.buf)?;
             self.buf.clear();
@@ -2519,7 +2597,9 @@ impl Write for SpillLines<'_> {
         }
         self.scanned = start;
         let flushable = self.line_end;
-        if flushable > 0 {
+        if flushable > 0 && stopped() {
+            self.clear();
+        } else if flushable > 0 {
             let held = self.buf.as_slice();
             let mut head = out.buffer();
             head.write_all(&held[..flushable])?;

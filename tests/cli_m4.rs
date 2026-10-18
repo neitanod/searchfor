@@ -406,6 +406,23 @@ fn m4_08_pre_and_z_as_ripgrep() {
             "m4/pre/a.txt".into(),
         ],
     ];
+    // Values that start with a dash, after a space or `=` (code review r2, Codex #3): the
+    // glob picks only `-x.txt` for the command, and `-cat` is a command that does not start.
+    let dash = fx.path().join("m4/pre-dash");
+    std::fs::create_dir_all(&dash).unwrap();
+    std::fs::write(dash.join("-x.txt"), "dash needle\n").unwrap();
+    std::fs::write(dash.join("y.txt"), "plain needle\n").unwrap();
+    for glob in [["--pre-glob", "-*.txt"], ["--pre-glob=-*.txt", "-i"]] {
+        let mut v: Vec<String> = vec!["--pre".into(), up.clone()];
+        v.extend(glob.map(String::from));
+        v.extend(["--sort", "path", "NEEDLE", "m4/pre-dash"].map(String::from));
+        cases.push(v);
+    }
+    for pre in [&["--pre", "-cat"][..], &["--pre=-cat"]] {
+        let mut v: Vec<String> = pre.iter().map(|a| a.to_string()).collect();
+        v.extend(["needle", "m4/pre/a.txt"].map(String::from));
+        cases.push(v);
+    }
     if have_gzip {
         cases.push(vec!["-z".into(), "needle".into(), "m4/pre/a.txt.gz".into()]);
         cases.push(vec![
@@ -696,6 +713,82 @@ fn m4_24_stdin_redirected_from_a_document_is_no_document() {
     }
 }
 
+/// Code review r2, Codex #2 and Fable #1: a reader opens a document again by its name, in
+/// another process, so a name that goes through the process's descriptors (`/proc/self/fd`,
+/// `/proc/<pid>/fd`, `/dev/fd`, `/dev/stdin`), in any of its parts, itself or through a link,
+/// names no document: here stdin is a directory, and each file under it is searched as rg
+/// searches it. A regular file anywhere else, `/dev/shm` included, is a document.
+#[cfg(target_os = "linux")]
+#[test]
+fn m4_27_only_names_through_descriptors_are_no_documents() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = fixture();
+    let link = |to: &str, name: &str| std::os::unix::fs::symlink(to, fx.path().join(name));
+    link("/proc/self/fd/0", "m4/fd0").unwrap();
+    link("/proc/self/fd", "m4/fds").unwrap();
+    link("/dev/fd/0", "m4/devfd0").unwrap();
+    let cases: &[&[&str]] = &[
+        &["needle", "/proc/self/fd/0/docs/shop.sqlite"],
+        &["needle", "/proc/thread-self/fd/0/docs/shop.sqlite"],
+        &["needle", "/dev/fd/0/docs/shop.sqlite"],
+        &["needle", "/dev/stdin/docs/shop.sqlite"],
+        &["needle", "/proc/self/fd/0/m4/report.docx"],
+        &["needle", "m4/fd0/docs/shop.sqlite"],
+        &["needle", "m4/fds/0/docs/shop.sqlite"],
+        &["needle", "m4/devfd0/m4/report.docx"],
+        &["-c", "--sort", "path", "needle", "/proc/self/fd/0/docs"],
+        &["-c", "--sort", "path", "needle", "m4/fd0/m4"],
+    ];
+    for args in cases {
+        let stdin = || std::fs::File::open(fx.path()).unwrap();
+        let s = run(fx
+            .s4(["--docs", "--no-trail"].iter().chain(args.iter()))
+            .stdin(stdin()));
+        let r = run(fx.rg(*args).stdin(stdin()));
+        assert_eq!(stderr(&s), "", "{args:?}");
+        assert_eq!(stdout(&s), stdout(&r), "{args:?}");
+        assert_eq!(code(&s), code(&r), "{args:?}");
+    }
+    // The other side: regular files, read by name, under /dev/shm and through /proc links
+    // that lead out of /proc.
+    let count = ok(&fx, &["--docs", "-c", "needle", "m4/report.docx"]);
+    let abs = fx.path().join("m4/report.docx");
+    let root = format!("/proc/self/root{}", abs.display());
+    let mut named: Vec<(Vec<String>, String)> = vec![
+        (vec!["/proc/self/cwd/m4/report.docx".into()], count.clone()),
+        (vec![root], count.clone()),
+    ];
+    let shm = std::path::Path::new("/dev/shm");
+    let held = shm
+        .is_dir()
+        .then(|| tempfile::tempdir_in(shm).ok())
+        .flatten();
+    if let Some(dir) = &held {
+        let d = dir.path();
+        std::fs::copy(&abs, d.join("report.docx")).unwrap();
+        let at = d.join("report.docx").display().to_string();
+        std::os::unix::fs::symlink(&at, fx.path().join("m4/shm.docx")).unwrap();
+        std::os::unix::fs::symlink(d, fx.path().join("m4/shmdir")).unwrap();
+        named.extend([
+            (vec![at.clone()], count.clone()),
+            (vec!["m4/shm.docx".into()], count.clone()),
+            (vec!["m4/shmdir/report.docx".into()], count.clone()),
+            (vec![d.display().to_string()], format!("{at}:{count}")),
+        ]);
+        let o = run(fx
+            .s4(["--docs", "-c", "needle", "report.docx"])
+            .current_dir(d));
+        assert_eq!((stdout(&o), stderr(&o)), (count.clone(), String::new()));
+    }
+    for (paths, want) in named {
+        let mut args = vec!["--docs", "-c", "needle"];
+        args.extend(paths.iter().map(String::as_str));
+        assert_eq!(ok(&fx, &args), want, "{paths:?}");
+    }
+}
+
 /// Codex r1 #7 and #8: --within keeps the Matches of an object row that are within, not the
 /// whole row, and -m after it counts rows, which share their line.
 #[test]
@@ -950,11 +1043,14 @@ fn m4_18_any_path_reaches_the_reader() {
 }
 
 /// A PDF of `pages` pages sharing one content stream of `ops` operations: slow to read, so a
-/// signal arrives while its reader works.
+/// signal arrives while its reader works. The stream is compressed, so the file is small and
+/// searching its bytes is quick.
 fn slow_pdf(pages: usize, ops: usize) -> Vec<u8> {
     use lopdf::{Dictionary, Document, Object, Stream};
     let mut doc = Document::with_version("1.5");
-    let content = doc.add_object(Stream::new(Dictionary::new(), b"h ".repeat(ops)));
+    let mut stream = Stream::new(Dictionary::new(), b"h ".repeat(ops));
+    stream.compress().unwrap();
+    let content = doc.add_object(stream);
     let pages_id = doc.new_object_id();
     let kids: Vec<Object> = (0..pages)
         .map(|_| {
@@ -999,22 +1095,46 @@ fn children_of(parent: u32) -> Vec<u32> {
 /// Codex r4 #2: a SIGTERM to s4 alone kills and reaps its readers, and s4 dies by it; a
 /// SIGKILL, which s4 cannot see, ends them too (the kernel's parent-death signal). Fable r6
 /// #1: nothing is printed after the signal, neither for the documents whose readers it killed
-/// nor for those still waiting for one: eight slow PDFs for the four readers.
+/// nor for those still waiting for one: eight slow PDFs for the four readers. Code review r2,
+/// Codex #5: the pattern is in each PDF's bytes and in none of their texts, so a document
+/// searched as it is once its reader was killed, or refused one, would print its count; and
+/// a SIGINT is sent to s4 alone and to its group, as the terminal sends Ctrl-C (pending r1,
+/// lote A: s4 printed those counts before the signal ended it).
 #[cfg(target_os = "linux")]
 #[test]
 fn m4_19_a_signal_to_sfor_ends_its_readers() {
     use std::io::Read;
     let fx = fixture();
-    let slow = slow_pdf(20_000, 200_000);
-    let mut args = vec!["--docs".to_string(), "-c".into(), "needle".into()];
+    // Four pages of two million operations: under the reader's limit of operations.
+    let slow = slow_pdf(4, 2_000_000);
+    assert!(slow.starts_with(b"%PDF-") && slow.len() < 64 * 1024);
+    let mut args = vec!["--docs".to_string(), "-c".into(), "^%PDF-".into()];
     for i in 0..8 {
         std::fs::write(fx.path().join(format!("m4/slow{i}.pdf")), &slow).unwrap();
         args.push(format!("m4/slow{i}.pdf"));
     }
-    for sig in [libc::SIGTERM, libc::SIGKILL] {
-        let mut child = fx
-            .s4(&args)
-            .stdout(std::process::Stdio::null())
+    // The terminal's Ctrl-C reaches the whole group, readers included, whose id is s4's pid.
+    for (sig, group) in [
+        (libc::SIGINT, true),
+        (libc::SIGINT, false),
+        (libc::SIGTERM, false),
+        (libc::SIGKILL, false),
+    ] {
+        let mut c = fx.s4(&args);
+        if group {
+            std::os::unix::process::CommandExt::process_group(&mut c, 0);
+        }
+        // A test run started with the signals ignored (a background job) would pass that on.
+        // SAFETY: signal() is async-signal-safe, as pre_exec asks.
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(&mut c, || {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                libc::signal(libc::SIGTERM, libc::SIG_DFL);
+                Ok(())
+            });
+        }
+        let mut child = c
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
@@ -1029,8 +1149,9 @@ fn m4_19_a_signal_to_sfor_ends_its_readers() {
         };
         assert!(!readers.is_empty(), "no reader started");
         std::thread::sleep(std::time::Duration::from_millis(300));
-        // SAFETY: a signal to our own child.
-        unsafe { libc::kill(pid as libc::pid_t, sig) };
+        let to = if group { -(pid as i32) } else { pid as i32 };
+        // SAFETY: a signal to our own child, or to the group it leads.
+        unsafe { libc::kill(to, sig) };
         let status = child.wait().unwrap();
         assert_eq!(
             std::os::unix::process::ExitStatusExt::signal(&status),
@@ -1044,6 +1165,14 @@ fn m4_19_a_signal_to_sfor_ends_its_readers() {
             .read_to_string(&mut errors)
             .unwrap();
         assert_eq!(errors, "", "after signal {sig}");
+        let mut printed = String::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut printed)
+            .unwrap();
+        assert_eq!(printed, "", "after signal {sig}");
         let gone = std::time::Instant::now();
         while readers
             .iter()
@@ -1055,6 +1184,74 @@ fn m4_19_a_signal_to_sfor_ends_its_readers() {
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+    }
+}
+
+/// Code review r2, Fable #2: a signal s4 was started ignoring (`trap '' INT`, nohup, a
+/// background job) stays ignored while its readers work, as rg leaves it: the search goes on
+/// and ends as it would have without the signal.
+#[cfg(target_os = "linux")]
+#[test]
+fn m4_26_a_signal_ignored_by_its_parent_is_ignored() {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    let fx = fixture();
+    let slow = slow_pdf(4, 2_000_000);
+    for i in 0..2 {
+        std::fs::write(fx.path().join(format!("m4/slow{i}.pdf")), &slow).unwrap();
+    }
+    let count = ok(&fx, &["--docs", "-c", "needle", "m4/report.docx"]);
+    let args = [
+        "--docs",
+        "-c",
+        "needle",
+        "m4/slow0.pdf",
+        "m4/slow1.pdf",
+        "m4/report.docx",
+    ];
+    for sig in [libc::SIGINT, libc::SIGTERM] {
+        let mut c = fx.s4(args);
+        // SAFETY: signal() is async-signal-safe, as pre_exec asks.
+        unsafe {
+            c.pre_exec(move || {
+                libc::signal(sig, libc::SIG_IGN);
+                Ok(())
+            });
+        }
+        let mut child = c
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let started = std::time::Instant::now();
+        while children_of(pid).is_empty() {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "no reader started"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        // SAFETY: a signal to our own child.
+        unsafe { libc::kill(pid as libc::pid_t, sig) };
+        let status = child.wait().unwrap();
+        let (mut out, mut err) = (String::new(), String::new());
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut out)
+            .unwrap();
+        child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut err)
+            .unwrap();
+        assert_eq!(status.code(), Some(0), "signal {sig}: {status:?}: {err}");
+        assert_eq!(err, "", "signal {sig}");
+        assert_eq!(out, format!("m4/report.docx:{count}"), "signal {sig}");
     }
 }
 

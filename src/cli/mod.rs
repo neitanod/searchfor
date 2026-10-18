@@ -186,8 +186,8 @@ pub struct Args {
     #[arg(long, hide = true)]
     pub no_search_zip: bool,
     /// ripgrep's --pre: search the output of `COMMAND PATH` instead of PATH; an empty COMMAND
-    /// turns it off.
-    #[arg(long = "pre", value_name = "COMMAND", action = ArgAction::Append)]
+    /// turns it off. Its value may start with a dash, as in rg (code review r2, Codex #3).
+    #[arg(long = "pre", value_name = "COMMAND", action = ArgAction::Append, allow_hyphen_values = true)]
     pub pre_flags: Vec<OsString>,
     /// --pre's command, once -z, --pre and their negations are applied in order (`pre_and_zip`).
     #[arg(skip)]
@@ -195,8 +195,8 @@ pub struct Args {
     #[arg(long, hide = true)]
     pub no_pre: bool,
     /// ripgrep's --pre-glob: run --pre only on files these globs match (gitignore syntax, `!`
-    /// excludes).
-    #[arg(long = "pre-glob", value_name = "GLOB", action = ArgAction::Append)]
+    /// excludes). Its value may start with a dash, as in rg.
+    #[arg(long = "pre-glob", value_name = "GLOB", action = ArgAction::Append, allow_hyphen_values = true)]
     pub pre_globs: Vec<String>,
     #[arg(long, overrides_with = "messages")]
     pub no_messages: bool,
@@ -635,6 +635,19 @@ mod tests {
         ]);
         assert_eq!(a.pre_globs, ["*.pdf", "!a.pdf"]);
         assert!(a.docs);
+    }
+
+    /// Code review r2, Codex #3: --pre and --pre-glob take a value that starts with a dash,
+    /// as rg 14.1.1 does, separated by a space or by `=`.
+    #[test]
+    fn pre_and_pre_glob_take_values_that_start_with_a_dash() {
+        let a = p(&["s4", "--pre", "-cat", "--pre-glob", "-*.txt", "x", "a.txt"]);
+        assert_eq!(a.pre.as_deref(), Some(std::ffi::OsStr::new("-cat")));
+        assert_eq!(a.pre_globs, ["-*.txt"]);
+        assert_eq!(a.pattern.as_deref(), Some("x"));
+        let a = p(&["s4", "--pre=-cat", "--pre-glob=-x", "x"]);
+        assert_eq!(a.pre.as_deref(), Some(std::ffi::OsStr::new("-cat")));
+        assert_eq!(a.pre_globs, ["-x"]);
     }
 
     #[test]
