@@ -7,6 +7,7 @@ pub mod grammars;
 pub mod helper;
 pub mod model;
 pub mod output;
+pub mod preprocess;
 pub mod processors;
 pub mod search;
 pub mod source;
