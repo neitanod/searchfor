@@ -65,7 +65,8 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     let mut marks = bookmarks(&doc, &numbers);
     marks.sort_by_key(|m| m.2);
     let mut marks = marks.into_iter().peekable();
-    let r = Reader::new(&doc);
+    // The page tree is walked once (Fable M4 code r2 #8): the reader gets its page count.
+    let r = Reader::new(&doc, pages.len());
     for (n, id) in &pages {
         let mut text = Layout::new(b.remaining());
         let res = Res::of_page(&r, *id)?;
@@ -590,10 +591,11 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    fn new(doc: &'a Document) -> Self {
+    /// A reader of `doc`, which has `pages` pages.
+    fn new(doc: &'a Document, pages: usize) -> Self {
         Reader {
             doc,
-            limit: MAX_WORK.saturating_add(PAGE_WORK * pages(doc).len().min(MAX_PAGES_WORK)),
+            limit: MAX_WORK.saturating_add(PAGE_WORK * pages.min(MAX_PAGES_WORK)),
             contents: RefCell::default(),
             fonts: RefCell::default(),
             forms: RefCell::default(),
@@ -2386,7 +2388,7 @@ mod tests {
     #[test]
     fn the_streams_of_a_document_share_a_budget() {
         let doc = Document::with_version("1.5");
-        let r = super::Reader::new(&doc);
+        let r = super::Reader::new(&doc, 0);
         r.inflated(super::MAX_INFLATED).unwrap();
         let e = r.inflated(1).unwrap_err();
         assert!(matches!(&e, DocError::TooLarge(_, 1024)), "{e}");
@@ -2781,7 +2783,7 @@ mod tests {
     fn tj_kerning_wide_enough_is_a_space() {
         let data = b"BT /F1 10 Tf [(ne) -20 (edle) -300 (here)] TJ ET";
         let doc = lopdf::Document::with_version("1.5");
-        let r = super::Reader::new(&doc);
+        let r = super::Reader::new(&doc, 0);
         let res = super::Res::new(&r, Vec::new()).unwrap();
         let mut out = super::Layout::new(usize::MAX);
         super::run(&r, data, &res, super::Matrix::IDENTITY, &mut out, 0).unwrap();
