@@ -677,9 +677,11 @@ binaries are often named without a telling extension (`libc.so.6`, `ls`; §4.1, 
         0x77:another needle here
   ```
 
-  `-m N` keeps the first N rows. Context lines (`-A`, `-B`, `-C`) are not printed for rows, and
-  no `--` goes between them. `--within` keeps the rows whose Trail it selects, and `--expand`
-  prints the rows themselves: a Section of a binary is not text (D8).
+  A string with several Matches is one row, at its first Match and under that Match's Trail,
+  with every Match highlighted; `--json` keeps the Trail of each Match. `-m N` keeps the first N
+  rows, also after `--within`. Context lines (`-A`, `-B`, `-C`) are not printed for rows, and
+  no `--` goes between them. `--within` keeps the Matches whose Trail it selects, and drops a
+  row with none; `--expand` prints the rows themselves: a Section of a binary is not text (D8).
 - **Trail (D7).** `ELF x86-64 › .rodata › main.version+0x10`:
   - the image (`kind = "object"`): the Format and the architecture, `ELF x86-64`, `ELF aarch64`,
     `PE x86-64`, `PE i386`, `Mach-O arm64`, `Mach-O x86-64`; a machine without a name shows its
@@ -724,7 +726,8 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
   extension, by its first bytes: `%PDF-`, `SQLite format 3\0`, or the `mimetype` an
   OpenDocument or EPUB file stores first (`application/vnd.oasis.opendocument.text`,
   `application/epub+zip`). Word, Excel and PowerPoint files have no such signature and are told
-  by their extension only. The extensions:
+  by their extension only. Only a regular file is a document: stdin, `/dev/fd/N` and FIFOs are
+  searched as ripgrep searches them, and read once. The extensions:
 
   | Format | Extensions | Extractor |
   |---|---|---|
@@ -748,7 +751,8 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
 - **Text.** One line per paragraph, heading, list item or table row; control characters
   (line breaks inside a cell, tabs inside a paragraph, NUL) become spaces, so a line is one line
   and the text never looks binary (D25); empty lines are left out. A table row is one line whose
-  cells are separated by tabs. Line numbers count the lines of that text.
+  cells are separated by tabs: an empty cell keeps its tab, and a value its spaces. Line
+  numbers count the lines of that text.
 - **Trails (D20)**, real output over the test fixtures (one-line layout):
 
   ```
@@ -776,8 +780,11 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
     name) and the cell (`kind = "cell"`, by its reference). A row is a line of its non-empty
     cells. A value prints as stored: shared and inline strings as text, booleans as `TRUE` or
     `FALSE`, a formula as its cached value, a number as written in the file (a date is its serial
-    number) (D18). Repeated empty rows and cells of an OpenDocument sheet are counted, never
-    written; a repeated cell with a value is written up to 1000 times.
+    number); an OpenDocument cell by its `office:value-type`: the `office:value` of a float,
+    percentage or currency, the `date-value` or `time-value` of a date or time, `TRUE` or `FALSE`,
+    and the text of a string, so a cell shown as `$1.50` is `1.5` (D18). Repeated empty rows and
+    cells of an OpenDocument sheet are counted, never written; a repeated cell with a value is
+    written up to 1000 times, and a repeat past the largest number makes the document `broken`.
   - **PowerPoint and OpenDocument presentation**: `slide N` (`kind = "slide"`, from 1 in the
     order of the presentation) holds the text of its shapes and tables; its speaker notes come
     after it as `slide N › notes` (`kind = "notes"`), without the placeholders of the slide
@@ -796,12 +803,14 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
     positions its content stream gives each string: a string lower or higher than the last by
     half its size starts a line, one further right than where the last ended by 0.15 of its size
     gets a space, and so does a `TJ` kerning of more than 0.1 em; ligatures (`ﬁ`) print as their
-    letters (D13). Text drawn as images (scans) has no text: OCR is out of scope.
+    letters. A font's strings are read through its ToUnicode map when it has one, else through
+    its encoding (D13). Text drawn as images (scans) has no text: OCR is out of scope.
   - **SQLite**: `users › row 12 › email`. Every table of `sqlite_schema` whose name does not
     start with `sqlite_` (`kind = "table"`), its rows in key order, each a line of its values
     separated by tabs: `row N` (`kind = "row"`) is the row's rowid, and the position in key order
     for a `WITHOUT ROWID` table; each value is a `column` Segment named by its column in the
-    table's `CREATE TABLE`. Values print as the `sqlite3` shell shows them: an `INTEGER PRIMARY
+    table's `CREATE TABLE`, in that order (a `WITHOUT ROWID` table stores its key's columns
+    first; they print in their place). Values print as the `sqlite3` shell shows them: an `INTEGER PRIMARY
     KEY` is the rowid, an integral value of a REAL column `3.0`, NULL empty, a blob
     `[blob N bytes]`; UTF-16 databases are transcoded. Indexes, views and triggers are not read,
     nor a `-wal` file beside the database, so changes not yet checkpointed into it are not found
@@ -822,12 +831,23 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
 
   An encrypted PDF that opens with the empty password (most of them: the password only guards
   printing or copying) is read. A zip-based document with an encrypted part is `encrypted`. The
-  limits against decompression bombs and huge documents: a zip part decompresses to at most
-  256 MiB and a PDF stream to at most 64 MiB, or the document is not read (`… is over the 256 MiB
-  limit`); at most 512 MiB of text are extracted from one document, and past that the text is
-  cut, with the warning `sfor: <path>: <format>: the text is cut at 512 MiB`. A malformed part
-  ends the text of that part where the reader stops; nothing in a document makes sfor panic
-  (the fuzz of §11 #27).
+  limits against decompression bombs and huge documents (D17): a zip part decompresses to at
+  most 256 MiB, and all the parts one document reads to 1 GiB; a PDF stream (a page, a Form, a
+  font's ToUnicode map, an object stream) to at most 64 MiB, and a PDF's pages, Forms and maps
+  to 1 GiB together; the Forms of a PDF do at most 8 000 000 units of work (16 each time one is
+  drawn, plus one per operation it runs). Past any of these the document is not read:
+
+  ```
+  sfor: bomb.docx: docx: word/document.xml is over the 256 MiB limit
+  sfor: bomb.xlsx: xlsx: the whole document, decompressed, is over the 1024 MiB limit
+  sfor: bomb.pdf: pdf: a font's ToUnicode map is over the 64 MiB limit
+  sfor: forms.pdf: pdf: its Forms run more than 8000000 operations
+  ```
+
+  At most 512 MiB of text are extracted from one document, and past that the text is cut, with
+  the warning `sfor: <path>: <format>: the text is cut at 512 MiB`. A malformed part ends the
+  text of that part where the reader stops, and a PDF stream that does not decompress draws
+  nothing; nothing in a document makes sfor panic (the fuzz of §11 #27).
 - **With the other flags.** `--docs` is independent of `-z`, which keeps ripgrep's meaning
   (single-stream compressed files), and of `-a` and `--binary`, which apply to the files that
   are not documents: an extracted text has no binary data. A file that `--pre` (when its globs
@@ -856,7 +876,7 @@ ripgrep's input transforms work as in ripgrep 14.1.1 (M4 plan, D2, D21):
   as the file would have it, and, for a Helper Processor, a temporary file with the output
   (§4.4, Paths). In the Trail layouts the output gets the Trails of the Format the file's path
   says (`--pre` over `notes.md` gives Markdown Trails); a document or object Format gives none,
-  the file prints as Plain. `--no-trail` prints what ripgrep prints.
+  whatever the output's bytes, `--format` or `-a` say, and the file prints as Plain. `--no-trail` prints what ripgrep prints.
 
 ## 6. Output (#13–#15)
 
@@ -1143,16 +1163,17 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
 26. Performance of M4 (`scripts/bench-m4.sh`, M4 plan D23): over a corpus of documents, object
     files and text files, without `--docs` and `--binary`, with a pattern no file matches, a
     sparse one and `--no-trail`, sfor takes at most 1.1 × rg; `--docs` over files that are not
-    documents, at most 1.1 × rg; `--binary` over object files with a sparse pattern, sfor's time
+    documents (text files, and object files, which have no extension), at most 1.1 × rg; `--binary` over object files with a sparse pattern, sfor's time
     over rg's is at most the largest matching object ÷ 100 MB/s plus all matching objects ÷
     (100 MB/s × threads) plus 0.05 s; `--docs` over the documents, sfor's time over rg's on their
     extracted texts is at most the texts' size ÷ (2 MB/s × threads) plus 0.1 s. In
     `tests/perf.rs`: a 50 MB ELF with three Matches, also with 200 000 symbols, within `rg -a`'s
     time plus 1 s and its RSS plus 64 MiB; a large document of each zip-based Format and PDF within
     rg's time over its text plus the text ÷ its Format's rate (docx 12, odt 10, epub 20, pdf 7,
-    xlsx 2, ods 1, pptx 1.3 MB/s) plus 1 s; and a zip bomb refused within 5 s and 256 MiB plus
-    rg's RSS plus 64 MiB.
+    xlsx 2, ods 1, pptx 1.3 MB/s) plus 1 s; a zip bomb, and a workbook of six 200 MiB sheets,
+    refused within 5 s and 256 MiB plus rg's RSS plus 64 MiB; and a PDF whose font's ToUnicode
+    map decompresses to 300 MiB refused within 5 s and 64 MiB plus rg's RSS plus 64 MiB.
 27. The fuzz of `tests/fuzz.rs` runs the Extractors over mutated documents (bytes changed, cut,
     repeated, and the XML inside the zip changed) and the `object` Processor over mutated object
-    files: nothing panics, an extraction takes at most 2 s, and every Segment and name lies
-    inside the extracted text.
+    files: nothing panics, an extraction ends within 2 s whatever it returns (one that never ends
+    fails the run), and every Segment and name lies inside the extracted text.
