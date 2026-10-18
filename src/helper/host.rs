@@ -630,7 +630,7 @@ impl Host {
 /// its SIGINT/SIGTERM watcher before the first spawn; on a signal it cancels, kills and reaps
 /// every helper — one that ignores SIGINT, or a signal sent to s4's pid alone, included — and
 /// then s4 dies by that signal with its default disposition, as ripgrep would. A run that
-/// launches no helper installs nothing.
+/// launches no helper installs nothing, and a signal s4 was started ignoring is not watched.
 pub(crate) mod cancel {
     use super::Conn;
     use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
@@ -785,7 +785,16 @@ pub(crate) mod cancel {
         static WATCHER: OnceLock<()> = OnceLock::new();
         WATCHER.get_or_init(|| {
             use signal_hook::consts::{SIGINT, SIGTERM};
-            let watched = [SIGINT, SIGTERM];
+            // A signal s4 was started ignoring stays ignored, as POSIX asks and as rg, which
+            // installs no handler, leaves it (code review r2, Fable #2): `trap '' INT`, nohup,
+            // a background job of a non-interactive shell.
+            let watched: Vec<_> = [SIGINT, SIGTERM]
+                .into_iter()
+                .filter(|&s| !ignored(s))
+                .collect();
+            if watched.is_empty() {
+                return;
+            }
             // If the handler cannot be installed, Ctrl-C keeps M1's behaviour.
             let Ok(mut signals) = signal_hook::iterator::Signals::new(&watched) else {
                 return;
@@ -804,6 +813,17 @@ pub(crate) mod cancel {
                 }
             });
         });
+    }
+
+    /// Whether s4 was started with `sig` ignored.
+    #[cfg(unix)]
+    fn ignored(sig: libc::c_int) -> bool {
+        // SAFETY: with no new action, sigaction only reads the current one into `old`.
+        unsafe {
+            let mut old: libc::sigaction = std::mem::zeroed();
+            libc::sigaction(sig, std::ptr::null(), &mut old) == 0
+                && old.sa_sigaction == libc::SIG_IGN
+        }
     }
 
     /// Windows' console Ctrl-C is M5's.

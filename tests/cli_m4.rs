@@ -1085,6 +1085,74 @@ fn m4_19_a_signal_to_sfor_ends_its_readers() {
     }
 }
 
+/// Code review r2, Fable #2: a signal s4 was started ignoring (`trap '' INT`, nohup, a
+/// background job) stays ignored while its readers work, as rg leaves it: the search goes on
+/// and ends as it would have without the signal.
+#[cfg(target_os = "linux")]
+#[test]
+fn m4_26_a_signal_ignored_by_its_parent_is_ignored() {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    let fx = fixture();
+    let slow = slow_pdf(4, 2_000_000);
+    for i in 0..2 {
+        std::fs::write(fx.path().join(format!("m4/slow{i}.pdf")), &slow).unwrap();
+    }
+    let count = ok(&fx, &["--docs", "-c", "needle", "m4/report.docx"]);
+    let args = [
+        "--docs",
+        "-c",
+        "needle",
+        "m4/slow0.pdf",
+        "m4/slow1.pdf",
+        "m4/report.docx",
+    ];
+    for sig in [libc::SIGINT, libc::SIGTERM] {
+        let mut c = fx.s4(args);
+        // SAFETY: signal() is async-signal-safe, as pre_exec asks.
+        unsafe {
+            c.pre_exec(move || {
+                libc::signal(sig, libc::SIG_IGN);
+                Ok(())
+            });
+        }
+        let mut child = c
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let started = std::time::Instant::now();
+        while children_of(pid).is_empty() {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "no reader started"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        // SAFETY: a signal to our own child.
+        unsafe { libc::kill(pid as libc::pid_t, sig) };
+        let status = child.wait().unwrap();
+        let (mut out, mut err) = (String::new(), String::new());
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut out)
+            .unwrap();
+        child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut err)
+            .unwrap();
+        assert_eq!(status.code(), Some(0), "signal {sig}: {status:?}: {err}");
+        assert_eq!(err, "", "signal {sig}");
+        assert_eq!(out, format!("m4/report.docx:{count}"), "signal {sig}");
+    }
+}
+
 /// Fable r5 #1: a reader's own time limit holds for each document, never for its life: one
 /// reader (`-j1`) reads workbooks that take less than the limit each and more together.
 /// Fable r1 #8 (M4 code): the limit (`SEARCHFOR_READER_SECONDS`) is six times what one
