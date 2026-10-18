@@ -214,6 +214,20 @@ r4, Fable #5):
 yes | sfor --format markdown --json -m1 y    # does not end; rg -m1 y does
 ```
 
+### Plain files in the Trail layouts
+
+A file with no structure (Plain) prints `line: text` in `--flat` and `--tree` (`path:line: text`
+when the search has several files), like every other file of the search, where rg 14.1.1 prints
+`text` (or `path:text`) and adds the line number only with `-n` or on a terminal. The uniform
+layout is Sebastián's decision (the Hilo, 17/10/2026, after code review m3-code-r2, Codex #4);
+`--no-trail` prints exactly what rg prints:
+
+```sh
+printf 'needle\n' > notes.txt
+sfor needle notes.txt            # 1: needle
+sfor --no-trail needle notes.txt # needle, as rg
+```
+
 ### `--in-headings` on UTF-16 with a NUL character and a context
 
 On a walked file with binary data, `--in-headings` keeps the names rg 14.1.1 would have

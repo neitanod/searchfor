@@ -238,3 +238,15 @@ is a decision; the agent's measurements are the reasons given at the time.
 - **Still valid from M1** (8385): the search must be as fast as ripgrep, the added cost belongs
   to the files with Matches only, and a Match with no structure prints the way ripgrep prints
   it.
+
+---
+
+# Follow-up decision in the Hilo (17/10/2026): Plain files in the Trail layouts
+
+- **Question** (code review m3-code-r2, Codex #4): a Plain file prints `line: text` (`path:line: text`
+  with several files) in `--flat` and `--tree` (spec §6.2), where ripgrep prints `text` (or
+  `path:text`), with no line number unless `-n`. Option A: print Plain files exactly as ripgrep. Option B: keep the uniform layout and
+  document it as a deviation.
+- **Decision**: «La B». Plain files keep the line number and the separator in the Trail layouts, so every file of
+  a search prints the same way; `--no-trail` is the output that is byte-for-byte ripgrep's. The
+  deviation is written in `docs/rg-compat.md`.
