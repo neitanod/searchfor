@@ -19,7 +19,10 @@ pub fn label(s: &Segment) -> String {
         "item" => format!("• {name}"),
         "column" => format!("column «{name}»"),
         // M3: markup elements (`tag`) and CSV rows (`row 12`) show their name alone.
-        "document" | "key" | "element" | "tag" | "row" => name.into_owned(),
+        // M4: the image, section and symbol of an object file, and a document's pages,
+        // sheets, slides, tables, chapters, cells and notes show their name alone.
+        "document" | "key" | "element" | "tag" | "row" | "object" | "section" | "symbol"
+        | "page" | "sheet" | "slide" | "table" | "chapter" | "cell" | "notes" => name.into_owned(),
         kind => format!("{kind} {name}"),
     }
 }
@@ -71,38 +74,46 @@ fn write_trail(
     Ok(())
 }
 
-/// One line at `depth`: indentation, line number with `:` or `-`, text.
+/// One line at `depth`: indentation, line number (an object file's row: its hex offset, spec
+/// §5.7) with `:` or `-`, text.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_row(
     w: &mut dyn WriteColor,
     depth: usize,
     line_number: u64,
+    offset: Option<u64>,
     bytes: &[u8],
     subs: &[(usize, usize)],
     is_match: bool,
     o: &RenderOptions,
 ) -> std::io::Result<()> {
     let line = super::LineText::new(bytes);
-    write_row_text(w, depth, line_number, &line, subs, is_match, o)
+    write_row_text(w, depth, line_number, offset, &line, subs, is_match, o)
 }
 
 /// `write_row` for a line whose text the rows before may have worked out already.
+#[allow(clippy::too_many_arguments)]
 fn write_row_text(
     w: &mut dyn WriteColor,
     depth: usize,
     line_number: u64,
+    offset: Option<u64>,
     line: &super::LineText,
     subs: &[(usize, usize)],
     is_match: bool,
     o: &RenderOptions,
 ) -> std::io::Result<()> {
-    let digits = line_number.checked_ilog10().map_or(1, |d| d as usize + 1);
+    let at = match offset {
+        Some(off) => format!("0x{off:x}"),
+        None => line_number.to_string(),
+    };
     let sep = if is_match { ":" } else { "-" };
-    let used = 2 * (depth + 1) + if o.line_numbers { digits + 1 } else { 0 };
+    let used = 2 * (depth + 1) + if o.line_numbers { at.len() + 1 } else { 0 };
     let prefix = |w: &mut dyn WriteColor| -> std::io::Result<()> {
         write_indent(w, depth)?;
         if o.line_numbers {
             w.set_color(&style::spec("line"))?;
-            write!(w, "{line_number}")?;
+            w.write_all(at.as_bytes())?;
             w.reset()?;
             w.write_all(sep.as_bytes())?;
         }
@@ -164,7 +175,16 @@ impl TreeState {
             write_trail(w, &self.printed, r.trail, &self.seen)?;
             self.printed = r.trail.to_vec();
         }
-        write_row_text(w, depth, r.line_number, &r.line, &r.subs, r.is_match, o)?;
+        write_row_text(
+            w,
+            depth,
+            r.line_number,
+            r.offset,
+            &r.line,
+            &r.subs,
+            r.is_match,
+            o,
+        )?;
         if self.seen.len() == SEEN {
             self.seen.pop_front();
         }
@@ -188,7 +208,7 @@ impl TreeState {
         for (n, line) in super::section_lines(src, start, end) {
             let subs = kept.get(&n);
             let s = subs.map_or(&[][..], |v| v.as_slice());
-            write_row(w, trail.len(), n, line, s, subs.is_some(), o)?;
+            write_row(w, trail.len(), n, None, line, s, subs.is_some(), o)?;
         }
         Ok(())
     }
@@ -242,6 +262,35 @@ mod tests {
         let mut sig = seg("method", "m", 1, 1);
         sig.signature = Some("fn m(\u{1b})".into());
         assert_eq!(label(&sig), "fn m(\\u{1b})");
+    }
+
+    #[test]
+    fn labels_of_the_m4_kinds() {
+        for kind in [
+            "object", "section", "symbol", "page", "sheet", "slide", "table", "chapter", "cell",
+            "notes",
+        ] {
+            assert_eq!(label(&seg(kind, "N", 1, 1)), "N", "{kind}");
+        }
+    }
+
+    #[test]
+    fn object_rows_in_the_tree() {
+        let (src, d) = crate::output::fixture::object_rows();
+        assert_eq!(
+            plain(&d, &src, &opts()),
+            "docs/a.md\n  ELF x86-64\n    .rodata\n      main.version+0x8\n        0xe:version=needle\n      0x1e:another needle\n"
+        );
+    }
+
+    /// Codex r1 #9: a string with two Matches is one row, under its first Match's Trail.
+    #[test]
+    fn an_object_row_with_two_matches_is_one_row() {
+        let (src, d) = crate::output::fixture::object_row_twice();
+        assert_eq!(
+            plain(&d, &src, &opts()),
+            "docs/a.md\n  ELF x86-64\n    .rodata\n      s\n        0x6:needle needle\n"
+        );
     }
 
     fn plain(d: &Described, src: &[u8], o: &RenderOptions) -> String {

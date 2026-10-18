@@ -105,10 +105,13 @@ fn digits(mut n: u64) -> usize {
     d
 }
 
-/// `path:line:` (or `path-line-` for context), each part present when asked for.
+/// `path:line:` (or `path-line-` for context), each part present when asked for; an object
+/// file's row has `path:0x1f3a:`, its hex offset in place of the line (spec §5.7).
 struct Head<'a> {
     file: &'a FileHead,
     line: Option<u64>,
+    /// `line` is an object row's offset, printed in hex.
+    hex: bool,
     sep: &'static str,
 }
 
@@ -122,8 +125,17 @@ impl<'a> Head<'a> {
         Head {
             file,
             line: line_number.filter(|_| o.line_numbers),
+            hex: false,
             sep: if is_match { ":" } else { "-" },
         }
+    }
+
+    fn at_offset(mut self, offset: Option<u64>) -> Self {
+        if let (Some(_), Some(off)) = (self.line, offset) {
+            self.line = Some(off);
+            self.hex = true;
+        }
+        self
     }
 
     fn is_empty(&self) -> bool {
@@ -131,6 +143,14 @@ impl<'a> Head<'a> {
     }
 
     fn width(&self) -> usize {
+        let digits = |l: u64| {
+            if self.hex {
+                // `0x` and the hex digits.
+                2 + (l.checked_ilog2().unwrap_or(0) / 4 + 1) as usize
+            } else {
+                digits(l)
+            }
+        };
         self.file.width + self.line.map_or(0, |l| digits(l) + 1)
     }
 
@@ -143,7 +163,11 @@ impl<'a> Head<'a> {
         }
         if let Some(l) = self.line {
             w.set_color(&style::spec("line"))?;
-            write!(w, "{l}")?;
+            if self.hex {
+                write!(w, "0x{l:x}")?;
+            } else {
+                write!(w, "{l}")?;
+            }
             w.reset()?;
             w.write_all(self.sep.as_bytes())?;
         }
@@ -161,7 +185,7 @@ pub(crate) fn write_row(
     if r.gap_before {
         w.write_all(b"--\n")?;
     }
-    let head = Head::new(file, Some(r.line_number), r.is_match, o);
+    let head = Head::new(file, Some(r.line_number), r.is_match, o).at_offset(r.offset);
     if !r.is_match {
         let prefix = |w: &mut dyn WriteColor| head.write(w);
         let avail = o.width.saturating_sub(head.width());
@@ -303,6 +327,48 @@ mod tests {
         let mut w = NoColor::new(Vec::new());
         render(d, src, o, None, &mut w).unwrap();
         String::from_utf8(w.into_inner()).unwrap()
+    }
+
+    /// M4 plan, D6 and D8: an object file's row is at the hex offset of its first Match, and
+    /// rows are strings, not lines: no `--` between them, even with context on.
+    #[test]
+    fn object_rows_print_the_hex_offset_of_their_match() {
+        let (src, d) = object_rows();
+        let o = RenderOptions {
+            context: true,
+            ..flat()
+        };
+        assert_eq!(
+            plain(&d, &src, &o),
+            "docs/a.md:0xe: ELF x86-64 › .rodata › main.version+0x8 │ version=needle\n\
+             docs/a.md:0x1e: ELF x86-64 › .rodata │ another needle\n"
+        );
+        let o = RenderOptions {
+            with_filename: false,
+            ..flat()
+        };
+        assert!(plain(&d, &src, &o).starts_with("0xe: ELF"));
+        // -N hides the offset as it hides line numbers.
+        let o = RenderOptions {
+            line_numbers: false,
+            with_filename: false,
+            ..flat()
+        };
+        assert!(plain(&d, &src, &o).starts_with("ELF x86-64"));
+    }
+
+    /// Codex r1 #9: a string with two Matches is one row, at its first Match and with its
+    /// Trail, both Matches highlighted.
+    #[test]
+    fn an_object_row_with_two_matches_is_one_row() {
+        let (src, d) = object_row_twice();
+        assert_eq!(
+            plain(&d, &src, &flat()),
+            "docs/a.md:0x6: ELF x86-64 › .rodata › s │ needle needle\n"
+        );
+        let colored = ansi(&d, &src, &flat());
+        assert_eq!(colored.lines().count(), 1, "{colored}");
+        assert_eq!(colored.matches("needle\x1b[0m").count(), 2, "{colored}");
     }
 
     fn ansi(d: &Described, src: &[u8], o: &RenderOptions) -> String {

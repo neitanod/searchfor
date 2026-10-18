@@ -152,6 +152,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             let subs: Vec<(usize, usize)> =
                 p.line.submatches.iter().map(|s| (s.start, s.end)).collect();
             let row = Row {
+                offset: None,
                 trail: &trail,
                 line_number: p.line.line_number,
                 line: Rc::new(LineText::new(p.line.bytes(src))),
@@ -249,6 +250,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         let text = Rc::new(LineText::new(bytes));
         for (n, (trail, subs)) in groups.iter().enumerate() {
             let row = Row {
+                offset: None,
                 trail,
                 line_number: line.line_number,
                 line: text.clone(),
@@ -297,6 +299,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
                 let trail = group.unwrap_or_else(|| self.last.1.clone());
                 let subs = line.submatches.iter().map(|s| (s.start, s.end)).collect();
                 let row = Row {
+                    offset: None,
                     trail: &trail,
                     line_number: line.line_number,
                     line: Rc::new(LineText::new(bytes)),

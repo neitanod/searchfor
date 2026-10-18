@@ -205,6 +205,9 @@ type Subs = Vec<(usize, usize)>;
 pub(crate) struct Row<'a> {
     pub trail: &'a [Segment],
     pub line_number: u64,
+    /// An object file's row (`Described::offsets`): the hex offset printed in place of the
+    /// line number.
+    pub offset: Option<u64>,
     /// The line, shared by the rows of a Match line.
     pub line: Rc<LineText<'a>>,
     pub subs: Vec<(usize, usize)>,
@@ -310,7 +313,10 @@ fn match_rows<'a>(
     o: &RenderOptions,
 ) -> Vec<Row<'a>> {
     let bytes = m.bytes(src);
-    let groups: Vec<(&'a [Segment], Subs)> = if m.submatches.is_empty() || omitted(bytes, o) {
+    // An object file's row is one string: one row, with the Trail of its first Match (spec
+    // §5.7; code review of the M4 plan r1, Codex #9).
+    let one = d.offsets || m.submatches.is_empty() || omitted(bytes, o);
+    let groups: Vec<(&'a [Segment], Subs)> = if one {
         vec![(trail_of(d, i, 0), subs_of(&m.submatches))]
     } else {
         group_by_trail(
@@ -324,6 +330,10 @@ fn match_rows<'a>(
     groups
         .into_iter()
         .map(|(trail, subs)| Row {
+            // At its first Match (spec §5.7).
+            offset: d
+                .offsets
+                .then(|| m.absolute_offset + m.submatches.first().map_or(0, |s| s.start) as u64),
             trail,
             line_number: m.line_number,
             line: line.clone(),
@@ -371,7 +381,8 @@ impl<'a> Rows<'a> {
         let line = match item {
             Item::Match(m) | Item::Context(m) => m,
         };
-        let gap = self.prev.is_some_and(|p| p + 1 != line.line_number);
+        // An object file's rows are strings, not lines: no `--` between them.
+        let gap = !self.d.offsets && self.prev.is_some_and(|p| p + 1 != line.line_number);
         if gap {
             // A group without a Match keeps an empty Trail.
             self.ready.extend(self.pending.drain(..));
@@ -384,6 +395,7 @@ impl<'a> Rows<'a> {
                 let row = Row {
                     trail: self.last.unwrap_or(&[]),
                     line_number: c.line_number,
+                    offset: None,
                     line: Rc::new(LineText::new(c.bytes(self.src))),
                     subs: subs_of(&c.submatches),
                     is_match: false,
@@ -644,6 +656,56 @@ pub(crate) mod fixture {
             submatches: Vec::new(),
         };
         (line, bytes)
+    }
+
+    /// An object file's rows (spec §5.7): two printable strings of a binary on its first line,
+    /// with context on, as `sfor -C1` gives them.
+    pub fn object_rows() -> (Vec<u8>, Described) {
+        let src = b"\x7fELF\0\0version=needle\0\x01another needle\0".to_vec();
+        let row = |at: usize, text: &[u8], start: usize| {
+            let mut l = Line::owned(1, at as u64, text);
+            l.submatches = vec![Submatch {
+                start,
+                end: start + 6,
+            }];
+            Item::Match(l)
+        };
+        let base = vec![
+            seg("object", "ELF x86-64", 1, 1),
+            seg("section", ".rodata", 1, 1),
+        ];
+        let mut sym = base.clone();
+        sym.push(seg("symbol", "main.version+0x8", 1, 1));
+        let mut d = described(
+            &src,
+            vec![row(6, b"version=needle", 8), row(22, b"another needle", 8)],
+            vec![vec![sym], vec![base]],
+        );
+        d.offsets = true;
+        d.format = Some("elf".into());
+        (src, d)
+    }
+
+    /// An object file's row holding two Matches of one symbol, whose Trails differ in the
+    /// distance into the symbol (code review of the M4 plan r1, Codex #9).
+    pub fn object_row_twice() -> (Vec<u8>, Described) {
+        let src = b"\x7fELF\0\0needle needle\0".to_vec();
+        let mut l = Line::owned(1, 6, b"needle needle");
+        l.submatches = vec![
+            Submatch { start: 0, end: 6 },
+            Submatch { start: 7, end: 13 },
+        ];
+        let at = |n: &str| {
+            vec![
+                seg("object", "ELF x86-64", 1, 1),
+                seg("section", ".rodata", 1, 1),
+                seg("symbol", n, 1, 1),
+            ]
+        };
+        let mut d = described(&src, vec![Item::Match(l)], vec![vec![at("s"), at("s+0x7")]]);
+        d.offsets = true;
+        d.format = Some("elf".into());
+        (src, d)
     }
 
     /// Line `n` as a Match, with one submatch per occurrence of `needle`.
