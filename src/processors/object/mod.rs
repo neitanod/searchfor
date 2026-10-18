@@ -31,6 +31,28 @@ impl super::Processor for Object {
     }
 }
 
+/// `f()`, or None when it panics, without the panic's message: the panic hook stays silent on
+/// the thread while `f` runs, and prints every other panic as before.
+fn quietly<T>(f: impl FnOnce() -> Option<T>) -> Option<T> {
+    use std::cell::Cell;
+    thread_local! {
+        static QUIET: Cell<bool> = const { Cell::new(false) };
+    }
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let before = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !QUIET.with(Cell::get) {
+                before(info);
+            }
+        }));
+    });
+    let was = QUIET.with(|q| q.replace(true));
+    let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    QUIET.with(|q| q.set(was));
+    got.ok().flatten()
+}
+
 /// One section: its name, the bytes of the file it holds, and its symbols, sorted by offset,
 /// one per offset.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,8 +87,14 @@ pub struct Map {
 
 impl Map {
     /// None when goblin does not read `bytes` as an ELF, PE or Mach-O file (the file is then
-    /// Plain, without a warning: M4 plan, D9).
+    /// Plain, without a warning: M4 plan, D9), also when it panics on them: goblin 0.10.7 does
+    /// arithmetic on the file's values that overflows in a debug build (Codex M4 code r4 #1),
+    /// and the Processor runs in s4's process.
     pub fn parse(bytes: &[u8]) -> Option<Map> {
+        quietly(|| Map::read(bytes))
+    }
+
+    fn read(bytes: &[u8]) -> Option<Map> {
         let images = match goblin::Object::parse(bytes).ok()? {
             goblin::Object::Elf(e) => vec![elf(&e, bytes.len())],
             goblin::Object::PE(p) => vec![pe(&p, bytes)],
@@ -591,6 +619,33 @@ mod tests {
         );
         assert_eq!(demangle("_ZN3foo3barEv"), "_ZN3foo3barEv"); // C++: kept
         assert_eq!(demangle("main.version"), "main.version");
+    }
+
+    /// Codex M4 code r4 #1 and the implementers' r4 note: goblin 0.10.7 panics on a 64-bit
+    /// Mach-O with an `LC_MAIN` whose `__TEXT` is loaded below its file offset (a subtraction
+    /// that overflows, goblin/src/mach/mod.rs:280, in a debug build; a release build wraps).
+    /// The Processor runs in s4's process: such a file is no object file. A PE has the same
+    /// risk: a COFF symbol whose name's offset in the string table is under 4 (pe/symbol.rs:240,
+    /// found fuzzing); none was found in ELF files.
+    #[test]
+    fn a_file_goblin_panics_on_is_no_object_file() {
+        let s = Spec::new()
+            .section("__TEXT,__text", b"\xc3\0\0\0needle\0")
+            .entry(0)
+            .vmaddr(0);
+        let pe = Spec::new()
+            .section(".rdata", b"\0needle\0")
+            .symbol("version_string", 0, 1);
+        for f in [
+            fixture::macho(&s).file,
+            fixture::pe_with_name_offset_0(fixture::pe(&pe).file),
+        ] {
+            let got = std::panic::catch_unwind(|| Map::parse(&f));
+            let got = got.expect("Map::parse panicked");
+            if cfg!(debug_assertions) {
+                assert_eq!(got, None);
+            }
+        }
     }
 
     #[test]

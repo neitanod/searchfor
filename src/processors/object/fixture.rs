@@ -13,6 +13,11 @@ pub struct Spec {
     pub machine: u32,
     /// The symbols Mach-O writes without `N_EXT`, by name: the others are external.
     pub locals: Vec<String>,
+    /// Mach-O only: an `LC_MAIN` with this entry offset.
+    pub entry: Option<u64>,
+    /// Mach-O only: the address every segment is loaded at, instead of 0x1_0000_0000 plus its
+    /// file offset (one lower than its file offset is malformed).
+    pub vmaddr: Option<u64>,
 }
 
 impl Spec {
@@ -42,6 +47,16 @@ impl Spec {
 
     pub fn machine(mut self, m: u32) -> Self {
         self.machine = m;
+        self
+    }
+
+    pub fn entry(mut self, offset: u64) -> Self {
+        self.entry = Some(offset);
+        self
+    }
+
+    pub fn vmaddr(mut self, addr: u64) -> Self {
+        self.vmaddr = Some(addr);
         self
     }
 }
@@ -316,8 +331,8 @@ pub fn pe(spec: &Spec) -> Layout {
 
 /// Mach-O 64-bit little-endian executable: one `LC_SEGMENT_64` per segment name, in the order
 /// the sections first name them (`__TEXT,__cstring` names segment `__TEXT`, section
-/// `__cstring`), and an `LC_SYMTAB` when `spec.symbols` is not empty. Sections are loaded at
-/// 0x1_0000_0000 plus their file offset.
+/// `__cstring`), an `LC_SYMTAB` when `spec.symbols` is not empty, and an `LC_MAIN` with
+/// `spec.entry`. Sections are loaded at 0x1_0000_0000 plus their file offset.
 pub fn macho(spec: &Spec) -> Layout {
     const BASE: u64 = 0x1_0000_0000;
     let cputype = if spec.machine == 0 {
@@ -334,8 +349,10 @@ pub fn macho(spec: &Spec) -> Layout {
         }
     }
     let with_syms = !spec.symbols.is_empty();
-    let cmds: usize =
-        segs.iter().map(|s| 72 + 80 * s.1.len()).sum::<usize>() + if with_syms { 24 } else { 0 };
+    let with_main = spec.entry.is_some();
+    let cmds: usize = segs.iter().map(|s| 72 + 80 * s.1.len()).sum::<usize>()
+        + if with_syms { 24 } else { 0 }
+        + if with_main { 24 } else { 0 };
     let mut at = 32 + cmds;
     let mut starts = vec![0; spec.sections.len()];
     for (_, idx) in &segs {
@@ -370,7 +387,10 @@ pub fn macho(spec: &Spec) -> Layout {
     put32(&mut out, cputype);
     put32(&mut out, 3);
     put32(&mut out, 2); // MH_EXECUTE
-    put32(&mut out, (segs.len() + usize::from(with_syms)) as u32);
+    put32(
+        &mut out,
+        (segs.len() + usize::from(with_syms) + usize::from(with_main)) as u32,
+    );
     put32(&mut out, cmds as u32);
     put32(&mut out, 0);
     put32(&mut out, 0);
@@ -384,7 +404,7 @@ pub fn macho(spec: &Spec) -> Layout {
         put32(&mut out, 0x19);
         put32(&mut out, (72 + 80 * idx.len()) as u32);
         name16(&mut out, seg);
-        put64(&mut out, BASE + lo as u64);
+        put64(&mut out, spec.vmaddr.unwrap_or(BASE + lo as u64));
         put64(&mut out, (hi - lo) as u64);
         put64(&mut out, lo as u64);
         put64(&mut out, (hi - lo) as u64);
@@ -417,6 +437,12 @@ pub fn macho(spec: &Spec) -> Layout {
         put32(&mut out, stroff as u32);
         put32(&mut out, strtab.len() as u32);
     }
+    if let Some(entry) = spec.entry {
+        put32(&mut out, 0x8000_0028); // LC_MAIN
+        put32(&mut out, 24);
+        put64(&mut out, entry);
+        put64(&mut out, 0);
+    }
     for &i in &order {
         out.resize(starts[i], 0);
         out.extend(&spec.sections[i].1);
@@ -427,6 +453,16 @@ pub fn macho(spec: &Spec) -> Layout {
         out.extend(&strtab);
     }
     Layout { file: out, starts }
+}
+
+/// `file`, a PE written by `pe` whose first symbol's name is in the string table, with that
+/// name's offset made 0, inside the table's length field: malformed (goblin 0.10.7 subtracts 4
+/// from it).
+pub fn pe_with_name_offset_0(mut file: Vec<u8>) -> Vec<u8> {
+    let symtab = u32::from_le_bytes(file[0x4c..0x50].try_into().unwrap()) as usize;
+    assert_eq!(&file[symtab..symtab + 4], &[0; 4], "the name is in the string table");
+    file[symtab + 4..symtab + 8].fill(0);
+    file
 }
 
 /// A fat (universal) Mach-O holding `arches`, each `(cputype, file)`, at 4 KiB boundaries.

@@ -1685,3 +1685,49 @@ fn m4_25_a_command_that_fails_late_is_an_error_after_its_lines() {
         (2, stderr(&r))
     );
 }
+
+/// Codex M4 code r4 #1: goblin 0.10.7 panics (debug builds) on a Mach-O whose `__TEXT` is
+/// loaded below its file offset with an `LC_MAIN`, and on a PE with a symbol name's offset
+/// under 4, and the `object` Processor runs in s4's process: the file, by its name or on stdin,
+/// is searched as rg searches it, without a word of the panic, in every layout.
+#[test]
+fn m4_29_an_object_file_goblin_panics_on_is_searched_as_rg_searches_it() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = fixture();
+    let spec = obj::Spec::new()
+        .section("__TEXT,__text", b"\xc3\0\0\0needle\0")
+        .entry(0)
+        .vmaddr(0);
+    std::fs::write(fx.path().join("m4/bin/bad-mac"), obj::macho(&spec).file).unwrap();
+    // The same risk in a PE: a symbol name's offset under 4 (pe/symbol.rs:240).
+    let pe = obj::Spec::new()
+        .section(".rdata", b"\0needle\0")
+        .symbol("version_string", 0, 1);
+    let pe = obj::pe_with_name_offset_0(obj::pe(&pe).file);
+    std::fs::write(fx.path().join("m4/bin/bad.exe"), pe).unwrap();
+    for (path, file) in [
+        ("m4/bin/bad-mac", "m4/bin/bad-mac"),
+        ("-", "m4/bin/bad-mac"),
+        ("m4/bin/bad.exe", "m4/bin/bad.exe"),
+        ("-", "m4/bin/bad.exe"),
+    ] {
+        let bad = fx.path().join(file);
+        let stdin = path == "-";
+        let r = run(fx
+            .rg(["needle", path])
+            .stdin(std::fs::File::open(&bad).unwrap()));
+        for layout in ["--flat", "--tree", "--no-trail"] {
+            let s = run(fx
+                .s4([layout, "needle", path])
+                .stdin(std::fs::File::open(&bad).unwrap()));
+            let what = format!("{layout} {file} (stdin {stdin})");
+            assert_eq!(stderr(&s), "", "{what}");
+            assert_eq!(code(&s), code(&r), "{what}");
+            if layout != "--tree" {
+                assert_eq!(stdout(&s), stdout(&r), "{what}");
+            }
+        }
+    }
+}
