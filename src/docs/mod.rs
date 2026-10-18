@@ -9,6 +9,7 @@ pub mod odf;
 pub mod ooxml;
 pub mod pdf;
 pub mod sqlite;
+pub mod table;
 pub mod xml;
 pub mod zipped;
 
