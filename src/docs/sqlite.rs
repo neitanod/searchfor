@@ -540,6 +540,8 @@ fn columns(sql: &str) -> Columns {
     let mut ipk = None;
     // The primary key's columns, by name, from a column's `PRIMARY KEY` or the table's.
     let mut pk: Vec<String> = Vec::new();
+    // Whether `pk` is the table's constraint, `PRIMARY KEY(…)`, rather than a column's.
+    let mut table_pk = false;
     let mut virtuals: Vec<usize> = Vec::new();
     let mut defaults: Vec<Option<Value>> = Vec::new();
     for part in split_commas(&toks[open + 1..close.max(open + 1)]) {
@@ -559,6 +561,7 @@ fn columns(sql: &str) -> Columns {
                     .iter()
                     .filter_map(|c| c.first().and_then(Tok::name))
                     .collect();
+                table_pk = true;
             }
             continue;
         }
@@ -596,6 +599,7 @@ fn columns(sql: &str) -> Columns {
         }
         if let Some(at) = primary_key(part) {
             pk = vec![name.clone()];
+            table_pk = false;
             if ty == "INTEGER" && !part.get(at).is_some_and(|t| t.is("DESC")) {
                 ipk = Some(names.len());
             }
@@ -614,10 +618,12 @@ fn columns(sql: &str) -> Columns {
         .filter_map(|k| names.iter().position(|n| n.eq_ignore_ascii_case(k)))
         .collect();
     if ipk.is_none()
+        && table_pk
         && let [only] = key.as_slice()
         && types[*only] == "INTEGER"
     {
-        // A table constraint `PRIMARY KEY(id)` over an INTEGER column makes it the rowid too.
+        // A table constraint `PRIMARY KEY(id)` over an INTEGER column makes it the rowid too,
+        // also with DESC; a column's `INTEGER PRIMARY KEY DESC` does not (Codex r1 #6).
         ipk = Some(*only);
     }
     let stored = if without_rowid {
@@ -998,6 +1004,19 @@ mod tests {
         assert_eq!(columns("CREATE TABLE t([a[b] TEXT, c)").names, ["a[b", "c"]);
         let c = columns("CREATE TABLE t(a INTEGER, b, PRIMARY KEY(a))");
         assert_eq!(c.names, ["a", "b"]);
+        assert_eq!(c.ipk, Some(0));
+    }
+
+    /// Codex r1 #6: SQLite's quirk: a column's `INTEGER PRIMARY KEY DESC` is no alias of the
+    /// rowid, and the row stores its value (NULL when the insert gave none); a table's
+    /// `PRIMARY KEY(id DESC)` over an INTEGER column is one.
+    #[test]
+    fn integer_primary_key_desc_is_not_the_rowid() {
+        let c = columns("CREATE TABLE t(id INTEGER PRIMARY KEY DESC, note TEXT)");
+        assert_eq!(c.ipk, None);
+        let c = columns("CREATE TABLE t(id INTEGER PRIMARY KEY ASC, note TEXT)");
+        assert_eq!(c.ipk, Some(0));
+        let c = columns("CREATE TABLE t(id INTEGER, note TEXT, PRIMARY KEY(id DESC))");
         assert_eq!(c.ipk, Some(0));
     }
 
