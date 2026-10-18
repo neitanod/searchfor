@@ -69,10 +69,19 @@ ureq = "3"
 tempfile = "3"
 # CSV and TSV fields with their byte offsets (spec §5.5; M3 plan, D3).
 csv-core = "0.1"
+# Object files, ELF, PE and Mach-O, and Rust symbol names (spec §5.7; M4 plan, D3).
+goblin = { version = "0.10", default-features = false, features = ["std", "elf32", "elf64", "mach32", "mach64", "pe32", "pe64", "te", "endian_fd"] }
+rustc-demangle = "0.1"
+# --docs (spec §5.8; M4 plan, D12, D13): the zip of Office, OpenDocument and EPUB files, and
+# PDF's objects, fonts, streams and encryption. Their XML and SQLite are read by our own code.
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+lopdf = { version = "0.45", default-features = false }
 
 # Ctrl-C with Helper Processors running (spec §4.4, Lifetime; M2 plan, D42).
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"
+# The limits of the child that extracts a document (M4 plan, D30): setrlimit and kill.
+libc = "0.2"
 
 [dev-dependencies]
 assert_cmd = "2"
