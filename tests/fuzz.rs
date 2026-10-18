@@ -748,8 +748,19 @@ fn document_seeds() -> Vec<(Kind, Vec<u8>)> {
     let slides: &[(&[&str], Option<&str>)] =
         &[(&["T", "needle"], Some("notes needle")), (&["2"], None)];
     let sqlite = |n: &str| std::fs::read(common::source_dir().join("docs").join(n)).unwrap();
+    // A Word document whose body is UTF-16, as its BOM says (Codex r1 #5).
+    let utf16 = doc::rezip(&doc::docx(&blocks), |name, data| {
+        if name != "word/document.xml" {
+            return data;
+        }
+        let x = String::from_utf8(data).unwrap();
+        let mut out = vec![0xff, 0xfe];
+        out.extend(x.encode_utf16().flat_map(u16::to_le_bytes));
+        out
+    });
     vec![
         (Kind::Docx, doc::docx(&blocks)),
+        (Kind::Docx, utf16),
         (Kind::Odt, doc::odt(&blocks)),
         (Kind::Xlsx, doc::xlsx(&[("S", sheet), ("T", sheet)])),
         (Kind::Ods, doc::ods(&[("S", sheet)])),
