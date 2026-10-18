@@ -814,7 +814,9 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
     first; they print in their place). Values print as the `sqlite3` shell shows them: an `INTEGER PRIMARY
     KEY` is the rowid, an integral value of a REAL column `3.0`, NULL empty, a blob
     `[blob N bytes]`, a `VIRTUAL` generated column (not stored) empty, a column added by
-    `ALTER TABLE ADD COLUMN` its `DEFAULT` in the rows written before; UTF-16 databases are
+    `ALTER TABLE ADD COLUMN` its `DEFAULT` in the rows written before, the constant as SQLite
+    reads it (`(('x'))`, `1e-3`, `0x2a`) with the column's affinity (`7.0` and `'7.0'` are `7` in
+    an INTEGER or NUMERIC column, a number stays as written in a TEXT one); UTF-16 databases are
     transcoded. Indexes, views and triggers are not read,
     nor a `-wal` file beside the database, so changes not yet checkpointed into it are not found
     (D15, D16).
@@ -856,7 +858,8 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
   again for that, never an external program (M4 plan, D30). A worker may allocate 1 024 MiB and
   spend 60 s on one document; past either it is ended, and the document gets one warning and
   is searched as ripgrep searches it. A SIGINT or SIGTERM to sfor ends its workers with it, and
-  a worker ends when sfor does:
+  sfor prints nothing more, for the documents they were reading or the ones still waiting for
+  a worker, as ripgrep prints nothing then; a worker ends when sfor does:
 
   ```
   sfor: big.pdf: pdf: reading it needed more than the 1024 MiB a reader may use
@@ -1183,7 +1186,9 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
 26. Performance of M4 (`scripts/bench-m4.sh`, M4 plan D23): over a corpus of documents, object
     files and text files, without `--docs` and `--binary`, with a pattern no file matches, a
     sparse one and `--no-trail`, sfor takes at most 1.1 × rg; `--docs` over files that are not
-    documents (text files, and object files, which have no extension), at most 1.1 × rg; `--binary` over object files with a sparse pattern, sfor's time
+    documents (text files, and object files, which have no extension), at most 1.05 × sfor
+    without `--docs` (over those small files sfor's ratio to rg is its own, the same with or
+    without `--docs`: M4 plan r6); `--binary` over object files with a sparse pattern, sfor's time
     over rg's is at most the largest matching object ÷ 100 MB/s plus all matching objects ÷
     (100 MB/s × threads) plus 0.05 s; `--docs` over the documents, sfor's time over rg's on their
     extracted texts is at most the texts' size ÷ (2 MB/s × threads) plus 0.1 s. In
