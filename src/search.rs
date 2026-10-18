@@ -101,8 +101,16 @@ pub fn max_count(args: &Args) -> Option<u64> {
     args.max_count.filter(|_| args.within.is_none())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The `WalkBuilder`s `walker` built on this thread: one per run (code review r4, Fable #1).
+    pub static WALKERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// `cwd` anchors the globs, as ripgrep does (`-g 'docs/*.md' x docs` works).
 pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder> {
+    #[cfg(test)]
+    WALKERS.with(|n| n.set(n.get() + 1));
     let first = paths.first().cloned().unwrap_or_else(|| PathBuf::from("."));
     let mut w = WalkBuilder::new(&first);
     for p in paths.iter().skip(1) {

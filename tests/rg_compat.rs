@@ -1387,7 +1387,8 @@ fn the_separator_with_one_thread_waits_for_a_line() {
 /// Code review r3, Codex #4: `--pre-glob` is validated before `-m0` and an empty pattern
 /// file search nothing; and as ripgrep 14.1.1 (hiargs.rs), the file types are validated
 /// first, then the globs, then the `--pre-glob` globs, and only then the patterns are
-/// compiled: with two errors, s4 reports rg's one, in every layout.
+/// compiled: with two errors, s4 reports rg's one, in every layout. `--type-list` validates
+/// the same three before it prints the list (code review r4, Fable #5).
 #[test]
 fn usage_errors_come_in_ripgreps_order() {
     if !reference_rg() {
@@ -1419,6 +1420,14 @@ fn usage_errors_come_in_ripgreps_order() {
             "needle",
             "md",
         ],
+        // Code review r4, Fable #5: `--type-list` validates the file types, the globs and the
+        // `--pre-glob` globs first, and reads no pattern file.
+        vec!["--type-list", "-tunknown"],
+        vec!["--type-list", "-Tunknown"],
+        vec!["--type-list", "-g", "[", "-tunknown"],
+        vec!["--type-list", "--iglob", "["],
+        vec!["--type-list", "--pre-glob", "["],
+        vec!["--type-list", "-f", "/nonexistent"],
     ];
     for c in &cases {
         let want = rg(&fx, c, In::Null);

@@ -24,7 +24,7 @@ use grep_printer::{
 };
 use grep_regex::RegexMatcher;
 use grep_searcher::{BinaryDetection, Searcher, Sink, SinkContext, SinkFinish, SinkMatch};
-use ignore::{DirEntry, WalkState};
+use ignore::{DirEntry, WalkBuilder, WalkState};
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -192,6 +192,11 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         });
     }
     if args.type_list {
+        // ripgrep 14.1.1 validates the file types, the globs and the `--pre-glob` globs before
+        // it prints the list, and reads no pattern (code review r4, Fable #5).
+        let cwd = std::env::current_dir()?;
+        search::walker(args, &[], &cwd)?;
+        Preprocess::new(args, &cwd)?;
         std::io::stdout()
             .lock()
             .write_all(search::RG_TYPES.as_bytes())?;
@@ -212,9 +217,10 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         (vec![PathBuf::from(".")], false, true)
     };
     // As ripgrep 14.1.1 (hiargs.rs), the file types, the globs and the `--pre-glob` globs are
-    // validated in this order before a pattern is compiled (code review r3, Codex #4).
+    // validated in this order before a pattern is compiled (code review r3, Codex #4). The
+    // walker is built once, here, and walks the paths (code review r4, Fable #1).
     let cwd = std::env::current_dir()?;
-    search::walker(args, &paths, &cwd)?;
+    let walker = search::walker(args, &paths, &cwd)?;
     let pre = Preprocess::new(args, &cwd)?;
     // Nothing can match: ripgrep 14.1.1 searches nothing and exits 1, in every mode and without
     // a JSON summary, once its file types and globs are valid (an unknown type is still an
@@ -324,6 +330,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         docs: detector.as_ref().filter(|_| args.docs),
         in_memory: search::rg_in_memory(&paths, implicit_stdin),
         paths,
+        walker,
         strip_dot: implicit_cwd,
         with_filename,
         summary: summary_mode,
@@ -558,6 +565,8 @@ struct Ctx<'a> {
     matcher: RegexMatcher,
     msgs: Messages,
     paths: Vec<PathBuf>,
+    /// Walks `paths`, with the file types and the globs (`search::walker`).
+    walker: WalkBuilder,
     /// The current directory was searched implicitly: print `md/a.md`, not `./md/a.md`.
     strip_dot: bool,
     in_memory: bool,
@@ -599,8 +608,7 @@ impl Ctx<'_> {
         init: impl Fn() -> S + Sync,
         visit: impl Fn(&mut S, Target) + Sync,
     ) -> anyhow::Result<()> {
-        let cwd = std::env::current_dir()?;
-        let w = search::walker(self.args, &self.paths, &cwd)?;
+        let w = &self.walker;
         if self.sequential {
             let mut state = init();
             for r in w.build() {
@@ -2750,6 +2758,24 @@ mod tests {
             true,
             &file
         ));
+    }
+
+    /// Code review r4, Fable #1: the walker, with its file types and globs, is built once per
+    /// run; validating them before the pattern (code review r3, Codex #4) built it twice.
+    #[test]
+    fn a_run_builds_its_walker_once() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("a.md");
+        std::fs::write(&f, "# A\nnothing here\n").unwrap();
+        for extra in [&["-q"][..], &["-q", "-j1"], &["-q", "--docs"]] {
+            let mut v = vec!["s4"];
+            v.extend_from_slice(extra);
+            v.extend(["needle", f.to_str().unwrap()]);
+            let a = cli::parse(v.iter().map(Into::into).collect()).unwrap();
+            search::WALKERS.with(|n| n.set(0));
+            assert_eq!(main(&a).unwrap(), 1);
+            assert_eq!(search::WALKERS.with(|n| n.get()), 1, "{v:?}");
+        }
     }
 
     /// Code review r2, Fable #2 and Codex #4: an explicit file searched in memory runs its
