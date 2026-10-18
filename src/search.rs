@@ -121,6 +121,17 @@ pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder>
     if !no_ignore {
         w.add_custom_ignore_filename(".rgignore");
     }
+    // The file types before the globs, as ripgrep 14.1.1 validates them (code review r3).
+    let mut tb = rg_types()?;
+    // In command-line order, as ripgrep: the last selection of a type wins.
+    for (select, t) in &args.type_selections {
+        if *select {
+            tb.select(t);
+        } else {
+            tb.negate(t);
+        }
+    }
+    w.types(tb.build()?);
     // As ripgrep 14.1.1: every -g first, then every --iglob (case-insensitive); the relative
     // order of the two kinds on the command line does not matter (measured in review r2).
     let mut ob = OverrideBuilder::new(cwd);
@@ -134,16 +145,6 @@ pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder>
         }
     }
     w.overrides(ob.build()?);
-    let mut tb = rg_types()?;
-    // In command-line order, as ripgrep: the last selection of a type wins.
-    for (select, t) in &args.type_selections {
-        if *select {
-            tb.select(t);
-        } else {
-            tb.negate(t);
-        }
-    }
-    w.types(tb.build()?);
     if args.sort.as_deref() == Some("path") {
         w.sort_by_file_path(|a, b| a.cmp(b));
     }

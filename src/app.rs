@@ -211,11 +211,15 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     } else {
         (vec![PathBuf::from(".")], false, true)
     };
+    // As ripgrep 14.1.1 (hiargs.rs), the file types, the globs and the `--pre-glob` globs are
+    // validated in this order before a pattern is compiled (code review r3, Codex #4).
+    let cwd = std::env::current_dir()?;
+    search::walker(args, &paths, &cwd)?;
+    let pre = Preprocess::new(args, &cwd)?;
     // Nothing can match: ripgrep 14.1.1 searches nothing and exits 1, in every mode and without
     // a JSON summary, once its file types and globs are valid (an unknown type is still an
     // error); the patterns are not compiled. We validate our Formats as well.
     if pats.patterns.is_empty() || args.max_count == Some(0) {
-        search::walker(args, &paths, &std::env::current_dir()?)?;
         if !args.formats.is_empty() {
             let registry = load_registry(&msgs, formats::user_formats_dir().as_deref());
             Detector::new(&registry, &args.formats)?;
@@ -316,7 +320,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         args,
         matcher,
         msgs,
-        pre: Preprocess::new(args, &std::env::current_dir()?)?,
+        pre,
         docs: detector.as_ref().filter(|_| args.docs),
         in_memory: search::rg_in_memory(&paths, implicit_stdin),
         paths,

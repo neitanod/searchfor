@@ -1384,6 +1384,59 @@ fn the_separator_with_one_thread_waits_for_a_line() {
     r.assert_empty();
 }
 
+/// Code review r3, Codex #4: `--pre-glob` is validated before `-m0` and an empty pattern
+/// file search nothing; and as ripgrep 14.1.1 (hiargs.rs), the file types are validated
+/// first, then the globs, then the `--pre-glob` globs, and only then the patterns are
+/// compiled: with two errors, s4 reports rg's one, in every layout.
+#[test]
+fn usage_errors_come_in_ripgreps_order() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let empty = tempfile::NamedTempFile::new().unwrap();
+    let empty = empty.path().to_str().unwrap().to_string();
+    let mut r = Report(Vec::new());
+    let cases: Vec<Vec<&str>> = vec![
+        vec!["-m0", "--pre-glob", "[", "needle", "md"],
+        vec!["--pre", "cat", "--pre-glob", "[", "-m0", "needle", "md"],
+        vec!["-f", &empty, "--pre-glob", "[", "md"],
+        vec!["--pre-glob", "[a", "(", "md"],
+        vec!["-g", "[", "(", "md"],
+        vec!["-tunknown", "(", "md"],
+        vec!["-tunknown", "-g", "[", "needle", "md"],
+        vec!["-g", "[", "-tunknown", "needle", "md"],
+        vec!["-g", "[", "--pre-glob", "[a", "needle", "md"],
+        vec!["--pre-glob", "[a", "-g", "[", "needle", "md"],
+        vec!["-tunknown", "--pre-glob", "[a", "needle", "md"],
+        vec![
+            "-m0",
+            "-tunknown",
+            "-g",
+            "[",
+            "--pre-glob",
+            "[a",
+            "needle",
+            "md",
+        ],
+    ];
+    for c in &cases {
+        let want = rg(&fx, c, In::Null);
+        let want = (code(&want), common::stderr(&want).replacen("rg:", "s4:", 1));
+        for mode in [&["--no-trail"][..], &[], &["--json"]] {
+            let mut s = mode.to_vec();
+            s.extend_from_slice(c);
+            let got = s4(&fx, &s, In::Null);
+            r.check(
+                format!("{s:?}"),
+                want.clone(),
+                (code(&got), common::stderr(&got)),
+            );
+        }
+    }
+    r.assert_empty();
+}
+
 /// The deviation «A binary file or stdin with a context» of docs/rg-compat.md (code review r5,
 /// Fable #3): when the first line after the NUL is a context line, rg 14.1.1 and `--no-trail`
 /// print nothing and exit 1, and the Trail layouts print the binary message, as `rg --json`
