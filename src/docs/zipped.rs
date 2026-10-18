@@ -73,7 +73,7 @@ impl<'a> Zip<'a> {
 }
 
 /// The text of the XML part `name`, by its encoding (Codex r1 #5): UTF-16 when its BOM or
-/// its first bytes (`<?` in UTF-16) say so, else the encoding its declaration names, UTF-8
+/// its first bytes (`<` in UTF-16) say so, else the encoding its declaration names, UTF-8
 /// when it names none. UTF-8, UTF-16, US-ASCII, ISO-8859-1 and Windows-1252 are read; a part
 /// in another encoding is an error that names it.
 fn decode(name: &str, b: Vec<u8>) -> Result<String, DocError> {
@@ -110,10 +110,11 @@ fn decode(name: &str, b: Vec<u8>) -> Result<String, DocError> {
     if starts(&[0xfe, 0xff]) {
         return Ok(utf16(&b[2..], true));
     }
-    if starts(&[b'<', 0, b'?', 0]) {
+    // Its first `<`, also without a declaration (Fable M4 code r2 #5).
+    if starts(&[b'<', 0]) {
         return Ok(utf16(&b, false));
     }
-    if starts(&[0, b'<', 0, b'?']) {
+    if starts(&[0, b'<']) {
         return Ok(utf16(&b, true));
     }
     let encoding = declared(&b).map(|e| e.to_ascii_lowercase());
@@ -258,6 +259,13 @@ mod tests {
             assert_eq!(e.text, "the needle é\n".as_bytes(), "big endian: {big}");
             // Without the BOM, its first bytes tell it.
             let d = reencode(&|x| utf16(x, big)[2..].to_vec());
+            let e = extract(Kind::Docx, &d).unwrap();
+            assert_eq!(e.text, "the needle é\n".as_bytes(), "big endian: {big}");
+            // Fable M4 code r2 #5: without the BOM and the declaration too, by its first `<`.
+            let d = reencode(&|x| {
+                let body = &x[x.find("?>").unwrap() + 2..];
+                utf16(body, big)[2..].to_vec()
+            });
             let e = extract(Kind::Docx, &d).unwrap();
             assert_eq!(e.text, "the needle é\n".as_bytes(), "big endian: {big}");
         }
