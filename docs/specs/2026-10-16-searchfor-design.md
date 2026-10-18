@@ -813,7 +813,8 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
     table's `CREATE TABLE`, in that order (a `WITHOUT ROWID` table stores its key's columns
     first; they print in their place). Values print as the `sqlite3` shell shows them: an `INTEGER PRIMARY
     KEY` is the rowid, an integral value of a REAL column `3.0`, NULL empty, a blob
-    `[blob N bytes]`; UTF-16 databases are transcoded. Indexes, views and triggers are not read,
+    `[blob N bytes]`, a `VIRTUAL` generated column (not stored) empty; UTF-16 databases are
+    transcoded. Indexes, views and triggers are not read,
     nor a `-wal` file beside the database, so changes not yet checkpointed into it are not found
     (D15, D16).
   - Page, sheet, slide, table, row, column, cell, chapter and notes names are not in the text, so
@@ -839,8 +840,8 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
   a PDF run at most 8 000 000 operations plus 20 000 per page, pages and Forms together, each
   Form drawn counting 16 more; an operation has at most 65 536 operands; a ToUnicode map holds
   at most 200 000 entries (a range of codes counts one); the object streams of a PDF hold at
-  most 64 MiB and 2 000 000 tokens together, and while an encrypted PDF loads each of its
-  streams decompresses to at most 1 MiB. Past any of these the document is not read:
+  most 64 MiB and 2 000 000 tokens together, their objects at offsets that grow. Past any of
+  these the document is not read:
 
   ```
   sfor: bomb.docx: docx: word/document.xml is over the 256 MiB limit
@@ -848,6 +849,16 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
   sfor: bomb.pdf: pdf: a font's ToUnicode map is over the 64 MiB limit
   sfor: ops.pdf: pdf: its content streams run more than 8020000 operations
   sfor: objstm.pdf: pdf: its object streams hold more than 2000000 tokens
+  ```
+
+  Whatever path a reader takes, each document is read in a worker process: `sfor` itself, run
+  again for that, never an external program (M4 plan, D30). A worker may allocate 1 024 MiB and
+  spend 60 s on one document; past either it is ended, and the document gets one warning and
+  is searched as ripgrep searches it:
+
+  ```
+  sfor: big.pdf: pdf: reading it needed more than the 1024 MiB a reader may use
+  sfor: slow.pdf: pdf: reading it took more than 60 s
   ```
 
   At most 512 MiB of text are extracted from one document, and past that the text is cut, with
@@ -1181,7 +1192,9 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
     refused within 5 s and 256 MiB plus rg's RSS plus 64 MiB; and a PDF whose font's ToUnicode
     map decompresses to 300 MiB, a page of 63 MiB of `h` and an object stream of 63 MiB of `1 `,
     each refused within 5 s and 64 MiB plus rg's RSS plus 64 MiB; a ToUnicode range of 2³² codes
-    and a 4 MiB string of a code mapped to 256 letters, read within the same bounds.
+    and a 4 MiB string of a code mapped to 256 letters, read within the same bounds; an
+    encrypted PDF of 64 object streams of 1 MiB of integers, ended within 10 s at its reader's
+    1 024 MiB plus rg's RSS plus 64 MiB.
 27. The fuzz of `tests/fuzz.rs` runs the Extractors over mutated documents (bytes changed, cut,
     repeated, and the XML inside the zip changed) and the `object` Processor over mutated object
     files: nothing panics, an extraction ends within 2 s whatever it returns (the documents run
