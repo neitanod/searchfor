@@ -709,6 +709,9 @@ const XML: &[&str] = &[
     // Namespace declarations (Codex M4 code r2 #1).
     " xmlns=\"\"", " xmlns:text=\"urn:x\"", " xmlns:o=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\"",
     "<o:text>", "</o:text>", " xmlns", "xmlns:=\"\"",
+    // Text boxes, cell comments, spaces and breaks (M4 code r3).
+    "<w:txbxContent>", "</w:txbxContent>", "<office:annotation>", "</office:annotation>",
+    "<text:s text:c=\"99999\"/>", "<text:tab/>", "<text:line-break/>", "<w:ptab/>", "<pre>", "</pre>",
 ];
 
 fn mutate(rng: &mut Rng, mut b: Vec<u8>, pool: &[&str]) -> Vec<u8> {

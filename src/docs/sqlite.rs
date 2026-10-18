@@ -537,6 +537,7 @@ fn columns(sql: &str) -> Columns {
         .any(|w| w[0].is("WITHOUT") && w[1].is("ROWID"));
     let mut names = Vec::new();
     let mut types = Vec::new();
+    let mut integers: Vec<bool> = Vec::new();
     let mut ipk = None;
     // The primary key's columns, by name, from a column's `PRIMARY KEY` or the table's.
     let mut pk: Vec<String> = Vec::new();
@@ -591,6 +592,9 @@ fn columns(sql: &str) -> Columns {
             .filter_map(Tok::name)
             .map(|w| w.to_ascii_uppercase())
             .collect();
+        // Only a declared type of exactly `INTEGER` makes the primary key the rowid: SQLite
+        // compares the whole type, so `INTEGER(8)` is not one (Codex r3 #2).
+        let integer = ty == ["INTEGER"] && part.get(2) != Some(&Tok::Punct('('));
         let ty = ty.join(" ");
         // `GENERATED ALWAYS AS (…)` or `AS (…)`, VIRTUAL unless it says STORED: a virtual
         // column takes no place in the record (M4 plan r3, Codex #6, Fable #5).
@@ -600,7 +604,7 @@ fn columns(sql: &str) -> Columns {
         if let Some(at) = primary_key(part) {
             pk = vec![name.clone()];
             table_pk = false;
-            if ty == "INTEGER" && !part.get(at).is_some_and(|t| t.is("DESC")) {
+            if integer && !part.get(at).is_some_and(|t| t.is("DESC")) {
                 ipk = Some(names.len());
             }
         }
@@ -612,6 +616,7 @@ fn columns(sql: &str) -> Columns {
         );
         names.push(name);
         types.push(ty);
+        integers.push(integer);
     }
     let key: Vec<usize> = pk
         .iter()
@@ -620,7 +625,7 @@ fn columns(sql: &str) -> Columns {
     if ipk.is_none()
         && table_pk
         && let [only] = key.as_slice()
-        && types[*only] == "INTEGER"
+        && integers[*only]
     {
         // A table constraint `PRIMARY KEY(id)` over an INTEGER column makes it the rowid too,
         // also with DESC; a column's `INTEGER PRIMARY KEY DESC` does not (Codex r1 #6).
@@ -1018,6 +1023,38 @@ mod tests {
         assert_eq!(c.ipk, Some(0));
         let c = columns("CREATE TABLE t(id INTEGER, note TEXT, PRIMARY KEY(id DESC))");
         assert_eq!(c.ipk, Some(0));
+    }
+
+    /// Codex r3 #2: only a declared type of exactly `INTEGER` makes the primary key the rowid;
+    /// `INTEGER(8)` and `INTEGER UNSIGNED` are stored, NULL when the insert gave none. Each case
+    /// is what SQLite 3.46.1 does with `INSERT INTO t(note) VALUES ('needle')`.
+    #[test]
+    fn only_the_exact_type_integer_is_the_rowid() {
+        for (alias, body) in [
+            (true, "id INTEGER PRIMARY KEY, note TEXT"),
+            (true, "id integer primary key, note TEXT"),
+            (false, "id INTEGER(8) PRIMARY KEY, note TEXT"),
+            (false, "id INTEGER (8) PRIMARY KEY, note TEXT"),
+            (false, "id INTEGER(8, 2) PRIMARY KEY, note TEXT"),
+            (true, "id \"INTEGER\" PRIMARY KEY, note TEXT"),
+            (true, "id [integer] PRIMARY KEY, note TEXT"),
+            (true, "id INTEGER /* c */ PRIMARY KEY, note TEXT"),
+            (false, "id UNSIGNED INTEGER PRIMARY KEY, note TEXT"),
+            (false, "id INTEGER UNSIGNED PRIMARY KEY, note TEXT"),
+            (true, "id INTEGER CONSTRAINT c PRIMARY KEY, note TEXT"),
+            (true, "id INTEGER NOT NULL PRIMARY KEY, note TEXT"),
+            (false, "id INTEGER(8) PRIMARY KEY DESC, note TEXT"),
+            (false, "id INTEGER(8), note TEXT, PRIMARY KEY(id)"),
+            (false, "id INTEGER(8), note TEXT, PRIMARY KEY(id DESC)"),
+            (true, "id \"INTEGER\", note TEXT, PRIMARY KEY(id)"),
+            (false, "id INTEGER UNSIGNED, note TEXT, PRIMARY KEY(id)"),
+            (true, "id INTEGER, note TEXT, CONSTRAINT k PRIMARY KEY(id)"),
+        ] {
+            let c = columns(&format!("CREATE TABLE t({body})"));
+            assert_eq!(c.ipk, alias.then_some(0), "{body}");
+        }
+        let c = columns("CREATE TABLE t(id INTEGER(8) PRIMARY KEY, note TEXT) WITHOUT ROWID");
+        assert_eq!(c.ipk, None);
     }
 
     /// Fable r7 #1: a real prints as the `sqlite3` shell prints it, with `%!.15g`; each case is

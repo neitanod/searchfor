@@ -782,7 +782,9 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
     document's body only: headers, footers, footnotes, comments and text boxes outside the
     body are left for later (D18), except an OpenDocument footnote, which its `text:note`
     holds inside the paragraph: its body is a line right after that paragraph. A `text:h`
-    inside a frame is a line of the frame, not a heading of the document.
+    inside a frame, and a Word paragraph inside a text box (`w:txbxContent`), whatever its
+    style, is a line of the box, not a heading of the document, after the paragraph that
+    anchors the box.
   - **Excel and OpenDocument spreadsheet**: `Sheet › B12`: the sheet (`kind = "sheet"`, by its
     name) and the cell (`kind = "cell"`, by its reference). A row is a line of its non-empty
     cells. A value prints as stored: shared and inline strings as text, booleans as `TRUE` or
@@ -801,15 +803,17 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
     the EPUB 2 NCX), or `chapter N` without one; inside, `h1`–`h6` are headings, and a heading
     whose text is the chapter's name holds only its own line, so the Trail names the chapter
     once (`Arrival`, never `Arrival › Arrival`). A line per block
-    element (`p`, `div`, `li`, `td`…); `script`, `style` and the `head` are not text. XML's
+    element (`p`, `div`, `li`, `td`…), its white space collapsed as a browser shows it except
+    in a `pre`; `script`, `style` and the `head` are not text. XML's
     entities, character references and the common HTML entities (`&nbsp;`, `&mdash;`, `&copy;`…)
     are decoded.
   - **The XML parts** of Word, Excel, PowerPoint, OpenDocument and EPUB files are read in their
     encoding: UTF-8, UTF-16 (by its BOM or its first bytes), ASCII, ISO-8859-1 and
     Windows-1252. A part in any other encoding makes the document `broken` (`<part> is in X, an
     encoding the reader does not read`), and the file is then searched as ripgrep searches it.
-    A manual line break inside a paragraph (`w:br`, `text:line-break`) is a space: a paragraph
-    is one line.
+    A manual line break or a tab inside a paragraph or a cell (`w:br`, `w:cr`, `w:tab`,
+    `text:line-break`, `text:tab`, an EPUB `br`) is a space, and `text:s` its spaces: a
+    paragraph is one line. A cell's comment (`office:annotation`) is not the cell's text.
   - **PDF**: `3 Results › 3.2 Costs › page 42`. Each page is `page N` (`kind = "page"`, its
     1-based position, not its label). The bookmarks are chapters (`kind = "chapter"`, with their
     `level`) that hold pages: a bookmark starts at the line of the page it points to that starts
