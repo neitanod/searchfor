@@ -5,6 +5,7 @@ pub mod frontmatter;
 pub mod keypath;
 pub mod markdown;
 pub mod markup;
+pub mod object;
 pub mod subtitles;
 pub mod treesitter;
 
@@ -74,6 +75,7 @@ pub fn by_name(name: &str) -> Option<&'static dyn Processor> {
         "markup" => Some(&markup::Markup),
         "csv" => Some(&csv::Csv),
         "subtitles" => Some(&subtitles::Subtitles),
+        "object" => Some(&object::Object),
         _ => None,
     }
 }
@@ -194,7 +196,7 @@ impl Processors {
 
     /// The Processor names a Format Definition may use (`Registry::load`).
     pub fn known(name: &str) -> bool {
-        by_name(name).is_some() || matches!(name, "treesitter" | "external")
+        by_name(name).is_some() || matches!(name, "treesitter" | "external" | "docs")
     }
 
     /// Whether files of `def` may get Trails, without building anything or warning: for
@@ -204,6 +206,9 @@ impl Processors {
         match def.processor.as_str() {
             "external" => !self.disabled.lock().unwrap().contains(&def.name),
             "treesitter" => self.has_grammar(Self::grammar_of(def)),
+            // A document's Trails come from its Extractor, before the search (M4 plan,
+            // design note 4); as a Processor, `docs` describes nothing.
+            "docs" => false,
             p => by_name(p).is_some(),
         }
     }
@@ -240,6 +245,7 @@ impl Processors {
                 );
                 None
             }
+            "docs" => None,
             p => by_name(p).map(ProcessorRef::BuiltIn),
         }
     }
@@ -358,6 +364,22 @@ mod tests {
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].text, "A");
         assert_eq!(n[0].pieces, vec![(0..1, 2..3)]);
+    }
+
+    /// M4: `object` is a stateless built-in; `docs` is known to Definitions but serves no file
+    /// as a Processor (its Extractors run before the search: M4 plan, design note 4).
+    #[test]
+    fn object_is_built_in_and_docs_is_known_but_describes_nothing() {
+        assert!(by_name("object").is_some());
+        assert!(Processors::known("object") && Processors::known("docs"));
+        assert!(by_name("docs").is_none());
+        let (w, seen) = collecting();
+        let ps = Processors::new(4, w);
+        let pdf = def("name='pdf'\nprocessor='docs'\n[params]\nextractor='pdf'");
+        assert!(ps.for_definition(&pdf).is_none());
+        assert!(!ps.describes(&pdf));
+        assert!(ps.available(&pdf));
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[test]

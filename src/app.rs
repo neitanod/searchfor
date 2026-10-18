@@ -1281,6 +1281,7 @@ impl Ctx<'_> {
                     format,
                     trails,
                     sections: Vec::new(),
+                    offsets: false,
                 };
                 (src, d)
             })
@@ -1472,6 +1473,7 @@ impl Ctx<'_> {
                 } else {
                     Vec::new()
                 },
+                offsets: false,
             };
             (src, d)
         }))
