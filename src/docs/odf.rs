@@ -159,14 +159,7 @@ impl Flow {
                             ..Para::default()
                         });
                     }
-                    (Ns::Text, "s") => {
-                        let n = attr(attrs, "c")
-                            .and_then(|v| v.parse::<usize>().ok())
-                            .unwrap_or(1);
-                        self.push(&" ".repeat(n.min(100)));
-                    }
-                    (Ns::Text, "tab") => self.push("\t"),
-                    (Ns::Text, "line-break") => self.push("\n"),
+                    (Ns::Text, "s" | "tab" | "line-break") => self.push(&control(l, attrs)),
                     (Ns::Table, "table") if !empty => {
                         if self.tables.is_empty() {
                             self.count += 1;
@@ -242,19 +235,7 @@ impl Flow {
                 if self.skip == 0
                     && let Some(p) = self.paras.last_mut()
                 {
-                    // White space in ODF text is collapsed; `text:s` writes the spaces it means.
-                    let mut last_space = p.text.ends_with(' ');
-                    for c in t.chars() {
-                        if c.is_whitespace() && c != '\u{a0}' {
-                            if !last_space {
-                                p.text.push(' ');
-                            }
-                            last_space = true;
-                        } else {
-                            p.text.push(c);
-                            last_space = false;
-                        }
-                    }
+                    collapse(&mut p.text, t);
                 }
             }
         }
@@ -263,6 +244,39 @@ impl Flow {
     fn push(&mut self, s: &str) {
         if let Some(p) = self.paras.last_mut() {
             p.text.push_str(s);
+        }
+    }
+}
+
+/// The text of `text:s` (its `text:c` spaces, at most 100), `text:tab` and `text:line-break`:
+/// a tab and a line break are written as themselves, and the Builder makes each a space, so a
+/// paragraph or a cell is one line (spec §5.8; Codex M4 code r3 #3).
+fn control(local: &str, attrs: &str) -> String {
+    match local {
+        "s" => {
+            let n = attr(attrs, "c")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(1);
+            " ".repeat(n.min(100))
+        }
+        "tab" => "\t".into(),
+        _ => "\n".into(),
+    }
+}
+
+/// Appends `t` to `out` with its white space collapsed, as ODF text is read; `text:s` writes the
+/// spaces it means.
+fn collapse(out: &mut String, t: &str) {
+    let mut last_space = out.ends_with(' ');
+    for c in t.chars() {
+        if c.is_whitespace() && c != '\u{a0}' {
+            if !last_space {
+                out.push(' ');
+            }
+            last_space = true;
+        } else {
+            out.push(c);
+            last_space = false;
         }
     }
 }
@@ -417,7 +431,18 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     // The cell being read: its column, repeat count, text, stored value.
     let mut cell: Option<(usize, usize, String, Option<String>)> = None;
     let mut para_depth = 0usize;
+    // Depth inside a cell's comment, `office:annotation`, which is not the cell's text, as in
+    // Excel and in an OpenDocument text (Fable M4 code r3 #1).
+    let mut skip = 0usize;
     for ev in Pull::new(&xml) {
+        if skip > 0 {
+            match ev {
+                Ev::Start { empty: false, .. } => skip += 1,
+                Ev::End { .. } => skip -= 1,
+                _ => {}
+            }
+            continue;
+        }
         match ev {
             Ev::Start {
                 name,
@@ -425,6 +450,11 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                 attrs,
                 empty,
             } => match (ns, local(name)) {
+                (Ns::Office, "annotation") => {
+                    if !empty {
+                        skip = 1;
+                    }
+                }
                 (Ns::Table, "table") if !empty => {
                     let n = attr(attrs, "name")
                         .map(|s| s.into_owned())
@@ -460,9 +490,9 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                     }
                     para_depth += 1;
                 }
-                (Ns::Text, "s") => {
+                (Ns::Text, l @ ("s" | "tab" | "line-break")) => {
                     if let Some(c) = cell.as_mut() {
-                        c.2.push(' ');
+                        c.2.push_str(&control(l, attrs));
                     }
                 }
                 _ => {}
@@ -506,7 +536,7 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
             },
             Ev::Text(t) if para_depth > 0 => {
                 if let Some(c) = cell.as_mut() {
-                    c.2.push_str(&t);
+                    collapse(&mut c.2, &t);
                 }
             }
             _ => {}
@@ -843,5 +873,49 @@ mod tests {
         let e = extract(Kind::Odt, &d).unwrap();
         // Codex r1 #9: a line break inside a paragraph is a space too: a paragraph is a line.
         assert_eq!(e.text, b"a   b c d e\n");
+    }
+
+    /// Codex M4 code r3 #3: the same rule in every OpenDocument reader: `text:s` is its
+    /// spaces, `text:tab` and `text:line-break` one space each, and white space is collapsed,
+    /// in a spreadsheet's cell, a text's table cell and a slide as in a text's paragraph.
+    #[test]
+    fn spaces_tabs_and_line_breaks_are_the_same_in_every_odf_reader() {
+        const P: &str =
+            r#"<text:p>a<text:s text:c="3"/>b<text:tab/>c<text:line-break/>d   e</text:p>"#;
+        let d = ods_of(&format!(
+            r#"<table:table-row><table:table-cell office:value-type="string">{P}</table:table-cell><table:table-cell office:value-type="string"><text:p>one<text:line-break/>two</text:p></table:table-cell></table:table-row>"#
+        ));
+        let e = extract(Kind::Ods, &d).unwrap();
+        assert_eq!(e.text, b"a   b c d e\tone two\n");
+        assert_eq!(trail(Kind::Ods, &d, "one two"), ["S", "B1"]);
+        let d = odt_of(
+            &format!(
+                r#"<table:table><table:table-row><table:table-cell><text:p>Item</text:p></table:table-cell></table:table-row><table:table-row><table:table-cell>{P}</table:table-cell></table:table-row></table:table>"#
+            ),
+            "",
+        );
+        assert_eq!(extract(Kind::Odt, &d).unwrap().text, b"Item\na   b c d e\n");
+        let d = odf_with(
+            "application/vnd.oasis.opendocument.presentation",
+            format!(
+                r#"<office:document-content xmlns:office="{OFFICE}" xmlns:draw="{DRAW}" xmlns:text="{TEXT}"><office:body><office:presentation><draw:page draw:name="p1"><draw:frame><draw:text-box>{P}</draw:text-box></draw:frame></draw:page></office:presentation></office:body></office:document-content>"#
+            ),
+        );
+        assert_eq!(extract(Kind::Odp, &d).unwrap().text, b"a   b c d e\n");
+    }
+
+    /// Fable M4 code r3 #1: a cell's comment (`office:annotation`) is not the cell's text, as
+    /// in Excel and in an OpenDocument text.
+    #[test]
+    fn a_cells_comment_is_not_its_text() {
+        let d = ods_of(concat!(
+            r#"<table:table-row><table:table-cell office:value-type="string"><office:annotation><dc:creator>Ana</dc:creator><dc:date>2026-10-18T00:00:00</dc:date><text:p>check needle</text:p><text:p>more</text:p></office:annotation><text:p>Pens</text:p></table:table-cell>"#,
+            r#"<table:table-cell office:value-type="float" office:value="1.5"><text:p>1.5</text:p></table:table-cell></table:table-row>"#,
+            r#"<table:table-row><table:table-cell><office:annotation><text:p>only a comment</text:p></office:annotation></table:table-cell>"#,
+            r#"<table:table-cell office:value-type="string"><text:p>Ink needle</text:p></table:table-cell></table:table-row>"#,
+        ));
+        let e = extract(Kind::Ods, &d).unwrap();
+        assert_eq!(e.text, b"Pens\t1.5\nInk needle\n");
+        assert_eq!(trail(Kind::Ods, &d, "needle"), ["S", "B2"]);
     }
 }
