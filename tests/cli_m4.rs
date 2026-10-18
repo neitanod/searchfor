@@ -696,6 +696,82 @@ fn m4_24_stdin_redirected_from_a_document_is_no_document() {
     }
 }
 
+/// Code review r2, Codex #2 and Fable #1: a reader opens a document again by its name, in
+/// another process, so a name that goes through the process's descriptors (`/proc/self/fd`,
+/// `/proc/<pid>/fd`, `/dev/fd`, `/dev/stdin`), in any of its parts, itself or through a link,
+/// names no document: here stdin is a directory, and each file under it is searched as rg
+/// searches it. A regular file anywhere else, `/dev/shm` included, is a document.
+#[cfg(target_os = "linux")]
+#[test]
+fn m4_27_only_names_through_descriptors_are_no_documents() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = fixture();
+    let link = |to: &str, name: &str| std::os::unix::fs::symlink(to, fx.path().join(name));
+    link("/proc/self/fd/0", "m4/fd0").unwrap();
+    link("/proc/self/fd", "m4/fds").unwrap();
+    link("/dev/fd/0", "m4/devfd0").unwrap();
+    let cases: &[&[&str]] = &[
+        &["needle", "/proc/self/fd/0/docs/shop.sqlite"],
+        &["needle", "/proc/thread-self/fd/0/docs/shop.sqlite"],
+        &["needle", "/dev/fd/0/docs/shop.sqlite"],
+        &["needle", "/dev/stdin/docs/shop.sqlite"],
+        &["needle", "/proc/self/fd/0/m4/report.docx"],
+        &["needle", "m4/fd0/docs/shop.sqlite"],
+        &["needle", "m4/fds/0/docs/shop.sqlite"],
+        &["needle", "m4/devfd0/m4/report.docx"],
+        &["-c", "--sort", "path", "needle", "/proc/self/fd/0/docs"],
+        &["-c", "--sort", "path", "needle", "m4/fd0/m4"],
+    ];
+    for args in cases {
+        let stdin = || std::fs::File::open(fx.path()).unwrap();
+        let s = run(fx
+            .s4(["--docs", "--no-trail"].iter().chain(args.iter()))
+            .stdin(stdin()));
+        let r = run(fx.rg(*args).stdin(stdin()));
+        assert_eq!(stderr(&s), "", "{args:?}");
+        assert_eq!(stdout(&s), stdout(&r), "{args:?}");
+        assert_eq!(code(&s), code(&r), "{args:?}");
+    }
+    // The other side: regular files, read by name, under /dev/shm and through /proc links
+    // that lead out of /proc.
+    let count = ok(&fx, &["--docs", "-c", "needle", "m4/report.docx"]);
+    let abs = fx.path().join("m4/report.docx");
+    let root = format!("/proc/self/root{}", abs.display());
+    let mut named: Vec<(Vec<String>, String)> = vec![
+        (vec!["/proc/self/cwd/m4/report.docx".into()], count.clone()),
+        (vec![root], count.clone()),
+    ];
+    let shm = std::path::Path::new("/dev/shm");
+    let held = shm
+        .is_dir()
+        .then(|| tempfile::tempdir_in(shm).ok())
+        .flatten();
+    if let Some(dir) = &held {
+        let d = dir.path();
+        std::fs::copy(&abs, d.join("report.docx")).unwrap();
+        let at = d.join("report.docx").display().to_string();
+        std::os::unix::fs::symlink(&at, fx.path().join("m4/shm.docx")).unwrap();
+        std::os::unix::fs::symlink(d, fx.path().join("m4/shmdir")).unwrap();
+        named.extend([
+            (vec![at.clone()], count.clone()),
+            (vec!["m4/shm.docx".into()], count.clone()),
+            (vec!["m4/shmdir/report.docx".into()], count.clone()),
+            (vec![d.display().to_string()], format!("{at}:{count}")),
+        ]);
+        let o = run(fx
+            .s4(["--docs", "-c", "needle", "report.docx"])
+            .current_dir(d));
+        assert_eq!((stdout(&o), stderr(&o)), (count.clone(), String::new()));
+    }
+    for (paths, want) in named {
+        let mut args = vec!["--docs", "-c", "needle"];
+        args.extend(paths.iter().map(String::as_str));
+        assert_eq!(ok(&fx, &args), want, "{paths:?}");
+    }
+}
+
 /// Codex r1 #7 and #8: --within keeps the Matches of an object row that are within, not the
 /// whole row, and -m after it counts rows, which share their line.
 #[test]
