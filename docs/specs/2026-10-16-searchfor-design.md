@@ -780,7 +780,9 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
     the first row's cell above it (cut at 40 characters with `…`), or `column K` when that cell
     is empty. The first row names the columns: a Match in it has no column Segment. The
     document's body only: headers, footers, footnotes, comments and text boxes outside the
-    body are left for later (D18).
+    body are left for later (D18), except an OpenDocument footnote, which its `text:note`
+    holds inside the paragraph: its body is a line right after that paragraph. A `text:h`
+    inside a frame is a line of the frame, not a heading of the document.
   - **Excel and OpenDocument spreadsheet**: `Sheet › B12`: the sheet (`kind = "sheet"`, by its
     name) and the cell (`kind = "cell"`, by its reference). A row is a line of its non-empty
     cells. A value prints as stored: shared and inline strings as text, booleans as `TRUE` or
