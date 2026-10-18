@@ -44,7 +44,7 @@ branch and is merged back after its tanda, as `ciclo` stage 7 describes
 (`using-git-worktrees`, `finishing-a-development-branch`). Line numbers in the diffs are those
 of `191dbaf` and only hints: locate code by the names given. The code of this plan was built
 and tested in a probe copy of the repository, frozen as
-`/tmp/subtask/m4-plan/m4tree-3547596` (see «Verified for this plan»).
+`/tmp/subtask/m4-plan/m4tree-c451602` (see «Verified for this plan»).
 
 ---
 
@@ -97,7 +97,7 @@ of the M3 plan, with M4's content as this plan decides it (D1):
 | 8390 | Decorate what ripgrep already finds; archive Formats out; a zip is never opened | C2, C11 (D4), C1 (no `zip` Definition) |
 | 8393–8395 | `--docs`: built-in Extractors in Rust, no external programs, text plus structure, independent of `-z`; without `--docs` as ripgrep; `--pre` | C1, C3, C4, C6–C10, C11 |
 | 8612 | The release binary may weigh up to 23 MB | C13 (measured), «Verified» |
-| Hilo, 18/10 | `--docs`' cost stays as measured (D23); the readers count their own memory, the same on Linux, macOS and Windows, `setrlimit` the second barrier on Linux, a Job Object in M5 | C4 (D31), C11 (`m4_22`), C13 («Amendment (18/10, Sebastián)») |
+| Hilo, 18/10 | `--docs`' cost stays as measured (D23); the readers count their own memory, the same on Linux, macOS and Windows, `setrlimit` the second barrier on Linux, a Job Object in M5 | C4 (D31), C11 (`m4_22`, `m4_23`), C13 («Amendment (18/10, Sebastián)») |
 
 Decisions 2–4, 7–11, 13–21 and the others of 8355–8459 were implemented by M1–M3 or belong to
 M5–M6.
@@ -131,25 +131,25 @@ ones it describes marked «M4 plan».
 | D20 | Trails: Word/ODT `heading › heading › table N › row R › Column` (the first row names the columns, 40 characters); Excel/ODS `Sheet › B12`; PowerPoint/ODP `slide N › notes`; EPUB `chapter › headings`; PDF `chapters › page N`; SQLite `table › row ROWID › column` | Each says where a person finds the text in the program that opens the document; a cell reference is what a spreadsheet shows |
 | D21 | Order: `--pre` (when its globs take the file), then `-z` (when the extension has a decompressor), then `--docs`; a file `--pre` or `-z` reads is never extracted; stdin is never transformed; `--pre`'s output gets the Trails of the Format its path says; what a transform outputs is never an object file nor a document, whatever its bytes, `--format` or `-a` say: no object rows, no `object` or `docs` Processor (Plain) | ripgrep's order for the first two; a decompressed stream has no name of its own to say what it is; `--pre cat` over an ELF printed object rows before (r1, Codex #11) |
 | D22 | `--docs` also changes `--no-trail`, `-c`, `-l` and `-q`: they work on the extracted text, in ripgrep's layout | `--docs` is sfor's flag, not ripgrep's; a script that counts Matches with `--docs -c` wants the documents' |
-| D23 | Benchmark (`scripts/bench-m4.sh`) and ceilings (`tests/perf.rs`) as in §11 #26: 1.1 × rg where M4 adds nothing, but for `--docs` over files that are not documents, at most 1.05 × sfor without `--docs` (r6, Fable #5: over 20 000 small files sfor without `--docs` is already 1.04–1.10 × rg, M1–M3's own cost, so 1.1 × rg there measured noise); without `--docs`, at most 1.03 × M3's sfor (`191dbaf`) over the whole corpus, the median of three series (`docs-off`, when `SFOR_BASE_BIN` names M3's binary: r7, Fable #2), which bounds what M4 adds to a search without `--docs`; objects at 100 MB/s; documents at 2 MB/s of text per thread on top of rg's search of their text; per-format rates in `tests/perf.rs` about a third of the probe's | The rates measured in the probe (MB/s of text): docx 41, odt 36, epub 66, PDF 23 (generated) and 1.2–1.8 (real), xlsx 5.6, ods 3.4, pptx 4.0, SQLite 16–17; a third leaves room for a loaded machine, as M3's ceilings did. `docs-off` is a ratio of two 48 ms medians: one series of the same code with and without D31's counter gave 0.98–1.04 here, three series 1.012, 1.034 and 1.020 for M4 against M3, whence the median of three and 1.03 rather than Fable's 1.02 (see «Review round 7»: M4 measures 1.015–1.029 × M3 without `--docs` already in round 6's code, which chunk 13 is to locate). Memory: rg's plus six times the text, plus 400 bytes per cell Segment of a spreadsheet, plus 64 MiB (the probe: 228 MiB for the 600 000 cells of an XLSX with 18 MB of text) |
-| D24 | The binary's growth is measured and reported: 16.6 MB (16 598 640 bytes at `191dbaf`) → 19.4 MB (19 356 872 bytes), under 23 MB (8612) | Spec §11 #22 |
+| D23 | Benchmark (`scripts/bench-m4.sh`) and ceilings (`tests/perf.rs`) as in §11 #26: 1.1 × rg where M4 adds nothing, but for `--docs` over files that are not documents, at most 1.05 × sfor without `--docs` (r6, Fable #5: over 20 000 small files sfor without `--docs` is already 1.04–1.10 × rg, M1–M3's own cost, so 1.1 × rg there measured noise); without `--docs`, at most 1.03 × M3's sfor (`191dbaf`) over the whole corpus, the median of three series (`docs-off`, when `SFOR_BASE_BIN` names M3's binary: r7, Fable #2), which bounds what M4 adds to a search without `--docs`; objects at 100 MB/s; documents at 2 MB/s of text per thread on top of rg's search of their text; per-format rates in `tests/perf.rs` about a third of the probe's | The rates measured in the probe (MB/s of text): docx 41, odt 36, epub 66, PDF 23 (generated) and 1.2–1.8 (real), xlsx 5.6, ods 3.4, pptx 4.0, SQLite 16–17; a third leaves room for a loaded machine, as M3's ceilings did. `docs-off` is a ratio of two 48 ms medians: one series of the same code with and without D31's counter gave 0.98–1.04 here, three series 1.012, 1.034 and 1.020 for M4 against M3, whence the median of three and 1.03 rather than Fable's 1.02 (see «Review round 7»: M4 measures 1.015–1.029 × M3 without `--docs` already in round 6's code). The spec said 1.02 until the cut of review round 8, which settled the spec, this decision and `bench-m4.sh` on 1.03 over the median of three series (r8, Codex #3, Fable #1). A pass does not close what M4 adds without `--docs`: Task 13.2, Step 3 measures it on a machine at low load, locates it when it stays above 1 %, removes it if it can, and otherwise writes it in the chunk report as a decision for Sebastián against 8385 (r8, Codex #3, Fable #2). Memory: rg's plus six times the text, plus 400 bytes per cell Segment of a spreadsheet, plus 64 MiB (the probe: 228 MiB for the 600 000 cells of an XLSX with 18 MB of text) |
+| D24 | The binary's growth is measured and reported: 16.6 MB (16 598 640 bytes at `191dbaf`) → 19.4 MB (19 358 432 bytes), under 23 MB (8612) | Spec §11 #22 |
 | D25 | Extracted text never holds a control character (line breaks inside a cell, tabs inside a paragraph, NUL become spaces) and has no empty lines; a row writes a tab before each cell but the first, empty cells included, and a cell's spaces as they are | A row of a table stays one line, and the searcher never sees binary data in a document; a SQLite row `(NULL, 'needle')` is `\tneedle`, so a search anchored at a column finds it (r1, Codex #12, Fable #11) |
 | D26 | The JSON statistics of an object file count the whole search (`bytes_searched` = file size, `matched_lines` = rows, `binary_offset` null), documented in `docs/rg-compat.md` | rg stops at the first Match of a binary; sfor reads on to describe each one |
 | D27 | Without `--docs` the document Formats are never detected (`Detector::with_docs`); `--list-formats` lists them; `--format pdf` without `--docs` prints the file as Plain | 8395 «without --docs those files are treated as ripgrep does», at no cost |
 | D28 | The fuzz mutates documents (bytes changed, cut, repeated; and the XML inside the zip, zipped again) and object files; nothing may panic, an extraction ends within 2 s whatever it returns, and every Segment and name lies inside its text. The documents run in a child process the test watches: one that prints nothing for 2 s is killed and reaped, and the cases after it run in a new child | It found a heading name with a NUL (fixed in `Builder`), and a panic in `xml::unescape` at `&` before a multi-byte letter (fixed); a slow extraction that ended in an error passed, and a hang hung the run (r1, Codex #13); a thread left running a hung case went on using memory and CPU (r2, Codex #7) |
 | D29 | PDF content streams and ToUnicode CMaps are read by a reader of our own, about 500 lines: `Ops` gives `run` one operation at a time, its operands borrowing the stream's bytes, and spends the work budget as it reads; `ToUnicode` keeps a `bfrange` as a range and decodes a string only as far as the text has room. lopdf keeps reading the file's objects, encryption, fonts' dictionaries and the encodings of fonts without a map; a load filter counts the tokens of each object stream before lopdf parses it. Round 3: a simple font's codes are 1 byte and a composite font's 2, unless its map declares other lengths (one table by first byte); a code is looked up with the map's other lengths too; a code the map leaves out reads through a 256-entry table lopdf builds from a copy of the font without its map; names read their `#xx` escapes; an inline image without a filter ends where its size says, its color space read from the resources when it names one (r4, Codex #5). Round 4 also: an object stream lopdf dropped while decrypting is found by the objects the cross-reference table puts in it and the document lacks, and one past the limit fails the document (r4, Codex #1); an object stream's header is read as lopdf reads it (r4, Fable #1) | Round 3 found a regression on real PDFs: Adobe's `<0000> <FFFF>` codespace over a simple font's 1-byte codes made every code 2 bytes, and four of Fable's 89 real PDFs lost letters (`B1754AQQ` → `B 54AQQ`); with the code length from the font none of the 87 that have a `pdftotext` text falls below round 2's word recall, six rise (r3, Fable #1). One cause, three findings: lopdf did unbounded work before sfor could measure it (`many0(operation)` over a whole stream, a reverse map of every code of every range, `decode_text` into two UTF-16 buffers). Pre-validating the bytes would need the same lexer to count operators past strings and inline images, and would still leave lopdf's parse of what passes; the reader replaces both. Measured with the release binary: Fable's `page-ops-bomb.pdf` 6 264 620 KiB and 9.14 s → 73 700 KiB and 1.12 s, `form-ops-bomb.pdf` 6 265 792 KiB → 73 552 KiB, `objstm-bomb-32.pdf` 2 021 992 KiB → 57 220 KiB; a range of 2³² codes out of memory → 8 MiB; a 4 KB map of long codes 1 796 208 KiB and 9.13 s → 92 040 KiB and 0.68 s. The six real PDFs of D13 and `many-forms.pdf` extract as before (to verify in chunk 9: the D13 recall over them, the probe ran only the unit and perf tests) |
-| D30 | Every document `--docs` reads is extracted in a worker process: the same `sfor` binary run as `sfor --__extract-document MIB` with `SFOR_READER_OF` set to the parent's pid (no external program, so 8393–8395 hold), with its memory at 1 024 MiB, counted by the worker itself (D31), and on Unix `RLIMIT_DATA` 64 MiB above as a second barrier; at most 4 workers at once, each reading up to 64 documents; a worker that dies, or takes more than 60 s over a document and is killed, gives the document one warning (`reading it needed more than the 1024 MiB a reader may use`, also when an allocation is refused rather than fatal; `reading it took more than 60 s`) and the file is searched as rg; without `--docs` nothing runs. The workers live in the Supervisor of M2's D42, which holds the same `Child` their pool and watchdog use, so every kill and wait goes through one lock and no pid is signalled after its process was reaped: a SIGINT or SIGTERM to sfor kills and reaps them, and sfor dies by the signal (r5, Codex #1), printing nothing more: a document whose reader the signal killed, or that finds no reader to start, is searched as rg without a warning, as M2's hosts stop relaying (r6, Fable #1); on Linux the kernel ends a worker whose parent dies (`PR_SET_PDEATHSIG`; they are started from one thread that lives as long as sfor), elsewhere the worker's own watchdog ends it when one document passes 65 s, the parent's 60 s plus 5, on a monotonic clock as the parent's (r6, Codex #2, Fable #3) (a CPU limit over the worker's life, round 4's, ended a long valid run: r5, Fable #1). A worker leaves no core file. An allocation that fails inside lopdf while it decompresses a ToUnicode map or any stream aborts the worker, which gives the memory warning; one that lopdf would ask for with `try_reserve` and see refused would read as a stream that does not decompress, without that warning (r5, Fable #3; whether lopdf 0.45 has such a path is to verify in chunk 9). The path goes as its bytes after their count. The limits of D17 stay as the first line, for precise warnings. `SFOR_READER_MIB` lowers the limit, for the tests | Three review rounds found a new unbounded path inside lopdf each time (r1 10 MAJOR, r2 4, r3 6: a map reached through an `/Encoding` dictionary, object offsets that repeat, the encrypted load that skips the filter); a process limit holds whatever path. Measured on the benchmark's 1 080 documents (12 threads): in-process 0.075 s, one process per document 0.424 s, the pool of 4 workers 0.299 s, against rg's 0.012 s over their texts and a budget of 0.78 s; with 4 workers of 1 GiB the worst case is 4 GiB, where 12 children could take 12, and 1 GiB leaves room for the 225 MiB the perf test's workbook of 600 000 cells takes. Fable's encrypted `objstm-1m-64-enc.pdf` (3 985 500 KiB and 11.97 s in round 2) ends at 1 GiB in 4.28 s with the warning. With 1 GiB, D17's text limit is 256 MiB: a PDF of 256 MiB of text is cut within the reader, at 689 MB and 6.8 s, where 512 MiB took 1.75 GB (r4, Fable #5). The flag cannot be a pattern: a first word that starts with `--` is a flag, and an unknown one is refused, as rg refuses it; the worker also needs exactly its two arguments and `SFOR_READER_OF` (r4, Codex #4, Fable #6). Not verified: macOS enforces `RLIMIT_DATA` only for some allocations, and Windows has none: D31's counter holds there, and a Windows Job Object is M5's |
-| D31 | The readers count their own memory (amendment of 18/10, Sebastián): `docs::memory::Counter`, the `#[global_allocator]` of every sfor process, is the system's allocator with a count of the live bytes. `isolated::child` arms it first, with the worker's limit (`MEMORY_MIB`, 1 024; `SFOR_READER_MIB` for the tests); from then on an allocation, a zeroed one or a realloc's growth that would take the count past the limit is refused, the same on Linux, macOS and Windows, and `RLIMIT_DATA`, on Unix, stands `HEADROOM_MIB` (64) above it, a second barrier for what the counter does not see (the allocator's own pages, the threads' stacks; `SFOR_READER_RLIMIT_MIB` sets it, for `m4_22`). A refused `try_reserve` gives an error ending `out of memory`, which `refused_memory` turns into the warning; any other refused allocation goes to `std::alloc::handle_alloc_error`, whose default handler prints `memory allocation of N bytes failed` and aborts the worker (SIGABRT, measured on Linux), and the parent, which reads that line in the worker's stderr (`why`), gives the same warning D30 gave for `RLIMIT_DATA`: `reading it needed more than the 1024 MiB a reader may use`. Never armed, as in sfor's own process and every test binary, each method of the allocator is one relaxed load of the limit, which no thread writes there, a branch, and a jump to the system's function; the count is never touched. The methods are out of line (`inline(never)`); the counter counts from `arm` on, so a block allocated before and freed after leaves the count below 0, never wrapped | Without it, D30's 1 GiB held on Linux only. Alternatives: count in every process and compare only in a worker, an atomic add and subtract per allocation in sfor's twelve search threads; abort inside the allocator, which loses the `try_reserve` path D30's warning uses (r4, Fable #2); count per thread with a `thread_local!`, which on a system without native thread-local storage allocates on first use, inside the allocator; `#[global_allocator]` in `main.rs`, outside the library whose worker arms it, which would then export its state to the binary. Measured (12 threads, a machine at load 4–12 from other sessions): over the M4 benchmark's corpus, sfor with the counter against the same code without it, the median ratio of 10 alternated series of 40 runs, 0.995 with a pattern no file matches, 1.007 with the sparse one, 1.016 with `e` over the 20 000 text files (single series 0.96–1.04); a run makes about 287 000 allocator calls (an `LD_PRELOAD` count: 120 636 `malloc`, 45 615 `realloc`, 120 748 `free`), and a micro-benchmark gives the unarmed counter about 1 ns per allocation, free and a third of a realloc (63.3 against 62.4 ns, the minimum of 30 rounds), so 0.01 ms of a 49 ms run; armed, about 35 ns more, and `--docs` over the 1 080 documents 351 against 344 ms (8 series, 0.91–1.04). Inlined at every allocation site, the counter made the release binary 406–462 KB larger; out of line, 108 KB (19 356 872 bytes against 19 248 904 for the same code without it). `m4_22` over the code without the counter, with `RLIMIT_DATA` at 4 096 MiB, read the workbook; with it, the warning at 16 MiB; a worker run by hand over a 98 MB SQLite database at 16 MiB exits by SIGABRT with `memory allocation of 16777216 bytes failed`. `cargo check --lib --bins` passes for `x86_64-pc-windows-gnu` and `aarch64-apple-darwin` (the latter with an empty C compiler for the C of ring and tree-sitter, which a check never links); not run on either |
+| D30 | Every document `--docs` reads is extracted in a worker process: the same `sfor` binary run as `sfor --__extract-document MIB` with `SFOR_READER_OF` set to the parent's pid (no external program, so 8393–8395 hold), with its memory at 1 024 MiB, counted by the worker itself (D31), and on Unix `RLIMIT_DATA` 64 MiB above as a second barrier; at most 4 workers at once, each reading up to 64 documents; a worker that dies, or takes more than 60 s over a document and is killed, gives the document one warning (`reading it needed more than the 1024 MiB a reader may use`, also when an allocation is refused rather than fatal; `reading it took more than 60 s`) and the file is searched as rg; without `--docs` nothing runs. The workers live in the Supervisor of M2's D42, which holds the same `Child` their pool and watchdog use, so every kill and wait goes through one lock and no pid is signalled after its process was reaped: a SIGINT or SIGTERM to sfor kills and reaps them, and sfor dies by the signal (r5, Codex #1), printing nothing more: a document whose reader the signal killed, or that finds no reader to start, is searched as rg without a warning, as M2's hosts stop relaying (r6, Fable #1); on Linux the kernel ends a worker whose parent dies (`PR_SET_PDEATHSIG`; they are started from one thread that lives as long as sfor), elsewhere the worker's own watchdog ends it when one document passes 65 s, the parent's 60 s plus 5, on a monotonic clock as the parent's (r6, Codex #2, Fable #3) (a CPU limit over the worker's life, round 4's, ended a long valid run: r5, Fable #1). A worker leaves no core file. An allocation that fails inside lopdf while it decompresses a ToUnicode map or any stream aborts the worker, which gives the memory warning; one that lopdf asks for through `read_to_end`, which reserves with `try_reserve`, ends the stream where the refusal came and lopdf goes on with what it read (lopdf 0.45's `decompress_zlib` logs the error and returns the output: r8, Codex #1, which r5's Fable #3 had left to verify), and the worker, which remembers the refusal (D31), gives the same warning and drops what it read. The path goes as its bytes after their count. The limits of D17 stay as the first line, for precise warnings. `SFOR_READER_MIB` lowers the limit, for the tests | Three review rounds found a new unbounded path inside lopdf each time (r1 10 MAJOR, r2 4, r3 6: a map reached through an `/Encoding` dictionary, object offsets that repeat, the encrypted load that skips the filter); a process limit holds whatever path. Measured on the benchmark's 1 080 documents (12 threads): in-process 0.075 s, one process per document 0.424 s, the pool of 4 workers 0.299 s, against rg's 0.012 s over their texts and a budget of 0.78 s; with 4 workers of 1 GiB the worst case is 4 GiB, where 12 children could take 12, and 1 GiB leaves room for the 225 MiB the perf test's workbook of 600 000 cells takes. Fable's encrypted `objstm-1m-64-enc.pdf` (3 985 500 KiB and 11.97 s in round 2) ends at 1 GiB in 4.28 s with the warning. With 1 GiB, D17's text limit is 256 MiB: a PDF of 256 MiB of text is cut within the reader, at 689 MB and 6.8 s, where 512 MiB took 1.75 GB (r4, Fable #5). The flag cannot be a pattern: a first word that starts with `--` is a flag, and an unknown one is refused, as rg refuses it; the worker also needs exactly its two arguments and `SFOR_READER_OF` (r4, Codex #4, Fable #6). Not verified: macOS enforces `RLIMIT_DATA` only for some allocations, and Windows has none: D31's counter holds there, and a Windows Job Object is M5's |
+| D31 | The readers count their own memory (amendment of 18/10, Sebastián): `docs::memory::Counter`, the `#[global_allocator]` of every sfor process, is the system's allocator with a count of the live bytes. `isolated::child` arms it first, with the worker's limit (`MEMORY_MIB`, 1 024; `SFOR_READER_MIB` for the tests); from then on an allocation, a zeroed one or a realloc's growth that would take the count past the limit is refused, the same on Linux, macOS and Windows, and `RLIMIT_DATA`, on Unix, stands `HEADROOM_MIB` (64) above it, a second barrier for what the counter does not see (the allocator's own pages, the threads' stacks; `SFOR_READER_RLIMIT_MIB` sets it, for `m4_22`). A refused `try_reserve` gives an error ending `out of memory`, which `refused_memory` turns into the warning; any other refused allocation goes to `std::alloc::handle_alloc_error`, whose default handler prints `memory allocation of N bytes failed` and aborts the worker (SIGABRT, measured on Linux), and the parent, which reads that line in the worker's stderr (`why`), gives the same warning D30 gave for `RLIMIT_DATA`: `reading it needed more than the 1024 MiB a reader may use`. A refusal the reader goes on from, as lopdf goes on from a failed `read_to_end`, is remembered: the counter marks every refusal, its own or the system's while armed, `child` clears the mark before each document and reads it after (`take_refused`), and with the mark set the answer is the warning, whatever the Extractor returned, an `Ok` included, whose text is dropped (r8, Codex #1: Codex's PDF of a 40 MiB stream gave `ok 0 0 0` at 16 MiB and the document read as empty, without a warning). Before `why` reads a dead worker's stderr, the parent waits for the thread that reads it to reach its end (`drain`, at most `DRAINED`, 1 s; r8, Codex #2, Fable #3: `answer` copied the bytes before that thread could have them, a window of microseconds, in which none of Fable's 120 runs fell). `HEADROOM_MIB` lets the counter cut first in most readers; one of many small blocks may spend the 64 MiB on glibc's headers (16 bytes a block) first, and then `RLIMIT_DATA` cuts, with the same warning (r8, Fable #4). The counter is the allocator of every binary that links the library (`helpers/example` and `helpers/grammar` do, and declare none): such a binary cannot declare a `#[global_allocator]` of its own, which M5 has to know if it builds another binary from the library (r8, Fable #4). Never armed, as in sfor's own process and every test binary, each method of the allocator is one relaxed load of the limit, which no thread writes there, a branch, and a jump to the system's function; the count is never touched. The methods are out of line (`inline(never)`); the counter counts from `arm` on, so a block allocated before and freed after leaves the count below 0, never wrapped | Without it, D30's 1 GiB held on Linux only. Alternatives: count in every process and compare only in a worker, an atomic add and subtract per allocation in sfor's twelve search threads; abort inside the allocator, which loses the `try_reserve` path D30's warning uses (r4, Fable #2); count per thread with a `thread_local!`, which on a system without native thread-local storage allocates on first use, inside the allocator; `#[global_allocator]` in `main.rs`, outside the library whose worker arms it, which would then export its state to the binary. Measured (12 threads, a machine at load 4–12 from other sessions): over the M4 benchmark's corpus, sfor with the counter against the same code without it, the median ratio of 10 alternated series of 40 runs, 0.995 with a pattern no file matches, 1.007 with the sparse one, 1.016 with `e` over the 20 000 text files (single series 0.96–1.04); a run makes about 287 000 allocator calls (an `LD_PRELOAD` count: 120 636 `malloc`, 45 615 `realloc`, 120 748 `free`), and a micro-benchmark gives the unarmed counter about 1 ns per allocation, free and a third of a realloc (63.3 against 62.4 ns, the minimum of 30 rounds), so 0.01 ms of a 49 ms run; armed, about 35 ns more, and `--docs` over the 1 080 documents 351 against 344 ms (8 series, 0.91–1.04). Inlined at every allocation site, the counter made the release binary 406–462 KB larger; out of line, 108 KB (19 356 872 bytes against 19 248 904 for the same code without it). `m4_22` over the code without the counter, with `RLIMIT_DATA` at 4 096 MiB, read the workbook; with it, the warning at 16 MiB; a worker run by hand over a 98 MB SQLite database at 16 MiB exits by SIGABRT with `memory allocation of 16777216 bytes failed`. `cargo check --lib --bins` passes for `x86_64-pc-windows-gnu` and `aarch64-apple-darwin` (the latter with an empty C compiler for the C of ring and tree-sitter, which a check never links); not run on either |
 
 ## Verified for this plan (2026-10-17 and 2026-10-18)
 
 Outputs in `/tmp/subtask/m4-plan/outputs/`. The probe `/tmp/subtask/m4-plan/m4v2` is a git
-repository of its own with ten commits: the repository at `1610a50`, the repository at
+repository of its own with eleven commits: the repository at `1610a50`, the repository at
 `191dbaf`, M4's code over the latter (`57edf0f`, cherry-picked from the first probe, see «Rebase
-on M3's final code»), and the fixes of the first seven reviews of this plan and of the
-amendment of 18/10 (`eea167a`, `48fe5e8`, `08b0aec`, `fd8b653`, `a78b088`, `8e974bc` and
-`3547596`, see «Review round 1» to «Review round 7» and «Amendment (18/10, Sebastián)»). The frozen
-copy `/tmp/subtask/m4-plan/m4tree-3547596` is that probe at its commit `3547596` (round 6's,
+on M3's final code»), and the fixes of the eight reviews of this plan and of the amendment of
+18/10 (`eea167a`, `48fe5e8`, `08b0aec`, `fd8b653`, `a78b088`, `8e974bc`, `3547596` and
+`c451602`, see «Review round 1» to «Review round 8 (cut)» and «Amendment (18/10, Sebastián)»). The
+frozen copy `/tmp/subtask/m4-plan/m4tree-c451602` is that probe at its commit `c451602` (round 6's,
 `m4tree-8e974bc`, stays while chunks built from it are merged); every code block below was generated from it (`/tmp/subtask/m4-plan/plan/gen.py`,
 diffs against its commit `05699bc`, which is `191dbaf`). The working probe may change with the
 reviews; the frozen one does not.
@@ -167,10 +167,10 @@ reviews; the frozen one does not.
   `cargo check --offline --workspace --all-targets` passes from the local cache. quick-xml
   0.42.0, the M3 plan's candidate, also resolved, and was dropped (D12).
 - **Binary.** `target/release/sfor` of `191dbaf`: 16 598 640 bytes (15 381 072 stripped); of the
-  frozen copy: 19 356 872 bytes (17 918 960 stripped), 2.8 MB more, under 23 MB (8612); before
+  frozen copy: 19 358 432 bytes (17 920 432 stripped), 2.8 MB more, under 23 MB (8612); before
   the fixes of review round 1, 19 015 120, of round 2, 19 041 208, of round 3, 19 064 256,
-  of round 4, 19 140 656, of round 5, 19 216 672, of round 6, 19 230 000, and of round 7,
-  19 239 280 (19 239 368 built in this round's target directory). Over `1610a50` the probe had measured 16 583 992 and
+  of round 4, 19 140 656, of round 5, 19 216 672, of round 6, 19 230 000, of round 7,
+  19 239 280 (19 239 368 built in this round's target directory), and of round 8, 19 356 872. Over `1610a50` the probe had measured 16 583 992 and
   19 000 368.
 - **Object files.** Over binaries built from one C file (`version_string` and a second string
   literal): gcc's ELF gives `ELF x86-64 › .rodata › version_string+0xe` and, for the second
@@ -197,16 +197,16 @@ reviews; the frozen one does not.
 - **Every tanda builds** (`/tmp/subtask/m4-plan/states/build.py`, over `191dbaf` with the code
   of the frozen copy): the repository with only what tanda 1, then 1–2, 1–3 and 1–4 write (the
   later files as their stubs, and the `offsets: false` literals) passes `cargo clippy
-  --workspace --all-targets -- -D warnings`, `cargo test --lib` (409, 457, 510 and 510 tests)
+  --workspace --all-targets -- -D warnings`, `cargo test --lib` (409, 459, 512 and 512 tests)
   and `cargo test --test cli --test cli_m2 --test cli_m3` (42, 16, 19), and after tanda 4 also
-  `--test cli_m4` (22). The first run of this check, in round 0, found that the shared writer
+  `--test cli_m4` (23). The first run of this check, in round 0, found that the shared writer
   helpers, `pub(crate)` then, are dead code to clippy while the format writers are stubs; they
   are `pub` now (Task 4.3).
 - **Frozen copy, whole suite:** `cargo build --workspace`, `cargo clippy --workspace
   --all-targets -- -D warnings` (no findings), `cargo fmt --check` and
-  `SFOR_REQUIRE_REFERENCE=1 cargo test --workspace` pass: 510 unit tests and 2 ignored, `cli` 42,
-  `cli_m2` 16 (with `m2_07` updated), `cli_m3` 19, `cli_m4` 22, `fuzz` 5, `helpers` 22,
-  `rg_compat` 37, and the helpers' own 14: 687 in all.
+  `SFOR_REQUIRE_REFERENCE=1 cargo test --workspace` pass: 512 unit tests and 2 ignored, `cli` 42,
+  `cli_m2` 16 (with `m2_07` updated), `cli_m3` 19, `cli_m4` 23, `fuzz` 5, `helpers` 22,
+  `rg_compat` 37, and the helpers' own 14: 690 in all.
 - **Rebase on M3's final code.** The probe was first built over `1610a50` (frozen then as
   `m4tree-7134553`, removed). Its changes were cherry-picked onto `191dbaf`: every diff applied
   but those of `src/output/{mod,tree,stream}.rs`, where M3's final code had turned `Row::bytes`
@@ -384,6 +384,43 @@ reviews; the frozen one does not.
   the documents 0.336–0.371 s against a budget of 0.780 s (0.300 s in round 6, on a quieter
   machine: here 8e974bc's binary measured 0.333–0.354 s beside it). M1–M3's benchmarks over
   the counter's binary: `PATH=/usr/bin:$PATH scripts/bench.sh` exit 0 (notes 1.30 × rg with Trails and 1.03 with `--no-trail`, the binaries of `/usr/lib` 1.07 and 1.03), `bench-code.sh` exit 0 (the cargo registry 1.02, 1.00 and 4.40 within its budget; `~/robotin/apps` 1.01, 0.98 and 1.31), `bench-m3.sh` 1.12 × rg for `none` in one run (exit 1) and 1.07 in the next (exit 0), where M3's own binary gave 1.01 beside it; over ten alternated series on the M3 corpus, M4's sfor is 1.008 × M3's and the counter 0.996 × the same code without it, so that gate sits at the noise (the probe had not run these three before: «To verify»). The Windows Job Object is in M5's row.
+- **Review round 8 (cut)** (`reviews/m4-plan-r8/{codex,fable}.md`; Codex «PLAN NO SANO», Fable
+  «PLAN SANO»; the last round, by the cut rule), every finding fixed, test first, RED over round
+  7's code (`3547596`) and GREEN over `c451602`. Codex #1, MAJOR: the counter refused lopdf's
+  `read_to_end` while it inflated a stream, lopdf kept what it had read, and the document was an
+  extraction without error and without its text: Codex's `long40.pdf` (a 40 MiB stream) at 16 MiB
+  with `RLIMIT_DATA` at 4 096 MiB answered `ok 0 0 0`, and `sfor --docs` printed nothing, with no
+  warning, also at the default `RLIMIT_DATA`. The counter now marks every refusal (`take_refused`),
+  `child` clears the mark before a document and, set after it, answers the warning whatever the
+  Extractor returned, its text dropped (D31): the same PDF answers `err broken` with the warning.
+  Tests: `a_refusal_is_remembered_until_taken` and `memory_refused_is_the_memory_warning` (did not
+  compile: `take_refused`, and `refused_memory` without the mark), and `m4_23` beside `m4_22`
+  (FAILED: no warning). Codex #2, MINOR, and Fable #3, NIT: the thread that reads a worker's stderr
+  was not waited for, so `why` could see an empty stderr after an abort; `answer` now reaps the
+  worker and then waits for that thread to reach the end (`drain`, `DRAINED`), and
+  `a_dead_workers_stderr_is_read_to_its_end_before_why`, with that thread started 300 ms late,
+  FAILED with `its reader stopped (exit status: 134)` before. Codex #3 and Fable #1, MINOR: the
+  spec said 1.02 × M3 and D23 and `bench-m4.sh` 1.03; the cut settled the three on 1.03 over the
+  median of three alternated series, which spec §11 #26 now says. Codex #3 and Fable #2, MINOR:
+  Task 13.2 looked for M4's cost without `--docs` only if `docs-off` failed; its new Step 3
+  measures it on a machine at low load (the load of `uptime` in the report), locates it when it
+  stays above 1 %, removes it if it can, and otherwise writes it as a decision for Sebastián
+  against 8385, whatever `docs-off` gives. Fable #4, NIT: `HEADROOM_MIB` says the counter cuts
+  first in most readers, as glibc's headers may pass 64 MiB first, and D31 and `COUNTER` say that a
+  binary linking the library cannot declare its own allocator. What changed, by chunk: C4
+  `src/docs/memory.rs` (`refused`, `take_refused`) and `src/docs/isolated.rs` (`refused_memory`
+  with the mark, `warn_memory`, `drain`, `DRAINED`, `Worker::drained`, `gone` by reference, the
+  comment of `HEADROOM_MIB`); C11 `m4_23` and its writer; C13 Task 13.2, Step 3. No file of C1, C2,
+  C3 or C5 changed, and no chunk, tanda or dependency was added. Measured over the frozen copy: the
+  suite (690 tests: 512 unit, `cli_m4` 23), clippy, fmt, every tanda (409, 459, 512 and 512 unit
+  tests), the eleven perf tests (114.5 s), `cargo check --lib --bins --target
+  x86_64-pc-windows-gnu` (the four warnings of `191dbaf`'s Supervisor), the binary 19 358 432 bytes
+  (17 920 432 stripped, 1 560 more than round 7's); Codex's `long40.pdf` by hand at 16 MiB answers
+  `err broken` and the memory warning for 1 024 bytes of text as for 256 MiB, and `sfor --docs`
+  warns and then searches it as rg. `m4_23` takes 13 s in a debug build, as `m4_16` does; a stream
+  of 12 MiB or more read silently over round 7, and one of 10 MiB or less aborted there with the
+  warning. Not run again: `SFOR_FUZZ_N=20000` (the default count passed in the suite),
+  `bench-m4.sh` and the 87 real PDFs (no search or PDF code changed).
 - **RED** over the stubs of C1 and C4 with each module's tests (`/tmp/subtask/m4-plan/red/run.py`,
   over the frozen copy): object `mod.rs` does not compile (`demangle`), `rows.rs` 7 FAIL,
   `preprocess.rs` 2 FAIL, `ooxml.rs` does not compile (4 functions), `odf.rs` 5 FAIL and 1 passes
@@ -428,7 +465,8 @@ reviews; the frozen one does not.
 on the merged code (chunk 13); a RED run of each ceiling (chunk 13); the README texts, which the
 probe did not write (chunk 14); that the diffs apply after the last M3 rounds merged into the
 work branch (chunk 1); the readers' memory counter run on macOS and Windows (M5, in CI), and
-where M4's 1.5–3 % over M3 without `--docs` comes from (chunk 13). Every other statement above
+where M4's 1.5–3 % over M3 without `--docs` comes from, whatever `docs-off` gives (chunk 13,
+Task 13.2, Step 3). Every other statement above
 was measured.
 
 ## M4 acceptance criteria
@@ -449,7 +487,9 @@ M4 is done when all of these hold; each names the test or script that measures i
    and both orders of `-z`/`--pre` with rg 14.1.1, stdout, stderr and exit code, run as
    `SFOR_REQUIRE_REFERENCE=1 cargo test --test cli_m4` so it cannot skip.
 7. Spec §11 #26: `scripts/bench-m4.sh` exits 0, and `PATH=/usr/bin:$PATH scripts/bench.sh`,
-   `scripts/bench-code.sh` and `scripts/bench-m3.sh` still exit 0 (C13).
+   `scripts/bench-code.sh` and `scripts/bench-m3.sh` still exit 0 (C13); and C13's report
+   closes what M4 adds without `--docs` over M3 (Task 13.2, Step 3): removed, or written as a
+   decision for Sebastián against 8385.
 8. The eleven M4 tests of `tests/perf.rs` pass in release with the reference required:
    `SFOR_REQUIRE_REFERENCE=1 cargo test --release --test perf -- --ignored object_ elf_
    documents_ zip_bomb pdf_`. A run that printed `skipping:` does not count.
@@ -459,7 +499,7 @@ M4 is done when all of these hold; each names the test or script that measures i
     `-i regex-syntax`, `-i memchr` and `-i encoding_rs` show only 0.4.7, 0.8.4, 2.7.4 and 0.8.34.
 11. Spec §11 #22: `target/release/sfor` is at most 23 MB (measured in C13 and reported; 19.4 MB
     in the probe).
-12. D31: the readers count their own memory: `m4_22` passes, and `cargo check --lib --bins
+12. D31: the readers count their own memory: `m4_22` and `m4_23` pass, and `cargo check --lib --bins
     --target x86_64-pc-windows-gnu` passes (C4; `aarch64-apple-darwin` too where its C compiler
     is at hand).
 
@@ -4422,7 +4462,13 @@ impl Table {
   (`own_watchdog`, `OWN_WALL`, on a monotonic clock: review r6, Codex #2), and on Linux
   `PR_SET_PDEATHSIG`; it writes `KIND MAX_TEXT LEN` and the path's `LEN` bytes,
   and reads the answer back (`write_extracted`, `read_extracted`, tested by
-  `an_answer_reads_back_as_it_was_written`; `memory_refused_is_the_memory_warning`). A worker
+  `an_answer_reads_back_as_it_was_written`). `memory_refused_is_the_memory_warning`: a refused
+  `try_reserve` is the memory warning, and so is any answer of a document during which the
+  counter refused memory, an `Ok` included (review r8, Codex #1; it did not compile over round
+  7's `refused_memory`, which took no mark). `a_dead_workers_stderr_is_read_to_its_end_before_why`:
+  the worker's stderr is read to its end before `why` names the cause, here with the thread that
+  reads it started 300 ms late (review r8, Codex #2, Fable #3; over round 7's `answer` it gave
+  `its reader stopped (exit status: 134)`). A worker
   that dies, or takes more than `WALL` over a document (and is killed through its `Child`),
   gives the document one warning; a new worker takes its place, and one from the pool that
   died between documents is replaced once (review r4, Fable #7), and one a signal reaped before
@@ -4599,8 +4645,9 @@ const PARENT: &str = "SFOR_READER_OF";
 /// for reading does not count).
 pub const MEMORY_MIB: u64 = 1024;
 /// How far above the counter's limit `RLIMIT_DATA` stands, on Unix: room for what the counter
-/// does not see (the allocator's own pages, the threads' stacks), so the counter cuts first and
-/// the warning is the same on every system (M4 plan, D31).
+/// does not see (the allocator's own pages, the threads' stacks), so that in most readers the
+/// counter cuts first. Where many small blocks spend more than this on the allocator's headers,
+/// `RLIMIT_DATA` cuts first, and the warning is the same (M4 plan, D31; r8, Fable #4).
 #[cfg(unix)]
 const HEADROOM_MIB: u64 = 64;
 /// The most workers at once: with `MEMORY_MIB` each, what all of them may take together.
@@ -4613,6 +4660,9 @@ const SERVES: usize = 64;
 /// parent and watchdog are gone, ends there (M4 plan r5, Fable #1: a CPU limit over the
 /// worker's life ended a long but valid run). `SFOR_READER_SECONDS` lowers it, for the tests.
 const OWN_WALL: Duration = Duration::from_secs(WALL.as_secs() + 5);
+/// How long a dead worker's stderr may take to be read to its end: at once, unless another
+/// process holds a copy of the pipe.
+const DRAINED: Duration = Duration::from_secs(1);
 /// The exit code of a worker past its own `OWN_WALL`.
 const LATE: i32 = 3;
 
@@ -4625,6 +4675,8 @@ struct Worker {
     stdout: BufReader<ChildStdout>,
     /// The last bytes of its stderr: why it died.
     errors: Arc<Mutex<Vec<u8>>>,
+    /// Disconnected when the thread that reads its stderr into `errors` has read it to the end.
+    drained: std::sync::mpsc::Receiver<()>,
     served: usize,
 }
 
@@ -4705,22 +4757,29 @@ fn spawn() -> std::io::Result<Worker> {
     let (stdin, stdout, mut stderr) = pipes(&shared)?;
     let errors = Arc::new(Mutex::new(Vec::new()));
     let keep = errors.clone();
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        while let Ok(n @ 1..) = stderr.read(&mut buf) {
-            let mut e = keep.lock().unwrap_or_else(|e| e.into_inner());
-            e.extend_from_slice(&buf[..n]);
-            let over = e.len().saturating_sub(4096);
-            e.drain(..over);
-        }
-    });
+    let (done, drained) = std::sync::mpsc::channel();
+    std::thread::spawn(move || drain(&mut stderr, &keep, done));
     Ok(Worker {
         stdin,
         stdout: BufReader::new(stdout),
         child: shared,
         errors,
+        drained,
         served: 0,
     })
+}
+
+/// Reads the worker's stderr to its end, keeping its last 4 096 bytes in `errors`; `done`
+/// drops when it returns.
+fn drain(stderr: &mut impl Read, errors: &Mutex<Vec<u8>>, done: std::sync::mpsc::Sender<()>) {
+    let mut buf = [0u8; 4096];
+    while let Ok(n @ 1..) = stderr.read(&mut buf) {
+        let mut e = errors.lock().unwrap_or_else(|e| e.into_inner());
+        e.extend_from_slice(&buf[..n]);
+        let over = e.len().saturating_sub(4096);
+        e.drain(..over);
+    }
+    drop(done);
 }
 
 /// The worker's pipes. A signal's `cancel` may have reaped it between its start and here, and
@@ -4755,7 +4814,7 @@ pub fn extract(kind: Kind, path: &Path, max_text: usize) -> Result<Extracted, Do
             .and_then(|_| w.stdin.write_all(&p))
             .and_then(|_| w.stdin.flush());
         if sent.is_err() && !fresh {
-            gone(w);
+            gone(&w);
             continue;
         }
         return answer(w, sent.is_ok());
@@ -4792,23 +4851,28 @@ fn answer(mut w: Worker, sent: bool) -> Result<Extracted, DocError> {
             a
         }
         _ => {
-            let errors =
-                String::from_utf8_lossy(&w.errors.lock().unwrap_or_else(|e| e.into_inner()))
-                    .into_owned();
-            let status = gone(w);
+            let status = gone(&w);
             if late {
                 return Err(DocError::broken(format!(
                     "reading it took more than {} s",
                     WALL.as_secs()
                 )));
             }
+            // Reaped, the worker has closed its stderr: what it wrote last, the line of
+            // `handle_alloc_error` before an abort, is all in `errors` once the thread that
+            // reads it ends, which may be after its stdout ended here (M4 plan r8, Codex #2,
+            // Fable #3).
+            let _ = w.drained.recv_timeout(DRAINED);
+            let errors =
+                String::from_utf8_lossy(&w.errors.lock().unwrap_or_else(|e| e.into_inner()))
+                    .into_owned();
             Err(why(status, &errors))
         }
     }
 }
 
 /// Kills and waits for a worker that will not answer.
-fn gone(w: Worker) -> Option<std::process::ExitStatus> {
+fn gone(w: &Worker) -> Option<std::process::ExitStatus> {
     let mut child = w.child.lock().unwrap_or_else(|e| e.into_inner());
     let _ = child.kill();
     child.wait().ok()
@@ -4887,10 +4951,7 @@ fn why(status: Option<std::process::ExitStatus>, errors: &str) -> DocError {
         ));
     }
     if errors.contains("memory allocation of") || errors.contains("out of memory") {
-        return DocError::broken(format!(
-            "reading it needed more than the {} MiB a reader may use",
-            memory_mib()
-        ));
+        return warn_memory(memory_mib());
     }
     DocError::broken(match status {
         Some(s) => format!("its reader stopped ({s})"),
@@ -4933,6 +4994,8 @@ pub fn child(args: &[std::ffi::OsString]) -> i32 {
         if input.read_exact(&mut p).is_err() {
             return 2;
         }
+        // A refusal before this document (reading the request) is not its own.
+        super::memory::take_refused();
         reading.store(now_ms(), std::sync::atomic::Ordering::SeqCst);
         let answer = match read(&path_of(p)) {
             Ok(bytes) => {
@@ -4942,7 +5005,7 @@ pub fn child(args: &[std::ffi::OsString]) -> i32 {
             Err(e) => Err(DocError::broken(e)),
         };
         reading.store(0, std::sync::atomic::Ordering::SeqCst);
-        let answer = refused_memory(answer, mib);
+        let answer = refused_memory(answer, super::memory::take_refused(), mib);
         if write_extracted(&answer, &mut out)
             .and_then(|_| out.flush())
             .is_err()
@@ -4985,14 +5048,26 @@ fn own_watchdog() -> Arc<std::sync::atomic::AtomicU64> {
 }
 
 /// A reader that asked for memory and was refused (`try_reserve`, `ErrorKind::OutOfMemory`,
-/// whose message ends `out of memory`) warns as one that died of it (M4 plan r4, Fable #2).
-fn refused_memory(a: Result<Extracted, DocError>, mib: u64) -> Result<Extracted, DocError> {
+/// whose message ends `out of memory`) warns as one that died of it (M4 plan r4, Fable #2);
+/// and so does one that was `refused` memory during the document whatever it answered, an
+/// `Ok` included, whose text is then dropped: a reader that went on without the memory may
+/// have read less than the document holds (M4 plan r8, Codex #1).
+fn refused_memory(
+    a: Result<Extracted, DocError>,
+    refused: bool,
+    mib: u64,
+) -> Result<Extracted, DocError> {
     match a {
-        Err(DocError::Broken(m)) if m.ends_with("out of memory") => Err(DocError::broken(format!(
-            "reading it needed more than the {mib} MiB a reader may use"
-        ))),
+        Err(DocError::Broken(m)) if m.ends_with("out of memory") => Err(warn_memory(mib)),
+        _ if refused => Err(warn_memory(mib)),
         a => a,
     }
+}
+
+fn warn_memory(mib: u64) -> DocError {
+    DocError::broken(format!(
+        "reading it needed more than the {mib} MiB a reader may use"
+    ))
 }
 
 /// The worker ends with its parent, which holds its watchdog (M4 plan r4, Codex #2): on Linux
@@ -5266,19 +5341,74 @@ mod tests {
         assert_eq!(e.to_string(), "sfor is ending");
     }
 
+    /// A refused `try_reserve` is the memory warning; and so is any answer of a document during
+    /// which the counter refused memory, an `Ok` included, its partial text dropped (M4 plan r8,
+    /// Codex #1: lopdf ends a stream where `read_to_end` failed, and the document read as
+    /// empty).
+    /// Codex r8 #2, Fable r8 #3: the warning of a worker that died of its memory never depends
+    /// on whether the thread that reads its stderr ran before its stdout ended. Here that
+    /// thread starts 300 ms late, after the worker wrote `memory allocation of …` and exited.
+    #[cfg(unix)]
+    #[test]
+    fn a_dead_workers_stderr_is_read_to_its_end_before_why() {
+        let shared = Arc::new(Mutex::new(
+            Command::new("sh")
+                .args([
+                    "-c",
+                    "echo 'memory allocation of 8 bytes failed' >&2; exit 134",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ));
+        let (stdin, stdout, mut stderr) = pipes(&shared).unwrap();
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let keep = errors.clone();
+        let (done, drained) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drain(&mut stderr, &keep, done);
+        });
+        let w = Worker {
+            child: shared,
+            stdin,
+            stdout: BufReader::new(stdout),
+            errors,
+            drained,
+            served: 0,
+        };
+        assert_eq!(
+            answer(w, true).unwrap_err(),
+            DocError::broken(format!(
+                "reading it needed more than the {} MiB a reader may use",
+                memory_mib()
+            ))
+        );
+    }
+
     #[test]
     fn memory_refused_is_the_memory_warning() {
+        let warning = DocError::broken("reading it needed more than the 16 MiB a reader may use");
         let oom = std::io::Error::from(std::io::ErrorKind::OutOfMemory);
         let e = refused_memory(
             Err(DocError::broken(format!("word/document.xml: {oom}"))),
+            false,
             16,
         );
-        assert_eq!(
-            e.unwrap_err(),
-            DocError::broken("reading it needed more than the 16 MiB a reader may use")
-        );
-        let e = refused_memory(Err(DocError::Encrypted), 16);
+        assert_eq!(e.unwrap_err(), warning);
+        let e = refused_memory(Err(DocError::Encrypted), false, 16);
         assert_eq!(e.unwrap_err(), DocError::Encrypted);
+        let mut b = super::super::Builder::new(super::super::MAX_TEXT);
+        b.line("a partial needle");
+        let partial = b.finish();
+        let e = refused_memory(Ok(partial.clone()), true, 16);
+        assert_eq!(e.unwrap_err(), warning);
+        let e = refused_memory(Err(DocError::Encrypted), true, 16);
+        assert_eq!(e.unwrap_err(), warning);
+        let e = refused_memory(Ok(partial.clone()), false, 16);
+        assert_eq!(e.unwrap().text, partial.text);
     }
 
     #[test]
@@ -5393,6 +5523,29 @@ mod tests {
         }
     }
 
+    /// M4 plan r8, Codex #1: a refusal is remembered until it is taken, so a reader whose
+    /// document went on without the memory it was refused (lopdf ends a stream where its
+    /// `read_to_end` failed) still gives the memory warning; taking it clears it for the next
+    /// document.
+    #[test]
+    fn a_refusal_is_remembered_until_taken() {
+        let c = Counter::new();
+        c.arm(4 * MIB);
+        assert!(!c.take_refused());
+        // SAFETY: the one block is freed once, with the layout of its last size.
+        unsafe {
+            assert!(c.alloc(layout(5 * MIB)).is_null());
+            assert!(c.take_refused(), "the refused alloc");
+            assert!(!c.take_refused(), "taken, the next document starts clean");
+            let a = c.alloc(layout(MIB));
+            assert!(!a.is_null());
+            assert!(c.realloc(a, layout(MIB), 8 * MIB).is_null());
+            assert!(c.take_refused(), "the refused realloc");
+            c.dealloc(a, layout(MIB));
+        }
+        assert!(!c.take_refused(), "what fits refuses nothing");
+    }
+
     /// D31: the limit in MiB, as `child` arms it, saturates instead of overflowing.
     #[test]
     fn a_limit_in_mib_saturates() {
@@ -5402,7 +5555,8 @@ mod tests {
 }
 ```
 
-  `cargo test --lib docs::memory` does not compile (`Counter`, `bytes_of_mib`): RED. Then the
+  `cargo test --lib docs::memory` does not compile (`Counter`, `bytes_of_mib`; and over round 7's
+  counter `take_refused`, review r8, Codex #1): RED. Then the
   counter, the `#[global_allocator]` of every sfor process, armed by `isolated::child` (Step 4)
   before anything else. A unit test calls a `Counter` of its own, never the process's:
 
@@ -5416,13 +5570,16 @@ mod tests {
 //!   and `isolated::refused_memory` turns into the warning;
 //! - any other allocation goes to `std::alloc::handle_alloc_error`, whose default prints
 //!   `memory allocation of N bytes failed` and aborts the reader: its parent reads that line in
-//!   the reader's stderr and gives the warning (`isolated::why`).
+//!   the reader's stderr and gives the warning (`isolated::why`);
+//! - and a reader that saw the refusal and went on (lopdf ends a stream where its
+//!   `read_to_end` failed, and returns what it read) finds it in `take_refused` after the
+//!   document, and gives the warning for whatever it answered (M4 plan r8, Codex #1).
 //!
 //! Not armed, in sfor's own process and in every test binary, each allocation and free costs
 //! one relaxed load of `limit`, a value no one writes there, and a branch: the count itself
 //! is never touched.
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering::Relaxed};
 
 /// The system's allocator, counting the live bytes once armed.
 pub struct Counter {
@@ -5432,8 +5589,14 @@ pub struct Counter {
     /// before it are freed after it, which loosens the limit by those few bytes and never
     /// makes it refuse everything.
     live: AtomicIsize,
+    /// Whether an allocation was refused, by the count or by the system, since the last
+    /// `take_refused`.
+    refused: AtomicBool,
 }
 
+/// The allocator of every binary that links this library: such a binary, as `helpers/example`
+/// and `helpers/grammar` are, cannot declare a `#[global_allocator]` of its own (M4 plan, D31;
+/// r8, Fable #4).
 #[global_allocator]
 static COUNTER: Counter = Counter::new();
 
@@ -5441,6 +5604,12 @@ static COUNTER: Counter = Counter::new();
 /// refused. Called once, by a reader, before its first document.
 pub fn arm(bytes: usize) {
     COUNTER.arm(bytes);
+}
+
+/// Whether this process was refused an allocation since the last call: a reader asks after
+/// each document, and before the next (M4 plan r8, Codex #1).
+pub fn take_refused() -> bool {
+    COUNTER.take_refused()
 }
 
 /// `mib` MiB in bytes, at most `isize::MAX` (`SFOR_READER_MIB` may say anything).
@@ -5453,7 +5622,12 @@ impl Counter {
         Counter {
             limit: AtomicUsize::new(0),
             live: AtomicIsize::new(0),
+            refused: AtomicBool::new(false),
         }
+    }
+
+    fn take_refused(&self) -> bool {
+        self.refused.swap(false, Relaxed)
     }
 
     fn arm(&self, bytes: usize) {
@@ -5476,6 +5650,7 @@ impl Counter {
         let before = self.live.fetch_add(n, Relaxed);
         if before.saturating_add(n) > limit {
             self.live.fetch_sub(n, Relaxed);
+            self.refused.store(true, Relaxed);
             return false;
         }
         true
@@ -5502,6 +5677,7 @@ impl Counter {
         };
         if p.is_null() {
             self.give(layout.size());
+            self.refused.store(true, Relaxed);
         }
         p
     }
@@ -5519,6 +5695,7 @@ impl Counter {
             if new_size > old {
                 self.give(new_size - old);
             }
+            self.refused.store(true, Relaxed);
         } else if new_size < old {
             self.give(old - new_size);
         }
@@ -5579,8 +5756,8 @@ unsafe impl GlobalAlloc for Counter {
 }
 ```
 
-  GREEN. The end-to-end test that the counter, and not `RLIMIT_DATA`, ends a reader is
-  C11's `m4_22`; this chunk checks that the counter builds elsewhere: `cargo check --lib --bins
+  GREEN. The end-to-end tests that the counter, and not `RLIMIT_DATA`, ends a reader, and that a
+  refusal a reader went on from still warns, are C11's `m4_22` and `m4_23`; this chunk checks that the counter builds elsewhere: `cargo check --lib --bins
   --target x86_64-pc-windows-gnu` (the probe: the four warnings of `191dbaf`'s Supervisor on
   Windows, none of this chunk) and, with the target and a C compiler for it,
   `--target aarch64-apple-darwin`.
@@ -13568,6 +13745,124 @@ fn m4_22_the_readers_own_count_ends_it_at_its_limit() {
     assert!(stdout(&o).contains("m4/report.docx:3"), "{}", stdout(&o));
     assert_eq!(code(&o), 0);
 }
+
+/// Bits of a deflate stream, the first in the lowest bit of each byte (RFC 1951).
+#[derive(Default)]
+struct Bits {
+    out: Vec<u8>,
+    n: u32,
+}
+
+impl Bits {
+    /// `v`'s `n` low bits, the lowest first: a block header or an extra field.
+    fn put(&mut self, v: u32, n: u32) {
+        for i in 0..n {
+            if self.n.is_multiple_of(8) {
+                self.out.push(0);
+            }
+            *self.out.last_mut().unwrap() |= (((v >> i) & 1) as u8) << (self.n % 8);
+            self.n += 1;
+        }
+    }
+
+    /// A Huffman code of `n` bits, its highest bit first.
+    fn code(&mut self, c: u32, n: u32) {
+        for i in (0..n).rev() {
+            self.put(c >> i, 1);
+        }
+    }
+}
+
+/// A PDF whose one page draws a string of `1 + 258 × runs` letters `A`, its content stream
+/// deflated with the fixed codes as one `A` and `runs` copies of the 258 bytes before, 13 bits
+/// each: a stream about 160 times smaller than what it inflates to (M4 plan r8, Codex #1).
+fn pdf_of_a_long_run(runs: usize) -> Vec<u8> {
+    let (head, tail) = (&b"BT /F1 12 Tf 72 700 Td ("[..], &b") Tj ET"[..]);
+    let mut bits = Bits::default();
+    // The last block, with the fixed codes.
+    bits.put(0b011, 3);
+    // A literal below 144 is 8 bits, 0x30 above its byte.
+    let literal = |b: &mut Bits, v: u8| b.code(0x30 + u32::from(v), 8);
+    head.iter().for_each(|&v| literal(&mut bits, v));
+    literal(&mut bits, b'A');
+    for _ in 0..runs {
+        // Length 258 is symbol 285, 8 bits; distance 1 is code 0, 5 bits.
+        bits.code(0xc5, 8);
+        bits.code(0, 5);
+    }
+    tail.iter().for_each(|&v| literal(&mut bits, v));
+    // The end of the block, symbol 256: 7 bits of 0.
+    bits.code(0, 7);
+    let (mut a, mut b) = (1u32, 0u32);
+    let n = 1 + 258 * runs;
+    let text = head.iter().chain(std::iter::repeat_n(&b'A', n)).chain(tail);
+    for &v in text {
+        a = (a + u32::from(v)) % 65521;
+        b = (b + a) % 65521;
+    }
+    let mut z = vec![0x78, 0x01];
+    z.extend_from_slice(&bits.out);
+    z.extend_from_slice(&((b << 16) | a).to_be_bytes());
+    let mut stream =
+        format!("<< /Length {} /Filter /FlateDecode >>\nstream\n", z.len()).into_bytes();
+    stream.extend_from_slice(&z);
+    stream.extend_from_slice(b"\nendstream");
+    let objects: [&[u8]; 5] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 612 792] >>",
+        b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        &stream,
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ];
+    let mut pdf = b"%PDF-1.5\n".to_vec();
+    let mut at = Vec::new();
+    for (i, o) in objects.iter().enumerate() {
+        at.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+        pdf.extend_from_slice(o);
+        pdf.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = pdf.len();
+    pdf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+    for o in at {
+        pdf.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!("trailer << /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
+    pdf
+}
+
+/// Codex r8 #1: a reader refused memory inside lopdf, which ends the stream where its
+/// `read_to_end` failed and goes on, gives the memory warning, its partial text dropped, as
+/// one the refusal aborted. The page's 16 MiB stream, refused at 16 MiB, gave an empty text
+/// without a warning; and at the reader's own limit the same PDF is read whole.
+#[test]
+fn m4_23_a_reader_refused_memory_it_went_on_without_warns() {
+    let fx = fixture();
+    std::fs::write(fx.path().join("m4/long.pdf"), pdf_of_a_long_run(16 << 12)).unwrap();
+    let o = run(fx
+        .sfor([
+            "--docs",
+            "--flat",
+            "-c",
+            "needle",
+            "m4/long.pdf",
+            "m4/report.docx",
+        ])
+        .env("SFOR_READER_MIB", "16")
+        .env("SFOR_READER_RLIMIT_MIB", "4096"));
+    assert!(
+        stderr(&o)
+            .contains("m4/long.pdf: pdf: reading it needed more than the 16 MiB a reader may use"),
+        "{}",
+        stderr(&o)
+    );
+    assert!(stdout(&o).contains("m4/report.docx:3"), "{}", stdout(&o));
+    assert_eq!(code(&o), 0);
+    let o = run(&mut fx.sfor(["--docs", "-c", "AAAAAAAA", "m4/long.pdf"]));
+    assert_eq!((stdout(&o), stderr(&o)), ("1\n".to_string(), String::new()));
+}
 ```
 
 - [ ] **Step 2:** `cargo test --test cli_m4`: RED. Before this chunk an object file prints
@@ -13598,7 +13893,11 @@ fn m4_22_the_readers_own_count_ends_it_at_its_limit() {
   still waited at 40 s, and this one fails in 11.6 s). `m4_22`: the reader's own count of its
   memory ends it, with `RLIMIT_DATA` far above (`SFOR_READER_RLIMIT_MIB=4096`), as macOS and
   Windows have it (D31); RED over the probe with the counter not armed, which read the
-  workbook. `m4_17` (the worker's flag is no pattern: `sfor
+  workbook. `m4_23`: a PDF whose one page's stream inflates to 16 MiB (`pdf_of_a_long_run`, a
+  deflate stream of fixed codes written by the test, 107 KB) gives the memory warning at
+  16 MiB, the other document is read, and at the reader's own limit the PDF is read whole
+  (review r8, Codex #1: RED over round 7's code, which read the stream up to the refusal of
+  lopdf's `read_to_end`, answered an empty text and gave no warning). `m4_17` (the worker's flag is no pattern: `sfor
   __extract-document FILE` searches it, as rg), `m4_18` (paths not UTF-8, with a line break,
   with a carriage return before the extension and at the very end, the latter with
   `--format docx`: «No such file or directory» over the round-3 reader, review r5, Codex #3)
@@ -15760,19 +16059,32 @@ exit "$fail"
   sfor without it over the same files: review r6, Fable #5), run with `SFOR_BASE_BIN` set to M3's
   binary, built from `191dbaf` in a worktree of its own (`git worktree add /tmp/sfor-m3
   191dbaf`, `cargo build --release` there, then `git worktree remove`), so that `docs-off`
-  runs (review r7, Fable #2; the probe measured 1.012, 1.034 and 1.020: if it fails, find
-  what M4 adds without `--docs`, and report it; D23); `SFOR_RG=/nonexistent scripts/bench-m4.sh`
+  runs (review r7, Fable #2; the probe measured 1.012, 1.034 and 1.020; D23); whether it
+  passes or fails, Step 3 follows; `SFOR_RG=/nonexistent scripts/bench-m4.sh`
   exits 1. Paste its lines into the report. Then `PATH=/usr/bin:$PATH scripts/bench.sh`,
   `scripts/bench-code.sh` and `scripts/bench-m3.sh` still exit 0 (to verify in chunk 13 on the
   merged code; the probe ran them in round 7, and `bench-m3.sh`'s `none` gave 1.12 × rg once
   and 1.07 the next time, where ten alternated series put M4 at 1.008 × M3 on that corpus:
   «Amendment (18/10, Sebastián)»).
+- [ ] **Step 3:** close what M4 adds to a search without `--docs`, also when `docs-off` passed
+  (review r8, Codex #3, Fable #2; D23). Measure M4's sfor against M3's without `--docs` on a
+  machine at low load: `docs-off`, or more alternated series of the same two commands, with the
+  load of `uptime` written down before and after each run. If M4 stays above 1.01 × M3, find
+  where the cost comes from: a `perf record` of both binaries over the corpus with the sparse
+  pattern, or the merged code bisected by chunk over the path without `--docs` (C1's detection,
+  C3's `Preprocess::through` and the new fields of `Target`, C4's Supervisor and `finish`, C11's
+  pipeline). Remove it if it can go without changing what a test checks, and measure again. If
+  it cannot, write in the chunk report the ratio, the load, where the cost is and why it stays,
+  as a decision for Sebastián against 8385 (a binary costs nothing until it has a Match). Chunk
+  13 is done when its report says one or the other. The probe: M3 → round 6's code 1.015, M3 →
+  round 7's 1.029, the counter 1.000 of the code without it (ten alternated series each, at a
+  load of 4–12); Fable's round 8, three series each, M4 → M3 1.021, the counter 0.994.
 
 ### Task 13.3: the binary
 
 - [ ] **Step 1:** `cargo build --release && ls -l target/release/sfor`: at most 23 000 000
   bytes (spec §11 #22); report the size, and the stripped size (`strip -o /tmp/sfor.s
-  target/release/sfor`). The probe: 19 356 872 bytes, 17 918 960 stripped (16 598 640 and 15 381 072 at `191dbaf`).
+  target/release/sfor`). The probe: 19 358 432 bytes, 17 920 432 stripped (16 598 640 and 15 381 072 at `191dbaf`).
 
 ## Chunk 14: documentation
 
