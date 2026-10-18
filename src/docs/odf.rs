@@ -35,20 +35,22 @@ fn content(bytes: &[u8]) -> Result<(String, HashMap<String, u8>), DocError> {
                 // name is `Heading_20_N` whatever the interface language).
                 let level = attr(attrs, "default-outline-level")
                     .and_then(|l| l.parse::<u8>().ok())
-                    .or_else(|| n.strip_prefix("Heading_20_").and_then(|d| d.parse().ok()));
-                if let Some(l) = level.filter(|l| (1..=10).contains(l)) {
+                    .filter(|l| (1..=10).contains(l))
+                    .or_else(|| built_in(&n));
+                if let Some(l) = level {
                     levels.insert(n.into_owned(), l);
                 }
             }
         }
     }
-    // A style is a heading when it or one of its parents has an outline level.
+    // A style is a heading when it or one of its parents has an outline level or is a
+    // built-in `Heading N`, declared or not (Fable r1 #6).
     let mut headings = HashMap::new();
     for name in parents.keys().chain(levels.keys()) {
         let mut cur = name.as_str();
         for _ in 0..16 {
-            if let Some(l) = levels.get(cur) {
-                headings.insert(name.clone(), *l);
+            if let Some(l) = levels.get(cur).copied().or_else(|| built_in(cur)) {
+                headings.insert(name.clone(), l);
                 break;
             }
             match parents.get(cur) {
@@ -60,13 +62,31 @@ fn content(bytes: &[u8]) -> Result<(String, HashMap<String, u8>), DocError> {
     Ok((content, headings))
 }
 
+/// The level of the built-in `Heading N` style, named `Heading_20_N` whatever the interface
+/// language.
+fn built_in(style: &str) -> Option<u8> {
+    style
+        .strip_prefix("Heading_20_")
+        .and_then(|d| d.parse().ok())
+        .filter(|l| (1..=10).contains(l))
+}
+
+/// A paragraph being read: its text, its heading level, and the paragraphs inside it (a
+/// footnote's body), written after it.
+#[derive(Default)]
+struct Para {
+    text: String,
+    level: Option<u8>,
+    after: Vec<(String, Option<u8>)>,
+}
+
 /// Text paragraphs and headings of `office:text`, a slide or a frame: `text:h` with its
 /// `outline-level`, `text:p`, spans, `text:s` (spaces), `text:tab`, `text:line-break`; notes
 /// (footnotes) inside a paragraph as lines after it; tables as in Word.
 struct Flow {
     /// Paragraph styles that make a `text:p` a heading, by name, with their level.
     headings: HashMap<String, u8>,
-    paras: Vec<(String, Option<u8>)>,
+    paras: Vec<Para>,
     tables: Vec<Table>,
     count: usize,
     table_seg: Option<usize>,
@@ -107,10 +127,17 @@ impl Flow {
                                     .unwrap_or(1),
                             )
                         } else {
-                            attr(attrs, "style-name")
-                                .and_then(|s| self.headings.get(s.as_ref()).copied())
+                            attr(attrs, "style-name").and_then(|s| {
+                                self.headings
+                                    .get(s.as_ref())
+                                    .copied()
+                                    .or_else(|| built_in(&s))
+                            })
                         };
-                        self.paras.push((String::new(), level));
+                        self.paras.push(Para {
+                            level,
+                            ..Para::default()
+                        });
                     }
                     "s" => {
                         let n = attr(attrs, "c")
@@ -149,16 +176,25 @@ impl Flow {
                 }
                 match local(name) {
                     "p" | "h" => {
-                        let Some((text, level)) = self.paras.pop() else {
+                        let Some(para) = self.paras.pop() else {
                             return;
                         };
-                        if let Some(t) = self.tables.last_mut() {
-                            t.add_text(&text);
-                        } else if let Some(l) = level {
-                            b.heading(l, &text);
-                        } else {
-                            // One line: its `text:line-break`s become spaces (spec §5.8).
-                            b.line(&text);
+                        if let Some(outer) = self.paras.last_mut() {
+                            // A footnote's paragraph comes after the one holding the note.
+                            outer.after.push((para.text, para.level));
+                            outer.after.extend(para.after);
+                            return;
+                        }
+                        let lines = std::iter::once((para.text, para.level)).chain(para.after);
+                        for (text, level) in lines {
+                            if let Some(t) = self.tables.last_mut() {
+                                t.add_text(&text);
+                            } else if let Some(l) = level {
+                                b.heading(l, &text);
+                            } else {
+                                // One line: its `text:line-break`s become spaces (spec §5.8).
+                                b.line(&text);
+                            }
                         }
                     }
                     "table-row" => {
@@ -186,15 +222,15 @@ impl Flow {
                     && let Some(p) = self.paras.last_mut()
                 {
                     // White space in ODF text is collapsed; `text:s` writes the spaces it means.
-                    let mut last_space = p.0.ends_with(' ');
+                    let mut last_space = p.text.ends_with(' ');
                     for c in t.chars() {
                         if c.is_whitespace() && c != '\u{a0}' {
                             if !last_space {
-                                p.0.push(' ');
+                                p.text.push(' ');
                             }
                             last_space = true;
                         } else {
-                            p.0.push(c);
+                            p.text.push(c);
                             last_space = false;
                         }
                     }
@@ -205,7 +241,7 @@ impl Flow {
 
     fn push(&mut self, s: &str) {
         if let Some(p) = self.paras.last_mut() {
-            p.0.push_str(s);
+            p.text.push_str(s);
         }
     }
 }
@@ -520,6 +556,63 @@ mod tests {
                 "{rows}"
             );
         }
+    }
+
+    fn odt_of(body: &str, styles: &str) -> Vec<u8> {
+        fixture::zip(
+            &[
+                (
+                    "mimetype",
+                    b"application/vnd.oasis.opendocument.text".to_vec(),
+                ),
+                (
+                    "content.xml",
+                    format!("<office:document-content><office:body><office:text>{body}</office:text></office:body></office:document-content>")
+                        .into_bytes(),
+                ),
+                (
+                    "styles.xml",
+                    format!("<office:document-styles><office:styles>{styles}</office:styles></office:document-styles>")
+                        .into_bytes(),
+                ),
+            ],
+            &["mimetype"],
+        )
+    }
+
+    /// Fable r1 #5: a footnote's body is a line after the paragraph that holds it.
+    #[test]
+    fn a_footnote_is_a_line_after_its_paragraph() {
+        let d = odt_of(
+            concat!(
+                r#"<text:h text:outline-level="1">Intro</text:h>"#,
+                r#"<text:p>Intro <text:note text:note-class="footnote"><text:note-citation>1</text:note-citation>"#,
+                r#"<text:note-body><text:p>a footnote needle</text:p></text:note-body></text:note>needle.</text:p>"#,
+                r#"<text:p>next</text:p>"#,
+            ),
+            "",
+        );
+        let e = extract(Kind::Odt, &d).unwrap();
+        assert_eq!(e.text, b"Intro\nIntro needle.\na footnote needle\nnext\n");
+        assert_eq!(trail(Kind::Odt, &d, "a footnote"), ["Intro"]);
+    }
+
+    /// Fable r1 #6: a style whose parent is the built-in `Heading N` is a heading also when
+    /// the document does not declare `Heading_20_N`, and so is a paragraph of that style.
+    #[test]
+    fn the_built_in_heading_styles_need_no_declaration() {
+        let d = odt_of(
+            concat!(
+                r#"<text:p text:style-name="Heading_20_1">Declared nowhere</text:p>"#,
+                r#"<text:p text:style-name="Mine">Child heading</text:p>"#,
+                r#"<text:p>needle one</text:p>"#,
+            ),
+            r#"<style:style style:name="Mine" style:family="paragraph" style:parent-style-name="Heading_20_2"/>"#,
+        );
+        assert_eq!(
+            trail(Kind::Odt, &d, "needle one"),
+            ["Declared nowhere", "Child heading"]
+        );
     }
 
     #[test]
