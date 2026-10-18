@@ -44,7 +44,7 @@ branch and is merged back after its tanda, as `ciclo` stage 7 describes
 (`using-git-worktrees`, `finishing-a-development-branch`). Line numbers in the diffs are those
 of `191dbaf` and only hints: locate code by the names given. The code of this plan was built
 and tested in a probe copy of the repository, frozen as
-`/tmp/subtask/m4-plan/m4tree-fd8b653` (see «Verified for this plan»).
+`/tmp/subtask/m4-plan/m4tree-a78b088` (see «Verified for this plan»).
 
 ---
 
@@ -122,7 +122,7 @@ ones it describes marked «M4 plan».
 | D12 | An XML pull reader of our own (`docs::xml`) for the Office, OpenDocument and EPUB parts, instead of quick-xml | Those parts are written by programs and well formed; the reader is 200 lines with entity decoding, and one dependency less; at a construct it cannot read the part ends there, as M3's XML scanner ends its structure |
 | D13 | lopdf 0.45 reads PDF objects, fonts, streams and encryption; a font's strings decode through its ToUnicode map when it has one that reads, else through its `/Encoding`; the content streams and the ToUnicode maps are read by our code (D29); the text is laid out by our code from the content streams: a new line when a string moves half its size up or down, a space for a gap of 0.15 of its size (only when its font gave widths), and for a `TJ` kerning past 0.1 em; ligatures expanded | lopdf's own `extract_text` joins positioned strings without spaces or line breaks; measured against `pdftotext` on six PDFs from five producers: word recall 0.93–1.00, bigram recall 0.875–1.00, and faster than pdftotext on the two long ones (0.41 s against 2.5 s, 0.14 s against 0.35 s). lopdf reads `/Encoding` before `/ToUnicode`, and a subset font's codes mean what its map says (r1, Codex #5) |
 | D14 | A PDF bookmark is a chapter that holds pages; it starts at the line of its page that starts with its title, or at the top of the page; a page split by a bookmark is a `page N` Segment under each chapter it holds part of; `page N` is the 1-based position | A Trail goes from the root down, and a chapter holds pages; LibreOffice's PDFs point every bookmark of a one-page document at page 1, which at page granularity put the whole page under the last bookmark |
-| D15 | A SQLite reader of our own: `sqlite_schema`, then each table's b-tree (interior and leaf, table and index pages, overflow pages); `row N` is the rowid (the position for `WITHOUT ROWID`); values as the `sqlite3` shell prints them, in the order of `CREATE TABLE` (a `WITHOUT ROWID` table stores its PRIMARY KEY columns first, in the key's order; a `VIRTUAL` generated column is not stored and prints empty) | No C compiler in the build and no C library in the binary (rusqlite bundles SQLite's C); read-only access to the file format is a few hundred lines; the rowid is what `SELECT … WHERE rowid = 12` uses. It replaces the M3 plan's forward reference (its D5 said M4's `row 12` would be the 12th row). The key's order was measured with SQLite: `t(payload TEXT, k TEXT PRIMARY KEY) WITHOUT ROWID` stores `k, payload` (r1, Codex #4, Fable #2); the schema is read by its tokens (r2, Codex #4); a virtual column's value moved the next ones (r3, Codex #6, Fable #5); `STORED` is the word after the expression, never one inside it (r4, Codex #6) |
+| D15 | A SQLite reader of our own: `sqlite_schema`, then each table's b-tree (interior and leaf, table and index pages, overflow pages); `row N` is the rowid (the position for `WITHOUT ROWID`); values as the `sqlite3` shell prints them, in the order of `CREATE TABLE` (a `WITHOUT ROWID` table stores its PRIMARY KEY columns first, in the key's order; a `VIRTUAL` generated column is not stored and prints empty; a record shorter than its table, written before an `ALTER TABLE ADD COLUMN`, has the added columns' constant `DEFAULT`, where a NULL it holds stays empty) | No C compiler in the build and no C library in the binary (rusqlite bundles SQLite's C); read-only access to the file format is a few hundred lines; the rowid is what `SELECT … WHERE rowid = 12` uses. It replaces the M3 plan's forward reference (its D5 said M4's `row 12` would be the 12th row). The key's order was measured with SQLite: `t(payload TEXT, k TEXT PRIMARY KEY) WITHOUT ROWID` stores `k, payload` (r1, Codex #4, Fable #2); the schema is read by its tokens (r2, Codex #4); a virtual column's value moved the next ones (r3, Codex #6, Fable #5); `STORED` is the word after the expression, never one inside it (r4, Codex #6); an added column's `DEFAULT` was lost in the older rows (r5, Codex #2) |
 | D16 | SQLite: indexes, views and triggers are not read, nor a `-wal` file | Tables hold the data; a WAL is a second file, and changes in it reach the database at the next checkpoint |
 | D17 | Limits: 256 MiB of text per document (512 MiB until round 4: D30) (cut, with a warning; a PDF page stops being drawn when its text reaches what is left); 256 MiB per zip part and 1 GiB for all the parts one document reads; 64 MiB per PDF stream (pages, Forms, fonts' ToUnicode maps, object streams) and 1 GiB for the pages', Forms' and maps' together; 8 000 000 units of Form work per PDF (16 per Form drawn plus one per operation it runs); refused with one warning, `… is over the N MiB limit` or `its Forms run more than 8000000 operations`, while a stream that does not decompress draws nothing. Round 2 made the work budget the content streams', pages' included: 8 000 000 plus 20 000 per page, one per operation read and 16 per Form drawn (`its content streams run more than N operations`); 256 open `q`; 65 536 operands to an operation; 200 000 entries to a ToUnicode map, a range counting one; 8 bytes of text for each byte of a string; 64 MiB and 2 000 000 tokens for the object streams of a document, counted before lopdf parses them (`its object streams hold more than 2000000 tokens`), with the offsets of each one's objects growing (`an object stream holds overlapping objects`). Round 3: `PAGE_WORK` counts at most 10 000 pages; a ToUnicode map's codespace ranges count among its entries, and at most 256 are kept; an encrypted PDF loads as any other, bounded by its reader's memory (D30); 100 000 bookmarks; forms nested 8 deep; a repeated ODF cell or row with a value written at most 1000 times, and a repeat past the largest number an error; b-trees 40 deep | Decompression bombs and pathological files must neither fill the memory nor hang sfor. Round 1 of this plan's review found a ToUnicode map read without a limit (791 MiB for a 714 KB PDF), a page of Forms drawing Forms (16⁷ draws), twelve 200 MiB sheets each under the part limit (4.7 s), and ODF repeats that overflow (Codex #1, #2, #10; Fable #1, #3); the perf tests bound a 300 MiB zip bomb, a 300 MiB ToUnicode map and a workbook of six 200 MiB sheets. Round 2 found that bytes are not what fills the memory: lopdf's parsed operations and objects are (6 GB for a page of 63 MiB of `0 0 m`, 2 GB for an object stream of 32 MiB of integers, a ToUnicode range listed code by code, 512 MiB of text from a 5 KB file; r2, Codex #1–#3, Fable #1); its perf tests bound each of those. 10 000 pages each drawing five Forms of 200 operations (Fable's `many-forms.pdf`) fit (r2, Fable #2); a content stream several pages share counts once in the 1 GiB (r2, Fable #3) |
 | D18 | Office documents: the body, the cell values as stored (Excel: dates as serial numbers, formulas' cached values; ODS: by `office:value-type`, the number of a float, percentage or currency, the date, time or boolean value, else the text) and the slides with their notes; not headers, footers, footnotes, comments, charts, embedded objects, nor the 97–2003 binary formats | What 8393 asked to find; each other part is a reader more, M6 candidates. An ODS cell shown as `$1.50` stores `1.5`, as an XLSX one does (r1, Codex #6) |
@@ -131,22 +131,22 @@ ones it describes marked «M4 plan».
 | D21 | Order: `--pre` (when its globs take the file), then `-z` (when the extension has a decompressor), then `--docs`; a file `--pre` or `-z` reads is never extracted; stdin is never transformed; `--pre`'s output gets the Trails of the Format its path says; what a transform outputs is never an object file nor a document, whatever its bytes, `--format` or `-a` say: no object rows, no `object` or `docs` Processor (Plain) | ripgrep's order for the first two; a decompressed stream has no name of its own to say what it is; `--pre cat` over an ELF printed object rows before (r1, Codex #11) |
 | D22 | `--docs` also changes `--no-trail`, `-c`, `-l` and `-q`: they work on the extracted text, in ripgrep's layout | `--docs` is sfor's flag, not ripgrep's; a script that counts Matches with `--docs -c` wants the documents' |
 | D23 | Benchmark (`scripts/bench-m4.sh`) and ceilings (`tests/perf.rs`) as in §11 #26: 1.1 × rg where M4 adds nothing; objects at 100 MB/s; documents at 2 MB/s of text per thread on top of rg's search of their text; per-format rates in `tests/perf.rs` about a third of the probe's | The rates measured in the probe (MB/s of text): docx 41, odt 36, epub 66, PDF 23 (generated) and 1.2–1.8 (real), xlsx 5.6, ods 3.4, pptx 4.0, SQLite 16–17; a third leaves room for a loaded machine, as M3's ceilings did. Memory: rg's plus six times the text, plus 400 bytes per cell Segment of a spreadsheet, plus 64 MiB (the probe: 228 MiB for the 600 000 cells of an XLSX with 18 MB of text) |
-| D24 | The binary's growth is measured and reported: 16.6 MB (16 598 640 bytes at `191dbaf`) → 19.2 MB (19 216 672 bytes), under 23 MB (8612) | Spec §11 #22 |
+| D24 | The binary's growth is measured and reported: 16.6 MB (16 598 640 bytes at `191dbaf`) → 19.2 MB (19 230 000 bytes), under 23 MB (8612) | Spec §11 #22 |
 | D25 | Extracted text never holds a control character (line breaks inside a cell, tabs inside a paragraph, NUL become spaces) and has no empty lines; a row writes a tab before each cell but the first, empty cells included, and a cell's spaces as they are | A row of a table stays one line, and the searcher never sees binary data in a document; a SQLite row `(NULL, 'needle')` is `\tneedle`, so a search anchored at a column finds it (r1, Codex #12, Fable #11) |
 | D26 | The JSON statistics of an object file count the whole search (`bytes_searched` = file size, `matched_lines` = rows, `binary_offset` null), documented in `docs/rg-compat.md` | rg stops at the first Match of a binary; sfor reads on to describe each one |
 | D27 | Without `--docs` the document Formats are never detected (`Detector::with_docs`); `--list-formats` lists them; `--format pdf` without `--docs` prints the file as Plain | 8395 «without --docs those files are treated as ripgrep does», at no cost |
 | D28 | The fuzz mutates documents (bytes changed, cut, repeated; and the XML inside the zip, zipped again) and object files; nothing may panic, an extraction ends within 2 s whatever it returns, and every Segment and name lies inside its text. The documents run in a child process the test watches: one that prints nothing for 2 s is killed and reaped, and the cases after it run in a new child | It found a heading name with a NUL (fixed in `Builder`), and a panic in `xml::unescape` at `&` before a multi-byte letter (fixed); a slow extraction that ended in an error passed, and a hang hung the run (r1, Codex #13); a thread left running a hung case went on using memory and CPU (r2, Codex #7) |
 | D29 | PDF content streams and ToUnicode CMaps are read by a reader of our own, about 500 lines: `Ops` gives `run` one operation at a time, its operands borrowing the stream's bytes, and spends the work budget as it reads; `ToUnicode` keeps a `bfrange` as a range and decodes a string only as far as the text has room. lopdf keeps reading the file's objects, encryption, fonts' dictionaries and the encodings of fonts without a map; a load filter counts the tokens of each object stream before lopdf parses it. Round 3: a simple font's codes are 1 byte and a composite font's 2, unless its map declares other lengths (one table by first byte); a code is looked up with the map's other lengths too; a code the map leaves out reads through a 256-entry table lopdf builds from a copy of the font without its map; names read their `#xx` escapes; an inline image without a filter ends where its size says, its color space read from the resources when it names one (r4, Codex #5). Round 4 also: an object stream lopdf dropped while decrypting is found by the objects the cross-reference table puts in it and the document lacks, and one past the limit fails the document (r4, Codex #1); an object stream's header is read as lopdf reads it (r4, Fable #1) | Round 3 found a regression on real PDFs: Adobe's `<0000> <FFFF>` codespace over a simple font's 1-byte codes made every code 2 bytes, and four of Fable's 89 real PDFs lost letters (`B1754AQQ` → `B 54AQQ`); with the code length from the font none of the 87 that have a `pdftotext` text falls below round 2's word recall, six rise (r3, Fable #1). One cause, three findings: lopdf did unbounded work before sfor could measure it (`many0(operation)` over a whole stream, a reverse map of every code of every range, `decode_text` into two UTF-16 buffers). Pre-validating the bytes would need the same lexer to count operators past strings and inline images, and would still leave lopdf's parse of what passes; the reader replaces both. Measured with the release binary: Fable's `page-ops-bomb.pdf` 6 264 620 KiB and 9.14 s → 73 700 KiB and 1.12 s, `form-ops-bomb.pdf` 6 265 792 KiB → 73 552 KiB, `objstm-bomb-32.pdf` 2 021 992 KiB → 57 220 KiB; a range of 2³² codes out of memory → 8 MiB; a 4 KB map of long codes 1 796 208 KiB and 9.13 s → 92 040 KiB and 0.68 s. The six real PDFs of D13 and `many-forms.pdf` extract as before (to verify in chunk 9: the D13 recall over them, the probe ran only the unit and perf tests) |
-| D30 | Every document `--docs` reads is extracted in a worker process: the same `sfor` binary run as `sfor --__extract-document MIB` with `SFOR_READER_OF` set to the parent's pid (no external program, so 8393–8395 hold), with `RLIMIT_DATA` at 1 024 MiB; at most 4 workers at once, each reading up to 64 documents; a worker that dies, or takes more than 60 s over a document and is killed, gives the document one warning (`reading it needed more than the 1024 MiB a reader may use`, also when an allocation is refused rather than fatal; `reading it took more than 60 s`) and the file is searched as rg; without `--docs` nothing runs. The workers live in the Supervisor of M2's D42: a SIGINT or SIGTERM to sfor kills and reaps them, and sfor dies by the signal; on Linux the kernel ends a worker whose parent dies (`PR_SET_PDEATHSIG`; they are started from one thread that lives as long as sfor), elsewhere 600 s of CPU over its life end an orphan. A worker leaves no core file. The path goes as its bytes after their count. The limits of D17 stay as the first line, for precise warnings. `SFOR_READER_MIB` lowers the limit, for the tests | Three review rounds found a new unbounded path inside lopdf each time (r1 10 MAJOR, r2 4, r3 6: a map reached through an `/Encoding` dictionary, object offsets that repeat, the encrypted load that skips the filter); a process limit holds whatever path. Measured on the benchmark's 1 080 documents (12 threads): in-process 0.075 s, one process per document 0.424 s, the pool of 4 workers 0.299 s, against rg's 0.012 s over their texts and a budget of 0.78 s; with 4 workers of 1 GiB the worst case is 4 GiB, where 12 children could take 12, and 1 GiB leaves room for the 225 MiB the perf test's workbook of 600 000 cells takes. Fable's encrypted `objstm-1m-64-enc.pdf` (3 985 500 KiB and 11.97 s in round 2) ends at 1 GiB in 4.28 s with the warning. With 1 GiB, D17's text limit is 256 MiB: a PDF of 256 MiB of text is cut within the reader, at 689 MB and 6.8 s, where 512 MiB took 1.75 GB (r4, Fable #5). The flag cannot be a pattern: a first word that starts with `--` is a flag, and an unknown one is refused, as rg refuses it; the worker also needs exactly its two arguments and `SFOR_READER_OF` (r4, Codex #4, Fable #6). Not verified: macOS enforces `RLIMIT_DATA` only for some allocations, and Windows needs a Job Object (to verify in M5) |
+| D30 | Every document `--docs` reads is extracted in a worker process: the same `sfor` binary run as `sfor --__extract-document MIB` with `SFOR_READER_OF` set to the parent's pid (no external program, so 8393–8395 hold), with `RLIMIT_DATA` at 1 024 MiB; at most 4 workers at once, each reading up to 64 documents; a worker that dies, or takes more than 60 s over a document and is killed, gives the document one warning (`reading it needed more than the 1024 MiB a reader may use`, also when an allocation is refused rather than fatal; `reading it took more than 60 s`) and the file is searched as rg; without `--docs` nothing runs. The workers live in the Supervisor of M2's D42, which holds the same `Child` their pool and watchdog use, so every kill and wait goes through one lock and no pid is signalled after its process was reaped: a SIGINT or SIGTERM to sfor kills and reaps them, and sfor dies by the signal (r5, Codex #1); on Linux the kernel ends a worker whose parent dies (`PR_SET_PDEATHSIG`; they are started from one thread that lives as long as sfor), elsewhere the worker's own watchdog ends it when one document passes 65 s, the parent's 60 s plus 5 (a CPU limit over the worker's life, round 4's, ended a long valid run: r5, Fable #1). A worker leaves no core file. An allocation that fails inside lopdf while it decompresses a ToUnicode map or any stream aborts the worker, which gives the memory warning; one that lopdf would ask for with `try_reserve` and see refused would read as a stream that does not decompress, without that warning (r5, Fable #3; whether lopdf 0.45 has such a path is to verify in chunk 9). The path goes as its bytes after their count. The limits of D17 stay as the first line, for precise warnings. `SFOR_READER_MIB` lowers the limit, for the tests | Three review rounds found a new unbounded path inside lopdf each time (r1 10 MAJOR, r2 4, r3 6: a map reached through an `/Encoding` dictionary, object offsets that repeat, the encrypted load that skips the filter); a process limit holds whatever path. Measured on the benchmark's 1 080 documents (12 threads): in-process 0.075 s, one process per document 0.424 s, the pool of 4 workers 0.299 s, against rg's 0.012 s over their texts and a budget of 0.78 s; with 4 workers of 1 GiB the worst case is 4 GiB, where 12 children could take 12, and 1 GiB leaves room for the 225 MiB the perf test's workbook of 600 000 cells takes. Fable's encrypted `objstm-1m-64-enc.pdf` (3 985 500 KiB and 11.97 s in round 2) ends at 1 GiB in 4.28 s with the warning. With 1 GiB, D17's text limit is 256 MiB: a PDF of 256 MiB of text is cut within the reader, at 689 MB and 6.8 s, where 512 MiB took 1.75 GB (r4, Fable #5). The flag cannot be a pattern: a first word that starts with `--` is a flag, and an unknown one is refused, as rg refuses it; the worker also needs exactly its two arguments and `SFOR_READER_OF` (r4, Codex #4, Fable #6). Not verified: macOS enforces `RLIMIT_DATA` only for some allocations, and Windows needs a Job Object (to verify in M5) |
 
 ## Verified for this plan (2026-10-17 and 2026-10-18)
 
 Outputs in `/tmp/subtask/m4-plan/outputs/`. The probe `/tmp/subtask/m4-plan/m4v2` is a git
-repository of its own with seven commits: the repository at `1610a50`, the repository at
+repository of its own with eight commits: the repository at `1610a50`, the repository at
 `191dbaf`, M4's code over the latter (`57edf0f`, cherry-picked from the first probe, see «Rebase
-on M3's final code»), and the fixes of the first four reviews of this plan (`eea167a`,
-`48fe5e8`, `08b0aec` and `fd8b653`, see «Review round 1» to «Review round 4»). The frozen copy `/tmp/subtask/m4-plan/m4tree-fd8b653` is that probe at its commit
-`fd8b653`; every code block below was generated from it (`/tmp/subtask/m4-plan/plan/gen.py`,
+on M3's final code»), and the fixes of the first five reviews of this plan (`eea167a`,
+`48fe5e8`, `08b0aec`, `fd8b653` and `a78b088`, see «Review round 1» to «Review round 5»). The frozen copy `/tmp/subtask/m4-plan/m4tree-a78b088` is that probe at its commit
+`a78b088`; every code block below was generated from it (`/tmp/subtask/m4-plan/plan/gen.py`,
 diffs against its commit `05699bc`, which is `191dbaf`). The working probe may change with the
 reviews; the frozen one does not.
 
@@ -163,9 +163,9 @@ reviews; the frozen one does not.
   `cargo check --offline --workspace --all-targets` passes from the local cache. quick-xml
   0.42.0, the M3 plan's candidate, also resolved, and was dropped (D12).
 - **Binary.** `target/release/sfor` of `191dbaf`: 16 598 640 bytes (15 381 072 stripped); of the
-  frozen copy: 19 216 672 bytes (17 791 984 stripped), 2.6 MB more, under 23 MB (8612); before
+  frozen copy: 19 230 000 bytes (17 803 152 stripped), 2.6 MB more, under 23 MB (8612); before
   the fixes of review round 1, 19 015 120, of round 2, 19 041 208, of round 3, 19 064 256, and
-  of round 4, 19 140 656. Over `1610a50` the probe had measured 16 583 992 and
+  of round 4, 19 140 656, and of round 5, 19 216 672. Over `1610a50` the probe had measured 16 583 992 and
   19 000 368.
 - **Object files.** Over binaries built from one C file (`version_string` and a second string
   literal): gcc's ELF gives `ELF x86-64 › .rodata › version_string+0xe` and, for the second
@@ -192,15 +192,15 @@ reviews; the frozen one does not.
 - **Every tanda builds** (`/tmp/subtask/m4-plan/states/build.py`, over `191dbaf` with the code
   of the frozen copy): the repository with only what tanda 1, then 1–2, 1–3 and 1–4 write (the
   later files as their stubs, and the `offsets: false` literals) passes `cargo clippy
-  --workspace --all-targets -- -D warnings`, `cargo test --lib` (409, 451, 502 and 502 tests)
+  --workspace --all-targets -- -D warnings`, `cargo test --lib` (409, 452, 504 and 504 tests)
   and `cargo test --test cli --test cli_m2 --test cli_m3` (42, 16, 19), and after tanda 4 also
-  `--test cli_m4` (19). The first run of this check, in round 0, found that the shared writer
+  `--test cli_m4` (20). The first run of this check, in round 0, found that the shared writer
   helpers, `pub(crate)` then, are dead code to clippy while the format writers are stubs; they
   are `pub` now (Task 4.3).
 - **Frozen copy, whole suite:** `cargo build --workspace`, `cargo clippy --workspace
   --all-targets -- -D warnings` (no findings), `cargo fmt --check` and
-  `SFOR_REQUIRE_REFERENCE=1 cargo test --workspace` pass: 502 unit tests and 2 ignored, `cli` 42,
-  `cli_m2` 16 (with `m2_07` updated), `cli_m3` 19, `cli_m4` 19, `fuzz` 5, `helpers` 22,
+  `SFOR_REQUIRE_REFERENCE=1 cargo test --workspace` pass: 504 unit tests and 2 ignored, `cli` 42,
+  `cli_m2` 16 (with `m2_07` updated), `cli_m3` 19, `cli_m4` 20, `fuzz` 5, `helpers` 22,
   `rg_compat` 37, and the helpers' own.
 - **Rebase on M3's final code.** The probe was first built over `1610a50` (frozen then as
   `m4tree-7134553`, removed). Its changes were cherry-picked onto `191dbaf`: every diff applied
@@ -265,7 +265,7 @@ reviews; the frozen one does not.
   `src/lib.rs`, `m4_16`, `m4_06` and the SQLite snapshots; C13 the encrypted perf test. No
   chunk or tanda was added or moved; `libc` is the one dependency more, already in the lock.
 - **Review round 4** (`reviews/m4-plan-r4/{codex,fable}.md`). Each fix written test first and
-  seen RED over the round-3 code (`08b0aec`), then GREEN (Tasks 9.1, 10.1 and 11.1 list them):
+  seen RED over the round-3 code (`08b0aec`; this round's probe is `fd8b653`), then GREEN (Tasks 9.1, 10.1 and 11.1 list them):
   Codex #1 (an encrypted object stream past the limit dropped in silence: `lost_objects`), #2
   (the readers in the Supervisor, `PR_SET_PDEATHSIG`, `ORPHAN_CPU`), #3 (the path as bytes, a
   worker always reaped), #4 with Fable #6 (`--__extract-document`, exactly two arguments and
@@ -278,6 +278,23 @@ reviews; the frozen one does not.
   `host.rs` (the readers' list), `MAX_TEXT`; C9 `lost_objects`, the inline color spaces,
   `separate`; C10 `generated_virtual`; C11 `m4_17`–`m4_19`. No chunk, tanda or dependency
   added.
+- **Review round 5** (`reviews/m4-plan-r5/{codex,fable}.md`). Codex #1: the Supervisor kept the
+  readers' pids and killed them with `kill`/`waitpid` while the pool reaped them through their
+  `Child`, so a pid reused in between could be signalled; it now keeps the same
+  `Arc<Mutex<Child>>`, and `a_reader_retired_while_the_run_is_cancelled_is_reaped_once` (in
+  `src/helper/host.rs`, a Helper Processor busy, the pool's retirement and the cancellation
+  released by one barrier; ten runs) checks one kill and one wait. #2: `ALTER TABLE ADD COLUMN
+  … DEFAULT` (a sixth SQLite table, `added`). #3: `m4_18` with a path that ends in `\r`, RED
+  against the round-3 reader. Measured over `a78b088`: the suite, the eleven perf tests (the
+  encrypted PDF ended in 2.91 s at 1 024 MiB), the 87 real PDFs (none below round 2), the
+  binary 19 230 000 bytes (17 803 152 stripped), and `bench-m4.sh` twice: `--docs` 0.300 s and
+  0.302 s, `docs-none` 1.10 × (exit 1) and 1.08 × (exit 0). `docs-none` sits on its 1.1 ×
+  ceiling by sfor's start (about 4 ms over rg's 42 ms, the same without `--docs`, as round 1
+  measured); whether the ceiling or the start moves is to verify in chunk 13. Fable #1: `RLIMIT_CPU` over a worker's life ended a long valid
+  run; the worker's own watchdog is per document now, and `m4_20` (four workbooks, one
+  reader, the limit lowered to 3 s by `SFOR_READER_SECONDS`) failed at the third when the
+  limit ran over the worker's life. Fable #2 is Codex #1 (no pid is kept now). Fable #3: the
+  line in D30. No chunk, tanda or dependency added.
 - **RED** over the stubs of C1 and C4 with each module's tests (`/tmp/subtask/m4-plan/red/run.py`,
   over the frozen copy): object `mod.rs` does not compile (`demangle`), `rows.rs` 7 FAIL,
   `preprocess.rs` 2 FAIL, `ooxml.rs` does not compile (4 functions), `odf.rs` 5 FAIL and 1 passes
@@ -4304,8 +4321,8 @@ impl Table {
 
 - [ ] **Step 4:** the reader process (D30): `isolated::extract` gives a document to one of
   `CHILDREN` workers, each the same `sfor` binary run as `sfor --__extract-document MIB` with
-  `SFOR_READER_OF`, `RLIMIT_DATA` at `MEMORY_MIB`, `RLIMIT_CPU` at `ORPHAN_CPU`, no core file,
-  and on Linux `PR_SET_PDEATHSIG`; it writes `KIND MAX_TEXT LEN` and the path's `LEN` bytes,
+  `SFOR_READER_OF`, `RLIMIT_DATA` at `MEMORY_MIB`, no core file, its own watchdog per document
+  (`own_watchdog`, `OWN_WALL`), and on Linux `PR_SET_PDEATHSIG`; it writes `KIND MAX_TEXT LEN` and the path's `LEN` bytes,
   and reads the answer back (`write_extracted`, `read_extracted`, tested by
   `an_answer_reads_back_as_it_was_written`; `memory_refused_is_the_memory_warning`). A worker
   that dies, or takes more than `WALL` over a document (and is killed through its `Child`),
@@ -4317,16 +4334,18 @@ impl Table {
 diff --git a/src/helper/host.rs b/src/helper/host.rs
 --- a/src/helper/host.rs
 +++ b/src/helper/host.rs
-@@ -641,6 +641,8 @@ pub(crate) mod cancel {
+@@ -641,6 +641,10 @@ pub(crate) mod cancel {
      struct Lifecycle {
          cancelled: bool,
          live: Vec<Weak<Conn>>,
-+        /// The readers of documents (M4 plan, D30), by pid: they die with the helpers.
-+        readers: Vec<u32>,
++        /// The readers of documents (M4 plan, D30): the same `Child` their pool and watchdog
++        /// use, so one lock orders every kill and wait, and a pid is never signalled after
++        /// its process was reaped (M4 plan r5, Codex #1).
++        readers: Vec<Weak<Mutex<std::process::Child>>>,
      }
  
      #[derive(Debug, PartialEq, Eq)]
-@@ -654,6 +656,7 @@ pub(crate) mod cancel {
+@@ -654,6 +658,7 @@ pub(crate) mod cancel {
                  state: Mutex::new(Lifecycle {
                      cancelled: false,
                      live: Vec::new(),
@@ -4334,7 +4353,7 @@ diff --git a/src/helper/host.rs b/src/helper/host.rs
                  }),
                  signals,
              }
-@@ -680,6 +683,31 @@ pub(crate) mod cancel {
+@@ -680,6 +685,27 @@ pub(crate) mod cancel {
              Ok(started)
          }
  
@@ -4343,7 +4362,7 @@ diff --git a/src/helper/host.rs b/src/helper/host.rs
 +        pub(crate) fn launch_reader(
 +            &self,
 +            start: impl FnOnce() -> std::io::Result<std::process::Child>,
-+        ) -> Result<std::io::Result<std::process::Child>, Cancelled> {
++        ) -> Result<std::io::Result<Arc<Mutex<std::process::Child>>>, Cancelled> {
 +            if self.signals {
 +                watch();
 +            }
@@ -4351,60 +4370,97 @@ diff --git a/src/helper/host.rs b/src/helper/host.rs
 +            if st.cancelled {
 +                return Err(Cancelled);
 +            }
-+            let started = start();
++            let started = start().map(|c| Arc::new(Mutex::new(c)));
 +            if let Ok(c) = &started {
-+                st.readers.push(c.id());
++                st.readers.retain(|w| w.strong_count() > 0);
++                st.readers.push(Arc::downgrade(c));
 +            }
 +            Ok(started)
-+        }
-+
-+        /// A reader that `extract` has waited for: no longer the Supervisor's to kill.
-+        pub(crate) fn forget_reader(&self, pid: u32) {
-+            self.state.lock().unwrap().readers.retain(|p| *p != pid);
 +        }
 +
          /// The run was cancelled: hosts stop warning, since sfor is about to die by the signal
          /// and ripgrep prints nothing on Ctrl-C (review r4, Fable #3).
          pub(crate) fn cancelled(&self) -> bool {
-@@ -690,11 +718,13 @@ pub(crate) mod cancel {
+@@ -690,11 +716,14 @@ pub(crate) mod cancel {
          /// every registered process, in parallel. Processes being started hold the lock, so
          /// they finish registering first and are in the list.
          pub(crate) fn cancel(&self) {
 -            let live: Vec<Arc<Conn>> = {
-+            let (live, readers): (Vec<Arc<Conn>>, Vec<u32>) = {
++            let (live, readers): (Vec<Arc<Conn>>, Vec<_>) = {
                  let mut st = self.state.lock().unwrap();
                  st.cancelled = true;
 -                st.live.iter().filter_map(Weak::upgrade).collect()
 +                let live = st.live.iter().filter_map(Weak::upgrade).collect();
-+                (live, std::mem::take(&mut st.readers))
++                let readers = st.readers.iter().filter_map(Weak::upgrade).collect();
++                (live, readers)
              };
 +            reap(&readers);
              std::thread::scope(|s| {
                  for c in &live {
                      s.spawn(move || c.abort());
-@@ -703,6 +733,22 @@ pub(crate) mod cancel {
+@@ -703,6 +732,16 @@ pub(crate) mod cancel {
          }
      }
  
-+    /// Kills and reaps the readers.
-+    #[cfg(unix)]
-+    fn reap(pids: &[u32]) {
-+        for &pid in pids {
-+            // SAFETY: a signal to our own child, then waiting for it; a pid that another
-+            // thread reaped first gives ECHILD, which is ignored.
-+            unsafe {
-+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
-+                libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), 0);
-+            }
++    /// Kills and reaps the readers, through their `Child`: one already reaped is not
++    /// signalled again (`Child::kill` after `wait` does nothing).
++    fn reap(readers: &[Arc<Mutex<std::process::Child>>]) {
++        for r in readers {
++            let mut c = r.lock().unwrap_or_else(|e| e.into_inner());
++            let _ = c.kill();
++            let _ = c.wait();
 +        }
 +    }
-+
-+    #[cfg(not(unix))]
-+    fn reap(_pids: &[u32]) {}
 +
      #[cfg(unix)]
      fn watch() {
          // Here, not at the top: Windows builds have no watcher and would warn (Fable r4 #6).
+@@ -1667,6 +1706,45 @@ mod tests {
+         );
+     }
+ 
++    /// M4 plan r5, Codex #1: a reader of documents that its pool retires while a signal
++    /// cancels the run, with a Helper Processor busy: both go through its one `Child`, so it is
++    /// killed and reaped once, and a kill after the wait signals no pid.
++    #[cfg(unix)]
++    #[test]
++    fn a_reader_retired_while_the_run_is_cancelled_is_reaped_once() {
++        let r = run(Mode::Pool, 1, 2000, deaf());
++        let reader = r
++            .sup
++            .launch_reader(|| std::process::Command::new("sleep").arg("30").spawn())
++            .unwrap()
++            .unwrap();
++        let go = Arc::new(std::sync::Barrier::new(3));
++        std::thread::scope(|s| {
++            let h = r.host.clone();
++            s.spawn(move || {
++                let _ = trails(&h, "a.ini");
++            });
++            std::thread::sleep(Duration::from_millis(50)); // the helper is busy
++            let (g, rd) = (go.clone(), reader.clone());
++            s.spawn(move || {
++                g.wait();
++                let mut c = rd.lock().unwrap();
++                let _ = c.kill();
++                let _ = c.wait();
++            });
++            let (g, sup) = (go.clone(), r.sup);
++            s.spawn(move || {
++                g.wait();
++                sup.cancel();
++            });
++            go.wait();
++        });
++        let mut c = reader.lock().unwrap();
++        assert!(c.try_wait().unwrap().is_some());
++        assert!(c.kill().is_ok());
++        assert_eq!(r.reaps.load(SeqCst), r.launches.load(SeqCst));
++    }
++
+     #[test]
+     fn a_signal_during_the_first_launch_still_reaps_it() {
+         // Codex r3 #1: the cancellation arrives while the first process is being spawned.
 ```
 
   RED: the tests do not compile before the module:
@@ -4445,14 +4501,18 @@ pub const CHILDREN: usize = 4;
 pub const WALL: Duration = Duration::from_secs(60);
 /// The most documents one worker reads before a new one replaces it.
 const SERVES: usize = 64;
-/// The CPU time a worker may spend over its life, in seconds: what ends one whose parent died
-/// where the kernel does not end it with the parent.
-const ORPHAN_CPU: u64 = 600;
+/// How long a worker gives itself for one document, past the parent's `WALL`: an orphan, whose
+/// parent and watchdog are gone, ends there (M4 plan r5, Fable #1: a CPU limit over the
+/// worker's life ended a long but valid run). `SFOR_READER_SECONDS` lowers it, for the tests.
+const OWN_WALL: Duration = Duration::from_secs(WALL.as_secs() + 5);
+/// The exit code of a worker past its own `OWN_WALL`.
+const LATE: i32 = 3;
 
 struct Worker {
-    /// Shared with the watchdog, which kills it past `WALL` (M4 plan r4, Fable #4).
+    /// Shared with the watchdog, which kills it past `WALL` (M4 plan r4, Fable #4), and with
+    /// the Supervisor, which kills and reaps it on a signal: every kill and wait goes through
+    /// this one `Child` (M4 plan r5, Codex #1).
     child: Arc<Mutex<Child>>,
-    pid: u32,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     /// The last bytes of its stderr: why it died.
@@ -4530,12 +4590,17 @@ pub fn is_worker(args: &[std::ffi::OsString]) -> bool {
 /// sfor kills and reaps it, and no worker starts after one (M4 plan r4, Codex #2).
 fn spawn() -> std::io::Result<Worker> {
     let started = crate::helper::host::cancel::GLOBAL.launch_reader(start);
-    let mut child = match started {
+    let shared = match started {
         Ok(c) => c?,
         Err(_) => return Err(std::io::Error::other("sfor is ending")),
     };
+    let (stdin, stdout, stderr) = {
+        let mut c = shared.lock().unwrap_or_else(|e| e.into_inner());
+        let pipes = (c.stdin.take(), c.stdout.take(), c.stderr.take());
+        (pipes.0.expect("piped"), pipes.1.expect("piped"), pipes.2)
+    };
     let errors = Arc::new(Mutex::new(Vec::new()));
-    let mut stderr = child.stderr.take().expect("piped");
+    let mut stderr = stderr.expect("piped");
     let keep = errors.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
@@ -4547,10 +4612,9 @@ fn spawn() -> std::io::Result<Worker> {
         }
     });
     Ok(Worker {
-        stdin: child.stdin.take().expect("piped"),
-        stdout: BufReader::new(child.stdout.take().expect("piped")),
-        pid: child.id(),
-        child: Arc::new(Mutex::new(child)),
+        stdin,
+        stdout: BufReader::new(stdout),
+        child: shared,
         errors,
         served: 0,
     })
@@ -4634,9 +4698,7 @@ fn answer(mut w: Worker, sent: bool) -> Result<Extracted, DocError> {
 fn gone(w: Worker) -> Option<std::process::ExitStatus> {
     let mut child = w.child.lock().unwrap_or_else(|e| e.into_inner());
     let _ = child.kill();
-    let status = child.wait().ok();
-    crate::helper::host::cancel::GLOBAL.forget_reader(w.pid);
-    status
+    child.wait().ok()
 }
 
 /// Ends the idle workers and waits for them, when `sfor` is done: a worker's memory is then
@@ -4650,12 +4712,9 @@ pub fn finish() {
 
 /// Ends a worker: its stdin closes, it exits, and it is waited for.
 fn end(w: Worker) {
-    let Worker {
-        child, stdin, pid, ..
-    } = w;
+    let Worker { child, stdin, .. } = w;
     drop(stdin);
     let _ = child.lock().unwrap_or_else(|e| e.into_inner()).wait();
-    crate::helper::host::cancel::GLOBAL.forget_reader(pid);
 }
 
 #[cfg(unix)]
@@ -4680,6 +4739,14 @@ fn path_of(b: Vec<u8>) -> std::path::PathBuf {
     String::from_utf8_lossy(&b).into_owned().into()
 }
 
+/// The worker's own limit for one document, as `own_watchdog` reads it.
+fn reading_limit() -> Duration {
+    std::env::var("SFOR_READER_SECONDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(OWN_WALL, Duration::from_secs)
+}
+
 /// `MEMORY_MIB`, or for the tests of this limit `SFOR_READER_MIB`.
 fn memory_mib() -> u64 {
     std::env::var("SFOR_READER_MIB")
@@ -4690,6 +4757,12 @@ fn memory_mib() -> u64 {
 
 /// Why a worker gave no answer.
 fn why(status: Option<std::process::ExitStatus>, errors: &str) -> DocError {
+    if status.is_some_and(|s| s.code() == Some(LATE)) {
+        return DocError::broken(format!(
+            "reading it took more than {} s",
+            reading_limit().as_secs()
+        ));
+    }
     if errors.contains("memory allocation of") || errors.contains("out of memory") {
         return DocError::broken(format!(
             "reading it needed more than the {} MiB a reader may use",
@@ -4711,6 +4784,7 @@ pub fn child(args: &[std::ffi::OsString]) -> i32 {
         .unwrap_or(MEMORY_MIB);
     limit(mib);
     orphan_dies();
+    let reading = own_watchdog();
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
     let mut out = std::io::BufWriter::new(std::io::stdout().lock());
@@ -4734,6 +4808,7 @@ pub fn child(args: &[std::ffi::OsString]) -> i32 {
         if input.read_exact(&mut p).is_err() {
             return 2;
         }
+        reading.store(now_ms(), std::sync::atomic::Ordering::SeqCst);
         let answer = match read(&path_of(p)) {
             Ok(bytes) => {
                 let got = std::panic::catch_unwind(|| super::extract_with(kind, &bytes, max));
@@ -4741,6 +4816,7 @@ pub fn child(args: &[std::ffi::OsString]) -> i32 {
             }
             Err(e) => Err(DocError::broken(e)),
         };
+        reading.store(0, std::sync::atomic::Ordering::SeqCst);
         let answer = refused_memory(answer, mib);
         if write_extracted(&answer, &mut out)
             .and_then(|_| out.flush())
@@ -4749,6 +4825,33 @@ pub fn child(args: &[std::ffi::OsString]) -> i32 {
             return 2;
         }
     }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |d| d.as_millis() as u64)
+        .max(1)
+}
+
+/// The worker's own watchdog, per document: when one document takes longer than `OWN_WALL`
+/// (or `SFOR_READER_SECONDS`), the worker exits with `LATE`. It ends an orphan on any system;
+/// with a parent, the parent's `WALL` comes first. Returns when the current document started
+/// (0: none).
+fn own_watchdog() -> Arc<std::sync::atomic::AtomicU64> {
+    let limit = reading_limit();
+    let reading = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let r = reading.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_millis(100));
+            let at = r.load(std::sync::atomic::Ordering::SeqCst);
+            if at != 0 && now_ms().saturating_sub(at) > limit.as_millis() as u64 {
+                std::process::exit(LATE);
+            }
+        }
+    });
+    reading
 }
 
 /// A reader that asked for memory and was refused (`try_reserve`, `ErrorKind::OutOfMemory`,
@@ -4764,7 +4867,8 @@ fn refused_memory(a: Result<Extracted, DocError>, mib: u64) -> Result<Extracted,
 
 /// The worker ends with its parent, which holds its watchdog (M4 plan r4, Codex #2): on Linux
 /// the kernel kills it then (`PR_SET_PDEATHSIG`), checked against the parent's pid in case the
-/// parent ended first; elsewhere `limit`'s CPU time ends an orphan that keeps working.
+/// parent ended first; elsewhere the worker's own watchdog (`own_watchdog`) ends an orphan at
+/// its document's `OWN_WALL`.
 #[cfg(target_os = "linux")]
 fn orphan_dies() {
     // SAFETY: prctl with an integer argument, and getppid, have no memory effects.
@@ -4810,8 +4914,7 @@ impl std::ops::Deref for Bytes {
     }
 }
 
-/// The worker's limits: `mib` of heap, and `ORPHAN_CPU` of CPU time over its life (it reads up
-/// to `SERVES` documents, each under the parent's `WALL`).
+/// The worker's limits: `mib` of heap, and no core file.
 #[cfg(unix)]
 fn limit(mib: u64) {
     let set = |what, n: u64| {
@@ -4823,7 +4926,6 @@ fn limit(mib: u64) {
         unsafe { libc::setrlimit(what, &r) };
     };
     set(libc::RLIMIT_DATA, mib << 20);
-    set(libc::RLIMIT_CPU, ORPHAN_CPU);
     // No core file and no crash report for a hostile document (M4 plan r4, Fable #3).
     set(libc::RLIMIT_CORE, 0);
     #[cfg(target_os = "linux")]
@@ -5337,6 +5439,14 @@ db.execute("INSERT INTO odd VALUES ('needle odd', 2)")
 # A VIRTUAL generated column is not in the record; a STORED one is (M4 plan r3, Codex #6).
 db.execute("CREATE TABLE gen (a TEXT, calc TEXT GENERATED ALWAYS AS (a) VIRTUAL, payload TEXT, st TEXT AS (upper(a)) STORED)")
 db.execute("INSERT INTO gen (a, payload) VALUES ('first', 'needle gen')")
+# A column added later has its DEFAULT in the rows written before; a NULL stays NULL (M4 plan
+# r5, Codex #2).
+db.execute("CREATE TABLE added (a TEXT)")
+db.execute("INSERT INTO added VALUES ('old')")
+db.commit()
+db.execute("ALTER TABLE added ADD COLUMN payload TEXT DEFAULT 'needle added'")
+db.execute("INSERT INTO added VALUES ('new', 'needle later')")
+db.execute("INSERT INTO added VALUES ('null', NULL)")
 db.execute("CREATE INDEX users_email ON users(email)")
 db.execute("CREATE VIEW v AS SELECT name FROM users")
 db.commit()
@@ -10744,6 +10854,22 @@ mod tests {
         assert!(String::from_utf8_lossy(&e.text).contains("\nfirst\t\tneedle gen\tFIRST\n"));
     }
 
+    /// Codex r5 #2: a column added with a DEFAULT has it in the rows written before; a row
+    /// written after keeps its value, and a NULL it holds stays empty.
+    #[test]
+    fn added_columns_have_their_default_in_older_rows() {
+        let e = extracted("shop.sqlite");
+        let text = String::from_utf8_lossy(&e.text);
+        assert!(text.contains("\nold\tneedle added\n"), "{text}");
+        assert!(text.contains("\nnew\tneedle later\n"), "{text}");
+        assert!(text.contains("\nnull\t\n"), "{text}");
+        assert_eq!(trail(&e, "needle added"), ["added", "row 1", "payload"]);
+        assert_eq!(trail(&e, "needle later"), ["added", "row 2", "payload"]);
+        assert_eq!(constant(&tokens("-3.5")), Some(Value::Float(-3.5)));
+        assert_eq!(constant(&tokens("('x')")), Some(Value::Text("x".into())));
+        assert_eq!(constant(&tokens("(1 + 2)")), None);
+    }
+
     #[test]
     fn interior_pages_keep_every_row_in_order() {
         let e = extracted("many.sqlite");
@@ -10777,7 +10903,9 @@ mod tests {
   code, which looked for the text `WITHOUT ROWID` and split the key's list at its commas
   (review r2, Codex #4); `virtual_columns_take_no_place` over the round-2 code, which took
   a `VIRTUAL` column for a stored one (review r3, Codex #6, Fable #5), and its case of a column
-  named `stored` inside the expression failed over the round-3 code (review r4, Codex #6).
+  named `stored` inside the expression failed over the round-3 code (review r4, Codex #6);
+  `added_columns_have_their_default_in_older_rows` over the round-4 code, which printed
+  `old` and an empty cell (review r5, Codex #2).
 
 - [ ] **Step 3:** the reader (D15, D16), from SQLite's file format document: the 100-byte
   header, b-tree pages (`0x0d` table leaf, `0x05` table interior, `0x0a` index leaf, `0x02`
@@ -11101,6 +11229,10 @@ struct Columns {
     /// `WITHOUT ROWID` table, which stores its primary key's columns first, in the key's order,
     /// then the others (Codex r1 #4).
     stored: Vec<usize>,
+    /// Each column's `DEFAULT`, when it is a constant: a column added by `ALTER TABLE ADD
+    /// COLUMN` has it in the rows written before, whose records end earlier (M4 plan r5,
+    /// Codex #2).
+    defaults: Vec<Option<Value>>,
 }
 
 /// A token of SQL (M4 plan r2, Codex #4): a word, a quoted name (`"…"`, `` `…` ``, `[…]`) or
@@ -11262,6 +11394,7 @@ fn columns(sql: &str) -> Columns {
     // The primary key's columns, by name, from a column's `PRIMARY KEY` or the table's.
     let mut pk: Vec<String> = Vec::new();
     let mut virtuals: Vec<usize> = Vec::new();
+    let mut defaults: Vec<Option<Value>> = Vec::new();
     for part in split_commas(&toks[open + 1..close.max(open + 1)]) {
         let Some(first) = part.first() else { continue };
         if ["CONSTRAINT", "PRIMARY", "UNIQUE", "CHECK", "FOREIGN"]
@@ -11321,6 +11454,11 @@ fn columns(sql: &str) -> Columns {
         }
         names.push(name);
         types.push(ty);
+        defaults.push(
+            part.iter()
+                .position(|t| t.is("DEFAULT"))
+                .and_then(|d| constant(&part[d + 1..])),
+        );
     }
     let key: Vec<usize> = pk
         .iter()
@@ -11354,7 +11492,43 @@ fn columns(sql: &str) -> Columns {
         ipk: if without_rowid { None } else { ipk },
         without_rowid,
         stored,
+        defaults,
     }
+}
+
+/// The constant a `DEFAULT` names at the start of `toks`: a string, a number (signed), `NULL`,
+/// `TRUE` or `FALSE`, a blob, or one of these in parentheses. None for an expression.
+fn constant(toks: &[Tok]) -> Option<Value> {
+    match toks {
+        [Tok::Punct('('), rest @ ..] => {
+            let close = rest.iter().position(|t| *t == Tok::Punct(')'))?;
+            (close <= 2).then(|| constant(&rest[..close])).flatten()
+        }
+        [Tok::Quoted(s), ..] => Some(Value::Text(s.clone())),
+        [Tok::Word(x), Tok::Quoted(h), ..] if x.eq_ignore_ascii_case("X") => {
+            Some(Value::Blob(h.len() / 2))
+        }
+        [Tok::Punct(sign @ ('-' | '+')), Tok::Word(w), ..] => {
+            let v = number(w)?;
+            Some(match (sign, v) {
+                ('-', Value::Int(n)) => Value::Int(-n),
+                ('-', Value::Float(f)) => Value::Float(-f),
+                (_, v) => v,
+            })
+        }
+        [Tok::Word(w), ..] if w.eq_ignore_ascii_case("NULL") => Some(Value::Null),
+        [Tok::Word(w), ..] if w.eq_ignore_ascii_case("TRUE") => Some(Value::Int(1)),
+        [Tok::Word(w), ..] if w.eq_ignore_ascii_case("FALSE") => Some(Value::Int(0)),
+        [Tok::Word(w), ..] => number(w),
+        _ => None,
+    }
+}
+
+fn number(w: &str) -> Option<Value> {
+    w.parse::<i64>()
+        .map(Value::Int)
+        .ok()
+        .or_else(|| w.parse::<f64>().ok().map(Value::Float))
 }
 
 pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
@@ -11388,12 +11562,19 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
         let r = db.walk(root, &mut |rowid, stored| {
             b.start_row(Some(&format!("row {rowid}")));
             // The values in their declared order: a record may hold fewer (columns added
-            // since), which are NULL, or more, which keep their stored place.
+            // since), which have their DEFAULT, or more, which keep their stored place. A NULL
+            // the record holds stays NULL.
             let n = cols.names.len().max(stored.len());
             let mut values = vec![Value::Null; n];
+            let held = stored.len();
             for (k, v) in stored.into_iter().enumerate() {
                 let at = cols.stored.get(k).copied().unwrap_or(k);
                 values[at] = v;
+            }
+            for &at in cols.stored.iter().skip(held) {
+                if let Some(Some(d)) = cols.defaults.get(at) {
+                    values[at] = d.clone();
+                }
             }
             for (i, v) in values.iter().enumerate() {
                 let col = cols
@@ -11738,7 +11919,9 @@ fn m4_06_document_trails() {
          46: late › row 1 › payload │ needle payload\tk1\n\
          48: gaps › row 1 › y │ \tneedle gap\n\
          49: odd › row 1 › payload │ needle odd\t2.0\n\
-         50: gen › row 1 › payload │ first\t\tneedle gen\tFIRST\n"
+         50: gen › row 1 › payload │ first\t\tneedle gen\tFIRST\n\
+         51: added › row 1 › payload │ old\tneedle added\n\
+         52: added › row 2 › payload │ new\tneedle later\n"
     );
 }
 
@@ -12293,14 +12476,21 @@ fn m4_18_any_path_reaches_the_reader() {
     use std::os::unix::ffi::OsStrExt;
     let fx = fixture();
     let report = std::fs::read(fx.path().join("m4/report.docx")).unwrap();
-    for name in [
-        &b"m4/caf\xe9.docx"[..],
-        b"m4/two\nlines.docx",
-        b"m4/end\r.docx",
+    // A name that ends in a carriage return has no extension: --format names its Format
+    // (Codex r5 #3).
+    for (name, format) in [
+        (&b"m4/caf\xe9.docx"[..], None),
+        (b"m4/two\nlines.docx", None),
+        (b"m4/end\r.docx", None),
+        (b"m4/end\r", Some("docx")),
     ] {
         let p = std::ffi::OsStr::from_bytes(name);
         std::fs::write(fx.path().join(p), &report).unwrap();
-        let o = run(fx.sfor(["--docs", "--flat", "-c", "Scope"]).arg(p));
+        let mut c = fx.sfor(["--docs", "--flat", "-c", "Scope"]);
+        if let Some(f) = format {
+            c.args(["--format", f]);
+        }
+        let o = run(c.arg(p));
         assert_eq!(
             (stdout(&o), stderr(&o)),
             ("2\n".to_string(), String::new()),
@@ -12401,6 +12591,41 @@ fn m4_19_a_signal_to_sfor_ends_its_readers() {
         }
     }
 }
+
+/// Fable r5 #1: a reader's own time limit holds for each document, never for its life: with
+/// it lowered to 3 s (`SFOR_READER_SECONDS`), one reader (`-j1`) reads four workbooks that take
+/// less each and more together.
+#[test]
+fn m4_20_the_readers_time_limit_is_per_document() {
+    let fx = fixture();
+    let row: &[&str] = &["needle in a sheet"];
+    let rows: Vec<&[&str]> = vec![row; 30_000];
+    let book = doc::xlsx(&[("S", &rows)]);
+    for i in 0..4 {
+        std::fs::write(fx.path().join(format!("m4/w{i}.xlsx")), &book).unwrap();
+    }
+    let started = std::time::Instant::now();
+    let o = run(fx
+        .sfor([
+            "--docs",
+            "-j1",
+            "-c",
+            "--sort",
+            "path",
+            "needle",
+            "m4/w0.xlsx",
+            "m4/w1.xlsx",
+            "m4/w2.xlsx",
+            "m4/w3.xlsx",
+        ])
+        .env("SFOR_READER_SECONDS", "3"));
+    eprintln!("four workbooks in {:?}", started.elapsed());
+    assert_eq!(stderr(&o), "");
+    assert_eq!(
+        stdout(&o),
+        "m4/w0.xlsx:30000\nm4/w1.xlsx:30000\nm4/w2.xlsx:30000\nm4/w3.xlsx:30000\n"
+    );
+}
 ```
 
 - [ ] **Step 2:** `cargo test --test cli_m4`: RED. Before this chunk an object file prints
@@ -12420,9 +12645,12 @@ fn m4_19_a_signal_to_sfor_ends_its_readers() {
   covers what the unit test of Task 2.3 showed RED against round 1's rows (review r2, Codex
   #5). `m4_16` lowers the reader's memory to 16 MiB (`SFOR_READER_MIB`) for a workbook of
   200 000 rows: one warning, the other document is read, and without the lowered limit the
-  workbook gives its 200 000 lines (D30). `m4_17` (the worker's flag is no pattern: `sfor
+  workbook gives its 200 000 lines (D30). `m4_20`: a reader's time limit is per document (review
+  r5, Fable #1). `m4_17` (the worker's flag is no pattern: `sfor
   __extract-document FILE` searches it, as rg), `m4_18` (paths not UTF-8, with a line break,
-  with a carriage return at the end) and `m4_19` (SIGTERM and SIGKILL to sfor alone end its
+  with a carriage return before the extension and at the very end, the latter with
+  `--format docx`: «No such file or directory» over the round-3 reader, review r5, Codex #3)
+  and `m4_19` (SIGTERM and SIGKILL to sfor alone end its
   reader) were RED against the round-3 reader (review r4, Codex #2–#4): no output and exit 0,
   «its path is not one line of UTF-8», a reader still running after the signal.
 
@@ -13237,7 +13465,7 @@ diff --git a/src/lib.rs b/src/lib.rs
   `tests/snapshots/cli_m4__*.snap` in full. The one-line and tree snapshots of the probe are
   those of `m4_02`, `m4_06` and the spec's examples; the JSON ones carry `"format"` and
   validate against the schema. Then `SFOR_REQUIRE_REFERENCE=1 cargo test --test cli_m4`:
-  19 tests pass.
+  20 tests pass.
 - [ ] **Step 3:** the whole suite: every M1–M3 test passes unchanged (the fixture copy now holds
   `tests/fixtures/docs/*.sqlite`, which rg and sfor without `--docs` search alike).
 
@@ -14539,7 +14767,7 @@ exit "$fail"
 
 - [ ] **Step 1:** `cargo build --release && ls -l target/release/sfor`: at most 23 000 000
   bytes (spec §11 #22); report the size, and the stripped size (`strip -o /tmp/sfor.s
-  target/release/sfor`). The probe: 19 216 672 bytes, 17 791 984 stripped (16 598 640 and 15 381 072 at `191dbaf`).
+  target/release/sfor`). The probe: 19 230 000 bytes, 17 803 152 stripped (16 598 640 and 15 381 072 at `191dbaf`).
 
 ## Chunk 14: documentation
 
