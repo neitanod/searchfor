@@ -3,7 +3,8 @@
 # searchfor
 
 `s4` es un buscador compatible con ripgrep que te dice **dónde** cae cada resultado dentro
-de la estructura de su archivo.
+de la estructura de su archivo. El producto se llama searchfor (el crate, el repositorio y los
+directorios de configuración), y su comando es `s4`.
 
 ````
 $ s4 needle-pkg md --tree
@@ -18,20 +19,33 @@ md/guide.md
 Las líneas que están arriba de `12:apt install needle-pkg` son el **Trail** del resultado:
 el título del documento tomado del frontmatter, los títulos y el bloque de código en el que
 cae el resultado. En el código el Trail es la clase y la función; en YAML, JSON y TOML, la ruta
-de claves; en HTML y XML, la ruta de elementos; en CSV y TSV, la fila y la columna; y en los
-subtítulos, el cue. Todos los ejemplos de este README son salidas reales sobre
-[`tests/fixtures/`](tests/fixtures), corridas desde adentro de ese directorio, salvo el de
-[Helper Processors](#helper-processors), que dice sobre qué corre.
+de claves; en HTML y XML, la ruta de elementos; en CSV y TSV, la fila y la columna; en los
+subtítulos, el cue; en un binario ELF, PE o Mach-O, la sección y el símbolo más cercano; y en un
+documento leído con `--docs`, el capítulo y la página de un PDF, el título y la tabla de un
+archivo de Word, la hoja y la celda de una planilla, la diapositiva de una presentación, o la
+tabla, la fila y la columna de una base SQLite.
+
+Todos los ejemplos de este README son salidas reales sobre [`tests/fixtures/`](tests/fixtures),
+corridas desde adentro de ese directorio. Los archivos objeto y los documentos de `m4/` los
+escriben ahí los mismos writers que usa [`tests/cli_m4.rs`](tests/cli_m4.rs)
+(`searchfor::processors::object::fixture` y `searchfor::docs::fixture`), con el mismo contenido.
+Los ejemplos sobre `/bin/ls`, sobre el script de `--pre` de
+[Compatibilidad con ripgrep](#compatibilidad-con-ripgrep) y el de
+[Helper Processors](#helper-processors) dicen sobre qué corren.
 
 ## Estado
 
-**v0.3: Markdown, archivos de configuración, código, markup, tablas y subtítulos.** El motor de
-búsqueda son los crates de ripgrep, así que la búsqueda se comporta como `rg`; encima de eso,
-Markdown, YAML, JSON, TOML, el código en ocho lenguajes, HTML, XML, CSV, TSV, SubRip y WebVTT
-tienen Trails (ver [Formatos](#formatos)), las líneas largas se
-muestran como Fragmentos, y `--within`, `--expand` e `--in-headings` filtran y expanden por
-estructura. Otros lenguajes se pueden describir con un [Helper Processor](#helper-processors),
-un programa aparte con el que s4 se comunica. Cualquier otro archivo es **Plain**: sus
+**v0.4: Markdown, archivos de configuración, código, markup, tablas, subtítulos, archivos objeto
+y, con `--docs`, documentos.** El motor de búsqueda son los crates de ripgrep, así que la
+búsqueda se comporta como `rg`; encima de eso, Markdown, YAML, JSON, TOML, el código en ocho
+lenguajes, HTML, XML, CSV, TSV, SubRip y WebVTT tienen Trails, y también los resultados que
+ripgrep encuentra en binarios ELF, PE y Mach-O (ver [Formatos](#formatos)). Con `--docs`, los
+archivos PDF, Word, Excel, PowerPoint, OpenDocument, EPUB y SQLite se buscan en su texto, con su
+estructura (ver [Documentos](#documentos---docs)). Las líneas largas se muestran como
+Fragmentos, y `--within`, `--expand` e `--in-headings` filtran y expanden por estructura. Los
+flags `--pre`, `--pre-glob` y `-z` de ripgrep funcionan como en ripgrep. Otros lenguajes se
+pueden describir con un [Helper Processor](#helper-processors), un programa aparte con el que s4
+se comunica. Cualquier otro archivo es **Plain**: sus
 resultados se imprimen con el Trail vacío. Los demás Formatos llegan por hito (ver
 [Hoja de ruta](#hoja-de-ruta)).
 
@@ -45,8 +59,8 @@ El glosario está en [CONTEXT.md](CONTEXT.md), el diseño en
 cargo install searchfor
 ```
 
-Eso instala la última versión publicada en crates.io. Hasta que v0.3.0 esté publicada ahí,
-v0.3 se instala desde el repositorio:
+Eso instala la última versión publicada en crates.io. Hasta que v0.4.0 esté publicada ahí,
+v0.4 se instala desde el repositorio:
 
 ```
 cargo install --git https://github.com/neitanod/searchfor
@@ -77,11 +91,24 @@ v1.0.
 | TSV | `.tsv` | `row N › Columna` |
 | SubRip | `.srt` | cues: `cue 12 00:01:02,500` |
 | WebVTT | `.vtt` | cues: `cue intro 00:00.000` |
+| ELF | los archivos cuyos primeros bytes lo dicen, con cualquier nombre | imagen › sección › símbolo, en el offset hexadecimal: `ELF x86-64 › .rodata › main.version+0xe` |
+| PE | los archivos cuyos primeros bytes lo dicen, con cualquier nombre | imagen › sección › símbolo, en el offset hexadecimal: `PE x86-64 › .rdata › version_string+0xe` |
+| Mach-O | los archivos cuyos primeros bytes lo dicen, con cualquier nombre; también los fat (universales) | imagen › sección › símbolo, en el offset hexadecimal: `Mach-O arm64 › __TEXT,__cstring › _version+0xe` |
+| PDF, con `--docs` | `.pdf`, y los archivos que empiezan con `%PDF-` | los marcadores como capítulos, y las páginas: `1 Intro › page 2` |
+| Word, con `--docs` | `.docx`, `.docm`, `.dotx`, `.dotm` | títulos, y tablas: `2 Costs › table 1 › row 2 › Price` |
+| Excel, con `--docs` | `.xlsx`, `.xlsm`, `.xltx`, `.xltm` | hojas y celdas: `Budget › A3` |
+| PowerPoint, con `--docs` | `.pptx`, `.pptm`, `.potx`, `.potm`, `.ppsx`, `.ppsm` | diapositivas y sus notas: `slide 1 › notes` |
+| Texto de OpenDocument, con `--docs` | `.odt`, `.ott`, y los archivos cuyo `mimetype` lo dice | como Word |
+| Planilla de OpenDocument, con `--docs` | `.ods`, `.ots`, y los archivos cuyo `mimetype` lo dice | como Excel |
+| Presentación de OpenDocument, con `--docs` | `.odp`, `.otp`, y los archivos cuyo `mimetype` lo dice | como PowerPoint |
+| EPUB, con `--docs` | `.epub`, y los archivos cuyo `mimetype` lo dice | capítulos, nombrados por el índice, y títulos: `1. Arrival › The Harbour` |
+| SQLite, con `--docs` | `.sqlite`, `.sqlite3`, `.db`, `.db3`, `.s3db`, `.sl3`, y los archivos que empiezan con `SQLite format 3` | tablas, filas y columnas: `users › row 12 › email` |
 
 Un archivo sin extensión también se reconoce por su shebang (`#!/usr/bin/env python3`,
 `node`, `bash`…). Los Formatos de código los parsean Grammars de tree-sitter compiladas
 dentro de `s4`; YAML, JSON y TOML, parsers nativos; HTML, XML, CSV, TSV y los subtítulos,
-scanners propios de s4. `s4 --list-formats` los lista todos.
+scanners propios de s4; los archivos objeto, goblin; y los documentos, Extractores incluidos en
+`s4`, escritos en Rust, sin ningún programa externo. `s4 --list-formats` los lista todos.
 
 La misma ruta de claves en un archivo YAML y en uno JSON:
 
@@ -160,6 +187,161 @@ subs/movie.srt
   cue 3 00:01:02,500 --> 00:01:04,000
     12:<i>needle</i>
 ```
+
+### Archivos objeto
+
+Un archivo ELF, PE o Mach-O se reconoce por sus primeros bytes, tenga el nombre que tenga
+(`libc.so.6`, `ls`). Donde ripgrep imprimiría `binary file matches`, s4 imprime una fila por
+cada cadena imprimible que tiene resultados, en el offset hexadecimal de su primer resultado. El
+Trail es la imagen (el Formato y la arquitectura), la sección, y el símbolo más cercano en el
+resultado o antes de él, con la distancia hasta ese símbolo:
+
+```
+$ s4 needle m4/bin/app --flat
+0x68: ELF x86-64 › .rodata › main.version+0xe │ version=1.2.3-needle
+0x77: ELF x86-64 › .rodata │ another needle here
+```
+
+```
+$ s4 needle m4/bin/app --tree
+m4/bin/app
+  ELF x86-64
+    .rodata
+      main.version+0xe
+        0x68:version=1.2.3-needle
+      0x77:another needle here
+```
+
+La segunda cadena cae después del final de `main.version`, así que su Trail termina en la
+sección, como todos los Trails de un binario sin símbolos (stripped). Un PE y cada arquitectura
+de un Mach-O fat tienen los mismos tres Segmentos:
+
+```
+$ s4 needle m4/bin/app.exe m4/bin/app-mac --flat --sort path
+m4/bin/app.exe:0x410: PE x86-64 › .rdata › version_string+0xe │ version=1.2.3-needle
+m4/bin/app-mac:0x1141: Mach-O x86-64 › __TEXT,__cstring › _version+0xe │ version=1.2.3-needle
+m4/bin/app-mac:0x2141: Mach-O arm64 › __TEXT,__cstring › _version+0xe │ version=1.2.3-needle
+```
+
+Sobre un binario real, el `/bin/ls` de esta máquina:
+
+```
+$ s4 --flat -m3 'GLIBC_2\.3' /bin/ls
+0x14af: ELF x86-64 › .dynstr │ GLIBC_2.38
+0x14c5: ELF x86-64 › .dynstr │ GLIBC_2.33
+0x14fb: ELF x86-64 › .dynstr │ GLIBC_2.34
+```
+
+Las filas aparecen donde ripgrep encuentra un resultado en un archivo binario: un archivo
+nombrado en la línea de comandos, cualquier archivo con `--binary`, o cualquier archivo con
+`-a`. Un archivo objeto recorrido sin `--binary` se detiene en su primer byte NUL y no imprime
+nada, como en ripgrep. Con `-v`, `-c`, `-l`, `-q` y `--no-trail` el archivo imprime lo que
+imprime ripgrep. Una cadena con varios resultados es una sola fila, y `-m N` se queda con las
+primeras N filas. Los símbolos de Rust se muestran decodificados (demangled) y sin su hash
+(`core::fmt::write`).
+
+### Documentos (`--docs`)
+
+Con `--docs`, los archivos PDF, Word, Excel, PowerPoint, OpenDocument, EPUB y SQLite se buscan
+en el texto que les sacan los Extractores incluidos en s4. Cada párrafo, título, ítem de lista o
+fila de tabla es una línea, con las celdas de una fila separadas por tabs, y cada resultado
+lleva el Trail de la estructura del documento:
+
+```
+$ s4 --docs needle m4/report.docx --tree
+m4/report.docx
+  # 1 Intro
+    2:The intro needle.
+    ## 1.1 Scope
+      4:Scope needle.
+  # 2 Costs
+    table 1
+      row 2
+        column «Price»
+          7:Pens	1.50 needle
+```
+
+Un título de Word o de OpenDocument se anida como uno de Markdown, y una tabla es
+`table N › row R`, con la columna nombrada por la celda de la primera fila. Una celda de planilla
+es `Hoja › celda`, una diapositiva es `slide N`, y sus notas del orador son `slide N › notes`:
+
+```
+$ s4 --docs needle m4/budget.xlsx --flat
+3: Budget › A3 │ needle pins	2
+```
+
+```
+$ s4 --docs needle m4/deck.pptx --flat
+2: slide 1 │ a needle margin
+3: slide 1 › notes │ tell the needle joke
+5: slide 2 │ find the needle
+```
+
+Los marcadores de un PDF son capítulos que contienen sus páginas, y cada página es `page N`. Los
+capítulos de un EPUB se nombran por su índice. Una fila de SQLite es
+`tabla › row N › columna`, con sus valores separados por tabs:
+
+```
+$ s4 --docs needle m4/report.pdf --tree
+m4/report.pdf
+  1 Intro
+    page 2
+      3:intro needle
+  2 Costs
+    page 3
+      5:costs needle
+```
+
+```
+$ s4 --docs ana.needle docs/shop.sqlite --flat
+12: users › row 12 › email │ 12	User 12	ana.needle@example.com	18.0
+```
+
+Sin `--docs`, estos Formatos nunca se detectan: los archivos se buscan como los busca ripgrep,
+sin costo extra, e imprimen lo que imprime ripgrep:
+
+```
+$ s4 needle m4/report.pdf
+binary file matches (found "\0" byte around offset 1136)
+```
+
+Un documento que el Extractor no puede leer da un aviso, que `--no-messages` silencia, y después
+se busca como lo busca ripgrep; el código de salida sigue siendo el de ripgrep. Acá
+`broken.docx` empieza con los primeros bytes de un zip sin ser un zip, y el resultado se cuenta
+en sus bytes:
+
+```
+$ s4 --docs -c needle m4/locked.pdf m4/broken.docx
+s4: m4/locked.pdf: pdf: encrypted, and the empty password does not open it
+s4: m4/broken.docx: docx: not a zip file the reader can open (invalid Zip archive: Could not find EOCD)
+m4/broken.docx:1
+```
+
+Cada documento se lee en un proceso aparte, el mismo `s4` corrido de nuevo, nunca un programa
+externo. Ese proceso puede reservar 1 024 MiB, una cuenta que lleva él mismo, y puede tardar
+60 s en un documento. Pasado cualquiera de los dos límites, el documento da un aviso
+(`reading it needed more than the 1024 MiB a reader may use`, o `reading it took more than
+60 s`) y se busca como lo busca ripgrep. La cuenta es el mismo código en Linux, macOS y
+Windows, y en Unix `RLIMIT_DATA`, 64 MiB por encima, es una segunda barrera. Está probada en
+Linux; en macOS y Windows compila, y todavía no se corrió ahí. Contra las bombas de
+descompresión, una parte de un zip se descomprime hasta 256 MiB y un documento entero hasta
+1 GiB, un stream de PDF hasta 64 MiB, y de un documento se sacan como mucho 256 MiB de texto.
+
+- Sólo los archivos regulares son documentos: stdin y los pipes se buscan como los busca
+  ripgrep.
+- `--docs` es independiente de `-z`, `-a` y `--binary`. Un archivo que lee `--pre` o `-z`
+  nunca se extrae, así que `report.pdf.gz` con `-z --docs` se busca en sus bytes
+  descomprimidos.
+- `--within` usa todos los Segmentos, y `--expand` imprime la Sección del último: la fila de
+  una celda, la página de un resultado en un PDF. Los nombres de página, hoja, diapositiva,
+  tabla, fila, columna, celda, capítulo y notas quedan fuera del texto, así que
+  `--in-headings` sólo encuentra títulos en los documentos.
+- Un PDF cifrado que abre con la contraseña vacía se lee. El texto dibujado como imagen
+  (escaneos) queda sin texto, porque no hay OCR.
+- Quedan sin leer los formatos binarios de Office (`.doc`, `.xls`, `.ppt`), los encabezados,
+  pies de página, notas al pie y comentarios de los documentos de Office, y el archivo `-wal`
+  de una base SQLite.
+- Un archivo zip nunca se abre.
 
 ## Uso
 
@@ -242,6 +424,7 @@ de Fragmentos.
 | `--within <TRAIL>` | se queda con los resultados cuyo Trail contiene esos nombres de Segmento, en orden (`›`, `>` o `/` entre nombres; subcadenas sin distinguir mayúsculas) |
 | `--expand` | imprime la Sección entera del último Segmento de cada resultado, una vez por Sección |
 | `--in-headings` | busca sólo dentro de los nombres de Segmento (títulos, claves, nombres de función, elementos, encabezados de CSV, cues); procesa todos los archivos candidatos, así que es más lento |
+| `--docs` | busca en el texto de los archivos PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB y SQLite, con los Extractores incluidos (ver [Documentos](#documentos---docs)) |
 | `--format <F>` / `--format <GLOB>=<F>` | fuerza un Formato para todos los archivos o para los que coinciden con un glob |
 | `--flat` / `--tree` | fuerza la salida de una línea o la de árbol |
 | `--no-trail` | imprime exactamente lo que imprimiría ripgrep |
@@ -258,7 +441,7 @@ nombre de un Formato incluido o instalado lo reemplaza, y un nombre nuevo agrega
 ### Compatibilidad con ripgrep
 
 ripgrep 14.1.1 tiene 146 nombres de flag (104 flags, 30 negaciones `--no-` y 12 negaciones de
-otra forma). v0.3 implementa 51. Los otros 95 se aceptan por nombre y fallan con
+otra forma). v0.4 implementa 56. Los otros 90 se aceptan por nombre y fallan con
 `s4: --<flag> is not supported yet` y código de salida 2, así que ninguno se ignora en
 silencio. La tabla está en [docs/rg-compat.md](docs/rg-compat.md). Los códigos de salida son
 los de ripgrep: 0 si algo coincidió, 1 si nada, 2 si hubo un error.
@@ -266,10 +449,24 @@ los de ripgrep: 0 si algo coincidió, 1 si nada, 2 si hubo un error.
 Con `--no-trail`, la salida la escribe el propio printer de ripgrep, y `--json --no-trail`
 imprime los mismos mensajes que `rg --json`, salvo los tiempos.
 
+`--pre`, `--pre-glob`, `--no-pre`, `-z` y `--no-search-zip` funcionan como en ripgrep 14.1.1,
+errores y códigos de salida incluidos, y entre `-z` y `--pre` gana el último que se pasa. Lo que
+devuelven se busca como se busca stdin, con los Trails del Formato que dice la ruta del archivo.
+Acá `pre.sh`, escrito para este ejemplo, es `sed s/needle-pkg/NEEDLE-PKG/ "$1"`:
+
+```
+$ s4 --pre ./pre.sh --pre-glob '*.md' --flat NEEDLE-PKG md
+md/guide.md:12: Deploy guide › Install › Linux › bash │ apt install NEEDLE-PKG
+```
+
 Diferencias conocidas con ripgrep 14.1.1:
 
 - En la salida `--json`, las `stats` de los mensajes `end` y `summary` cuentan los resultados
   que encontró la búsqueda, antes de que `--within` e `--in-headings` los filtren.
+- Un archivo ELF, PE o Mach-O con un resultado imprime las filas de
+  [Archivos objeto](#archivos-objeto) donde ripgrep imprime `binary file matches`, así que s4
+  busca en el archivo entero; en `--json`, `bytes_searched` es el tamaño del archivo y
+  `binary_offset` es null.
 
 ## Helper Processors
 
@@ -422,6 +619,26 @@ code/thing.rs:7-9: outer › Thing › helper
 
 ```
 
+Encontrar la diapositiva, la hoja o la página donde está una frase, con `--docs`:
+
+```
+$ s4 --docs --flat 'needle joke' m4/deck.pptx m4/deck.odp
+m4/deck.pptx:3: slide 1 › notes │ tell the needle joke
+m4/deck.odp:3: slide 1 › notes │ tell the needle joke
+```
+
+Encontrar qué sección y qué símbolo de un binario tienen una cadena, con `--binary` sobre un
+directorio:
+
+```
+$ s4 --binary --flat --sort path version= m4/bin
+m4/bin/app:0x5a: ELF x86-64 › .rodata › main.version │ version=1.2.3-needle
+m4/bin/app-mac:0x1133: Mach-O x86-64 › __TEXT,__cstring › _version │ version=1.2.3-needle
+m4/bin/app-mac:0x2133: Mach-O arm64 › __TEXT,__cstring › _version │ version=1.2.3-needle
+m4/bin/app-stripped:0x5a: ELF x86-64 › .rodata │ version=1.2.3-needle
+m4/bin/app.exe:0x402: PE x86-64 › .rdata › version_string │ version=1.2.3-needle
+```
+
 `--json` emite los JSON Lines de ripgrep (`begin`, `match`, `context`, `end`, `summary`), así
 que cualquier consumidor de `rg --json` sigue funcionando, y agrega tres campos a cada
 `match`:
@@ -454,8 +671,9 @@ recetas; para instalarlo, copiá ese directorio a `~/.claude/skills/`.
 | M1 | v0.1 | Markdown, los flags centrales de ripgrep, salida en árbol / una línea / JSON, Fragmentos, `--within`, `--expand`, `--in-headings`, skill de Claude Code |
 | M2 | v0.2 | rutas de claves en YAML, JSON y TOML (`server › ports[2] › host`); código (PHP, JavaScript, TypeScript, TSX, Bash, Go, Rust, Python) como `Cart › addItem`, con las Grammars de tree-sitter compiladas adentro; Helper Processors (`processor = "external"`); `--install-grammar` y `--list-grammars` |
 | M3 (terminado, 2026-10-17) | v0.3 | rutas de elementos en HTML y XML (`section#pricing › table › tr[3] › td[2]`); filas y columnas en CSV y TSV (`row 2 › Plan`); cues de SubRip y WebVTT (`cue 2 00:00:04,000`); los caracteres de control de los nombres impresos como escapes |
-| M4 | v0.4 | archivos objeto (ELF, PE, Mach-O); `--docs`, extractores incluidos que buscan en PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB y SQLite con su estructura; el `--pre` de ripgrep |
-| M5 | v1.0 | un servidor MCP, el resto de los flags de ripgrep, binarios precompilados, Homebrew y npm, Windows y macOS; los binarios de los Grammar Helpers publicados en el índice de Grammars; la guía para escribir un Helper Processor |
+| M4 (terminado, 2026-10-18) | v0.4 | archivos objeto (ELF, PE, Mach-O, Mach-O fat) como `ELF x86-64 › .rodata › main.version+0xe`; `--docs`, con Extractores para PDF, Word, Excel, PowerPoint, texto, planilla y presentación de OpenDocument, EPUB y SQLite, cada documento leído en un proceso aparte que cuenta su propia memoria; los flags `--pre`, `--pre-glob`, `--no-pre`, `-z` y `--no-search-zip` de ripgrep; el benchmark de M4, los techos de rendimiento y los fuzz targets |
+| M5 | v1.0 | un servidor MCP, el resto de los flags de ripgrep, binarios precompilados (GitHub Releases), Homebrew y npm; Windows y macOS en CI, donde se corre la cuenta de memoria de los lectores, y un Job Object de Windows sobre cada lector de documentos como segunda barrera; los binarios de los Grammar Helpers publicados en el índice de Grammars; releases firmados; la guía para escribir un Helper Processor; los Trails en streaming para los archivos donde coinciden casi todas las líneas |
+| M6 | v1.x | más Formatos: metadatos de imagen y audio, WebAssembly y `.class` de Java (en el offset hexadecimal del resultado, como los archivos objeto); los formatos binarios de Office (`.doc`, `.xls`, `.ppt`); los encabezados, pies de página, notas al pie y comentarios de los documentos de Office |
 
 Los Formatos de empaquetado (zip, tar, 7z, rar, deb, rpm, jar) quedan afuera: searchfor busca
 donde busca ripgrep, y `-z` conserva el significado de ripgrep (archivos comprimidos de un
