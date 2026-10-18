@@ -752,6 +752,8 @@ impl Ctx<'_> {
             // ripgrep prints nothing then (spec §4.4, §5.8; M4 plan r6, Fable #1).
             Err(_) if crate::helper::host::cancel::GLOBAL.cancelled() => as_is(t),
             Err(e) => {
+                // A Ctrl-C that ended the reader before s4 saw it stops s4 here.
+                crate::helper::host::cancel::GLOBAL.settle();
                 self.msgs
                     .warn(format_args!("s4: {}: {name}: {e}", t.path.display()));
                 as_is(t)

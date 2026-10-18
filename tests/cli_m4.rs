@@ -1124,6 +1124,15 @@ fn m4_19_a_signal_to_sfor_ends_its_readers() {
         if group {
             std::os::unix::process::CommandExt::process_group(&mut c, 0);
         }
+        // A test run started with the signals ignored (a background job) would pass that on.
+        // SAFETY: signal() is async-signal-safe, as pre_exec asks.
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(&mut c, || {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                libc::signal(libc::SIGTERM, libc::SIG_DFL);
+                Ok(())
+            });
+        }
         let mut child = c
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

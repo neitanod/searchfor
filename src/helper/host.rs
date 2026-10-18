@@ -393,6 +393,7 @@ impl Host {
                 Err(HelperError::Timeout(self.cfg.timeout.as_millis()))
             }
             Err(CallError::Gone(why)) => {
+                self.sup.settle();
                 self.failed(conn);
                 Err(HelperError::Crashed(format!("the helper {why}")))
             }
@@ -422,6 +423,7 @@ impl Host {
             // No answer to hello, a process that exits or writes a broken line before it, is
             // a handshake failure, as in `start` (Codex r2 #5; m2-code-r1, Codex #5).
             Err(e) => {
+                self.sup.settle();
                 conn.close(true);
                 self.disable(self.no_hello(e));
                 Err(HelperError::Disabled)
@@ -647,6 +649,36 @@ pub(crate) mod cancel {
         STOPPED.load(SeqCst)
     }
 
+    /// Called where a reader or a helper just failed. The terminal's Ctrl-C reaches s4's
+    /// whole group, and on a busy machine the reader or helper it ended may be seen before
+    /// s4's handler runs: a SIGINT or SIGTERM still pending for s4 stops it already.
+    pub(crate) fn settle() {
+        if !STOPPED.load(SeqCst) && pending() {
+            STOPPED.store(true, SeqCst);
+        }
+    }
+
+    /// Whether a SIGINT or SIGTERM is pending for s4 and not handled yet: its shared pending
+    /// set, `ShdPnd` in /proc/self/status (sigpending(2) only reports blocked signals).
+    #[cfg(target_os = "linux")]
+    fn pending() -> bool {
+        let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
+            return false;
+        };
+        let mask = status
+            .lines()
+            .find_map(|l| l.strip_prefix("ShdPnd:"))
+            .and_then(|m| u64::from_str_radix(m.trim(), 16).ok())
+            .unwrap_or(0);
+        let bit = |sig: libc::c_int| 1u64 << (sig - 1);
+        mask & (bit(libc::SIGINT) | bit(libc::SIGTERM)) != 0
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn pending() -> bool {
+        false
+    }
+
     pub(crate) struct Supervisor {
         state: Mutex<Lifecycle>,
         /// Only the process-wide Supervisor watches signals.
@@ -719,6 +751,13 @@ pub(crate) mod cancel {
                 st.readers.push(Arc::downgrade(c));
             }
             Ok(started)
+        }
+
+        /// `settle`, for the process-wide Supervisor alone.
+        pub(crate) fn settle(&self) {
+            if self.signals {
+                settle();
+            }
         }
 
         /// The run was cancelled: hosts stop warning, since s4 is about to die by the signal
