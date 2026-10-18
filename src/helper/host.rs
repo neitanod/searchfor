@@ -659,19 +659,23 @@ pub(crate) mod cancel {
     }
 
     /// Whether a SIGINT or SIGTERM is pending for s4 and not handled yet: its shared pending
-    /// set, `ShdPnd` in /proc/self/status (sigpending(2) only reports blocked signals).
+    /// set, `ShdPnd` in /proc/self/status (sigpending(2) only reports blocked signals). A
+    /// signal in s4's mask, `SigBlk`, inherited from a parent that blocked it, is never
+    /// delivered and stops nothing (code review r3, Codex #1).
     #[cfg(target_os = "linux")]
     fn pending() -> bool {
         let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
             return false;
         };
-        let mask = status
-            .lines()
-            .find_map(|l| l.strip_prefix("ShdPnd:"))
-            .and_then(|m| u64::from_str_radix(m.trim(), 16).ok())
-            .unwrap_or(0);
+        let set = |name: &str| {
+            status
+                .lines()
+                .find_map(|l| l.strip_prefix(name))
+                .and_then(|m| u64::from_str_radix(m.trim(), 16).ok())
+                .unwrap_or(0)
+        };
         let bit = |sig: libc::c_int| 1u64 << (sig - 1);
-        mask & (bit(libc::SIGINT) | bit(libc::SIGTERM)) != 0
+        set("ShdPnd:") & !set("SigBlk:") & (bit(libc::SIGINT) | bit(libc::SIGTERM)) != 0
     }
 
     #[cfg(not(target_os = "linux"))]

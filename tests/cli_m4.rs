@@ -1255,6 +1255,49 @@ fn m4_26_a_signal_ignored_by_its_parent_is_ignored() {
     }
 }
 
+/// Code review r3, Codex #1: a SIGINT or SIGTERM that s4's parent blocked, and that is
+/// pending as s4 starts, never reaches it: a reader that fails, and a path that does not
+/// exist, are reported as without the signal, with the same output and exit code.
+#[cfg(target_os = "linux")]
+#[test]
+fn m4_28_a_signal_blocked_by_its_parent_is_no_stop() {
+    use std::os::unix::process::CommandExt;
+    let fx = fixture();
+    let args = [
+        "--docs",
+        "--no-trail",
+        "-j1",
+        "-c",
+        "needle",
+        "m4/broken.docx",
+        "m4/nonexistent",
+    ];
+    let free = run(&mut fx.s4(args));
+    assert_eq!(code(&free), 2, "{}", stderr(&free));
+    assert_eq!(stdout(&free), "m4/broken.docx:1\n");
+    assert_eq!(stderr(&free).lines().count(), 2, "{}", stderr(&free));
+    for sig in [libc::SIGINT, libc::SIGTERM] {
+        let mut c = fx.s4(args);
+        // A signal to the process, as the terminal's Ctrl-C, and not to the thread (raise).
+        // SAFETY: sigemptyset, sigaddset, sigprocmask, getpid and kill are async-signal-safe,
+        // as pre_exec asks; the mask and the pending signal survive the exec.
+        unsafe {
+            c.pre_exec(move || {
+                let mut set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut set);
+                libc::sigaddset(&mut set, sig);
+                libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+                libc::kill(libc::getpid(), sig);
+                Ok(())
+            });
+        }
+        let o = run(&mut c);
+        assert_eq!(code(&o), 2, "signal {sig}: {}", stderr(&o));
+        assert_eq!(stdout(&o), stdout(&free), "signal {sig}");
+        assert_eq!(stderr(&o), stderr(&free), "signal {sig}");
+    }
+}
+
 /// Fable r5 #1: a reader's own time limit holds for each document, never for its life: one
 /// reader (`-j1`) reads workbooks that take less than the limit each and more together.
 /// Fable r1 #8 (M4 code): the limit (`SEARCHFOR_READER_SECONDS`) is six times what one
