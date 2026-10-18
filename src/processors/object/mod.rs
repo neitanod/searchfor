@@ -384,8 +384,10 @@ fn macho(m: &goblin::mach::MachO, range: Range<usize>) -> Image {
         if nl.n_type & N_STAB != 0 || nl.n_type & N_TYPE != N_SECT || nl.n_sect == 0 {
             continue;
         }
-        // `l…` and `L…` are the assembler's local labels (`ltmp1`, `L_.str`), not symbols.
-        if name.starts_with('l') || name.starts_with('L') {
+        // A local `l…` or `L…` is an assembler's label (`ltmp1`, `L_.str`), not a symbol; an
+        // external one is a symbol (Codex r1 #8).
+        const N_EXT: u8 = 0x01;
+        if nl.n_type & N_EXT == 0 && (name.starts_with('l') || name.starts_with('L')) {
             continue;
         }
         let i = nl.n_sect - 1;
@@ -530,10 +532,32 @@ mod tests {
         assert_eq!(trail_at(&l.file, l.offset(0, 14))[2], "version+0xe");
         let s = Spec::new()
             .section("__TEXT,__const", b"version=1.2.3-needle\0")
-            .symbol("ltmp1", 0, 0)
-            .symbol("_version", 0, 0);
+            .local("ltmp1", 0, 0)
+            .symbol("_version", 0, 0)
+            .local("L_.str", 0, 2);
         let l = fixture::macho(&s);
         assert_eq!(trail_at(&l.file, l.offset(0, 14))[2], "_version+0xe");
+    }
+
+    /// Codex r1 #8: an external Mach-O symbol whose name starts with `l` or `L` is a symbol;
+    /// only a local one is an assembler's label.
+    #[test]
+    fn an_external_macho_symbol_starting_with_l_names_its_bytes() {
+        let s = Spec::new()
+            .section("__TEXT,__const", b"abcneedle\0")
+            .symbol("long_function", 0, 0)
+            .symbol("Log", 0, 1)
+            .local("lstatic", 0, 2);
+        let l = fixture::macho(&s);
+        assert_eq!(
+            trail_at(&l.file, l.offset(0, 3)),
+            ["Mach-O x86-64", "__TEXT,__const", "Log+0x2"]
+        );
+        let s = Spec::new()
+            .section("__TEXT,__const", b"abcneedle\0")
+            .symbol("long_function", 0, 0);
+        let l = fixture::macho(&s);
+        assert_eq!(trail_at(&l.file, l.offset(0, 3))[2], "long_function+0x3");
     }
 
     #[test]

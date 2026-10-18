@@ -11,6 +11,8 @@ pub struct Spec {
     pub symbols: Vec<(String, usize, u64, u64)>,
     /// The machine: an ELF `e_machine`, a PE `Machine` or a Mach-O `cputype`; 0 picks x86-64.
     pub machine: u32,
+    /// The symbols Mach-O writes without `N_EXT`, by name: the others are external.
+    pub locals: Vec<String>,
 }
 
 impl Spec {
@@ -24,6 +26,12 @@ impl Spec {
     }
 
     pub fn symbol(self, name: &str, section: usize, offset: u64) -> Self {
+        self.sized(name, section, offset, 0)
+    }
+
+    /// A symbol that is not external (Mach-O only; the other writers write it as any symbol).
+    pub fn local(mut self, name: &str, section: usize, offset: u64) -> Self {
+        self.locals.push(name.into());
         self.sized(name, section, offset, 0)
     }
 
@@ -346,7 +354,12 @@ pub fn macho(spec: &Spec) -> Layout {
         put32(&mut syms, strtab.len() as u32);
         strtab.extend(name.as_bytes());
         strtab.push(0);
-        syms.push(0x0f); // N_SECT | N_EXT
+        // N_SECT, and N_EXT unless the symbol is local.
+        syms.push(if spec.locals.contains(name) {
+            0x0e
+        } else {
+            0x0f
+        });
         syms.push(order.iter().position(|&s| s == *sec).unwrap() as u8 + 1);
         put16(&mut syms, 0);
         put64(&mut syms, BASE + starts[*sec] as u64 + off);
