@@ -1,6 +1,7 @@
 //! searchfor: ripgrep-compatible search that reports the Trail of every Match.
 pub mod app;
 pub mod cli;
+pub mod docs;
 pub mod filter;
 pub mod formats;
 pub mod grammars;
