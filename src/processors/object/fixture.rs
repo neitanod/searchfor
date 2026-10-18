@@ -460,7 +460,11 @@ pub fn macho(spec: &Spec) -> Layout {
 /// from it).
 pub fn pe_with_name_offset_0(mut file: Vec<u8>) -> Vec<u8> {
     let symtab = u32::from_le_bytes(file[0x4c..0x50].try_into().unwrap()) as usize;
-    assert_eq!(&file[symtab..symtab + 4], &[0; 4], "the name is in the string table");
+    assert_eq!(
+        &file[symtab..symtab + 4],
+        &[0; 4],
+        "the name is in the string table"
+    );
     file[symtab + 4..symtab + 8].fill(0);
     file
 }

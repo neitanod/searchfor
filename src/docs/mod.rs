@@ -236,8 +236,7 @@ impl Builder {
     /// ends in a no-break space), its control characters as spaces. A line of ASCII white space
     /// alone is skipped.
     pub fn verbatim(&mut self, s: &str) {
-        if s.trim_matches(|c: char| c.is_ascii_whitespace()).is_empty() || !self.room(s.len() + 1)
-        {
+        if s.trim_matches(|c: char| c.is_ascii_whitespace()).is_empty() || !self.room(s.len() + 1) {
             return;
         }
         clean(s, &mut self.text);
