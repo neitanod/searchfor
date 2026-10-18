@@ -14,7 +14,10 @@ use std::collections::HashMap;
 pub struct Flow<'s> {
     styles: &'s HashMap<String, u8>,
     /// The paragraphs being read, innermost last (a text box's paragraphs are inside one).
-    paras: Vec<(String, Option<u8>)>,
+    paras: Vec<Para>,
+    /// Depth inside `w:txbxContent`: a text box's paragraphs are lines of the box, never
+    /// headings of the document (Fable M4 code r3 #2), as a `text:h` in an OpenDocument frame.
+    boxes: usize,
     /// Inside `w:t` or `a:t`.
     in_text: bool,
     /// Depth inside elements whose text is not shown (`w:instrText`, `w:delText`,
@@ -26,11 +29,24 @@ pub struct Flow<'s> {
     table_seg: Option<usize>,
 }
 
+/// A paragraph being read.
+#[derive(Default)]
+struct Para {
+    text: String,
+    level: Option<u8>,
+    /// The lines of the text boxes it anchors, written after it, as in an OpenDocument text.
+    after: Vec<String>,
+    /// The tables open when it started: a paragraph inside it in a table opened after (one in
+    /// a text box) belongs to that table's cell.
+    tables: usize,
+}
+
 impl<'s> Flow<'s> {
     pub fn new(styles: &'s HashMap<String, u8>) -> Self {
         Flow {
             styles,
             paras: Vec::new(),
+            boxes: 0,
             in_text: false,
             skip: 0,
             tables: Vec::new(),
@@ -59,13 +75,21 @@ impl<'s> Flow<'s> {
                     return;
                 }
                 match l {
-                    "p" if !empty => self.paras.push((String::new(), None)),
+                    "txbxContent" if *ns == Ns::Word && !empty => self.boxes += 1,
+                    "p" if !empty => self.paras.push(Para {
+                        tables: self.tables.len(),
+                        ..Para::default()
+                    }),
                     "t" if !empty => self.in_text = true,
                     "br" | "cr" => self.push("\n"),
-                    "tab" if *ns == Ns::Word && self.paras.last().is_some() => self.push("\t"),
+                    // A tab, or a positional tab (Codex M4 code r3 #3): a space, as a break.
+                    "tab" | "ptab" if *ns == Ns::Word && self.paras.last().is_some() => {
+                        self.push("\t")
+                    }
+                    "pStyle" | "outlineLvl" if self.boxes > 0 => {}
                     "pStyle" => {
                         if let (Some(v), Some(p)) = (attr(attrs, "val"), self.paras.last_mut()) {
-                            p.1 = self.styles.get(v.as_ref()).copied().or(p.1);
+                            p.level = self.styles.get(v.as_ref()).copied().or(p.level);
                         }
                     }
                     "outlineLvl" => {
@@ -73,7 +97,7 @@ impl<'s> Flow<'s> {
                             && let Ok(n) = v.parse::<u8>()
                             && n < 9
                         {
-                            p.1 = Some(n + 1);
+                            p.level = Some(n + 1);
                         }
                     }
                     "tbl" if !empty => {
@@ -92,7 +116,7 @@ impl<'s> Flow<'s> {
                     _ => {}
                 }
             }
-            Ev::End { name, .. } => {
+            Ev::End { name, ns } => {
                 let l = local(name);
                 if self.skip > 0 {
                     self.skip -= 1;
@@ -100,11 +124,24 @@ impl<'s> Flow<'s> {
                 }
                 match l {
                     "t" => self.in_text = false,
+                    "txbxContent" if *ns == Ns::Word => self.boxes = self.boxes.saturating_sub(1),
                     "p" => {
-                        let Some((text, level)) = self.paras.pop() else {
+                        let Some(para) = self.paras.pop() else {
                             return;
                         };
-                        self.end_paragraph(text, level, b);
+                        let tables = self.tables.len();
+                        if let Some(outer) = self.paras.last_mut()
+                            && outer.tables == tables
+                        {
+                            // A text box's paragraph comes after the one that anchors it.
+                            outer.after.push(para.text);
+                            outer.after.extend(para.after);
+                            return;
+                        }
+                        self.end_paragraph(para.text, para.level, b);
+                        for line in para.after {
+                            self.end_paragraph(line, None, b);
+                        }
                     }
                     "tr" => {
                         if self.tables.len() == 1 {
@@ -136,7 +173,7 @@ impl<'s> Flow<'s> {
 
     fn push(&mut self, s: &str) {
         if let Some(p) = self.paras.last_mut() {
-            p.0.push_str(s);
+            p.text.push_str(s);
         }
     }
 
@@ -150,7 +187,6 @@ impl<'s> Flow<'s> {
     }
 
     fn end_paragraph(&mut self, text: String, level: Option<u8>, b: &mut Builder) {
-        // A text box's paragraph, inside another one, writes its lines before the outer's.
         if let Some(t) = self.tables.last_mut() {
             t.add_text(&text);
             return;
@@ -694,6 +730,75 @@ mod extract_tests {
                 .into_bytes()
         });
         assert_eq!(extract(Kind::Docx, &other).unwrap().text, e.text);
+    }
+
+    /// A Word document whose body is `body`, with the fixture's heading styles.
+    fn docx_with(body: &str) -> Vec<u8> {
+        let d = fixture::docx(&[p("BODY")]);
+        fixture::rezip(&d, |name, data| {
+            if name != "word/document.xml" {
+                return data;
+            }
+            String::from_utf8(data)
+                .unwrap()
+                .replace(
+                    r#"<w:p><w:r><w:t xml:space="preserve">BODY</w:t></w:r></w:p>"#,
+                    body,
+                )
+                .into_bytes()
+        })
+    }
+
+    /// Codex M4 code r3 #3, in Word: the same rule as in OpenDocument and EPUB: a tab
+    /// (`w:tab`, `w:ptab`), a carriage return `w:cr` and a break `w:br` inside a paragraph are a
+    /// space each, in the body and in a table cell.
+    #[test]
+    fn word_tabs_and_breaks_are_a_space_each() {
+        const P: &str = r#"<w:p><w:r><w:t>a</w:t><w:tab/><w:t>b</w:t><w:ptab w:relativeTo="margin" w:alignment="right" w:leader="none"/><w:t>c</w:t><w:cr/><w:t>d</w:t><w:br w:type="page"/><w:t>e</w:t></w:r></w:p>"#;
+        let d = docx_with(&format!(
+            "{P}<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Item</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc>{P}</w:tc></w:tr></w:tbl>"
+        ));
+        assert_eq!(
+            extract(Kind::Docx, &d).unwrap().text,
+            b"a b c d e\nItem\na b c d e\n"
+        );
+    }
+
+    /// Fable M4 code r3 #2: a paragraph inside a text box (`w:txbxContent`, which LibreOffice
+    /// and Word write inside a run of the paragraph that anchors it) is a line of the box, never
+    /// a heading of the document, whatever its style, and the box's lines come after the
+    /// anchoring paragraph, as in an OpenDocument text.
+    #[test]
+    fn a_text_boxs_heading_is_a_line_of_the_box() {
+        let d = docx_with(concat!(
+            r#"<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Intro</w:t></w:r></w:p>"#,
+            r#"<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Scope</w:t></w:r></w:p>"#,
+            r#"<w:p><w:r><w:t>anchor after</w:t></w:r><w:r><mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Choice Requires="wps"><w:drawing><wps:wsp><wps:txbx><w:txbxContent>"#,
+            r#"<w:p><w:pPr><w:pStyle w:val="Heading3"/></w:pPr><w:r><w:t>Box head</w:t></w:r></w:p>"#,
+            r#"<w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:t>box needle</w:t></w:r></w:p>"#,
+            r#"</w:txbxContent></wps:txbx></wps:wsp></w:drawing></mc:Choice>"#,
+            r#"<mc:Fallback><w:pict><v:textbox><w:txbxContent><w:p><w:r><w:t>fallback</w:t></w:r></w:p></w:txbxContent></v:textbox></w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p>"#,
+            r#"<w:p><w:r><w:t>last needle</w:t></w:r></w:p>"#,
+        ));
+        let e = extract(Kind::Docx, &d).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&e.text),
+            "Intro\nScope\nanchor after\nBox head\nbox needle\nlast needle\n"
+        );
+        assert_eq!(trail(Kind::Docx, &d, "last needle"), ["Intro", "Scope"]);
+        assert_eq!(trail(Kind::Docx, &d, "box needle"), ["Intro", "Scope"]);
+        assert_eq!(trail(Kind::Docx, &d, "anchor"), ["Intro", "Scope"]);
+        // A table inside a text box keeps its cells.
+        let d = docx_with(concat!(
+            r#"<w:p><w:r><w:t>anchor</w:t></w:r><w:r><w:drawing><wps:txbx><w:txbxContent><w:tbl>"#,
+            r#"<w:tr><w:tc><w:p><w:r><w:t>Item</w:t></w:r></w:p></w:tc></w:tr>"#,
+            r#"<w:tr><w:tc><w:p><w:r><w:t>box cell needle</w:t></w:r></w:p></w:tc></w:tr>"#,
+            r#"</w:tbl></w:txbxContent></wps:txbx></w:drawing></w:r></w:p>"#,
+        ));
+        assert_eq!(
+            trail(Kind::Docx, &d, "box cell"),
+            ["table 1", "row 2", "Item"]
+        );
     }
 
     #[test]
