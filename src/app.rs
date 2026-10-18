@@ -68,16 +68,22 @@ struct Messages {
 impl Messages {
     fn error(&self, msg: impl std::fmt::Display) {
         self.errored.store(true, Relaxed);
-        if !self.silent {
+        if !self.silent && !stopped() {
             eprintln!("s4: {msg}");
         }
     }
 
     fn warn(&self, msg: impl std::fmt::Display) {
-        if !self.silent {
+        if !self.silent && !stopped() {
             eprintln!("{msg}");
         }
     }
+}
+
+/// A SIGINT or SIGTERM reached s4, which is about to die by it: from then on it prints
+/// nothing, neither on stdout nor on stderr, as rg prints nothing after Ctrl-C.
+fn stopped() -> bool {
+    crate::helper::host::cancel::stopped()
 }
 
 /// The built-in Definitions, those of the installed Grammar Helpers and the user's (D26).
@@ -97,7 +103,7 @@ fn load_registry(msgs: &Messages, user_dir: Option<&Path>) -> Registry {
 fn run_processors(args: &Args, threads: usize) -> processors::Processors {
     let silent = args.no_messages;
     let warn: crate::helper::Warn = std::sync::Arc::new(move |m: String| {
-        if !silent {
+        if !silent && !stopped() {
             eprintln!("{m}");
         }
     });
@@ -794,6 +800,10 @@ impl Ctx<'_> {
     }
 
     fn print(&self, buf: &Buffer) {
+        if stopped() {
+            self.quit.store(true, Relaxed);
+            return;
+        }
         if !buf.as_slice().is_empty() {
             self.printed.store(true, Relaxed);
         }
@@ -2453,6 +2463,10 @@ impl Write for Spill<'_> {
         if let Some(out) = self.out
             && self.buf.as_slice().len() >= SPILL
         {
+            if stopped() {
+                self.buf.clear();
+                return Ok(n);
+            }
             self.printed.store(true, Relaxed);
             out.print(self.buf)?;
             self.buf.clear();
@@ -2519,7 +2533,9 @@ impl Write for SpillLines<'_> {
         }
         self.scanned = start;
         let flushable = self.line_end;
-        if flushable > 0 {
+        if flushable > 0 && stopped() {
+            self.clear();
+        } else if flushable > 0 {
             let held = self.buf.as_slice();
             let mut head = out.buffer();
             head.write_all(&held[..flushable])?;

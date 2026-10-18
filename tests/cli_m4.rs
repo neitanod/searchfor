@@ -950,11 +950,14 @@ fn m4_18_any_path_reaches_the_reader() {
 }
 
 /// A PDF of `pages` pages sharing one content stream of `ops` operations: slow to read, so a
-/// signal arrives while its reader works.
+/// signal arrives while its reader works. The stream is compressed, so the file is small and
+/// searching its bytes is quick.
 fn slow_pdf(pages: usize, ops: usize) -> Vec<u8> {
     use lopdf::{Dictionary, Document, Object, Stream};
     let mut doc = Document::with_version("1.5");
-    let content = doc.add_object(Stream::new(Dictionary::new(), b"h ".repeat(ops)));
+    let mut stream = Stream::new(Dictionary::new(), b"h ".repeat(ops));
+    stream.compress().unwrap();
+    let content = doc.add_object(stream);
     let pages_id = doc.new_object_id();
     let kids: Vec<Object> = (0..pages)
         .map(|_| {
@@ -999,22 +1002,37 @@ fn children_of(parent: u32) -> Vec<u32> {
 /// Codex r4 #2: a SIGTERM to s4 alone kills and reaps its readers, and s4 dies by it; a
 /// SIGKILL, which s4 cannot see, ends them too (the kernel's parent-death signal). Fable r6
 /// #1: nothing is printed after the signal, neither for the documents whose readers it killed
-/// nor for those still waiting for one: eight slow PDFs for the four readers.
+/// nor for those still waiting for one: eight slow PDFs for the four readers. Code review r2,
+/// Codex #5: the pattern is in each PDF's bytes and in none of their texts, so a document
+/// searched as it is once its reader was killed, or refused one, would print its count; and
+/// a SIGINT is sent to s4 alone and to its group, as the terminal sends Ctrl-C (pending r1,
+/// lote A: s4 printed those counts before the signal ended it).
 #[cfg(target_os = "linux")]
 #[test]
 fn m4_19_a_signal_to_sfor_ends_its_readers() {
     use std::io::Read;
     let fx = fixture();
-    let slow = slow_pdf(20_000, 200_000);
-    let mut args = vec!["--docs".to_string(), "-c".into(), "needle".into()];
+    // Four pages of two million operations: under the reader's limit of operations.
+    let slow = slow_pdf(4, 2_000_000);
+    assert!(slow.starts_with(b"%PDF-") && slow.len() < 64 * 1024);
+    let mut args = vec!["--docs".to_string(), "-c".into(), "^%PDF-".into()];
     for i in 0..8 {
         std::fs::write(fx.path().join(format!("m4/slow{i}.pdf")), &slow).unwrap();
         args.push(format!("m4/slow{i}.pdf"));
     }
-    for sig in [libc::SIGTERM, libc::SIGKILL] {
-        let mut child = fx
-            .s4(&args)
-            .stdout(std::process::Stdio::null())
+    // The terminal's Ctrl-C reaches the whole group, readers included, whose id is s4's pid.
+    for (sig, group) in [
+        (libc::SIGINT, true),
+        (libc::SIGINT, false),
+        (libc::SIGTERM, false),
+        (libc::SIGKILL, false),
+    ] {
+        let mut c = fx.s4(&args);
+        if group {
+            std::os::unix::process::CommandExt::process_group(&mut c, 0);
+        }
+        let mut child = c
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
@@ -1029,8 +1047,9 @@ fn m4_19_a_signal_to_sfor_ends_its_readers() {
         };
         assert!(!readers.is_empty(), "no reader started");
         std::thread::sleep(std::time::Duration::from_millis(300));
-        // SAFETY: a signal to our own child.
-        unsafe { libc::kill(pid as libc::pid_t, sig) };
+        let to = if group { -(pid as i32) } else { pid as i32 };
+        // SAFETY: a signal to our own child, or to the group it leads.
+        unsafe { libc::kill(to, sig) };
         let status = child.wait().unwrap();
         assert_eq!(
             std::os::unix::process::ExitStatusExt::signal(&status),
@@ -1044,6 +1063,14 @@ fn m4_19_a_signal_to_sfor_ends_its_readers() {
             .read_to_string(&mut errors)
             .unwrap();
         assert_eq!(errors, "", "after signal {sig}");
+        let mut printed = String::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut printed)
+            .unwrap();
+        assert_eq!(printed, "", "after signal {sig}");
         let gone = std::time::Instant::now();
         while readers
             .iter()

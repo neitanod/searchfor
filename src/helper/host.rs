@@ -633,7 +633,19 @@ impl Host {
 /// launches no helper installs nothing.
 pub(crate) mod cancel {
     use super::Conn;
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
     use std::sync::{Arc, Mutex, Weak};
+
+    /// Set the moment a SIGINT or SIGTERM reaches s4, by the signal handler itself, before
+    /// the watcher cancels the run. From then on s4 prints nothing, as ripgrep, which dies by
+    /// the signal at once: a file whose reader or helper the signal ended would otherwise be
+    /// printed as it is, without its Trail (pending of the M4 code review r1, lote A).
+    static STOPPED: AtomicBool = AtomicBool::new(false);
+
+    /// A SIGINT or SIGTERM reached s4 and it is about to die by it: nothing more is printed.
+    pub(crate) fn stopped() -> bool {
+        STOPPED.load(SeqCst)
+    }
 
     pub(crate) struct Supervisor {
         state: Mutex<Lifecycle>,
@@ -721,6 +733,9 @@ pub(crate) mod cancel {
         /// watcher alone (`watch`).
         #[cfg_attr(not(unix), allow(dead_code))]
         pub(crate) fn cancel(&self) {
+            if self.signals {
+                STOPPED.store(true, SeqCst);
+            }
             let (live, readers): (Vec<Arc<Conn>>, Vec<_>) = {
                 let mut st = self.state.lock().unwrap();
                 st.cancelled = true;
@@ -770,10 +785,17 @@ pub(crate) mod cancel {
         static WATCHER: OnceLock<()> = OnceLock::new();
         WATCHER.get_or_init(|| {
             use signal_hook::consts::{SIGINT, SIGTERM};
+            let watched = [SIGINT, SIGTERM];
             // If the handler cannot be installed, Ctrl-C keeps M1's behaviour.
-            let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGINT, SIGTERM]) else {
+            let Ok(mut signals) = signal_hook::iterator::Signals::new(&watched) else {
                 return;
             };
+            for &sig in &watched {
+                // SAFETY: the action only stores into an atomic, which is async-signal-safe.
+                let _ = unsafe {
+                    signal_hook::low_level::register(sig, || STOPPED.store(true, SeqCst))
+                };
+            }
             std::thread::spawn(move || {
                 if let Some(sig) = signals.forever().next() {
                     GLOBAL.cancel();
