@@ -58,7 +58,9 @@ fn params(t: &toml::Table) -> anyhow::Result<Params> {
 }
 
 /// The delimiter of a CSV file (D4): of `,`, `;`, tab and `|`, the one that appears most often
-/// in its first line outside quotes; `,` on a tie or when none appears. The line is read once,
+/// in its first record outside quotes; `,` on a tie or when none appears. The first record is
+/// the first line that is not blank, as csv-core skips blank lines, and it goes on across line
+/// ends inside quotes; `\r` ends it as `\n` does (M3 code review r3, Fable #2). It is read once,
 /// with csv-core's quoting rules (csv-core 0.1.13, `reader.rs`) and every candidate ending a
 /// field: a quote opens a quoted field only as the field's first byte, whichever candidate is
 /// before it; inside it `""` is a quote and a lone one closes it; a quote anywhere else, after
@@ -75,10 +77,18 @@ pub fn sniff(src: &[u8], quote: Option<u8>) -> u8 {
         Quoted,
         AfterQuote,
     }
-    let line = &src[..memchr::memchr(b'\n', src).unwrap_or(src.len())];
     let mut counts = [0usize; 4];
     let mut state = State::Start;
-    for &b in line {
+    let mut started = false;
+    for &b in src {
+        if (b == b'\n' || b == b'\r') && !matches!(state, State::Quoted) {
+            if started {
+                break;
+            }
+            // A blank line before the first record.
+            continue;
+        }
+        started = true;
         let q = Some(b) == quote;
         let candidate = if q {
             None
@@ -566,6 +576,23 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    #[test]
+    fn sniffs_the_delimiter_of_the_first_record() {
+        // M3 code review r3, Fable #2: the blank lines before it are skipped, as csv-core skips
+        // them, a quoted field goes on across lines, and `\r` ends a record as `\n` does.
+        assert_eq!(sniff(b"\na;b;c\n1;2;needle\n", Some(b'"')), b';');
+        assert_eq!(sniff(b"\r\n\r\na|b|c\n", Some(b'"')), b'|');
+        assert_eq!(sniff(b"\"a\nb,c,d\";e;f\n", Some(b'"')), b';');
+        assert_eq!(
+            sniff(b"\"Name\nfull\";Plan;Note\nx;needle;y\n", Some(b'"')),
+            b';'
+        );
+        assert_eq!(sniff(b"a,b\rc;d;e;f\r", Some(b'"')), b',');
+        // Without quoting a quote is text, and the record ends at the line's end.
+        assert_eq!(sniff(b"\"a\nb;c;d\n", None), b',');
+        assert_eq!(sniff(b"\n\n", Some(b'"')), b',');
     }
 
     #[test]

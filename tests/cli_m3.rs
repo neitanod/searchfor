@@ -394,3 +394,27 @@ fn m3_18_a_doctype_without_a_name_ends_the_structure() {
     assert_eq!(code(&o), 0);
     assert_eq!(stdout(&o), "1: r › a │ <!DOCTYPE r><r><a>needle</a></r>\n");
 }
+
+#[test]
+fn m3_19_the_csv_delimiter_comes_from_the_first_record() {
+    // M3 code review r3, Fable #2: a blank line before the header, or a header whose first cell
+    // spans two lines, still gives `;`.
+    let fx = Fixture::new();
+    for (file, body, row) in [
+        (
+            "blank.csv",
+            "\nID;Plan;Note\n1;needle;ok\n",
+            "3: row 1 › Plan │ 1;needle;ok\n",
+        ),
+        (
+            "multi.csv",
+            "\"Name\nfull\";Plan;Note\nx;needle;y\n",
+            "3: row 1 › Plan │ x;needle;y\n",
+        ),
+    ] {
+        std::fs::write(fx.file(file), body).unwrap();
+        let o = run(&mut fx.sfor(["--flat", "needle", file]));
+        assert_eq!(code(&o), 0, "{file}");
+        assert_eq!(stdout(&o), row, "{file}");
+    }
+}
