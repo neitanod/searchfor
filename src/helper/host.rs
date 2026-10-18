@@ -737,6 +737,21 @@ pub(crate) mod cancel {
         }
     }
 
+    impl Supervisor {
+        /// Called as s4 is about to exit: a run the signal watcher cancelled never exits by
+        /// itself, since the watcher ends s4 by that signal (`watch`). Without this, a search
+        /// that finished meanwhile, its helpers killed and its files Plain, could exit first,
+        /// with 0 (pending C7: `h16_ctrl_c_ends_every_helper` failed 4 times in 100 under
+        /// load).
+        pub(crate) fn hold_if_cancelled(&self) {
+            if self.signals && self.cancelled() {
+                loop {
+                    std::thread::park();
+                }
+            }
+        }
+    }
+
     /// Kills and reaps the readers, through their `Child`: one already reaped is not
     /// signalled again (`Child::kill` after `wait` does nothing).
     #[cfg_attr(not(unix), allow(dead_code))]

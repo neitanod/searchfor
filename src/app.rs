@@ -46,13 +46,16 @@ pub fn run(argv: Vec<OsString>) -> i32 {
             return 2;
         }
     };
-    match main(&args) {
+    let code = match main(&args) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("s4: {e:#}");
             2
         }
-    }
+    };
+    // After a SIGINT or SIGTERM s4 dies by it, as ripgrep, never with a code of its own.
+    crate::helper::host::cancel::GLOBAL.hold_if_cancelled();
+    code
 }
 
 /// Error and warning messages on stderr; `--no-messages` silences them, and an error still
