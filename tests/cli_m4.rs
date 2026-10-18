@@ -656,6 +656,44 @@ fn m4_12_docs_reads_streams_once() {
     }
 }
 
+/// Code review r1, Codex #1: stdin redirected from a document, named `/dev/stdin`,
+/// `/dev/fd/0`, `/proc/self/fd/0` or through a link to one of them, is a regular file, yet no
+/// document: a reader would open it as its own stdin. It is searched as rg searches it.
+#[cfg(unix)]
+#[test]
+fn m4_24_stdin_redirected_from_a_document_is_no_document() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = fixture();
+    std::os::unix::fs::symlink("/dev/stdin", fx.path().join("m4/stdin.docx")).unwrap();
+    let shop = common::source_dir().join("docs/shop.sqlite");
+    let docx = fx.path().join("m4/report.docx");
+    for (path, input) in [
+        ("/dev/stdin", &shop),
+        ("/dev/fd/0", &shop),
+        ("/proc/self/fd/0", &shop),
+        ("m4/stdin.docx", &docx),
+    ] {
+        let started = std::time::Instant::now();
+        let s = run(fx
+            .s4(["--docs", "--no-trail", "needle", path])
+            .env("SEARCHFOR_READER_SECONDS", "1")
+            .stdin(std::fs::File::open(input).unwrap()));
+        let took = started.elapsed();
+        let r = run(fx
+            .rg(["needle", path])
+            .stdin(std::fs::File::open(input).unwrap()));
+        assert_eq!(stderr(&s), "", "{path}");
+        assert_eq!(stdout(&s), stdout(&r), "{path}");
+        assert_eq!(code(&s), code(&r), "{path}");
+        assert!(
+            took < std::time::Duration::from_millis(900),
+            "{path}: {took:?}"
+        );
+    }
+}
+
 /// Codex r1 #7 and #8: --within keeps the Matches of an object row that are within, not the
 /// whole row, and -m after it counts rows, which share their line.
 #[test]

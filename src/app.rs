@@ -624,6 +624,11 @@ impl Ctx<'_> {
     /// or, for a name without an extension, by its first bytes (read only then).
     fn document(&self, p: &Path) -> Option<Through> {
         let det = self.docs.filter(|d| d.may_be_document(p))?;
+        // `/dev/stdin` redirected from a file is a regular file, which the reader would open
+        // as its own stdin (code review r1, Codex #1).
+        if names_a_stream(p) {
+            return None;
+        }
         let def = match det.detect_by_path(p) {
             Some(d) => d?,
             None => {
@@ -2249,6 +2254,34 @@ fn head_of(p: &Path) -> Vec<u8> {
     let mut head = Vec::with_capacity(16);
     let _ = File::open(p).and_then(|f| f.take(16).read_to_end(&mut head));
     head
+}
+
+/// Whether `p` names a file through /dev or /proc (`/dev/stdin`, `/dev/fd/0`,
+/// `/proc/self/fd/0`), itself or by a link on the way: a name another process resolves to its
+/// own descriptors (spec §5.8, "Only a regular file is a document"). Followed link by link, as
+/// `canonicalize` would go past /proc to the redirected file; true past 40 links.
+fn names_a_stream(p: &Path) -> bool {
+    let Ok(mut cur) = std::path::absolute(p) else {
+        return false;
+    };
+    let in_streams = |q: &Path| q.starts_with("/dev") || q.starts_with("/proc");
+    for _ in 0..40 {
+        let (Some(dir), Some(name)) = (cur.parent(), cur.file_name()) else {
+            return in_streams(&cur);
+        };
+        let Ok(dir) = std::fs::canonicalize(dir) else {
+            return false;
+        };
+        let full = dir.join(name);
+        if in_streams(&full) {
+            return true;
+        }
+        match std::fs::read_link(&full) {
+            Ok(to) => cur = dir.join(to),
+            Err(_) => return false,
+        }
+    }
+    true
 }
 
 /// A regular file, which can be opened again and read the same: not `/dev/stdin` or a FIFO.
