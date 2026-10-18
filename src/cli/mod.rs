@@ -180,16 +180,19 @@ pub struct Args {
     #[arg(short = 'q', long)]
     pub quiet: bool,
     /// ripgrep's -z: search compressed files through their decompressors on PATH (gzip,
-    /// bzip2, xz, LZ4, LZMA, Brotli, Zstd). -z and --pre override each other (last wins).
-    #[arg(short = 'z', long, overrides_with = "no_search_zip")]
+    /// bzip2, xz, LZ4, LZMA, Brotli, Zstd). -z and --pre turn each other off (last wins).
+    #[arg(short = 'z', long)]
     pub search_zip: bool,
-    #[arg(long, hide = true, overrides_with = "search_zip")]
+    #[arg(long, hide = true)]
     pub no_search_zip: bool,
     /// ripgrep's --pre: search the output of `COMMAND PATH` instead of PATH; an empty COMMAND
     /// turns it off.
-    #[arg(long, value_name = "COMMAND", overrides_with = "no_pre")]
+    #[arg(long = "pre", value_name = "COMMAND", action = ArgAction::Append)]
+    pub pre_flags: Vec<OsString>,
+    /// --pre's command, once -z, --pre and their negations are applied in order (`pre_and_zip`).
+    #[arg(skip)]
     pub pre: Option<OsString>,
-    #[arg(long, hide = true, overrides_with = "pre")]
+    #[arg(long, hide = true)]
     pub no_pre: bool,
     /// ripgrep's --pre-glob: run --pre only on files these globs match (gitignore syntax, `!`
     /// excludes).
@@ -302,18 +305,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
     a.no_ignore_resolved = last_by_index(&m, &[("no_ignore", true), ("ignore", false)], u(0), true);
     a.hidden_resolved = last_by_index(&m, &[("hidden", true), ("no_hidden", false)], u(1), true);
     a.binary_choice = binary_choice(&m);
-    // -z and --pre override each other, the last one given wins, as in ripgrep 14.1.1; an
-    // empty --pre is no --pre.
-    if a.pre.as_ref().is_some_and(|p| p.is_empty()) {
-        a.pre = None;
-    }
-    if a.search_zip && a.pre.is_some() {
-        if m.index_of("search_zip") > m.index_of("pre") {
-            a.pre = None;
-        } else {
-            a.search_zip = false;
-        }
-    }
+    (a.pre, a.search_zip) = pre_and_zip(&m);
     a.type_selections = type_selections(&m);
     a.pattern_sources = pattern_sources(&m);
     // `-M0` turns the limit off, as in ripgrep 14.1.1 (code review r2, Codex #3).
@@ -359,6 +351,57 @@ fn last_by_index(
         }
     }
     last.is_some_and(|(_, v)| v)
+}
+
+/// `--pre` and `-z` as ripgrep 14.1.1 sets them (flags/defs.rs, `Pre` and `SearchZip`): each
+/// flag in command-line order, where `--pre COMMAND` also turns -z off and `-z` also turns
+/// --pre off, an empty COMMAND and `--no-pre` turn --pre off, and `--no-search-zip` turns -z
+/// off. A negation turns off only its own flag, so it never brings back the one the other
+/// turned off (code review r1, Codex #4, Fable #2).
+fn pre_and_zip(m: &clap::ArgMatches) -> (Option<OsString>, bool) {
+    enum Step<'a> {
+        Pre(&'a OsString),
+        NoPre,
+        Zip,
+        NoZip,
+    }
+    let mut steps: Vec<(usize, Step)> = Vec::new();
+    if let (Some(values), Some(indices)) = (
+        m.get_many::<OsString>("pre_flags"),
+        m.indices_of("pre_flags"),
+    ) {
+        steps.extend(indices.zip(values.map(Step::Pre)));
+    }
+    // A repeated switch keeps its last index, which is enough: it sets the same each time.
+    for (id, step) in [
+        ("no_pre", Step::NoPre),
+        ("search_zip", Step::Zip),
+        ("no_search_zip", Step::NoZip),
+    ] {
+        if m.get_flag(id)
+            && let Some(i) = m.index_of(id)
+        {
+            steps.push((i, step));
+        }
+    }
+    steps.sort_by_key(|(i, _)| *i);
+    let (mut pre, mut zip) = (None, false);
+    for (_, step) in steps {
+        match step {
+            Step::Pre(c) if c.is_empty() => pre = None,
+            Step::Pre(c) => {
+                pre = Some(c.clone());
+                zip = false;
+            }
+            Step::NoPre => pre = None,
+            Step::Zip => {
+                zip = true;
+                pre = None;
+            }
+            Step::NoZip => zip = false,
+        }
+    }
+    (pre, zip)
 }
 
 /// ripgrep's binary-mode flags in command-line order: -a → Text; --binary and the third -u →
@@ -565,6 +608,22 @@ mod tests {
         assert_eq!(p(&["s4", "x", "--pre", ""]).pre, None);
         assert_eq!(p(&["s4", "x", "--pre", "cat", "--no-pre"]).pre, None);
         assert!(!p(&["s4", "x", "-z", "--no-search-zip"]).search_zip);
+        // Each of -z and --pre turns the other off as it comes, and a later negation does not
+        // bring that one back, as in ripgrep 14.1.1 (code review r1, Codex #4, Fable #2).
+        let a = p(&["s4", "x", "-z", "--pre", "cat", "--no-pre"]);
+        assert_eq!((a.search_zip, a.pre), (false, None));
+        let a = p(&["s4", "x", "--pre", "cat", "-z", "--no-search-zip"]);
+        assert_eq!((a.search_zip, a.pre), (false, None));
+        let a = p(&["s4", "x", "-z", "--pre", "cat", "--pre", ""]);
+        assert_eq!((a.search_zip, a.pre), (false, None));
+        let a = p(&["s4", "x", "--pre", "cat", "--pre", "", "-z"]);
+        assert_eq!((a.search_zip, a.pre), (true, None));
+        let a = p(&["s4", "x", "--no-pre", "--pre", "cat"]);
+        assert_eq!(a.pre.as_deref(), Some(std::ffi::OsStr::new("cat")));
+        let a = p(&["s4", "x", "--no-search-zip", "-z"]);
+        assert!(a.search_zip);
+        let a = p(&["s4", "x", "--pre", "a", "--pre", "b"]);
+        assert_eq!(a.pre.as_deref(), Some(std::ffi::OsStr::new("b")));
         let a = p(&[
             "s4",
             "x",

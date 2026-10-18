@@ -422,6 +422,16 @@ fn m4_08_pre_and_z_as_ripgrep() {
             "NEEDLE".into(),
             "m4/pre/a.txt.gz".into(),
         ]);
+        // A negation turns off only its own flag: what the other flag turned off stays off
+        // (code review r1, Codex #4, Fable #2).
+        for (flags, pattern) in [
+            (["-z", "--pre", &up, "--no-pre"], "needle"),
+            (["--pre", &up, "-z", "--no-search-zip"], "NEEDLE"),
+        ] {
+            let mut v: Vec<String> = flags.iter().map(|f| f.to_string()).collect();
+            v.extend(["--sort", "path", pattern, "m4/pre"].map(String::from));
+            cases.push(v);
+        }
     }
     for args in cases {
         let s = run(&mut fx.s4(args.iter().map(String::as_str).chain(["--no-trail"])));
@@ -435,6 +445,25 @@ fn m4_08_pre_and_z_as_ripgrep() {
             (stdout(&s), stdout(&r))
         };
         assert_eq!(so, ro, "{args:?}");
+        assert_eq!(code(&s), code(&r), "{args:?}");
+        assert_eq!(stderr(&s).replace("s4: ", "rg: "), stderr(&r), "{args:?}");
+    }
+    // Walking the current directory, the command and the decompressor get the path rg prints,
+    // without `./`, in their arguments and in rg's errors (code review r1, Fable #1).
+    let show = script("show.sh", "#!/bin/sh\nprintf 'ARG=%s\\n' \"$1\"\n");
+    let mut walked: Vec<Vec<&str>> = vec![
+        vec!["--pre", &show, "--sort", "path", "ARG="],
+        vec!["--pre", &fail, "--sort", "path", "needle"],
+        vec!["--pre", "/nonexistent/pre", "--sort", "path", "needle"],
+    ];
+    if have_gzip {
+        std::fs::write(d.join("bad.gz"), "not gzip, needle\n").unwrap();
+        walked.push(vec!["-z", "--sort", "path", "needle"]);
+    }
+    for args in walked {
+        let s = run(fx.s4(args.iter().chain(&["--no-trail"])).current_dir(&d));
+        let r = run(fx.rg(&args).current_dir(&d));
+        assert_eq!(stdout(&s), stdout(&r), "{args:?}");
         assert_eq!(code(&s), code(&r), "{args:?}");
         assert_eq!(stderr(&s).replace("s4: ", "rg: "), stderr(&r), "{args:?}");
     }
@@ -514,6 +543,8 @@ fn m4_10_structural_flags_on_documents_and_objects() {
                 "--flat",
                 "--within",
                 "Costs",
+                "--sort",
+                "path",
                 "needle",
                 "m4/report.docx",
                 "m4/report.pdf"
@@ -624,6 +655,44 @@ fn m4_12_docs_reads_streams_once() {
         assert_eq!(code(&r), 0, "{path}");
         assert_eq!(code(&s), code(&r), "{path}");
         assert_eq!(stdout(&s), stdout(&r), "{path}");
+    }
+}
+
+/// Code review r1, Codex #1: stdin redirected from a document, named `/dev/stdin`,
+/// `/dev/fd/0`, `/proc/self/fd/0` or through a link to one of them, is a regular file, yet no
+/// document: a reader would open it as its own stdin. It is searched as rg searches it.
+#[cfg(unix)]
+#[test]
+fn m4_24_stdin_redirected_from_a_document_is_no_document() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = fixture();
+    std::os::unix::fs::symlink("/dev/stdin", fx.path().join("m4/stdin.docx")).unwrap();
+    let shop = common::source_dir().join("docs/shop.sqlite");
+    let docx = fx.path().join("m4/report.docx");
+    for (path, input) in [
+        ("/dev/stdin", &shop),
+        ("/dev/fd/0", &shop),
+        ("/proc/self/fd/0", &shop),
+        ("m4/stdin.docx", &docx),
+    ] {
+        let started = std::time::Instant::now();
+        let s = run(fx
+            .s4(["--docs", "--no-trail", "needle", path])
+            .env("SEARCHFOR_READER_SECONDS", "1")
+            .stdin(std::fs::File::open(input).unwrap()));
+        let took = started.elapsed();
+        let r = run(fx
+            .rg(["needle", path])
+            .stdin(std::fs::File::open(input).unwrap()));
+        assert_eq!(stderr(&s), "", "{path}");
+        assert_eq!(stdout(&s), stdout(&r), "{path}");
+        assert_eq!(code(&s), code(&r), "{path}");
+        assert!(
+            took < std::time::Duration::from_millis(900),
+            "{path}: {took:?}"
+        );
     }
 }
 
@@ -989,37 +1058,54 @@ fn m4_19_a_signal_to_sfor_ends_its_readers() {
     }
 }
 
-/// Fable r5 #1: a reader's own time limit holds for each document, never for its life: with
-/// it lowered to 1 s (`SEARCHFOR_READER_SECONDS`), one reader (`-j1`) reads 24 workbooks that take
-/// less each and more together. Fable r6 #4: each takes about an eighth of the limit here,
-/// so a slower or busier machine keeps a margin, and three limits together, so a faster one
-/// still passes the limit over the reader's life.
+/// Fable r5 #1: a reader's own time limit holds for each document, never for its life: one
+/// reader (`-j1`) reads workbooks that take less than the limit each and more together.
+/// Fable r1 #8 (M4 code): the limit (`SEARCHFOR_READER_SECONDS`) is six times what one
+/// workbook takes on this machine now, so a busy machine keeps its margin, and the workbooks
+/// double until together they take longer than it, so a fast one still passes it.
 #[test]
 fn m4_20_the_readers_time_limit_is_per_document() {
-    const BOOKS: usize = 24;
     let fx = fixture();
     let row: &[&str] = &["needle in a sheet"];
     let rows: Vec<&[&str]> = vec![row; 3_500];
     let book = doc::xlsx(&[("S", &rows)]);
-    let mut args = ["--docs", "-j1", "-c", "--sort", "path", "needle"]
-        .map(String::from)
-        .to_vec();
-    let mut expected = String::new();
-    for i in 0..BOOKS {
-        let p = format!("m4/w{i:02}.xlsx");
-        std::fs::write(fx.path().join(&p), &book).unwrap();
-        expected.push_str(&format!("{p}:3500\n"));
-        args.push(p);
-    }
+    let path = |i: usize| format!("m4/w{i:03}.xlsx");
+    std::fs::write(fx.path().join(path(0)), &book).unwrap();
     let started = std::time::Instant::now();
-    let o = run(fx.s4(&args).env("SEARCHFOR_READER_SECONDS", "1"));
-    let took = started.elapsed();
-    eprintln!(
-        "{BOOKS} workbooks in {took:?}, {:?} each, against a limit of 1 s",
-        took / BOOKS as u32
-    );
-    assert_eq!(stderr(&o), "");
-    assert_eq!(stdout(&o), expected);
+    let o = run(&mut fx.s4(["--docs", "-c", "needle", &path(0)]));
+    let one = started.elapsed();
+    assert_eq!((stdout(&o), stderr(&o)), ("3500\n".into(), String::new()));
+    let limit = std::time::Duration::from_secs((one.as_secs_f64() * 6.0).ceil().max(1.0) as u64);
+    let mut books = 24;
+    loop {
+        let mut args = ["--docs", "-j1", "-c", "--sort", "path", "needle"]
+            .map(String::from)
+            .to_vec();
+        let mut expected = String::new();
+        for i in 0..books {
+            let p = path(i);
+            std::fs::write(fx.path().join(&p), &book).unwrap();
+            expected.push_str(&format!("{p}:3500\n"));
+            args.push(p);
+        }
+        let started = std::time::Instant::now();
+        let o = run(fx
+            .s4(&args)
+            .env("SEARCHFOR_READER_SECONDS", limit.as_secs().to_string()));
+        let took = started.elapsed();
+        eprintln!(
+            "{books} workbooks in {took:?}, {:?} each, one alone in {one:?}, against a limit of \
+             {limit:?}",
+            took / books as u32
+        );
+        assert_eq!(stderr(&o), "");
+        assert_eq!(stdout(&o), expected);
+        if took > limit {
+            break;
+        }
+        assert!(books < 400, "{books} workbooks took less than {limit:?}");
+        books *= 2;
+    }
 }
 
 /// Codex r6 #2: the reader's own limit ends the document that passes it, counted from that
@@ -1222,4 +1308,140 @@ fn m4_23_a_reader_refused_memory_it_went_on_without_warns() {
     assert_eq!(code(&o), 0);
     let o = run(&mut fx.s4(["--docs", "-c", "AAAAAAAA", "m4/long.pdf"]));
     assert_eq!((stdout(&o), stderr(&o)), ("1\n".to_string(), String::new()));
+}
+
+/// Code review r1, Codex #2 and #3: a `--pre` command that prints its output and then fails is
+/// an error, exit 2, also where the search stops before the end of its output (-q, -m, -l); the
+/// lines it found before are printed as rg 14.1.1 prints them: with one thread, as they come,
+/// and with more, never (rg drops the file's buffer). The Trail layouts print them too.
+#[cfg(unix)]
+#[test]
+fn m4_25_a_command_that_fails_late_is_an_error_after_its_lines() {
+    use std::os::unix::fs::PermissionsExt;
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = fixture();
+    let d = fx.path().join("m4/late");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("a.txt"), "needle one\nother\n").unwrap();
+    std::fs::write(d.join("b.txt"), "needle two\n").unwrap();
+    let late = d.join("late.sh");
+    std::fs::write(&late, "#!/bin/sh\ncat \"$1\"\necho boom >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&late, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let late = late.to_string_lossy().into_owned();
+    let pre = |rest: &[&str]| -> Vec<String> {
+        ["--pre", late.as_str()]
+            .iter()
+            .chain(rest)
+            .map(|s| s.to_string())
+            .collect()
+    };
+    let a = "m4/late/a.txt";
+    let b = "m4/late/b.txt";
+    for args in [
+        pre(&["needle", a]),
+        pre(&["-q", "needle", a]),
+        pre(&["-m1", "needle", a]),
+        pre(&["-c", "needle", a]),
+        pre(&["-l", "needle", a]),
+        pre(&["-v", "needle", a]),
+        pre(&["--json", "needle", a]),
+        pre(&["-m1", "--json", "needle", a]),
+        pre(&["-j1", "needle", a, b]),
+        pre(&["-q", "-j1", "needle", a, b]),
+        pre(&["-l", "-j1", "needle", a, b]),
+    ] {
+        let s = run(&mut fx.s4(args.iter().map(String::as_str).chain(["--no-trail"])));
+        let r = run(&mut fx.rg(&args));
+        let json = args.contains(&"--json".to_string());
+        let mask = |o: &std::process::Output| match json {
+            true => common::mask_json_times(&stdout(o)),
+            false => stdout(o),
+        };
+        assert_eq!(mask(&s), mask(&r), "{args:?}");
+        assert_eq!(code(&s), 2, "{args:?}");
+        assert_eq!(code(&s), code(&r), "{args:?}");
+        assert_eq!(stderr(&s).replace("s4: ", "rg: "), stderr(&r), "{args:?}");
+    }
+    // With threads rg prints nothing of a file whose search failed; its two errors come in
+    // either order.
+    let args = pre(&["-j4", "needle", a, b]);
+    let s = run(&mut fx.s4(args.iter().map(String::as_str).chain(["--no-trail"])));
+    let r = run(&mut fx.rg(&args));
+    assert_eq!((stdout(&s), code(&s)), (stdout(&r), code(&r)), "{args:?}");
+    assert_eq!(stdout(&s), "");
+    assert_eq!(stderr(&s).matches("boom").count(), 2, "{}", stderr(&s));
+    // The Trail layouts: the rows found, then the error.
+    let err = |path: &str, prefixed: bool| {
+        let cmd = if prefixed {
+            format!("preprocessor command failed: '\"{late}\" \"{path}\"': ")
+        } else {
+            String::new()
+        };
+        format!("s4: {path}: {cmd}\n{0}\nboom\n{0}\n", "-".repeat(79))
+    };
+    for (args, out, prefixed) in [
+        (pre(&["--flat", "needle", a]), "1: needle one\n", true),
+        (
+            pre(&["--flat", "-m1", "needle", a]),
+            "1: needle one\n",
+            false,
+        ),
+        (
+            pre(&["--flat", "-j1", "needle", a, b]),
+            "m4/late/a.txt:1: needle one\nm4/late/b.txt:1: needle two\n",
+            true,
+        ),
+        (pre(&["--flat", "-j4", "needle", a, b]), "", true),
+    ] {
+        let s = run(&mut fx.s4(&args));
+        assert_eq!(stdout(&s), out, "{args:?}");
+        assert_eq!(code(&s), 2, "{args:?}");
+        if args.contains(&"-j4".to_string()) {
+            assert_eq!(stderr(&s).matches("boom").count(), 2, "{}", stderr(&s));
+        } else if args.contains(&"-j1".to_string()) {
+            assert_eq!(stderr(&s), err(a, prefixed) + &err(b, prefixed), "{args:?}");
+        } else {
+            assert_eq!(stderr(&s), err(a, prefixed), "{args:?}");
+        }
+    }
+    // --json: the file's begin and match, without its end, and nothing in the summary, as rg.
+    let s = run(&mut fx.s4(pre(&["--json", "needle", a])));
+    assert_eq!(code(&s), 2);
+    assert_eq!(stderr(&s), err(a, true));
+    let types: Vec<String> = stdout(&s)
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["type"].to_string())
+        .collect();
+    assert_eq!(types, ["\"begin\"", "\"match\"", "\"summary\""]);
+    let summary: serde_json::Value =
+        serde_json::from_str(stdout(&s).lines().last().unwrap()).unwrap();
+    assert_eq!(summary["data"]["stats"]["matches"], 0);
+    assert_eq!(summary["data"]["stats"]["searches"], 0);
+    // A truncated gzip file: its decompressor fails after the lines it gave.
+    let text: String = (0..50_000).map(|i| format!("needle {i}\n")).collect();
+    std::fs::write(d.join("big.txt"), text).unwrap();
+    let zipped = std::process::Command::new("gzip")
+        .arg("-k")
+        .arg(d.join("big.txt"))
+        .status();
+    if !zipped.is_ok_and(|s| s.success()) {
+        return;
+    }
+    let gz = std::fs::read(d.join("big.txt.gz")).unwrap();
+    std::fs::write(d.join("cut.gz"), &gz[..gz.len() / 2]).unwrap();
+    let args = ["-z", "needle", "m4/late/cut.gz"];
+    let s = run(&mut fx.s4(args.iter().chain(&["--no-trail"])));
+    let r = run(&mut fx.rg(args));
+    assert_eq!(code(&r), 2);
+    assert!(stdout(&r).lines().count() > 1000);
+    assert_eq!((stdout(&s), code(&s)), (stdout(&r), code(&r)));
+    assert_eq!(stderr(&s).replace("s4: ", "rg: "), stderr(&r));
+    let s = run(&mut fx.s4(args.iter().chain(&["--flat"])));
+    assert_eq!(stdout(&s).lines().count(), stdout(&r).lines().count());
+    assert_eq!(
+        (code(&s), stderr(&s).replace("s4: ", "rg: ")),
+        (2, stderr(&r))
+    );
 }
