@@ -236,6 +236,7 @@ mod tests {
             format: Some("markdown".into()),
             trails,
             sections: vec![],
+            offsets: false,
         }
     }
 

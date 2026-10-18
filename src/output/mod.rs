@@ -695,6 +695,7 @@ pub(crate) mod fixture {
             format: Some("markdown".into()),
             trails,
             sections: Vec::new(),
+            offsets: false,
         }
     }
 }

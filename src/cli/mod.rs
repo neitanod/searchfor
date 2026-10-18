@@ -179,6 +179,22 @@ pub struct Args {
     pub binary_choice: BinaryChoice,
     #[arg(short = 'q', long)]
     pub quiet: bool,
+    /// ripgrep's -z: search compressed files through their decompressors on PATH (gzip,
+    /// bzip2, xz, LZ4, LZMA, Brotli, Zstd). -z and --pre override each other (last wins).
+    #[arg(short = 'z', long, overrides_with = "no_search_zip")]
+    pub search_zip: bool,
+    #[arg(long, hide = true, overrides_with = "search_zip")]
+    pub no_search_zip: bool,
+    /// ripgrep's --pre: search the output of `COMMAND PATH` instead of PATH; an empty COMMAND
+    /// turns it off.
+    #[arg(long, value_name = "COMMAND", overrides_with = "no_pre")]
+    pub pre: Option<OsString>,
+    #[arg(long, hide = true, overrides_with = "pre")]
+    pub no_pre: bool,
+    /// ripgrep's --pre-glob: run --pre only on files these globs match (gitignore syntax, `!`
+    /// excludes).
+    #[arg(long = "pre-glob", value_name = "GLOB", action = ArgAction::Append)]
+    pub pre_globs: Vec<String>,
     #[arg(long, overrides_with = "messages")]
     pub no_messages: bool,
     #[arg(long, hide = true, overrides_with = "no_messages")]
@@ -204,6 +220,10 @@ pub struct Args {
     /// Print exactly what ripgrep would print.
     #[arg(long)]
     pub no_trail: bool,
+    /// Search PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite files through the
+    /// built-in Extractors (spec §5.8).
+    #[arg(long)]
+    pub docs: bool,
     /// Fragment width when there is no terminal.
     #[arg(long, default_value_t = 200)]
     pub fragment_width: usize,
@@ -282,6 +302,18 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
     a.no_ignore_resolved = last_by_index(&m, &[("no_ignore", true), ("ignore", false)], u(0), true);
     a.hidden_resolved = last_by_index(&m, &[("hidden", true), ("no_hidden", false)], u(1), true);
     a.binary_choice = binary_choice(&m);
+    // -z and --pre override each other, the last one given wins, as in ripgrep 14.1.1; an
+    // empty --pre is no --pre.
+    if a.pre.as_ref().is_some_and(|p| p.is_empty()) {
+        a.pre = None;
+    }
+    if a.search_zip && a.pre.is_some() {
+        if m.index_of("search_zip") > m.index_of("pre") {
+            a.pre = None;
+        } else {
+            a.search_zip = false;
+        }
+    }
     a.type_selections = type_selections(&m);
     a.pattern_sources = pattern_sources(&m);
     // `-M0` turns the limit off, as in ripgrep 14.1.1 (code review r2, Codex #3).
@@ -517,6 +549,33 @@ mod tests {
     }
     fn p(v: &[&str]) -> Args {
         parse(os(v)).unwrap()
+    }
+
+    /// M4: ripgrep's -z and --pre override each other, the last one given winning, and an
+    /// empty --pre is none (rg 14.1.1).
+    #[test]
+    fn z_and_pre_override_each_other() {
+        let a = p(&["sfor", "x", "-z", "--pre", "cat"]);
+        assert_eq!(
+            (a.search_zip, a.pre.as_deref()),
+            (false, Some(std::ffi::OsStr::new("cat")))
+        );
+        let a = p(&["sfor", "x", "--pre", "cat", "-z"]);
+        assert_eq!((a.search_zip, a.pre), (true, None));
+        assert_eq!(p(&["sfor", "x", "--pre", ""]).pre, None);
+        assert_eq!(p(&["sfor", "x", "--pre", "cat", "--no-pre"]).pre, None);
+        assert!(!p(&["sfor", "x", "-z", "--no-search-zip"]).search_zip);
+        let a = p(&[
+            "sfor",
+            "x",
+            "--pre-glob",
+            "*.pdf",
+            "--pre-glob",
+            "!a.pdf",
+            "--docs",
+        ]);
+        assert_eq!(a.pre_globs, ["*.pdf", "!a.pdf"]);
+        assert!(a.docs);
     }
 
     #[test]

@@ -1,0 +1,4 @@
+# formats/macho.toml — Mach-O files, also fat ones (spec §5.7): `Mach-O arm64 › __TEXT,__cstring`.
+name      = "macho"
+magic     = [{ hex = "feedface" }, { hex = "feedfacf" }, { hex = "cefaedfe" }, { hex = "cffaedfe" }, { hex = "cafebabe" }]
+processor = "object"

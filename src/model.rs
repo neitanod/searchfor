@@ -134,6 +134,9 @@ pub struct Described {
     /// With `--expand`, `sections[i][k]`: the Section of submatch `k` of Match `i`
     /// (1-based inclusive lines), aligned with `trails`.
     pub sections: Vec<Vec<Option<(u64, u64)>>>,
+    /// The rows are an object file's printable strings (spec §5.7): tree and one-line output
+    /// print each at the hex offset of its first Match, where they print a line number.
+    pub offsets: bool,
 }
 
 /// What a Processor receives about one file (design note 6). External Processors (M5) need

@@ -199,6 +199,73 @@ mod tests {
         crate::processors::Processors::known(p)
     }
 
+    /// M4 plan, D5 and D10: document Formats only with --docs; object Formats by their magic
+    /// whatever the name.
+    #[test]
+    fn the_m4_definitions_load_and_detect() {
+        let (r, warnings) = Registry::load(None, &known);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let plain = detector::Detector::new(&r, &[]).unwrap();
+        let docs = detector::Detector::new(&r, &[]).unwrap().with_docs(true);
+        let p = std::path::Path::new;
+        for (path, format) in [
+            ("r.pdf", "pdf"),
+            ("r.DOCX", "docx"),
+            ("b.xlsm", "xlsx"),
+            ("d.ppsx", "pptx"),
+            ("t.ott", "odt"),
+            ("s.ods", "ods"),
+            ("p.odp", "odp"),
+            ("b.epub", "epub"),
+            ("x.sqlite3", "sqlite"),
+            ("app.db", "sqlite"),
+        ] {
+            assert_eq!(
+                docs.detect(p(path), b"").map(|d| d.name.as_str()),
+                Some(format),
+                "{path}"
+            );
+            assert!(
+                plain.detect(p(path), b"").is_none(),
+                "{path} without --docs"
+            );
+        }
+        let mut odt = b"PK\x03\x04".to_vec();
+        odt.resize(30, 0);
+        odt.extend(b"mimetypeapplication/vnd.oasis.opendocument.text");
+        for (head, format) in [
+            (&b"%PDF-1.7\n"[..], "pdf"),
+            (b"SQLite format 3\0", "sqlite"),
+            (&odt, "odt"),
+        ] {
+            assert_eq!(
+                docs.detect(p("noext"), head).map(|d| d.name.as_str()),
+                Some(format)
+            );
+            assert!(plain.detect(p("noext"), head).is_none());
+        }
+        for (head, format) in [
+            (&b"\x7fELF\x02\x01"[..], "elf"),
+            (b"MZ\x90\0", "pe"),
+            (b"\xcf\xfa\xed\xfe", "macho"),
+            (b"\xca\xfe\xba\xbe", "macho"),
+        ] {
+            assert_eq!(plain.object(head).map(|d| d.name.as_str()), Some(format));
+            // Without an extension the magic decides as for any Format.
+            assert_eq!(
+                plain.detect(p("ls"), head).map(|d| d.name.as_str()),
+                Some(format)
+            );
+        }
+        assert!(plain.object(b"#!/bin/sh\n").is_none());
+        // `libc.so.6`: its extension decides nothing, so only `object` tells it.
+        assert!(plain.detect(p("libc.so.6"), b"\x7fELF").is_none());
+        assert_eq!(
+            plain.object(b"\x7fELF").map(|d| d.name.as_str()),
+            Some("elf")
+        );
+    }
+
     #[test]
     fn the_m3_definitions_load_and_detect() {
         let (r, warnings) = Registry::load(None, &known);

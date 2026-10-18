@@ -557,6 +557,7 @@ mod tests {
                 format: format.map(Into::into),
                 trails,
                 sections: Vec::new(),
+                offsets: false,
             };
             match layout {
                 Layout::Flat => {

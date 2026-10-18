@@ -1,0 +1,8 @@
+# formats/epub.toml — EPUB books: `3. The Storm › The harbour` with --docs (spec §5.8).
+name       = "epub"
+extensions = ["epub"]
+magic      = [{ offset = 30, hex = "6d696d65747970656170706c69636174696f6e2f657075622b7a6970" }]
+processor  = "docs"
+
+[params]
+extractor = "epub"

@@ -1,0 +1,7 @@
+# formats/docx.toml — Word documents: `2 Costs › table 1 › row 3 › Price` with --docs (spec §5.8).
+name       = "docx"
+extensions = ["docx", "docm", "dotx", "dotm"]
+processor  = "docs"
+
+[params]
+extractor = "docx"

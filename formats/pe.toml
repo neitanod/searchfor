@@ -1,0 +1,4 @@
+# formats/pe.toml — PE images and objects (spec §5.7): `PE x86-64 › .rdata › version+0xe`.
+name      = "pe"
+magic     = [{ hex = "4d5a" }]
+processor = "object"

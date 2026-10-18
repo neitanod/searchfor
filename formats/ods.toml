@@ -1,0 +1,8 @@
+# formats/ods.toml — OpenDocument spreadsheets: `Budget › B12` with --docs (spec §5.8).
+name       = "ods"
+extensions = ["ods", "ots"]
+magic      = [{ offset = 30, hex = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e7370726561647368656574" }]
+processor  = "docs"
+
+[params]
+extractor = "ods"
