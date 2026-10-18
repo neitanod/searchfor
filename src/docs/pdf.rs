@@ -60,7 +60,7 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
         }
     }
     lost_objects(&doc)?;
-    let pages = doc.get_pages();
+    let pages = pages(&doc);
     let numbers: HashMap<ObjectId, u32> = pages.iter().map(|(n, id)| (*id, *n)).collect();
     let mut marks = bookmarks(&doc, &numbers);
     marks.sort_by_key(|m| m.2);
@@ -132,6 +132,60 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
         }
     }
     Ok(())
+}
+
+/// The pages, numbered from 1 in the order of the page tree. lopdf's walk goes round a
+/// `/Kids` that holds a node above it until it has spent a step per object, and lists a page
+/// it reaches twice twice; this one visits each node once (Fable r1 #7), with lopdf's limit
+/// of 256 levels that still have kids to read.
+fn pages(doc: &Document) -> BTreeMap<u32, ObjectId> {
+    const PENDING: usize = 256;
+    let mut out = BTreeMap::new();
+    let Ok(root) = doc
+        .catalog()
+        .and_then(|c| c.get(b"Pages"))
+        .and_then(Object::as_reference)
+    else {
+        return out;
+    };
+    let kids = |id| {
+        doc.get_dictionary(id)
+            .and_then(|d| d.get_deref(b"Kids", doc))
+            .and_then(Object::as_array)
+            .map_or(&[][..], |k| k.as_slice())
+    };
+    let mut seen = HashSet::from([root]);
+    let mut current = kids(root);
+    let mut pending = Vec::new();
+    loop {
+        let Some((kid, rest)) = current.split_first() else {
+            match pending.pop() {
+                Some(p) => {
+                    current = p;
+                    continue;
+                }
+                None => break,
+            }
+        };
+        current = rest;
+        let Ok(id) = kid.as_reference() else { continue };
+        if !seen.insert(id) {
+            continue;
+        }
+        match doc.get_dictionary(id).and_then(Dictionary::get_type) {
+            Ok(t) if t == b"Page" => {
+                out.insert(out.len() as u32 + 1, id);
+            }
+            Ok(t) if t == b"Pages" && pending.len() < PENDING => {
+                if !current.is_empty() {
+                    pending.push(current);
+                }
+                current = kids(id);
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// A page's content: its one stream decompressed, or its streams joined by lopdf, which
@@ -539,7 +593,7 @@ impl<'a> Reader<'a> {
     fn new(doc: &'a Document) -> Self {
         Reader {
             doc,
-            limit: MAX_WORK.saturating_add(PAGE_WORK * doc.get_pages().len().min(MAX_PAGES_WORK)),
+            limit: MAX_WORK.saturating_add(PAGE_WORK * pages(doc).len().min(MAX_PAGES_WORK)),
             contents: RefCell::default(),
             fonts: RefCell::default(),
             forms: RefCell::default(),
@@ -2255,6 +2309,55 @@ mod tests {
         let kept = super::objstm((9, 0), &mut o);
         assert!(kept.is_some());
         assert!(super::OBJSTM.with(|c| c.get()).refused.is_none());
+    }
+
+    /// Fable r1 #7: a page tree whose `/Kids` holds the node itself reads the pages after it
+    /// (lopdf's walk spent its steps going round and read none), and a page reached twice is
+    /// one page.
+    #[test]
+    fn a_page_tree_that_loops_reads_each_page_once() {
+        let pdf = pdf_with(simple_font(|_| {}), b"BT /F1 12 Tf (needle) Tj ET", &[]);
+        let mut doc = Document::load_mem(&pdf).unwrap();
+        let page = *doc.get_pages().get(&1).unwrap();
+        let tree = doc
+            .catalog()
+            .unwrap()
+            .get(b"Pages")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        doc.get_object_mut(tree)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set(
+                "Kids",
+                Object::Array(vec![
+                    Object::Reference(tree),
+                    Object::Reference(page),
+                    Object::Reference(page),
+                ]),
+            );
+        let mut out = Vec::new();
+        doc.save_to(&mut out).unwrap();
+        assert_eq!(text_of(&out), "needle\n");
+        // A chain of 1000 nodes of one kid each: no level has kids left to read, so the depth
+        // is no limit, as in lopdf.
+        let mut below = page;
+        for _ in 0..1000 {
+            let mut node = Dictionary::new();
+            node.set("Type", Object::Name(b"Pages".to_vec()));
+            node.set("Kids", Object::Array(vec![Object::Reference(below)]));
+            below = doc.add_object(node);
+        }
+        doc.get_object_mut(tree)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set("Kids", Object::Array(vec![Object::Reference(below)]));
+        let mut out = Vec::new();
+        doc.save_to(&mut out).unwrap();
+        assert_eq!(text_of(&out), "needle\n");
     }
 
     fn compressed_zeros(n: usize) -> Stream {
