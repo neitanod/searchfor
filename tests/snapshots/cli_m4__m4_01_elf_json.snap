@@ -1,0 +1,9 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"m4/bin/app"}}}
+{"type":"match","data":{"path":{"text":"m4/bin/app"},"lines":{"text":"version=1.2.3-needle"},"line_number":1,"absolute_offset":90,"submatches":[{"match":{"text":"needle"},"start":14,"end":20}],"format":"elf","trail":[{"kind":"object","name":"ELF x86-64","line":1,"end_line":1},{"kind":"section","name":".rodata","line":1,"end_line":1},{"kind":"symbol","name":"main.version+0xe","line":1,"end_line":1}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"m4/bin/app"},"lines":{"text":"another needle here"},"line_number":1,"absolute_offset":111,"submatches":[{"match":{"text":"needle"},"start":8,"end":14}],"format":"elf","trail":[{"kind":"object","name":"ELF x86-64","line":1,"end_line":1},{"kind":"section","name":".rodata","line":1,"end_line":1}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"m4/bin/app"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":664,"bytes_printed":828,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":828,"bytes_searched":664,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

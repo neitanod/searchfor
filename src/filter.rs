@@ -19,6 +19,39 @@ pub fn within(trail: &Trail, wanted: &[String]) -> bool {
         .all(|w| it.any(|s| s.name.to_lowercase().contains(w.as_str())))
 }
 
+/// `retain` for an object file's rows (M4 plan, D8): a row keeps only its kept Matches and
+/// their Trails, and a row with none kept is dropped (code review of the M4 plan r1, Codex #7).
+/// Rows are strings, not lines, so none becomes a context line. With `max`, the first `max`
+/// rows that stay: rows share their lines, so -m counts rows (Codex #8).
+pub fn retain_rows(d: &mut Described, keep: &[Vec<bool>], max: Option<u64>) {
+    let items = std::mem::take(&mut d.file.items);
+    let trails = std::mem::take(&mut d.trails);
+    let max = max.map_or(usize::MAX, |m| usize::try_from(m).unwrap_or(usize::MAX));
+    for ((item, ts), ks) in items.into_iter().zip(trails).zip(keep) {
+        if d.file.items.len() == max {
+            break;
+        }
+        let Item::Match(mut m) = item else { continue };
+        if !ks.iter().any(|&b| b) {
+            continue;
+        }
+        debug_assert_eq!(ks.len(), m.submatches.len());
+        m.submatches = m
+            .submatches
+            .into_iter()
+            .zip(ks)
+            .filter_map(|(s, &k)| k.then_some(s))
+            .collect();
+        let ts = ts
+            .into_iter()
+            .zip(ks)
+            .filter_map(|(t, &k)| k.then_some(t))
+            .collect();
+        d.file.items.push(Item::Match(m));
+        d.trails.push(ts);
+    }
+}
+
 /// Applies per-submatch decisions. `keep[i][k]` is for submatch `k` of Match item `i`
 /// (one entry for an inverted Match). A Match keeps only its kept submatches and their Trails;
 /// a Match with none kept becomes a Context line when it lies within `before`/`after` lines of
@@ -490,5 +523,34 @@ mod tests {
         let mut d = described(vec![Item::Match(lm)]);
         d.trails = vec![trails];
         assert_eq!(sections(&d), vec![vec![Some((19, 34)), Some((21, 24))]]);
+    }
+
+    #[test]
+    fn retain_rows_keeps_rows_with_a_kept_match_and_counts_m_by_row() {
+        // Object rows (M4 plan, D8): strings that share line 1, never Context lines.
+        let rows = || {
+            described(vec![
+                m(1, &[(0, 1), (2, 3)]),
+                m(1, &[(4, 5)]),
+                m(1, &[(6, 7), (8, 9)]),
+                m(1, &[(10, 11)]),
+            ])
+        };
+        let keep = vec![vec![false, true], vec![false], vec![true, true], vec![true]];
+        let mut d = rows();
+        retain_rows(&mut d, &keep, None);
+        assert_eq!(shape(&d), vec!["m1", "m1", "m1"]);
+        assert_eq!(
+            trail_names(&d),
+            vec![vec!["L1#1"], vec!["L1#0", "L1#1"], vec!["L1#0"]]
+        );
+        let Item::Match(first) = &d.file.items[0] else {
+            panic!("a row is a Match")
+        };
+        assert_eq!(first.submatches, vec![Submatch { start: 2, end: 3 }]);
+        let mut d = rows();
+        retain_rows(&mut d, &keep, Some(2));
+        assert_eq!(shape(&d), vec!["m1", "m1"]);
+        assert_eq!(trail_names(&d), vec![vec!["L1#1"], vec!["L1#0", "L1#1"]]);
     }
 }

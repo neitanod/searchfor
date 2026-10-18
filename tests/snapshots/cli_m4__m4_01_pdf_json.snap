@@ -1,0 +1,9 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"m4/report.pdf"}}}
+{"type":"match","data":{"path":{"text":"m4/report.pdf"},"lines":{"text":"intro needle\n"},"line_number":3,"absolute_offset":15,"submatches":[{"match":{"text":"needle"},"start":6,"end":12}],"format":"pdf","trail":[{"kind":"chapter","name":"1 Intro","line":2,"end_line":3,"level":1},{"kind":"page","name":"page 2","line":2,"end_line":3}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"m4/report.pdf"},"lines":{"text":"costs needle\n"},"line_number":5,"absolute_offset":36,"submatches":[{"match":{"text":"needle"},"start":6,"end":12}],"format":"pdf","trail":[{"kind":"chapter","name":"2 Costs","line":4,"end_line":5,"level":1},{"kind":"page","name":"page 3","line":4,"end_line":5}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"m4/report.pdf"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":49,"bytes_printed":766,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":766,"bytes_searched":49,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

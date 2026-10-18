@@ -1,0 +1,11 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+m4/deck.odp
+  slide 1
+    2:a needle margin
+    notes
+      3:tell the needle joke
+  slide 2
+    5:find the needle

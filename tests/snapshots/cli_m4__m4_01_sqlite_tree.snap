@@ -1,0 +1,40 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+docs/shop.sqlite
+  users
+    row 12
+      column «email»
+        12:12	User 12	ana.needle@example.com	18.0
+  notes
+    row 2
+      column «body»
+        42:…[+1349] ng long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long needle at the end	
+  kv
+    row 3
+      column «v»
+        45:gamma	value of gamma needle
+  late
+    row 1
+      column «payload»
+        46:needle payload	k1
+  gaps
+    row 1
+      column «y»
+        48:	needle gap
+  odd
+    row 1
+      column «payload»
+        49:needle odd	2.0
+  gen
+    row 1
+      column «payload»
+        50:first		needle gen	FIRST
+  added
+    row 1
+      column «payload»
+        51:old	needle added
+    row 2
+      column «payload»
+        52:new	needle later

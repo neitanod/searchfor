@@ -1,0 +1,7 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+2: slide 1 │ a needle margin
+3: slide 1 › notes │ tell the needle joke
+5: slide 2 │ find the needle

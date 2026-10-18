@@ -1,0 +1,13 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+12: users › row 12 › email │ 12	User 12	ana.needle@example.com	18.0
+42: notes › row 2 › body │ …[+1365] g long long long long long long long long long long long long long long long long long long long long long long long long long long long needle at the end	
+45: kv › row 3 › v │ gamma	value of gamma needle
+46: late › row 1 › payload │ needle payload	k1
+48: gaps › row 1 › y │ 	needle gap
+49: odd › row 1 › payload │ needle odd	2.0
+50: gen › row 1 › payload │ first		needle gen	FIRST
+51: added › row 1 › payload │ old	needle added
+52: added › row 2 › payload │ new	needle later

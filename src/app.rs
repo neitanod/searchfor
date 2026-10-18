@@ -1,6 +1,7 @@
 //! The pipeline (plan, Task 9.1): command line, actions, walk, search, Processor, filters and
 //! printers, with ripgrep's exit codes (design notes 9 to 11).
 use crate::cli::{self, Args, CliError, ColorWhen};
+use crate::docs;
 use crate::filter;
 use crate::formats::{self, Registry, detector::Detector};
 use crate::model::{Described, FileMatches, FileStats, Input, Item, Line, Name, Submatch, Trail};
@@ -11,6 +12,7 @@ use crate::output::{
     stream::{StreamFile, StreamSink},
     summary,
 };
+use crate::preprocess::{Preprocess, Through};
 use crate::processors::{self, Processor};
 use crate::search::{self, CollectSink, MaxCount};
 use crate::source::Source;
@@ -295,10 +297,20 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     } else {
         args.fragment_width
     };
+    // The Format Definitions: for the Trails, and with --docs for every mode, which must tell a
+    // document by its name before the search (M4 plan, design note 3).
+    let registry = (matches!(mode, Mode::Trail) || args.docs)
+        .then(|| load_registry(&msgs, formats::user_formats_dir().as_deref()));
+    let detector = match &registry {
+        Some(r) => Some(Detector::new(r, &args.formats)?.with_docs(args.docs)),
+        None => None,
+    };
     let ctx = Ctx {
         args,
         matcher,
         msgs,
+        pre: Preprocess::new(args, &std::env::current_dir()?)?,
+        docs: detector.as_ref().filter(|_| args.docs),
         in_memory: search::rg_in_memory(&paths, implicit_stdin),
         paths,
         strip_dot: implicit_cwd,
@@ -350,9 +362,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
             }
         }
         Mode::Trail => {
-            let user_dir = formats::user_formats_dir();
-            let registry = load_registry(&ctx.msgs, user_dir.as_deref());
-            let detector = Detector::new(&registry, &args.formats)?;
+            let detector = detector.as_ref().expect("built for Mode::Trail");
             let ro = RenderOptions {
                 layout,
                 line_numbers: !args.no_line_number,
@@ -371,7 +381,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
                     buf: ctx.out.buffer(),
                     binary_quit: false,
                 },
-                |st, t| ctx.trail_file(st, &t, &detector, &ro),
+                |st, t| ctx.trail_file(st, &t, detector, &ro),
             )?;
             if layout == Layout::Json && summary_mode.is_none() {
                 ctx.print_summary();
@@ -425,7 +435,13 @@ struct Target {
     path: PathBuf,
     fs: Option<PathBuf>,
     explicit: bool,
+    /// False also for a file read through `--pre`, `-z` or an Extractor: what is searched is
+    /// not the file's bytes, and can be read only once, as a pipe (M4 plan, design note 3).
     regular: bool,
+    /// How the file is read when not as it is.
+    through: Option<Through>,
+    /// A document's text and Outline, extracted in `Ctx::prepare` (M4 plan, design note 4).
+    doc: Option<std::sync::Arc<docs::Extracted>>,
 }
 
 /// What a Trail-mode thread keeps between files: a searcher for files and stdin (BOM sniffing
@@ -503,6 +519,10 @@ struct Ctx<'a> {
     /// The run's Processors (design note 3), dropped with `Ctx`, which closes every helper's
     /// stdin (spec §4.4, Lifetime).
     processors: processors::Processors,
+    /// `--pre` and `-z`.
+    pre: Preprocess,
+    /// With --docs, the Detector that tells documents by their name or magic bytes.
+    docs: Option<&'a Detector<'a>>,
 }
 
 impl Ctx<'_> {
@@ -525,7 +545,7 @@ impl Ctx<'_> {
                 match r {
                     Ok(d) => {
                         if let Some(t) = self.target(&d) {
-                            visit(&mut state, t);
+                            visit(&mut state, self.prepare(t));
                         }
                     }
                     Err(e) => self.msgs.error(e),
@@ -542,7 +562,7 @@ impl Ctx<'_> {
                     match r {
                         Ok(d) => {
                             if let Some(t) = self.target(&d) {
-                                visit(&mut state, t);
+                                visit(&mut state, self.prepare(t));
                             }
                         }
                         Err(e) => self.msgs.error(e),
@@ -567,6 +587,8 @@ impl Ctx<'_> {
                 fs: None,
                 explicit: true,
                 regular: false,
+                through: None,
+                doc: None,
             });
         }
         let is_dir = d.file_type().is_some_and(|t| t.is_dir());
@@ -583,12 +605,112 @@ impl Ctx<'_> {
         // The walker only yields regular files, and its file type costs no system call; a path
         // named on the command line may be a link to anything, so it alone is looked up.
         let regular = d.file_type().is_some_and(|t| t.is_file()) || (explicit && rewindable(p));
+        // Only a regular file can be a document: its first bytes are read before the search
+        // and the file is opened again, which a FIFO, a descriptor or stdin by name would not
+        // survive (code review of the M4 plan r1, Codex #3).
+        let through = self
+            .pre
+            .through(p)
+            .or_else(|| regular.then(|| self.document(p)).flatten());
         Some(Target {
             path: shown.to_path_buf(),
             fs: Some(p.to_path_buf()),
             explicit,
-            regular,
+            regular: regular && through.is_none(),
+            through,
+            doc: None,
         })
+    }
+
+    /// With --docs, `Through::Docs` for a file whose Format is a document Format: by its name,
+    /// or, for a name without an extension, by its first bytes (read only then).
+    fn document(&self, p: &Path) -> Option<Through> {
+        let det = self.docs.filter(|d| d.may_be_document(p))?;
+        let def = match det.detect_by_path(p) {
+            Some(d) => d?,
+            None => {
+                let mut head = Vec::with_capacity(crate::source::READ_HEAD);
+                File::open(p)
+                    .and_then(|f| {
+                        f.take(crate::source::READ_HEAD as u64)
+                            .read_to_end(&mut head)
+                    })
+                    .ok()?;
+                det.detect(p, &head)?
+            }
+        };
+        if def.processor != "docs" {
+            return None;
+        }
+        let extractor = def.params.get("extractor")?.as_str()?;
+        docs::Kind::from_name(extractor)?;
+        Some(Through::Docs(def.name.clone(), extractor.to_string()))
+    }
+
+    /// Extracts a document's text (`Through::Docs`). A file whose bytes are not of its
+    /// document Format is searched as it is, silently; one the Extractor cannot read is too,
+    /// with one warning, `sfor: <path>: <format>: <reason>` (spec §5.8, M4 plan D10).
+    fn prepare(&self, mut t: Target) -> Target {
+        let Some(Through::Docs(name, extractor)) = &t.through else {
+            return t;
+        };
+        let name = name.clone();
+        let kind = docs::Kind::from_name(extractor).expect("checked by `document`");
+        let fs = t.fs.clone().expect("only files are documents");
+        let as_is = |mut t: Target| {
+            t.through = None;
+            t.regular = rewindable(&fs);
+            t
+        };
+        let src = match Source::open(&fs, t.explicit) {
+            Ok(s) => s,
+            // The search opens it again and reports the error as ripgrep would.
+            Err(_) => return as_is(t),
+        };
+        if !kind.looks_like(src.as_read()) {
+            return as_is(t);
+        }
+        // In a child process with limits of its own (M4 plan, D30).
+        drop(src);
+        match docs::isolated::extract(kind, &fs, docs::MAX_TEXT) {
+            Ok(e) => {
+                if e.cut {
+                    self.msgs.warn(format_args!(
+                        "sfor: {}: {name}: the text is cut at {} MiB",
+                        t.path.display(),
+                        docs::MAX_TEXT >> 20
+                    ));
+                }
+                t.doc = Some(std::sync::Arc::new(e));
+                t
+            }
+            // A SIGINT or SIGTERM cancelled the run: its readers were killed and no new one
+            // starts, and sfor is about to die by the signal, so nothing is printed, as
+            // ripgrep prints nothing then (spec §4.4, §5.8; M4 plan r6, Fable #1).
+            Err(_) if crate::helper::host::cancel::GLOBAL.cancelled() => as_is(t),
+            Err(e) => {
+                self.msgs
+                    .warn(format_args!("sfor: {}: {name}: {e}", t.path.display()));
+                as_is(t)
+            }
+        }
+    }
+
+    /// What is searched for `t`: stdin, a document's text, the output of `--pre` or of a
+    /// decompressor, or the file.
+    fn open_input<'t>(&'t self, t: &'t Target) -> std::io::Result<Box<dyn Read + 't>> {
+        let Some(p) = &t.fs else {
+            return Ok(Box::new(std::io::stdin().lock()));
+        };
+        if let Some(doc) = &t.doc {
+            return Ok(Box::new(std::io::Cursor::new(doc.text.as_slice())));
+        }
+        match &t.through {
+            Some(how @ (Through::Pre | Through::Zip)) => {
+                self.pre.open(how, p).map(|r| r as Box<dyn Read>)
+            }
+            _ => Ok(Box::new(File::open(p)?)),
+        }
     }
 
     /// Searches a file on disk or stdin, streaming (passthrough and the quiet path). A file
@@ -602,9 +724,8 @@ impl Ctx<'_> {
         searcher.set_binary_detection(search::binary_detection(self.args, t.explicit));
         let m = &self.matcher;
         match &t.fs {
-            None => searcher.search_reader(m, std::io::stdin().lock(), sink),
-            Some(p) if self.in_memory => searcher.search_path(m, p, sink),
-            Some(p) => searcher.search_reader(m, File::open(p)?, sink),
+            Some(p) if self.in_memory && t.through.is_none() => searcher.search_path(m, p, sink),
+            _ => searcher.search_reader(m, self.open_input(t)?, sink),
         }
     }
 
@@ -777,9 +898,13 @@ impl Ctx<'_> {
     fn trail_file(&self, st: &mut TrailState, t: &Target, detector: &Detector, ro: &RenderOptions) {
         // Without structural flags, rows are printed as the searcher reports them: Plain files,
         // and files on disk whose Processor builds an Outline (code review r1, Fable #1).
-        if !self.args.structural() && self.summary.is_none() && !self.args.quiet {
+        if !self.args.structural()
+            && self.summary.is_none()
+            && !self.args.quiet
+            && t.through.is_none()
+        {
             match detector.detect_by_path(&t.path) {
-                Some(None) => return self.plain_file(st, t, ro),
+                Some(None) if self.plain_file(st, t, ro, detector) => return,
                 Some(Some(def)) if t.regular => {
                     if let Some(p) = processors::by_name(&def.processor)
                         && builds_outline(p)
@@ -893,17 +1018,30 @@ impl Ctx<'_> {
     /// A Plain file without structural flags, printed row by row as the searcher reports
     /// them, without a model of the file (code review r1, Fable #1). In memory, as ripgrep
     /// (explicit files, at most 10), through the Source, which says whether a BOM makes the
-    /// search a reader one; else straight from the file or stdin.
-    fn plain_file(&self, st: &mut TrailState, t: &Target, ro: &RenderOptions) {
+    /// search a reader one; else straight from the file or stdin. Returns false, printing
+    /// nothing, for a file with a Match whose first bytes are an object Format's magic: its
+    /// name said Plain, but it may be an object file (spec §4.1, M4 plan D5).
+    fn plain_file(
+        &self,
+        st: &mut TrailState,
+        t: &Target,
+        ro: &RenderOptions,
+        detector: &Detector,
+    ) -> bool {
+        let object = |head: &[u8]| !self.args.invert_match && detector.object(head).is_some();
         match &t.fs {
-            Some(p) if self.in_memory => match Source::open(p, t.explicit) {
+            Some(p) if self.in_memory && t.through.is_none() => match Source::open(p, t.explicit) {
+                Ok(src) if object(src.head()) => return false,
                 Ok(src) => self.stream_file(st, t, ro, Streamed::Source(&src), None, None),
                 Err(e) => self.msgs.error(format_args!("{}: {e}", t.path.display())),
             },
             // A file without Matches costs what it costs ripgrep: no line is counted (grill 8385).
             Some(p) if t.regular && self.probe(st, t, p) != Some(true) => {}
+            // Its first bytes are read only once it has a Match.
+            Some(p) if t.regular && object(&head_of(p)) => return false,
             _ => self.stream_file(st, t, ro, Streamed::Raw, None, None),
         }
+        true
     }
 
     /// Whether the file on disk at `path` has a Match, searched up to its first one without
@@ -1043,8 +1181,7 @@ impl Ctx<'_> {
             StreamSink::new(&mut w, &self.matcher, self.args.invert_match, ro, &jo, file);
         let m = &self.matcher;
         let r = match (how, &t.fs) {
-            (Streamed::Raw, None) => searcher.search_reader(m, std::io::stdin().lock(), &mut sink),
-            (Streamed::Raw, Some(p)) => match File::open(p) {
+            (Streamed::Raw, _) => match self.open_input(t) {
                 Ok(f) => searcher.search_reader(m, f, &mut sink),
                 Err(e) => Err(e),
             },
@@ -1104,7 +1241,7 @@ impl Ctx<'_> {
                 Err(())
             }
         };
-        if let (Some(p), true) = (&t.fs, self.in_memory) {
+        if let (Some(p), true) = (&t.fs, self.in_memory && t.through.is_none()) {
             let src = open(p)?;
             // A BOM: a reader search that decodes it, as ripgrep's (`Source::as_read`).
             let in_memory = !src.had_bom;
@@ -1148,16 +1285,13 @@ impl Ctx<'_> {
             Some(p) if t.regular => {
                 File::open(p).and_then(|f| st.unnumbered.search_reader(&self.matcher, f, &mut sink))
             }
-            fs => {
-                let inner: Box<dyn Read> = match fs {
-                    None => Box::new(std::io::stdin().lock()),
-                    Some(p) => match std::fs::File::open(p) {
-                        Ok(f) => Box::new(f),
-                        Err(e) => {
-                            report(&e);
-                            return Err(());
-                        }
-                    },
+            _ => {
+                let inner = match self.open_input(t) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        report(&e);
+                        return Err(());
+                    }
                 };
                 let tee = kept.insert(Tee {
                     inner,
@@ -1251,8 +1385,33 @@ impl Ctx<'_> {
         let found = if self.args.in_headings {
             self.names_of(st, t, detector)?
         } else {
-            self.search_first(st, t, detector)?.map(|(src, fm)| {
-                let def = detector.detect(&src.path, src.head());
+            let Some((src, fm)) = self.search_first(st, t, detector)? else {
+                return Ok(None);
+            };
+            if let Some(doc) = &t.doc {
+                // A document: the Trails of its Extractor's Outline (M4 plan, design note 4).
+                let Some(Through::Docs(name, _)) = &t.through else {
+                    unreachable!("a document is read through its Extractor")
+                };
+                let d = Described {
+                    trails: outline_trails(&doc.outline, &fm),
+                    file: fm,
+                    format: Some(name.clone()),
+                    sections: Vec::new(),
+                    offsets: false,
+                };
+                return self.filter(st, t, src, d);
+            }
+            // What a transform outputs is no object file nor document, whatever its bytes or
+            // --format say: Plain (spec §5.9; code review of the M4 plan r1, Codex #11).
+            let transformed = matches!(t.through, Some(Through::Pre | Through::Zip));
+            if !transformed && let Some(d) = self.object(st, detector, &src, &fm)? {
+                return self.filter(st, t, src, d);
+            }
+            Some({
+                let def = detector.detect(&src.path, src.head()).filter(|d| {
+                    !(transformed && matches!(d.processor.as_str(), "object" | "docs"))
+                });
                 // A binary file's coordinates follow NUL conversion: no Processor (step 7). A
                 // Format without a Processor, or whose Processor fails, is Plain (D33).
                 let described = def
@@ -1286,9 +1445,20 @@ impl Ctx<'_> {
                 (src, d)
             })
         };
-        let Some((src, mut d)) = found else {
+        let Some((src, d)) = found else {
             return Ok(None);
         };
+        self.filter(st, t, src, d)
+    }
+
+    /// `--within` and `--expand` over a described file.
+    fn filter(
+        &self,
+        st: &mut TrailState,
+        t: &Target,
+        src: Source,
+        mut d: Described,
+    ) -> Result<Option<(Source, Described)>, ()> {
         let searched_to = d.file.items.last().map_or(0, |i| item_line(i).line_number);
         if let Some(w) = &self.args.within {
             let wanted = filter::parse_within(w);
@@ -1297,9 +1467,15 @@ impl Ctx<'_> {
                 .iter()
                 .map(|ts| ts.iter().map(|t| filter::within(t, &wanted)).collect())
                 .collect();
-            filter::retain(&mut d, &keep, self.args.before(), self.args.after());
+            // An object file's rows have no context: a row the filter drops is gone, and -m
+            // counts the rows it keeps (D8).
+            if d.offsets {
+                filter::retain_rows(&mut d, &keep, self.args.max_count);
+            } else {
+                filter::retain(&mut d, &keep, self.args.before(), self.args.after());
+            }
             // -m counts the lines the filter kept (code review r1, Fable #3).
-            if let Some(m) = self.args.max_count {
+            if let Some(m) = self.args.max_count.filter(|_| !d.offsets) {
                 filter::limit(&mut d, m, self.args.before(), self.max_count_after());
                 if d.file.stats.binary_offset.is_some() && !self.detected_by(&d, t, searched_to) {
                     d.file.stats.binary_offset = None;
@@ -1308,10 +1484,101 @@ impl Ctx<'_> {
                 }
             }
         }
-        if self.args.expand && !self.args.in_headings {
+        // An object file's Sections are byte ranges of a binary: --expand prints its rows (M4
+        // plan, D8).
+        if self.args.expand && !self.args.in_headings && !d.offsets {
             d.sections = filter::sections(&d);
         }
         Ok(Some((src, d)))
+    }
+
+    /// An object file with Matches (spec §5.7): its rows, the printable strings that hold the
+    /// Matches of a search of the whole file, each with the Trail of each Match. None: not an
+    /// object file goblin reads, or `-v`, whose lines are the non-matching bytes. The search
+    /// that found the file's first Match is rg's; this one reads on past the binary data, so it
+    /// costs only a file with a Match (8385).
+    fn object(
+        &self,
+        st: &mut TrailState,
+        detector: &Detector,
+        src: &Source,
+        fm: &FileMatches,
+    ) -> Result<Option<Described>, ()> {
+        if self.args.invert_match {
+            return Ok(None);
+        }
+        let def = match detector.detect(&src.path, src.head()) {
+            Some(d) if d.processor == "object" => d,
+            Some(_) => return Ok(None),
+            None => match detector.object(src.head()) {
+                Some(d) => d,
+                None => return Ok(None),
+            },
+        };
+        let Some(map) = processors::object::Map::parse(src.bytes()) else {
+            return Ok(None);
+        };
+        let started = Instant::now();
+        st.source.set_binary_detection(BinaryDetection::none());
+        let mut sink = CollectSink::new(&self.matcher, false, false).in_memory();
+        if let Err(e) = st
+            .source
+            .search_slice(&self.matcher, src.bytes(), &mut sink)
+        {
+            self.msgs.error(format_args!("{}: {e}", fm.path.display()));
+            return Err(());
+        }
+        let hits: Vec<std::ops::Range<usize>> = sink
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Match(l) => Some(l),
+                Item::Context(_) => None,
+            })
+            .flat_map(|l| {
+                let base = l.absolute_offset as usize;
+                l.submatches
+                    .iter()
+                    .map(move |s| base + s.start..base + s.end)
+            })
+            .collect();
+        let lines = LineIndex::new(src.bytes());
+        let rows = processors::object::rows::rows(
+            src.bytes(),
+            &hits,
+            search::max_count(self.args),
+            &lines,
+        );
+        let trails = rows
+            .iter()
+            .map(|r| {
+                r.submatches
+                    .iter()
+                    .map(|s| map.trail(r.absolute_offset as usize + s.start, &lines))
+                    .collect()
+            })
+            .collect();
+        let stats = FileStats {
+            bytes_searched: src.bytes().len() as u64,
+            matched_lines: rows.len() as u64,
+            matches: rows.iter().map(|r| r.submatches.len() as u64).sum(),
+            binary_offset: None,
+            binary_cut: None,
+            elapsed: started.elapsed(),
+        };
+        st.binary_quit = false;
+        Ok(Some(Described {
+            file: FileMatches {
+                path: fm.path.clone(),
+                explicit: fm.explicit,
+                items: rows.into_iter().map(Item::Match).collect(),
+                stats,
+            },
+            format: Some(def.name.clone()),
+            trails,
+            sections: Vec::new(),
+            offsets: true,
+        }))
     }
 
     /// --in-headings: the Source and its names, and the Matches in them. A Plain file has no
@@ -1391,30 +1658,39 @@ impl Ctx<'_> {
                 replaced = true;
             }
         }
-        let def = detector.detect(&src.path, src.head());
-        // A Format without a Processor is Plain: no names (D33).
-        let Some((p, def)) = def.and_then(|d| Some((self.processors.for_definition(d)?, d))) else {
-            self.count_unnamed(st, binary.as_ref(), &src);
-            return Ok(None);
-        };
-        let disk = if replaced { None } else { disk_of(t, &src) };
-        let input = Input {
-            bytes: src.bytes(),
-            path: &src.path,
-            format: &def.name,
-            disk: disk.as_deref(),
-        };
-        let names = match p.names(&input, &def.params) {
-            Ok(n) => n,
-            Err(e) => {
-                // A failing Processor skips the file with one warning; an unavailable one
-                // (a disabled helper) says nothing more (spec §4.4, Failures).
-                if e.downcast_ref::<crate::helper::Unavailable>().is_none() {
-                    self.msgs
-                        .warn(format_args!("sfor: {}: {e:#}", src.path.display()));
+        // A document's names are its Outline's: its headings (M4 plan, D11).
+        let (names, format) = if let (Some(doc), Some(Through::Docs(name, _))) =
+            (&t.doc, &t.through)
+        {
+            (crate::trail::names_of(&doc.outline), name.clone())
+        } else {
+            let def = detector.detect(&src.path, src.head());
+            // A Format without a Processor is Plain: no names (D33).
+            let Some((p, def)) = def.and_then(|d| Some((self.processors.for_definition(d)?, d)))
+            else {
+                self.count_unnamed(st, binary.as_ref(), &src);
+                return Ok(None);
+            };
+            let disk = if replaced { None } else { disk_of(t, &src) };
+            let input = Input {
+                bytes: src.bytes(),
+                path: &src.path,
+                format: &def.name,
+                disk: disk.as_deref(),
+            };
+            let names = match p.names(&input, &def.params) {
+                Ok(n) => n,
+                Err(e) => {
+                    // A failing Processor skips the file with one warning; an unavailable one
+                    // (a disabled helper) says nothing more (spec §4.4, Failures).
+                    if e.downcast_ref::<crate::helper::Unavailable>().is_none() {
+                        self.msgs
+                            .warn(format_args!("sfor: {}: {e:#}", src.path.display()));
+                    }
+                    return Err(());
                 }
-                return Err(());
-            }
+            };
+            (names, def.name.clone())
         };
         let mut found = self.heading_matches(&src, &names);
         // What rg detects: `-m` and its after context may stop its search first.
@@ -1465,7 +1741,8 @@ impl Ctx<'_> {
         Ok(found.map(|(file, trails, sections)| {
             let d = Described {
                 file,
-                format: Some(def.name.clone()),
+                format: Some(format),
+                offsets: false,
                 trails,
                 // With --expand, the Section of each named Segment (code review r1, Fable #4).
                 sections: if self.args.expand {
@@ -1473,7 +1750,6 @@ impl Ctx<'_> {
                 } else {
                     Vec::new()
                 },
-                offsets: false,
             };
             (src, d)
         }))
@@ -1485,15 +1761,12 @@ impl Ctx<'_> {
         let report = |e: &dyn std::fmt::Display| {
             self.msgs.error(format_args!("{}: {e}", t.path.display()));
         };
-        let reader: Box<dyn Read> = match &t.fs {
-            None => Box::new(std::io::stdin().lock()),
-            Some(p) => match File::open(p) {
-                Ok(f) => Box::new(f),
-                Err(e) => {
-                    report(&e);
-                    return Err(());
-                }
-            },
+        let reader = match self.open_input(t) {
+            Ok(r) => r,
+            Err(e) => {
+                report(&e);
+                return Err(());
+            }
         };
         let detection = search::binary_detection(self.args, t.explicit);
         let quit = detection.quit_byte().is_some();
@@ -1606,7 +1879,7 @@ impl Ctx<'_> {
         if (!quit && detection.convert_byte().is_none()) || !src.bytes().contains(&0) {
             return Ok(None);
         }
-        let in_memory = t.fs.is_some() && self.in_memory && !src.had_bom;
+        let in_memory = t.fs.is_some() && self.in_memory && t.through.is_none() && !src.had_bom;
         if in_memory {
             let ahead = &src.bytes()[..src.bytes().len().min(64 * 1024)];
             return Ok(Some(BinaryProbe {
@@ -1647,15 +1920,12 @@ impl Ctx<'_> {
         let report = |e: &dyn std::fmt::Display| {
             self.msgs.error(format_args!("{}: {e}", t.path.display()));
         };
-        let inner: Box<dyn Read> = match &t.fs {
-            None => Box::new(std::io::stdin().lock()),
-            Some(p) => match File::open(p) {
-                Ok(f) => Box::new(f),
-                Err(e) => {
-                    report(&e);
-                    return Err(());
-                }
-            },
+        let inner = match self.open_input(t) {
+            Ok(r) => r,
+            Err(e) => {
+                report(&e);
+                return Err(());
+            }
         };
         let mut tee = Tee {
             inner,
@@ -1947,6 +2217,10 @@ fn builds_outline(p: &dyn Processor) -> bool {
 /// resolve to a regular file. Anything else reaches the helper as a temporary copy (spec §4.4).
 /// Called only for files with Matches (D8, review r4, Codex #2).
 fn disk_of(t: &Target, src: &Source) -> Option<PathBuf> {
+    // Bytes from `--pre`, `-z` or an Extractor are not the file's (spec §4.4, Paths).
+    if t.through.is_some() {
+        return None;
+    }
     let real = std::fs::canonicalize(t.fs.as_deref()?).ok()?;
     if real.starts_with("/dev") || real.starts_with("/proc") {
         return None;
@@ -1955,10 +2229,26 @@ fn disk_of(t: &Target, src: &Source) -> Option<PathBuf> {
     (m.is_file() && !src.had_bom && m.len() == src.bytes().len() as u64).then_some(real)
 }
 
+/// `trails[i][k]` of the Matches of `fm` from an Outline, as `OutlineProcessor` gives them.
+fn outline_trails(o: &Outline, fm: &FileMatches) -> Vec<Vec<Trail>> {
+    let mut c = crate::trail::TrailCursor::new(o);
+    fm.matches()
+        .map(|m| m.anchors().into_iter().map(|a| c.trail(a)).collect())
+        .collect()
+}
+
 fn empty_trails(fm: &FileMatches) -> Vec<Vec<Trail>> {
     fm.matches()
         .map(|m| vec![Vec::new(); m.submatches.len().max(1)])
         .collect()
+}
+
+/// The first 16 bytes of the file at `p`, enough for every object magic; empty on an error,
+/// which the search reports.
+fn head_of(p: &Path) -> Vec<u8> {
+    let mut head = Vec::with_capacity(16);
+    let _ = File::open(p).and_then(|f| f.take(16).read_to_end(&mut head));
+    head
 }
 
 /// A regular file, which can be opened again and read the same: not `/dev/stdin` or a FIFO.

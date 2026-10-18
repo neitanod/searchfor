@@ -1,0 +1,9 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+m4/bin/app.exe
+  PE x86-64
+    .rdata
+      version_string+0xe
+        0x410:version=1.2.3-needle

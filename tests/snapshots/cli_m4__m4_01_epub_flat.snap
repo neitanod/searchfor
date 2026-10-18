@@ -1,0 +1,6 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+2: 1. Arrival › The Harbour │ A needle in the water.
+3: 2. The Storm │ The storm needle.

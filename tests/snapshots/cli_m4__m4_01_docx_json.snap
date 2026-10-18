@@ -1,0 +1,10 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"m4/report.docx"}}}
+{"type":"match","data":{"path":{"text":"m4/report.docx"},"lines":{"text":"The intro needle.\n"},"line_number":2,"absolute_offset":8,"submatches":[{"match":{"text":"needle"},"start":10,"end":16}],"format":"docx","trail":[{"kind":"heading","name":"1 Intro","line":1,"end_line":4,"level":1}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"m4/report.docx"},"lines":{"text":"Scope needle.\n"},"line_number":4,"absolute_offset":36,"submatches":[{"match":{"text":"needle"},"start":6,"end":12}],"format":"docx","trail":[{"kind":"heading","name":"1 Intro","line":1,"end_line":4,"level":1},{"kind":"heading","name":"1.1 Scope","line":3,"end_line":4,"level":2}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"m4/report.docx"},"lines":{"text":"Pens\t1.50 needle\n"},"line_number":7,"absolute_offset":69,"submatches":[{"match":{"text":"needle"},"start":10,"end":16}],"format":"docx","trail":[{"kind":"heading","name":"2 Costs","line":5,"end_line":7,"level":1},{"kind":"table","name":"table 1","line":6,"end_line":7},{"kind":"row","name":"row 2","line":7,"end_line":7},{"kind":"column","name":"Price","line":7,"end_line":7}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"m4/report.docx"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":86,"bytes_printed":1210,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1210,"bytes_searched":86,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

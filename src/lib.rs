@@ -17,5 +17,11 @@ pub mod trail;
 
 /// Entry point used by `main`. Returns the process exit code (0, 1 or 2, as ripgrep).
 pub fn run(args: Vec<std::ffi::OsString>) -> i32 {
-    app::run(args)
+    // The child that extracts a document for --docs (M4 plan, D30).
+    if docs::isolated::is_worker(&args) {
+        return docs::isolated::child(&args);
+    }
+    let code = app::run(args);
+    docs::isolated::finish();
+    code
 }

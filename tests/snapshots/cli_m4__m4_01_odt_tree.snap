@@ -1,0 +1,14 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+m4/report.odt
+  # 1 Intro
+    2:The intro needle.
+    ## 1.1 Scope
+      4:Scope needle.
+  # 2 Costs
+    table 1
+      row 2
+        column «Price»
+          7:Pens	1.50 needle
