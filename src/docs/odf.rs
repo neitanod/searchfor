@@ -157,9 +157,8 @@ impl Flow {
                         } else if let Some(l) = level {
                             b.heading(l, &text);
                         } else {
-                            for line in text.split('\n') {
-                                b.line(line);
-                            }
+                            // One line: its `text:line-break`s become spaces (spec §5.8).
+                            b.line(&text);
                         }
                     }
                     "table-row" => {
@@ -535,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn spaces_tabs_and_line_breaks_of_odf_text() {
+    fn spaces_tabs_and_line_breaks_of_odf_text_stay_on_its_line() {
         let body = r#"<office:text><text:p>a<text:s text:c="3"/>b<text:tab/>c<text:line-break/>d   e</text:p></office:text>"#;
         let d = fixture::zip(
             &[
@@ -552,6 +551,7 @@ mod tests {
             &["mimetype"],
         );
         let e = extract(Kind::Odt, &d).unwrap();
-        assert_eq!(e.text, b"a   b c\nd e\n");
+        // Codex r1 #9: a line break inside a paragraph is a space too: a paragraph is a line.
+        assert_eq!(e.text, b"a   b c d e\n");
     }
 }

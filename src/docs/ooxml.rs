@@ -148,13 +148,10 @@ impl<'s> Flow<'s> {
             t.add_text(&text);
             return;
         }
+        // A paragraph is one line: its manual line breaks become spaces (spec §5.8).
         match level {
             Some(l) => b.heading(l, &text),
-            None => {
-                for line in text.split('\n') {
-                    b.line(line);
-                }
-            }
+            None => b.line(&text),
         }
     }
 }
@@ -612,6 +609,36 @@ mod extract_tests {
         // The slide-image placeholder of the notes page is left out.
         let e = extract(Kind::Pptx, &d).unwrap();
         assert!(memchr::memmem::find(&e.text, b"slide image").is_none());
+    }
+
+    /// Codex r1 #9: a manual line break inside a paragraph (`w:br`, `a:br`) is a space, so
+    /// a paragraph is one line (spec §5.8) and the lines after it keep their numbers.
+    #[test]
+    fn a_line_break_inside_a_paragraph_keeps_it_one_line() {
+        let d = fixture::docx(&[p("one BREAK two"), p("after needle")]);
+        let d = fixture::rezip(&d, |name, data| {
+            if name != "word/document.xml" {
+                return data;
+            }
+            String::from_utf8(data)
+                .unwrap()
+                .replace(" BREAK ", "</w:t><w:br/><w:t>")
+                .into_bytes()
+        });
+        let e = extract(Kind::Docx, &d).unwrap();
+        assert_eq!(e.text, b"one two\nafter needle\n");
+        let d = fixture::pptx(&[(&["one BREAK two"], None)]);
+        let d = fixture::rezip(&d, |name, data| {
+            if name != "ppt/slides/slide1.xml" {
+                return data;
+            }
+            String::from_utf8(data)
+                .unwrap()
+                .replace(" BREAK ", "</a:t></a:r><a:br/><a:r><a:t>")
+                .into_bytes()
+        });
+        let e = extract(Kind::Pptx, &d).unwrap();
+        assert_eq!(e.text, b"one two\n");
     }
 
     #[test]
