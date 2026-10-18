@@ -184,6 +184,8 @@ fn body(xhtml: &str, b: &mut Builder) {
     let mut line = String::new();
     let mut heading: Option<(u8, String)> = None;
     let mut skip = 0usize;
+    // Depth inside `pre`, whose white space is kept.
+    let mut pre = 0usize;
     let mut in_body = false;
     let flush = |line: &mut String, b: &mut Builder| {
         b.line(line);
@@ -200,6 +202,9 @@ fn body(xhtml: &str, b: &mut Builder) {
                     skip += 1;
                     continue;
                 }
+                if l == "pre" && !empty {
+                    pre += 1;
+                }
                 if let Some(level) = l
                     .strip_prefix('h')
                     .and_then(|d| d.parse::<u8>().ok())
@@ -209,9 +214,10 @@ fn body(xhtml: &str, b: &mut Builder) {
                     flush(&mut line, b);
                     heading = Some((level, String::new()));
                 } else if l == "br" {
+                    // A space: a block is one line (spec §5.8; Codex M4 code r3 #3).
                     match heading.as_mut() {
                         Some(h) => h.1.push(' '),
-                        None => flush(&mut line, b),
+                        None => line.push(' '),
                     }
                 } else if block(l) {
                     flush(&mut line, b);
@@ -223,6 +229,9 @@ fn body(xhtml: &str, b: &mut Builder) {
                     skip = skip.saturating_sub(1);
                     continue;
                 }
+                if l == "pre" {
+                    pre = pre.saturating_sub(1);
+                }
                 if l.len() == 2 && l.starts_with('h') && heading.is_some() {
                     let (level, text) = heading.take().unwrap();
                     b.heading(level, &text);
@@ -230,10 +239,17 @@ fn body(xhtml: &str, b: &mut Builder) {
                     flush(&mut line, b);
                 }
             }
-            Ev::Text(t) if skip == 0 && in_body => match heading.as_mut() {
-                Some(h) => h.1.push_str(&t),
-                None => line.push_str(&t),
-            },
+            Ev::Text(t) if skip == 0 && in_body => {
+                let out = match heading.as_mut() {
+                    Some(h) => &mut h.1,
+                    None => &mut line,
+                };
+                if pre > 0 {
+                    out.push_str(&t);
+                } else {
+                    collapse(out, &t);
+                }
+            }
             _ => {}
         }
         if b.full() {
@@ -241,6 +257,23 @@ fn body(xhtml: &str, b: &mut Builder) {
         }
     }
     flush(&mut line, b);
+}
+
+/// Appends `t` to `out` with its white space collapsed, as a browser shows it: a run of it is
+/// one space, none at the start of a line (a `br` is one too).
+fn collapse(out: &mut String, t: &str) {
+    let mut last_space = out.is_empty() || out.ends_with(' ');
+    for c in t.chars() {
+        if c.is_ascii_whitespace() {
+            if !last_space {
+                out.push(' ');
+            }
+            last_space = true;
+        } else {
+            out.push(c);
+            last_space = false;
+        }
+    }
 }
 
 /// Elements whose start and end break the line.
@@ -373,6 +406,28 @@ mod tests {
             );
             assert_eq!(trail(&p, "No heading"), ["2. The Storm"]);
         }
+    }
+
+    /// Codex M4 code r3 #3: a `br` inside a block is a space, as a line break inside a Word or
+    /// OpenDocument paragraph: the block stays one line, and the lines after it keep their
+    /// numbers. White space is collapsed as a browser shows it, except in a `pre`.
+    #[test]
+    fn a_line_break_inside_a_block_is_a_space() {
+        let ch = concat!(
+            "<p>one<br/>two</p>",
+            "<p>three<br />\n    four</p>",
+            "<p>\n  A needle\n  in the water.\n</p>",
+            "<pre>a  b</pre>",
+            "<h2>Big<br/>head</h2>",
+            "<p>after needle</p>",
+        );
+        let d = fixture::epub(&[("Arrival", ch)], true);
+        let e = extract(Kind::Epub, &d).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&e.text),
+            "one two\nthree four\nA needle in the water.\na  b\nBig head\nafter needle\n"
+        );
+        assert_eq!(trail(&d, "after needle"), ["Arrival", "Big head"]);
     }
 
     #[test]
