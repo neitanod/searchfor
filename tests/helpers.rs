@@ -152,38 +152,31 @@ fn sorted_lines(o: &Output) -> Vec<String> {
 
 #[test]
 fn h02_a_pool_runs_at_most_the_thread_count() {
-    // Without `--sort` the search runs on `-j 3` threads (review m2-code-r1, Codex #4): every
-    // request takes 300 ms, so the trace shows requests in flight at once, never more than 3,
-    // and as many per process as its mode allows.
-    for (mode, low, high, per_process) in [
-        ("pool", 2, 3, 1),
-        ("concurrent", 1, 1, 3),
-        ("oneshot", 12, 12, 1),
-    ] {
+    // Without `--sort` the search runs on `-j 3` threads (review m2-code-r1, Codex #4). The
+    // helper's barrier (`SFOR_EXAMPLE_BARRIER`) holds every request until 3 are in flight, or
+    // all that are left, so the trace shows exactly 3 at once whatever the scheduler does (M3
+    // code review r2, Codex #5): a 4th that sfor sent would arrive while 3 are held. A pool
+    // then needs 3 processes, one request each; timeouts are tested elsewhere (h06), and 30 s is
+    // more than a loaded machine takes (Fable #1).
+    for (mode, processes, per_process) in [("pool", 3, 1), ("concurrent", 1, 3), ("oneshot", 12, 1)]
+    {
         let fx = Fixture::new();
         generate(&fx, 12);
-        ini(&fx, mode, 2000);
+        ini(&fx, mode, 30_000);
         let log = fx.file("helper.log");
         let tr = fx.file("trace.log");
         let o = run(fx
             .sfor(["needle", "gen", "--flat", "-j", "3"])
-            .env("SFOR_EXAMPLE_SLOW", "/gen/")
+            .env("SFOR_EXAMPLE_BARRIER", "3 12")
             .env("SFOR_EXAMPLE_LOG", &log)
             .env("SFOR_EXAMPLE_TRACE", &tr));
         assert_eq!(code(&o), 0, "{mode}: {}", stderr(&o));
-        let n = starts(&log);
-        assert!(
-            (low..=high).contains(&n),
-            "{mode}: {n} processes, expected {low}..={high}"
-        );
+        assert_eq!(starts(&log), processes, "{mode}: processes");
         let events = trace(&tr);
         assert_eq!(events.len(), 24, "{mode}: {events:?}");
         let (all, one) = in_flight(&events);
-        assert!(
-            (2..=3).contains(&all),
-            "{mode}: {all} requests in flight at most"
-        );
-        assert_eq!(one, per_process.min(all), "{mode}: {one} in one process");
+        assert_eq!(all, 3, "{mode}: {all} requests in flight at most");
+        assert_eq!(one, per_process, "{mode}: {one} in one process");
         let want: Vec<String> = (1..=12)
             .map(|i| format!("gen/g{i:02}.ini:2: s › k │ k = needle"))
             .collect();
@@ -193,10 +186,11 @@ fn h02_a_pool_runs_at_most_the_thread_count() {
 
 #[test]
 fn h03_out_of_order_answers_reach_their_files() {
-    // One `concurrent` process, `-j 4`, no `--sort`: the `s*` files answer after 300 ms, the
-    // `f*` files at once, so a request sent after a slow one is answered before it, and each
-    // answer still reaches its own file (review m2-code-r1, Codex #4). The files are created
-    // alternating, so no directory order puts every fast one first.
+    // One `concurrent` process, `-j 4`, no `--sort`: the first `s*` request is held until a
+    // request sent after it is answered (`SFOR_EXAMPLE_OVERTAKE`), so an answer overtakes
+    // another whatever order the walker gives the files (M3 code review r2, Fable #1), and each
+    // answer still reaches its own file (review m2-code-r1, Codex #4). The other seven `s*`
+    // files come after it and are not held.
     let fx = Fixture::new();
     let dir = fx.file("gen");
     std::fs::create_dir_all(&dir).unwrap();
@@ -206,12 +200,12 @@ fn h03_out_of_order_answers_reach_their_files() {
             std::fs::write(dir.join(format!("{kind}{i}.ini")), body).unwrap();
         }
     }
-    ini(&fx, "concurrent", 2000);
+    ini(&fx, "concurrent", 30_000);
     let log = fx.file("helper.log");
     let tr = fx.file("trace.log");
     let o = run(fx
         .sfor(["needle", "gen", "--flat", "-j", "4"])
-        .env("SFOR_EXAMPLE_SLOW", "/gen/s")
+        .env("SFOR_EXAMPLE_OVERTAKE", "/gen/s")
         .env("SFOR_EXAMPLE_LOG", &log)
         .env("SFOR_EXAMPLE_TRACE", &tr));
     assert_eq!(code(&o), 0, "{}", stderr(&o));

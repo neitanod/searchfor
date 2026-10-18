@@ -16,6 +16,15 @@
 //! stdin, until killed), `SFOR_EXAMPLE_STDERR`
 //! (a line to write to stderr), `SFOR_EXAMPLE_FORK` (when set, start `sleep 30` with this
 //! process's stdout and stderr, as a careless helper's child would).
+//!
+//! Two knobs coordinate requests through the trace, so a test of concurrency depends on what
+//! sfor sends and not on the scheduler (M3 code review r2, Codex #5 and Fable #1); each needs
+//! `SFOR_EXAMPLE_TRACE`, and waits at most `BARRIER_LIMIT`:
+//!
+//! - `SFOR_EXAMPLE_BARRIER` (`<n> <total>`): after its `begin`, every request waits until `n`
+//!   requests are in flight, or all of the `total` that have not ended.
+//! - `SFOR_EXAMPLE_OVERTAKE` (a substring of paths): the first request whose path holds it
+//!   waits until a request that began after it has ended.
 use anyhow::Context;
 use searchfor::helper::protocol::{MatchPos, WireName};
 use searchfor::helper::serve::{Handler, Info, serve};
@@ -154,6 +163,30 @@ struct Ini {
     knobs: Knobs,
     /// `SFOR_EXAMPLE_TRACE`.
     trace: Option<std::path::PathBuf>,
+    /// `SFOR_EXAMPLE_BARRIER`: (n, total).
+    barrier: Option<(usize, usize)>,
+    /// `SFOR_EXAMPLE_OVERTAKE`.
+    overtake: Option<String>,
+}
+
+/// The longest a request waits at a barrier: far more than a loaded machine needs to send the
+/// requests it waits for, and less than the 30 s timeout of the tests that use it.
+const BARRIER_LIMIT: Duration = Duration::from_secs(20);
+
+/// One line of the trace: (a `begin`, its pid and path).
+type TraceLine = (bool, String);
+
+/// The complete lines of the trace file, in order.
+fn trace_lines(t: &Path) -> Vec<TraceLine> {
+    let text = std::fs::read_to_string(t).unwrap_or_default();
+    let complete = text.rfind('\n').map_or("", |k| &text[..k]);
+    complete
+        .lines()
+        .filter_map(|l| {
+            let (what, rest) = l.split_once(' ')?;
+            Some((what == "begin", rest.to_string()))
+        })
+        .collect()
 }
 
 impl Ini {
@@ -176,9 +209,44 @@ impl Ini {
         }
     }
 
+    /// Waits, after this request's `begin`, as `SFOR_EXAMPLE_BARRIER` and
+    /// `SFOR_EXAMPLE_OVERTAKE` say, polling the trace; at most `BARRIER_LIMIT`.
+    fn wait(&self, path: &Path) {
+        let Some(t) = &self.trace else { return };
+        if self.barrier.is_none() && self.overtake.is_none() {
+            return;
+        }
+        let me = format!("{} {}", std::process::id(), path.display());
+        let deadline = std::time::Instant::now() + BARRIER_LIMIT;
+        while std::time::Instant::now() < deadline {
+            let lines = trace_lines(t);
+            let ends = lines.iter().filter(|(b, _)| !b).count();
+            let in_flight = lines.len() - 2 * ends;
+            let barrier = self
+                .barrier
+                .is_none_or(|(n, total)| in_flight >= n.min(total.saturating_sub(ends)));
+            let overtaken = self.overtake.as_deref().is_none_or(|sub| {
+                let Some(at) = lines.iter().position(|(b, l)| *b && *l == me) else {
+                    return false;
+                };
+                let first = !lines[..at].iter().any(|(b, l)| *b && l.contains(sub));
+                !first
+                    || !me.contains(sub)
+                    || lines[at + 1..]
+                        .iter()
+                        .any(|(b, later)| *b && lines.iter().any(|(e, l)| !*e && l == later))
+            });
+            if barrier && overtaken {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
     /// `f` between a `begin` and an `end` line of the trace.
     fn traced<T>(&self, path: &Path, f: impl FnOnce() -> T) -> T {
         self.trace("begin", path);
+        self.wait(path);
         let out = f();
         self.trace("end", path);
         out
@@ -215,8 +283,10 @@ fn start_up() {
             .create(true)
             .append(true)
             .open(&log);
+        // One write: `writeln!` may write in pieces, which the appends of concurrent copies
+        // interleave (one `start` line lost in 20 runs of h02 under load).
         if let Ok(mut f) = f {
-            let _ = writeln!(f, "start {}", std::process::id());
+            let _ = f.write_all(format!("start {}\n", std::process::id()).as_bytes());
         }
     }
     if let Ok(line) = std::env::var("SFOR_EXAMPLE_STDERR") {
@@ -235,12 +305,22 @@ fn main() {
     start_up();
     let knobs = Knobs::from_env();
     let trace = std::env::var_os("SFOR_EXAMPLE_TRACE").map(Into::into);
+    let barrier = std::env::var("SFOR_EXAMPLE_BARRIER").ok().and_then(|v| {
+        let (n, total) = v.split_once(' ')?;
+        Some((n.parse().ok()?, total.parse().ok()?))
+    });
+    let overtake = std::env::var("SFOR_EXAMPLE_OVERTAKE").ok();
     let info = Info {
         name: "sfor-example-helper",
         version: env!("CARGO_PKG_VERSION"),
     };
     if let Err(e) = serve(std::io::stdin().lock(), std::io::stdout(), info, |_| {
-        Ok(Ini { knobs, trace })
+        Ok(Ini {
+            knobs,
+            trace,
+            barrier,
+            overtake,
+        })
     }) {
         eprintln!("sfor-example-helper: {e:#}");
         std::process::exit(1);
