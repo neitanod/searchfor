@@ -44,7 +44,7 @@ branch and is merged back after its tanda, as `ciclo` stage 7 describes
 (`using-git-worktrees`, `finishing-a-development-branch`). Line numbers in the diffs are those
 of `191dbaf` and only hints: locate code by the names given. The code of this plan was built
 and tested in a probe copy of the repository, frozen as
-`/tmp/subtask/m4-plan/m4tree-8e974bc` (see «Verified for this plan»).
+`/tmp/subtask/m4-plan/m4tree-3547596` (see «Verified for this plan»).
 
 ---
 
@@ -61,7 +61,7 @@ of the M3 plan, with M4's content as this plan decides it (D1):
 | M2 (done) | v0.2 | `keypath` (YAML, JSON, TOML); `treesitter` with eight compiled-in Grammars; Helper Processors (`pool`, `concurrent`, `oneshot`); `processor = "external"`; `--install-grammar`, `--list-grammars` |
 | M3 (done) | v0.3 | `markup` (HTML, XML), `csv` (CSV, TSV), `subtitles` (SubRip, WebVTT); control characters escaped in printed names; M3 benchmark, perf ceilings and fuzz targets |
 | **M4 (this plan)** | v0.4 | `object` (ELF, PE, Mach-O, fat Mach-O); `--docs` with Extractors for PDF, Word, Excel, PowerPoint, OpenDocument text, spreadsheet and presentation, EPUB and SQLite; ripgrep's `--pre`, `--pre-glob`, `--no-pre`, `-z`, `--no-search-zip`; M4 benchmark, perf ceilings and fuzz targets |
-| M5 | v1.0 | MCP server, the rest of ripgrep's flags, `dist` (GitHub Releases, Homebrew tap, npm), Windows and macOS in CI, Grammar Helper binaries in the index, signed releases, the External Processor guide, streaming the Trails of dense files |
+| M5 | v1.0 | MCP server, the rest of ripgrep's flags, `dist` (GitHub Releases, Homebrew tap, npm), Windows and macOS in CI (the readers' memory counter of D31 run there), a Windows Job Object over each document reader as its second barrier (D31), Grammar Helper binaries in the index, signed releases, the External Processor guide, streaming the Trails of dense files |
 | M6 | v1.x | The other Formats of Questionnaire 49 that 8385 accepted, among them image/audio metadata, WebAssembly and Java `.class` (offset decorations, as the `object` Processor's), and the candidates M4 leaves (below) |
 
 **What M4 leaves out, and why:**
@@ -97,6 +97,7 @@ of the M3 plan, with M4's content as this plan decides it (D1):
 | 8390 | Decorate what ripgrep already finds; archive Formats out; a zip is never opened | C2, C11 (D4), C1 (no `zip` Definition) |
 | 8393–8395 | `--docs`: built-in Extractors in Rust, no external programs, text plus structure, independent of `-z`; without `--docs` as ripgrep; `--pre` | C1, C3, C4, C6–C10, C11 |
 | 8612 | The release binary may weigh up to 23 MB | C13 (measured), «Verified» |
+| Hilo, 18/10 | `--docs`' cost stays as measured (D23); the readers count their own memory, the same on Linux, macOS and Windows, `setrlimit` the second barrier on Linux, a Job Object in M5 | C4 (D31), C11 (`m4_22`), C13 («Amendment (18/10, Sebastián)») |
 
 Decisions 2–4, 7–11, 13–21 and the others of 8355–8459 were implemented by M1–M3 or belong to
 M5–M6.
@@ -122,7 +123,7 @@ ones it describes marked «M4 plan».
 | D12 | An XML pull reader of our own (`docs::xml`) for the Office, OpenDocument and EPUB parts, instead of quick-xml | Those parts are written by programs and well formed; the reader is 200 lines with entity decoding, and one dependency less; at a construct it cannot read the part ends there, as M3's XML scanner ends its structure |
 | D13 | lopdf 0.45 reads PDF objects, fonts, streams and encryption; a font's strings decode through its ToUnicode map when it has one that reads, else through its `/Encoding`; the content streams and the ToUnicode maps are read by our code (D29); the text is laid out by our code from the content streams: a new line when a string moves half its size up or down, a space for a gap of 0.15 of its size (only when its font gave widths), and for a `TJ` kerning past 0.1 em; ligatures expanded | lopdf's own `extract_text` joins positioned strings without spaces or line breaks; measured against `pdftotext` on six PDFs from five producers: word recall 0.93–1.00, bigram recall 0.875–1.00, and faster than pdftotext on the two long ones (0.41 s against 2.5 s, 0.14 s against 0.35 s). lopdf reads `/Encoding` before `/ToUnicode`, and a subset font's codes mean what its map says (r1, Codex #5) |
 | D14 | A PDF bookmark is a chapter that holds pages; it starts at the line of its page that starts with its title, or at the top of the page; a page split by a bookmark is a `page N` Segment under each chapter it holds part of; `page N` is the 1-based position | A Trail goes from the root down, and a chapter holds pages; LibreOffice's PDFs point every bookmark of a one-page document at page 1, which at page granularity put the whole page under the last bookmark |
-| D15 | A SQLite reader of our own: `sqlite_schema`, then each table's b-tree (interior and leaf, table and index pages, overflow pages); `row N` is the rowid (the position for `WITHOUT ROWID`); values as the `sqlite3` shell prints them, in the order of `CREATE TABLE` (a `WITHOUT ROWID` table stores its PRIMARY KEY columns first, in the key's order; a `VIRTUAL` generated column is not stored and prints empty; a record shorter than its table, written before an `ALTER TABLE ADD COLUMN`, has the added columns' constant `DEFAULT`, read as SQLite reads it (parentheses nested, a number with an exponent or in hexadecimal, a bare word a string) and with the column's affinity (`7.0` and `'7.0'` are `7` in an INTEGER or NUMERIC column, a number stays as written in a TEXT one), where a NULL it holds stays empty) | No C compiler in the build and no C library in the binary (rusqlite bundles SQLite's C); read-only access to the file format is a few hundred lines; the rowid is what `SELECT … WHERE rowid = 12` uses. It replaces the M3 plan's forward reference (its D5 said M4's `row 12` would be the 12th row). The key's order was measured with SQLite: `t(payload TEXT, k TEXT PRIMARY KEY) WITHOUT ROWID` stores `k, payload` (r1, Codex #4, Fable #2); the schema is read by its tokens (r2, Codex #4); a virtual column's value moved the next ones (r3, Codex #6, Fable #5); `STORED` is the word after the expression, never one inside it (r4, Codex #6); an added column's `DEFAULT` was lost in the older rows (r5, Codex #2), and so were `(('needle'))`, `1e-3` and `0x2a`, while `7.0` printed as written in an INTEGER column, where SQLite gives `7` (r6, Codex #1, Fable #2) |
+| D15 | A SQLite reader of our own: `sqlite_schema`, then each table's b-tree (interior and leaf, table and index pages, overflow pages); `row N` is the rowid (the position for `WITHOUT ROWID`); values as the `sqlite3` shell prints them (a real with SQLite's `%!.15g`: 15 significant digits, rounded half away from zero, `1.0e-05` below 1e-4 and from 1e15 on), in the order of `CREATE TABLE` (a `WITHOUT ROWID` table stores its PRIMARY KEY columns first, in the key's order; a `VIRTUAL` generated column is not stored and prints empty; a record shorter than its table, written before an `ALTER TABLE ADD COLUMN`, has the added columns' constant `DEFAULT`, read as SQLite reads it (parentheses nested, a number with an exponent or in hexadecimal, a bare word a string, `CURRENT_DATE`, `CURRENT_TIME` and `CURRENT_TIMESTAMP` no constant, a unary `+` nothing, a `-` before what is not a number literal the value made a number and negated) and with the column's affinity, from the declared type quoted or not (`7.0` and `'7.0'` are `7` in an INTEGER or NUMERIC column; in a TEXT one an integer is its value, `007` `7`, and any other number stays as written), where a NULL it holds stays empty) | No C compiler in the build and no C library in the binary (rusqlite bundles SQLite's C); read-only access to the file format is a few hundred lines; the rowid is what `SELECT … WHERE rowid = 12` uses. It replaces the M3 plan's forward reference (its D5 said M4's `row 12` would be the 12th row). The key's order was measured with SQLite: `t(payload TEXT, k TEXT PRIMARY KEY) WITHOUT ROWID` stores `k, payload` (r1, Codex #4, Fable #2); the schema is read by its tokens (r2, Codex #4); a virtual column's value moved the next ones (r3, Codex #6, Fable #5); `STORED` is the word after the expression, never one inside it (r4, Codex #6); an added column's `DEFAULT` was lost in the older rows (r5, Codex #2), and so were `(('needle'))`, `1e-3` and `0x2a`, while `7.0` printed as written in an INTEGER column, where SQLite gives `7` (r6, Codex #1, Fable #2); `+'needle'` and `current_needle` were lost and `"INTEGER"` gave no affinity (r7, Codex #1), a real printed Rust's shortest form, `0.30000000000000004` where the shell prints `0.3` (r7, Fable #1), and `-'abc'`, `1_000` in a TEXT column and `-'7.0'` differed from SQLite (r7, Fable #3): over 103 `DEFAULT`s of an `ALTER TABLE ADD COLUMN` and 8 033 stored reals (6 000 of them random), every one is now SQLite 3.46.1's `CAST(x AS TEXT)` |
 | D16 | SQLite: indexes, views and triggers are not read, nor a `-wal` file | Tables hold the data; a WAL is a second file, and changes in it reach the database at the next checkpoint |
 | D17 | Limits: 256 MiB of text per document (512 MiB until round 4: D30) (cut, with a warning; a PDF page stops being drawn when its text reaches what is left); 256 MiB per zip part and 1 GiB for all the parts one document reads; 64 MiB per PDF stream (pages, Forms, fonts' ToUnicode maps, object streams) and 1 GiB for the pages', Forms' and maps' together; 8 000 000 units of Form work per PDF (16 per Form drawn plus one per operation it runs); refused with one warning, `… is over the N MiB limit` or `its Forms run more than 8000000 operations`, while a stream that does not decompress draws nothing. Round 2 made the work budget the content streams', pages' included: 8 000 000 plus 20 000 per page, one per operation read and 16 per Form drawn (`its content streams run more than N operations`); 256 open `q`; 65 536 operands to an operation; 200 000 entries to a ToUnicode map, a range counting one; 8 bytes of text for each byte of a string; 64 MiB and 2 000 000 tokens for the object streams of a document, counted before lopdf parses them (`its object streams hold more than 2000000 tokens`), with the offsets of each one's objects growing (`an object stream holds overlapping objects`). Round 3: `PAGE_WORK` counts at most 10 000 pages; a ToUnicode map's codespace ranges count among its entries, and at most 256 are kept; an encrypted PDF loads as any other, bounded by its reader's memory (D30); 100 000 bookmarks; forms nested 8 deep; a repeated ODF cell or row with a value written at most 1000 times, and a repeat past the largest number an error; b-trees 40 deep | Decompression bombs and pathological files must neither fill the memory nor hang sfor. Round 1 of this plan's review found a ToUnicode map read without a limit (791 MiB for a 714 KB PDF), a page of Forms drawing Forms (16⁷ draws), twelve 200 MiB sheets each under the part limit (4.7 s), and ODF repeats that overflow (Codex #1, #2, #10; Fable #1, #3); the perf tests bound a 300 MiB zip bomb, a 300 MiB ToUnicode map and a workbook of six 200 MiB sheets. Round 2 found that bytes are not what fills the memory: lopdf's parsed operations and objects are (6 GB for a page of 63 MiB of `0 0 m`, 2 GB for an object stream of 32 MiB of integers, a ToUnicode range listed code by code, 512 MiB of text from a 5 KB file; r2, Codex #1–#3, Fable #1); its perf tests bound each of those. 10 000 pages each drawing five Forms of 200 operations (Fable's `many-forms.pdf`) fit (r2, Fable #2); a content stream several pages share counts once in the 1 GiB (r2, Fable #3) |
 | D18 | Office documents: the body, the cell values as stored (Excel: dates as serial numbers, formulas' cached values; ODS: by `office:value-type`, the number of a float, percentage or currency, the date, time or boolean value, else the text) and the slides with their notes; not headers, footers, footnotes, comments, charts, embedded objects, nor the 97–2003 binary formats | What 8393 asked to find; each other part is a reader more, M6 candidates. An ODS cell shown as `$1.50` stores `1.5`, as an XLSX one does (r1, Codex #6) |
@@ -130,23 +131,26 @@ ones it describes marked «M4 plan».
 | D20 | Trails: Word/ODT `heading › heading › table N › row R › Column` (the first row names the columns, 40 characters); Excel/ODS `Sheet › B12`; PowerPoint/ODP `slide N › notes`; EPUB `chapter › headings`; PDF `chapters › page N`; SQLite `table › row ROWID › column` | Each says where a person finds the text in the program that opens the document; a cell reference is what a spreadsheet shows |
 | D21 | Order: `--pre` (when its globs take the file), then `-z` (when the extension has a decompressor), then `--docs`; a file `--pre` or `-z` reads is never extracted; stdin is never transformed; `--pre`'s output gets the Trails of the Format its path says; what a transform outputs is never an object file nor a document, whatever its bytes, `--format` or `-a` say: no object rows, no `object` or `docs` Processor (Plain) | ripgrep's order for the first two; a decompressed stream has no name of its own to say what it is; `--pre cat` over an ELF printed object rows before (r1, Codex #11) |
 | D22 | `--docs` also changes `--no-trail`, `-c`, `-l` and `-q`: they work on the extracted text, in ripgrep's layout | `--docs` is sfor's flag, not ripgrep's; a script that counts Matches with `--docs -c` wants the documents' |
-| D23 | Benchmark (`scripts/bench-m4.sh`) and ceilings (`tests/perf.rs`) as in §11 #26: 1.1 × rg where M4 adds nothing, but for `--docs` over files that are not documents, at most 1.05 × sfor without `--docs` (r6, Fable #5: over 20 000 small files sfor without `--docs` is already 1.04–1.10 × rg, M1–M3's own cost, so 1.1 × rg there measured noise); objects at 100 MB/s; documents at 2 MB/s of text per thread on top of rg's search of their text; per-format rates in `tests/perf.rs` about a third of the probe's | The rates measured in the probe (MB/s of text): docx 41, odt 36, epub 66, PDF 23 (generated) and 1.2–1.8 (real), xlsx 5.6, ods 3.4, pptx 4.0, SQLite 16–17; a third leaves room for a loaded machine, as M3's ceilings did. Memory: rg's plus six times the text, plus 400 bytes per cell Segment of a spreadsheet, plus 64 MiB (the probe: 228 MiB for the 600 000 cells of an XLSX with 18 MB of text) |
-| D24 | The binary's growth is measured and reported: 16.6 MB (16 598 640 bytes at `191dbaf`) → 19.2 MB (19 239 280 bytes), under 23 MB (8612) | Spec §11 #22 |
+| D23 | Benchmark (`scripts/bench-m4.sh`) and ceilings (`tests/perf.rs`) as in §11 #26: 1.1 × rg where M4 adds nothing, but for `--docs` over files that are not documents, at most 1.05 × sfor without `--docs` (r6, Fable #5: over 20 000 small files sfor without `--docs` is already 1.04–1.10 × rg, M1–M3's own cost, so 1.1 × rg there measured noise); without `--docs`, at most 1.03 × M3's sfor (`191dbaf`) over the whole corpus, the median of three series (`docs-off`, when `SFOR_BASE_BIN` names M3's binary: r7, Fable #2), which bounds what M4 adds to a search without `--docs`; objects at 100 MB/s; documents at 2 MB/s of text per thread on top of rg's search of their text; per-format rates in `tests/perf.rs` about a third of the probe's | The rates measured in the probe (MB/s of text): docx 41, odt 36, epub 66, PDF 23 (generated) and 1.2–1.8 (real), xlsx 5.6, ods 3.4, pptx 4.0, SQLite 16–17; a third leaves room for a loaded machine, as M3's ceilings did. `docs-off` is a ratio of two 48 ms medians: one series of the same code with and without D31's counter gave 0.98–1.04 here, three series 1.012, 1.034 and 1.020 for M4 against M3, whence the median of three and 1.03 rather than Fable's 1.02 (see «Review round 7»: M4 measures 1.015–1.029 × M3 without `--docs` already in round 6's code, which chunk 13 is to locate). Memory: rg's plus six times the text, plus 400 bytes per cell Segment of a spreadsheet, plus 64 MiB (the probe: 228 MiB for the 600 000 cells of an XLSX with 18 MB of text) |
+| D24 | The binary's growth is measured and reported: 16.6 MB (16 598 640 bytes at `191dbaf`) → 19.4 MB (19 356 872 bytes), under 23 MB (8612) | Spec §11 #22 |
 | D25 | Extracted text never holds a control character (line breaks inside a cell, tabs inside a paragraph, NUL become spaces) and has no empty lines; a row writes a tab before each cell but the first, empty cells included, and a cell's spaces as they are | A row of a table stays one line, and the searcher never sees binary data in a document; a SQLite row `(NULL, 'needle')` is `\tneedle`, so a search anchored at a column finds it (r1, Codex #12, Fable #11) |
 | D26 | The JSON statistics of an object file count the whole search (`bytes_searched` = file size, `matched_lines` = rows, `binary_offset` null), documented in `docs/rg-compat.md` | rg stops at the first Match of a binary; sfor reads on to describe each one |
 | D27 | Without `--docs` the document Formats are never detected (`Detector::with_docs`); `--list-formats` lists them; `--format pdf` without `--docs` prints the file as Plain | 8395 «without --docs those files are treated as ripgrep does», at no cost |
 | D28 | The fuzz mutates documents (bytes changed, cut, repeated; and the XML inside the zip, zipped again) and object files; nothing may panic, an extraction ends within 2 s whatever it returns, and every Segment and name lies inside its text. The documents run in a child process the test watches: one that prints nothing for 2 s is killed and reaped, and the cases after it run in a new child | It found a heading name with a NUL (fixed in `Builder`), and a panic in `xml::unescape` at `&` before a multi-byte letter (fixed); a slow extraction that ended in an error passed, and a hang hung the run (r1, Codex #13); a thread left running a hung case went on using memory and CPU (r2, Codex #7) |
 | D29 | PDF content streams and ToUnicode CMaps are read by a reader of our own, about 500 lines: `Ops` gives `run` one operation at a time, its operands borrowing the stream's bytes, and spends the work budget as it reads; `ToUnicode` keeps a `bfrange` as a range and decodes a string only as far as the text has room. lopdf keeps reading the file's objects, encryption, fonts' dictionaries and the encodings of fonts without a map; a load filter counts the tokens of each object stream before lopdf parses it. Round 3: a simple font's codes are 1 byte and a composite font's 2, unless its map declares other lengths (one table by first byte); a code is looked up with the map's other lengths too; a code the map leaves out reads through a 256-entry table lopdf builds from a copy of the font without its map; names read their `#xx` escapes; an inline image without a filter ends where its size says, its color space read from the resources when it names one (r4, Codex #5). Round 4 also: an object stream lopdf dropped while decrypting is found by the objects the cross-reference table puts in it and the document lacks, and one past the limit fails the document (r4, Codex #1); an object stream's header is read as lopdf reads it (r4, Fable #1) | Round 3 found a regression on real PDFs: Adobe's `<0000> <FFFF>` codespace over a simple font's 1-byte codes made every code 2 bytes, and four of Fable's 89 real PDFs lost letters (`B1754AQQ` → `B 54AQQ`); with the code length from the font none of the 87 that have a `pdftotext` text falls below round 2's word recall, six rise (r3, Fable #1). One cause, three findings: lopdf did unbounded work before sfor could measure it (`many0(operation)` over a whole stream, a reverse map of every code of every range, `decode_text` into two UTF-16 buffers). Pre-validating the bytes would need the same lexer to count operators past strings and inline images, and would still leave lopdf's parse of what passes; the reader replaces both. Measured with the release binary: Fable's `page-ops-bomb.pdf` 6 264 620 KiB and 9.14 s → 73 700 KiB and 1.12 s, `form-ops-bomb.pdf` 6 265 792 KiB → 73 552 KiB, `objstm-bomb-32.pdf` 2 021 992 KiB → 57 220 KiB; a range of 2³² codes out of memory → 8 MiB; a 4 KB map of long codes 1 796 208 KiB and 9.13 s → 92 040 KiB and 0.68 s. The six real PDFs of D13 and `many-forms.pdf` extract as before (to verify in chunk 9: the D13 recall over them, the probe ran only the unit and perf tests) |
-| D30 | Every document `--docs` reads is extracted in a worker process: the same `sfor` binary run as `sfor --__extract-document MIB` with `SFOR_READER_OF` set to the parent's pid (no external program, so 8393–8395 hold), with `RLIMIT_DATA` at 1 024 MiB; at most 4 workers at once, each reading up to 64 documents; a worker that dies, or takes more than 60 s over a document and is killed, gives the document one warning (`reading it needed more than the 1024 MiB a reader may use`, also when an allocation is refused rather than fatal; `reading it took more than 60 s`) and the file is searched as rg; without `--docs` nothing runs. The workers live in the Supervisor of M2's D42, which holds the same `Child` their pool and watchdog use, so every kill and wait goes through one lock and no pid is signalled after its process was reaped: a SIGINT or SIGTERM to sfor kills and reaps them, and sfor dies by the signal (r5, Codex #1), printing nothing more: a document whose reader the signal killed, or that finds no reader to start, is searched as rg without a warning, as M2's hosts stop relaying (r6, Fable #1); on Linux the kernel ends a worker whose parent dies (`PR_SET_PDEATHSIG`; they are started from one thread that lives as long as sfor), elsewhere the worker's own watchdog ends it when one document passes 65 s, the parent's 60 s plus 5, on a monotonic clock as the parent's (r6, Codex #2, Fable #3) (a CPU limit over the worker's life, round 4's, ended a long valid run: r5, Fable #1). A worker leaves no core file. An allocation that fails inside lopdf while it decompresses a ToUnicode map or any stream aborts the worker, which gives the memory warning; one that lopdf would ask for with `try_reserve` and see refused would read as a stream that does not decompress, without that warning (r5, Fable #3; whether lopdf 0.45 has such a path is to verify in chunk 9). The path goes as its bytes after their count. The limits of D17 stay as the first line, for precise warnings. `SFOR_READER_MIB` lowers the limit, for the tests | Three review rounds found a new unbounded path inside lopdf each time (r1 10 MAJOR, r2 4, r3 6: a map reached through an `/Encoding` dictionary, object offsets that repeat, the encrypted load that skips the filter); a process limit holds whatever path. Measured on the benchmark's 1 080 documents (12 threads): in-process 0.075 s, one process per document 0.424 s, the pool of 4 workers 0.299 s, against rg's 0.012 s over their texts and a budget of 0.78 s; with 4 workers of 1 GiB the worst case is 4 GiB, where 12 children could take 12, and 1 GiB leaves room for the 225 MiB the perf test's workbook of 600 000 cells takes. Fable's encrypted `objstm-1m-64-enc.pdf` (3 985 500 KiB and 11.97 s in round 2) ends at 1 GiB in 4.28 s with the warning. With 1 GiB, D17's text limit is 256 MiB: a PDF of 256 MiB of text is cut within the reader, at 689 MB and 6.8 s, where 512 MiB took 1.75 GB (r4, Fable #5). The flag cannot be a pattern: a first word that starts with `--` is a flag, and an unknown one is refused, as rg refuses it; the worker also needs exactly its two arguments and `SFOR_READER_OF` (r4, Codex #4, Fable #6). Not verified: macOS enforces `RLIMIT_DATA` only for some allocations, and Windows needs a Job Object (to verify in M5) |
+| D30 | Every document `--docs` reads is extracted in a worker process: the same `sfor` binary run as `sfor --__extract-document MIB` with `SFOR_READER_OF` set to the parent's pid (no external program, so 8393–8395 hold), with its memory at 1 024 MiB, counted by the worker itself (D31), and on Unix `RLIMIT_DATA` 64 MiB above as a second barrier; at most 4 workers at once, each reading up to 64 documents; a worker that dies, or takes more than 60 s over a document and is killed, gives the document one warning (`reading it needed more than the 1024 MiB a reader may use`, also when an allocation is refused rather than fatal; `reading it took more than 60 s`) and the file is searched as rg; without `--docs` nothing runs. The workers live in the Supervisor of M2's D42, which holds the same `Child` their pool and watchdog use, so every kill and wait goes through one lock and no pid is signalled after its process was reaped: a SIGINT or SIGTERM to sfor kills and reaps them, and sfor dies by the signal (r5, Codex #1), printing nothing more: a document whose reader the signal killed, or that finds no reader to start, is searched as rg without a warning, as M2's hosts stop relaying (r6, Fable #1); on Linux the kernel ends a worker whose parent dies (`PR_SET_PDEATHSIG`; they are started from one thread that lives as long as sfor), elsewhere the worker's own watchdog ends it when one document passes 65 s, the parent's 60 s plus 5, on a monotonic clock as the parent's (r6, Codex #2, Fable #3) (a CPU limit over the worker's life, round 4's, ended a long valid run: r5, Fable #1). A worker leaves no core file. An allocation that fails inside lopdf while it decompresses a ToUnicode map or any stream aborts the worker, which gives the memory warning; one that lopdf would ask for with `try_reserve` and see refused would read as a stream that does not decompress, without that warning (r5, Fable #3; whether lopdf 0.45 has such a path is to verify in chunk 9). The path goes as its bytes after their count. The limits of D17 stay as the first line, for precise warnings. `SFOR_READER_MIB` lowers the limit, for the tests | Three review rounds found a new unbounded path inside lopdf each time (r1 10 MAJOR, r2 4, r3 6: a map reached through an `/Encoding` dictionary, object offsets that repeat, the encrypted load that skips the filter); a process limit holds whatever path. Measured on the benchmark's 1 080 documents (12 threads): in-process 0.075 s, one process per document 0.424 s, the pool of 4 workers 0.299 s, against rg's 0.012 s over their texts and a budget of 0.78 s; with 4 workers of 1 GiB the worst case is 4 GiB, where 12 children could take 12, and 1 GiB leaves room for the 225 MiB the perf test's workbook of 600 000 cells takes. Fable's encrypted `objstm-1m-64-enc.pdf` (3 985 500 KiB and 11.97 s in round 2) ends at 1 GiB in 4.28 s with the warning. With 1 GiB, D17's text limit is 256 MiB: a PDF of 256 MiB of text is cut within the reader, at 689 MB and 6.8 s, where 512 MiB took 1.75 GB (r4, Fable #5). The flag cannot be a pattern: a first word that starts with `--` is a flag, and an unknown one is refused, as rg refuses it; the worker also needs exactly its two arguments and `SFOR_READER_OF` (r4, Codex #4, Fable #6). Not verified: macOS enforces `RLIMIT_DATA` only for some allocations, and Windows has none: D31's counter holds there, and a Windows Job Object is M5's |
+| D31 | The readers count their own memory (amendment of 18/10, Sebastián): `docs::memory::Counter`, the `#[global_allocator]` of every sfor process, is the system's allocator with a count of the live bytes. `isolated::child` arms it first, with the worker's limit (`MEMORY_MIB`, 1 024; `SFOR_READER_MIB` for the tests); from then on an allocation, a zeroed one or a realloc's growth that would take the count past the limit is refused, the same on Linux, macOS and Windows, and `RLIMIT_DATA`, on Unix, stands `HEADROOM_MIB` (64) above it, a second barrier for what the counter does not see (the allocator's own pages, the threads' stacks; `SFOR_READER_RLIMIT_MIB` sets it, for `m4_22`). A refused `try_reserve` gives an error ending `out of memory`, which `refused_memory` turns into the warning; any other refused allocation goes to `std::alloc::handle_alloc_error`, whose default handler prints `memory allocation of N bytes failed` and aborts the worker (SIGABRT, measured on Linux), and the parent, which reads that line in the worker's stderr (`why`), gives the same warning D30 gave for `RLIMIT_DATA`: `reading it needed more than the 1024 MiB a reader may use`. Never armed, as in sfor's own process and every test binary, each method of the allocator is one relaxed load of the limit, which no thread writes there, a branch, and a jump to the system's function; the count is never touched. The methods are out of line (`inline(never)`); the counter counts from `arm` on, so a block allocated before and freed after leaves the count below 0, never wrapped | Without it, D30's 1 GiB held on Linux only. Alternatives: count in every process and compare only in a worker, an atomic add and subtract per allocation in sfor's twelve search threads; abort inside the allocator, which loses the `try_reserve` path D30's warning uses (r4, Fable #2); count per thread with a `thread_local!`, which on a system without native thread-local storage allocates on first use, inside the allocator; `#[global_allocator]` in `main.rs`, outside the library whose worker arms it, which would then export its state to the binary. Measured (12 threads, a machine at load 4–12 from other sessions): over the M4 benchmark's corpus, sfor with the counter against the same code without it, the median ratio of 10 alternated series of 40 runs, 0.995 with a pattern no file matches, 1.007 with the sparse one, 1.016 with `e` over the 20 000 text files (single series 0.96–1.04); a run makes about 287 000 allocator calls (an `LD_PRELOAD` count: 120 636 `malloc`, 45 615 `realloc`, 120 748 `free`), and a micro-benchmark gives the unarmed counter about 1 ns per allocation, free and a third of a realloc (63.3 against 62.4 ns, the minimum of 30 rounds), so 0.01 ms of a 49 ms run; armed, about 35 ns more, and `--docs` over the 1 080 documents 351 against 344 ms (8 series, 0.91–1.04). Inlined at every allocation site, the counter made the release binary 406–462 KB larger; out of line, 108 KB (19 356 872 bytes against 19 248 904 for the same code without it). `m4_22` over the code without the counter, with `RLIMIT_DATA` at 4 096 MiB, read the workbook; with it, the warning at 16 MiB; a worker run by hand over a 98 MB SQLite database at 16 MiB exits by SIGABRT with `memory allocation of 16777216 bytes failed`. `cargo check --lib --bins` passes for `x86_64-pc-windows-gnu` and `aarch64-apple-darwin` (the latter with an empty C compiler for the C of ring and tree-sitter, which a check never links); not run on either |
 
 ## Verified for this plan (2026-10-17 and 2026-10-18)
 
 Outputs in `/tmp/subtask/m4-plan/outputs/`. The probe `/tmp/subtask/m4-plan/m4v2` is a git
-repository of its own with eight commits: the repository at `1610a50`, the repository at
+repository of its own with ten commits: the repository at `1610a50`, the repository at
 `191dbaf`, M4's code over the latter (`57edf0f`, cherry-picked from the first probe, see «Rebase
-on M3's final code»), and the fixes of the first six reviews of this plan (`eea167a`,
-`48fe5e8`, `08b0aec`, `fd8b653`, `a78b088` and `8e974bc`, see «Review round 1» to «Review round 6»). The frozen copy `/tmp/subtask/m4-plan/m4tree-8e974bc` is that probe at its commit
-`8e974bc`; every code block below was generated from it (`/tmp/subtask/m4-plan/plan/gen.py`,
+on M3's final code»), and the fixes of the first seven reviews of this plan and of the
+amendment of 18/10 (`eea167a`, `48fe5e8`, `08b0aec`, `fd8b653`, `a78b088`, `8e974bc` and
+`3547596`, see «Review round 1» to «Review round 7» and «Amendment (18/10, Sebastián)»). The frozen
+copy `/tmp/subtask/m4-plan/m4tree-3547596` is that probe at its commit `3547596` (round 6's,
+`m4tree-8e974bc`, stays while chunks built from it are merged); every code block below was generated from it (`/tmp/subtask/m4-plan/plan/gen.py`,
 diffs against its commit `05699bc`, which is `191dbaf`). The working probe may change with the
 reviews; the frozen one does not.
 
@@ -163,9 +167,10 @@ reviews; the frozen one does not.
   `cargo check --offline --workspace --all-targets` passes from the local cache. quick-xml
   0.42.0, the M3 plan's candidate, also resolved, and was dropped (D12).
 - **Binary.** `target/release/sfor` of `191dbaf`: 16 598 640 bytes (15 381 072 stripped); of the
-  frozen copy: 19 239 280 bytes (17 811 632 stripped), 2.6 MB more, under 23 MB (8612); before
+  frozen copy: 19 356 872 bytes (17 918 960 stripped), 2.8 MB more, under 23 MB (8612); before
   the fixes of review round 1, 19 015 120, of round 2, 19 041 208, of round 3, 19 064 256,
-  of round 4, 19 140 656, of round 5, 19 216 672, and of round 6, 19 230 000. Over `1610a50` the probe had measured 16 583 992 and
+  of round 4, 19 140 656, of round 5, 19 216 672, of round 6, 19 230 000, and of round 7,
+  19 239 280 (19 239 368 built in this round's target directory). Over `1610a50` the probe had measured 16 583 992 and
   19 000 368.
 - **Object files.** Over binaries built from one C file (`version_string` and a second string
   literal): gcc's ELF gives `ELF x86-64 › .rodata › version_string+0xe` and, for the second
@@ -192,16 +197,16 @@ reviews; the frozen one does not.
 - **Every tanda builds** (`/tmp/subtask/m4-plan/states/build.py`, over `191dbaf` with the code
   of the frozen copy): the repository with only what tanda 1, then 1–2, 1–3 and 1–4 write (the
   later files as their stubs, and the `offsets: false` literals) passes `cargo clippy
-  --workspace --all-targets -- -D warnings`, `cargo test --lib` (409, 453, 506 and 506 tests)
+  --workspace --all-targets -- -D warnings`, `cargo test --lib` (409, 457, 510 and 510 tests)
   and `cargo test --test cli --test cli_m2 --test cli_m3` (42, 16, 19), and after tanda 4 also
-  `--test cli_m4` (21). The first run of this check, in round 0, found that the shared writer
+  `--test cli_m4` (22). The first run of this check, in round 0, found that the shared writer
   helpers, `pub(crate)` then, are dead code to clippy while the format writers are stubs; they
   are `pub` now (Task 4.3).
 - **Frozen copy, whole suite:** `cargo build --workspace`, `cargo clippy --workspace
   --all-targets -- -D warnings` (no findings), `cargo fmt --check` and
-  `SFOR_REQUIRE_REFERENCE=1 cargo test --workspace` pass: 506 unit tests and 2 ignored, `cli` 42,
-  `cli_m2` 16 (with `m2_07` updated), `cli_m3` 19, `cli_m4` 21, `fuzz` 5, `helpers` 22,
-  `rg_compat` 37, and the helpers' own.
+  `SFOR_REQUIRE_REFERENCE=1 cargo test --workspace` pass: 510 unit tests and 2 ignored, `cli` 42,
+  `cli_m2` 16 (with `m2_07` updated), `cli_m3` 19, `cli_m4` 22, `fuzz` 5, `helpers` 22,
+  `rg_compat` 37, and the helpers' own 14: 687 in all.
 - **Rebase on M3's final code.** The probe was first built over `1610a50` (frozen then as
   `m4tree-7134553`, removed). Its changes were cherry-picked onto `191dbaf`: every diff applied
   but those of `src/output/{mod,tree,stream}.rs`, where M3's final code had turned `Row::bytes`
@@ -329,6 +334,56 @@ reviews; the frozen one does not.
   2.99 s at 1 024 MiB), `SFOR_FUZZ_N=20000` (72 s), the binary 19 239 280 bytes (17 811 632
   stripped); the 87 real PDFs were not run again, since no PDF code changed. No chunk, tanda or dependency
   added.
+- **Review round 7** (`reviews/m4-plan-r7/{codex,fable}.md`; both «PLAN SANO»), every MINOR and
+  NIT fixed, test first, RED over the round-6 code (`8e974bc`) and GREEN over `3547596`. Codex #1:
+  `constant` drops a unary `+`, as SQLite's grammar does (`DEFAULT PLUS term` is the term), takes
+  only `CURRENT_DATE`, `CURRENT_TIME` and `CURRENT_TIMESTAMP` for the time of the insertion, and
+  the type of a column may be quoted (`"INTEGER"`, `[INTEGER]`, `'INTEGER'`; a quoted
+  `"INTEGER" PRIMARY KEY` is the rowid, as SQLite 3.46.1 gives); an eighth SQLite table,
+  `signed`, has a row before its `ALTER`s and one after (`old`, `plus default`, `current_word`,
+  `7`, `0`, `-7` and `1.0e-05`, where the newer row holds the `-7.0` SQLite itself wrote), its count
+  and Trail checked (`defaults_are_read_as_sqlite_reads_them` panicked at `+'needle'` over
+  round 6). Fable #1: `Value::shown` prints a real as `%!.15g` (`real`): over Fable's
+  `reals.sqlite`-like 33 values and 6 000 random ones, 286 of 6 033 equal to SQLite over round 6,
+  6 030 with Rust's rounding at 15 digits (half to even), and 8 033 of 8 033 with the 16th digit
+  rounding half away from zero, as SQLite does (2 000 exact halves added for that).
+  `values_print_as_sqlite_shows_them` printed `0.30000000000000004` over round 6. Fable #3, the
+  NIT, with Codex #1: `negative` reads `-` as `sqlite3ValueFromExpr` does, a number literal with
+  its sign, anything else made a number (`numerify`) and negated, and `number` gives an integer
+  that fits to a TEXT column as its value; over 103 `DEFAULT`s (Fable's 68, Codex's three, and
+  32 more: `007`, `-1_0.5`, `+X'01'`, `((+'x'))`, `"UNSIGNED" BIG INT`, …) 71 equal SQLite over
+  round 6 and 103 now. Codex #2: `m4_21` waits with `try_wait` and a 10 s limit of its own, and
+  kills and reaps the reader past it: with the watchdog broken (`SFOR_READER_SECONDS=1000`), the
+  round-6 test was still waiting when `timeout` ended it at 40 s; this one fails in 11.6 s,
+  «the reader still read the FIFO 10 s after its 1 s limit», the reader reaped. Fable #2:
+  `bench-m4.sh` has a `docs-off` case, M4's sfor against M3's (`SFOR_BASE_BIN`, which Task
+  13.2 builds), the median of three alternated series at most 1.03 × (D23), and spec §11 #26
+  says that `--docs` over files that are not documents is bounded against rg by sfor's own
+  ratio without `--docs` times 1.05. Measured: `docs-off` 1.012, 1.034 (exit 1) and 1.020 in
+  three runs; over ten alternated series each, M3 → round 6's code 1.015, M3 → this round
+  without the counter 1.029, without the counter → with it 1.000, so M4 costs 1.5–3 % over M3
+  without `--docs` before D31, which no earlier case could see (`none`, `sparse` and `no-trail`
+  hold to 1.1 × rg, which M1–M3 already take 1.04–1.10 of). Start-up is not it (an empty
+  directory: M3 10.3–11.4 ms, M4 10.5–11.1 ms); where it comes from is for chunk 13 to find,
+  and if it stays, for Sebastián to accept against 8385. What changed, by chunk: C4 the SQLite
+  fixture table `signed`; C10 `real`, `number`, `negative`, `numerify`, `constant`, the quoted
+  types; C11 `m4_21`, and `m4_01`'s SQLite JSON snapshot (3 289 bytes searched, the eighth
+  table's text); C13 `docs-off`. No chunk, tanda or dependency added.
+- **Amendment (18/10, Sebastián)** (`docs/specs/grill-respuestas.md`, last section): «Acepto la
+  sugerencia de sumar el contador de memoria propio», in M4. D31 says what it does and what it
+  costs. It is C4's: `src/docs/memory.rs` (a new file under `src/docs/**`, which C4 holds), one
+  line in `src/docs/mod.rs`, and in `src/docs/isolated.rs` the arming, `HEADROOM_MIB` and
+  `rlimit_mib` (Task 4.2, Step 5); `#[global_allocator]` sits in the library, so no chunk
+  touches `src/main.rs` or any file of C1, and the chunk graph keeps its files. `m4_22` is
+  C11's (Task 11.1). Tests: four unit tests of the counter, RED (`Counter` and `bytes_of_mib`
+  did not exist), and `m4_22`, RED with `SFOR_READER_RLIMIT_MIB` read and the counter not armed
+  (the workbook was read whole), GREEN armed; `m4_16` passes either way. Measured over the
+  frozen copy: the suite (687 tests), clippy, fmt, every tanda (409, 457, 510 and 510 unit tests), the
+  eleven perf tests (the encrypted PDF ended in 3.31 s at 1 026 MiB), `SFOR_FUZZ_N=20000` (the whole file in 207 s), the
+  binary 19 356 872 bytes (17 918 960 stripped), and `bench-m4.sh` as round 7 says, `--docs` over
+  the documents 0.336–0.371 s against a budget of 0.780 s (0.300 s in round 6, on a quieter
+  machine: here 8e974bc's binary measured 0.333–0.354 s beside it). M1–M3's benchmarks over
+  the counter's binary: `PATH=/usr/bin:$PATH scripts/bench.sh` exit 0 (notes 1.30 × rg with Trails and 1.03 with `--no-trail`, the binaries of `/usr/lib` 1.07 and 1.03), `bench-code.sh` exit 0 (the cargo registry 1.02, 1.00 and 4.40 within its budget; `~/robotin/apps` 1.01, 0.98 and 1.31), `bench-m3.sh` 1.12 × rg for `none` in one run (exit 1) and 1.07 in the next (exit 0), where M3's own binary gave 1.01 beside it; over ten alternated series on the M3 corpus, M4's sfor is 1.008 × M3's and the counter 0.996 × the same code without it, so that gate sits at the noise (the probe had not run these three before: «To verify»). The Windows Job Object is in M5's row.
 - **RED** over the stubs of C1 and C4 with each module's tests (`/tmp/subtask/m4-plan/red/run.py`,
   over the frozen copy): object `mod.rs` does not compile (`demangle`), `rows.rs` 7 FAIL,
   `preprocess.rs` 2 FAIL, `ooxml.rs` does not compile (4 functions), `odf.rs` 5 FAIL and 1 passes
@@ -372,7 +427,9 @@ reviews; the frozen one does not.
 (chunk 8); M1's `scripts/bench.sh`, M2's `scripts/bench-code.sh` and M3's `scripts/bench-m3.sh`
 on the merged code (chunk 13); a RED run of each ceiling (chunk 13); the README texts, which the
 probe did not write (chunk 14); that the diffs apply after the last M3 rounds merged into the
-work branch (chunk 1). Every other statement above was measured.
+work branch (chunk 1); the readers' memory counter run on macOS and Windows (M5, in CI), and
+where M4's 1.5–3 % over M3 without `--docs` comes from (chunk 13). Every other statement above
+was measured.
 
 ## M4 acceptance criteria
 
@@ -400,8 +457,11 @@ M4 is done when all of these hold; each names the test or script that measures i
    `SFOR_FUZZ_N=20000` once before the merge.
 10. `Cargo.lock` gains only the packages listed in Task 1.1; `cargo tree -i regex-automata`,
     `-i regex-syntax`, `-i memchr` and `-i encoding_rs` show only 0.4.7, 0.8.4, 2.7.4 and 0.8.34.
-11. Spec §11 #22: `target/release/sfor` is at most 23 MB (measured in C13 and reported; 19.0 MB
+11. Spec §11 #22: `target/release/sfor` is at most 23 MB (measured in C13 and reported; 19.4 MB
     in the probe).
+12. D31: the readers count their own memory: `m4_22` passes, and `cargo check --lib --bins
+    --target x86_64-pc-windows-gnu` passes (C4; `aarch64-apple-darwin` too where its C compiler
+    is at hand).
 
 ## Design notes the chunks share
 
@@ -460,6 +520,7 @@ src/app.rs, src/filter.rs, src/output/{mod,stream}.rs   `offsets: false` in thei
 src/processors/object/{mod,rows,fixture}.rs    object Processor and writers (stubs C1, C2)
 src/preprocess.rs                              --pre and -z (stub C1, C3)
 src/docs/{mod,table,xml,zipped,isolated}.rs    shared Extractor code, the reader process (C4)
+src/docs/memory.rs                             the readers' memory counter, the global allocator (C4)
 src/helper/host.rs                             the readers in the Supervisor (C4)
 src/docs/fixture/mod.rs                        shared document writers (C4)
 src/docs/{ooxml,odf,epub,pdf,sqlite}.rs        Extractors (stubs C4, C6–C10)
@@ -481,7 +542,7 @@ README.md, README.es.md, skills/searchfor/SKILL.md, docs/json-schema.json, the s
 | C1 | Dependencies, Definitions, Detector, CLI flags, `Described::offsets`, `object` in the Processors, stubs of `object` and `preprocess` | — | `Cargo.toml`, `Cargo.lock`, `formats/*.toml` (the 12 new), `src/formats/{builtin,definition,detector,mod}.rs`, `src/cli/{mod,rg_flags}.rs`, `docs/rg-compat.md`, `src/model.rs`, `src/lib.rs`, `src/processors/mod.rs`, `src/processors/object/**` (stubs), `src/preprocess.rs` (stub), `src/app.rs`, `src/filter.rs`, `src/output/{mod,stream}.rs` (the `Described` literals only), `tests/cli_m2.rs` | 1 |
 | C2 | `object`: `Map`, Trails, rows, and the object writers | C1 | `src/processors/object/{mod,rows,fixture}.rs` | 2 |
 | C3 | `--pre`, `--pre-glob`, `-z` | C1 | `src/preprocess.rs` | 2 |
-| C4 | The shared modules of `docs` (Builder, tables, XML, zip), the shared writers, the stubs of the Extractors and their writers, the SQLite fixtures | C1 | `src/lib.rs`, `src/docs/**`, `src/helper/host.rs` (the readers' lifecycle), `scripts/gen-sqlite-fixtures.py`, `tests/fixtures/docs/**` | 2 |
+| C4 | The shared modules of `docs` (Builder, tables, XML, zip), the readers and their memory counter (D30, D31), the shared writers, the stubs of the Extractors and their writers, the SQLite fixtures | C1 | `src/lib.rs`, `src/docs/**`, `src/helper/host.rs` (the readers' lifecycle), `scripts/gen-sqlite-fixtures.py`, `tests/fixtures/docs/**` | 2 |
 | C5 | Object rows and the new kinds in the printers | C1 | `src/output/{mod,flat,tree,stream}.rs` | 2 |
 | C6 | Word, Excel, PowerPoint | C4 | `src/docs/ooxml.rs`, `src/docs/fixture/ooxml.rs` | 3 |
 | C7 | OpenDocument | C4 | `src/docs/odf.rs`, `src/docs/fixture/odf.rs` | 3 |
@@ -3355,6 +3416,7 @@ pub mod epub;
 #[doc(hidden)]
 pub mod fixture;
 pub mod isolated;
+pub mod memory;
 pub mod odf;
 pub mod ooxml;
 pub mod pdf;
@@ -3775,7 +3837,7 @@ pub fn column_letters(mut i: usize) -> String {
 ### Task 4.2: the XML reader, the zip container and the tables
 
 **Files:** `src/docs/xml.rs`, `src/docs/zipped.rs`, `src/docs/table.rs`, `src/docs/isolated.rs`,
-`src/helper/host.rs` (the readers in the Supervisor).
+`src/docs/memory.rs`, `src/helper/host.rs` (the readers in the Supervisor).
 
 - [ ] **Step 1:** the XML reader (D12), tests first, then the code:
 
@@ -4355,7 +4417,8 @@ impl Table {
 
 - [ ] **Step 4:** the reader process (D30): `isolated::extract` gives a document to one of
   `CHILDREN` workers, each the same `sfor` binary run as `sfor --__extract-document MIB` with
-  `SFOR_READER_OF`, `RLIMIT_DATA` at `MEMORY_MIB`, no core file, its own watchdog per document
+  `SFOR_READER_OF`, its memory counter armed at `MEMORY_MIB` (Step 5) and `RLIMIT_DATA`
+  `HEADROOM_MIB` above it, no core file, its own watchdog per document
   (`own_watchdog`, `OWN_WALL`, on a monotonic clock: review r6, Codex #2), and on Linux
   `PR_SET_PDEATHSIG`; it writes `KIND MAX_TEXT LEN` and the path's `LEN` bytes,
   and reads the answer back (`write_extracted`, `read_extracted`, tested by
@@ -4506,7 +4569,9 @@ diff --git a/src/helper/host.rs b/src/helper/host.rs
 ```rust
 //! Every document `--docs` reads is extracted in a child process: the same `sfor` binary run as
 //! `sfor __extract-document`, a worker that reads one request a line (`KIND MAX_TEXT PATH`)
-//! and writes each answer, with a limit on its memory (M4 plan, D30). The limits of each
+//! and writes each answer, with a limit on its memory (M4 plan, D30): its own count of the
+//! bytes it holds (`super::memory`, D31), the same on every system, and on Unix `RLIMIT_DATA`
+//! a little above, as a second barrier. The limits of each
 //! Extractor (D17) give the precise warnings; this one holds whatever path a reader takes,
 //! lopdf's inside included: a worker past its memory dies, one past `WALL` on a document is
 //! killed, the document gets one warning, and the search goes on with a new worker.
@@ -4530,9 +4595,14 @@ use std::time::Duration;
 pub const SUBCOMMAND: &str = "--__extract-document";
 /// The pid of the worker's parent, which the worker checks: it ends when the parent does.
 const PARENT: &str = "SFOR_READER_OF";
-/// The most memory a worker may allocate (its heap: `RLIMIT_DATA`; a file it maps for reading
-/// does not count).
+/// The most memory a worker may allocate (its heap, as `super::memory` counts it; a file it maps
+/// for reading does not count).
 pub const MEMORY_MIB: u64 = 1024;
+/// How far above the counter's limit `RLIMIT_DATA` stands, on Unix: room for what the counter
+/// does not see (the allocator's own pages, the threads' stacks), so the counter cuts first and
+/// the warning is the same on every system (M4 plan, D31).
+#[cfg(unix)]
+const HEADROOM_MIB: u64 = 64;
 /// The most workers at once: with `MEMORY_MIB` each, what all of them may take together.
 pub const CHILDREN: usize = 4;
 /// The most time one document may take.
@@ -4798,6 +4868,16 @@ fn memory_mib() -> u64 {
         .unwrap_or(MEMORY_MIB)
 }
 
+/// The worker's `RLIMIT_DATA` in MiB: `HEADROOM_MIB` above its counter's `mib`, or
+/// `SFOR_READER_RLIMIT_MIB`, for the test that the counter cuts where no `RLIMIT_DATA` would.
+#[cfg(unix)]
+fn rlimit_mib(mib: u64) -> u64 {
+    std::env::var("SFOR_READER_RLIMIT_MIB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(mib.saturating_add(HEADROOM_MIB))
+}
+
 /// Why a worker gave no answer.
 fn why(status: Option<std::process::ExitStatus>, errors: &str) -> DocError {
     if status.is_some_and(|s| s.code() == Some(LATE)) {
@@ -4825,6 +4905,8 @@ pub fn child(args: &[std::ffi::OsString]) -> i32 {
         .get(2)
         .and_then(|m| m.to_string_lossy().parse().ok())
         .unwrap_or(MEMORY_MIB);
+    // First, so what the worker allocates from here on is counted (D31).
+    super::memory::arm(super::memory::bytes_of_mib(mib));
     limit(mib);
     orphan_dies();
     let reading = own_watchdog();
@@ -4962,7 +5044,8 @@ impl std::ops::Deref for Bytes {
     }
 }
 
-/// The worker's limits: `mib` of heap, and no core file.
+/// The worker's limits: `RLIMIT_DATA` a little above its counter's `mib` (the counter is
+/// armed already), and no core file.
 #[cfg(unix)]
 fn limit(mib: u64) {
     let set = |what, n: u64| {
@@ -4973,7 +5056,7 @@ fn limit(mib: u64) {
         // SAFETY: setrlimit reads the struct it is given.
         unsafe { libc::setrlimit(what, &r) };
     };
-    set(libc::RLIMIT_DATA, mib << 20);
+    set(libc::RLIMIT_DATA, rlimit_mib(mib).saturating_mul(1 << 20));
     // No core file and no crash report for a hostile document (M4 plan r4, Fable #3).
     set(libc::RLIMIT_CORE, 0);
     #[cfg(target_os = "linux")]
@@ -5229,6 +5312,278 @@ mod tests {
     }
 }
 ```
+
+- [ ] **Step 5:** the readers' memory counter (D31, the amendment of 18/10): the tests first,
+  in `src/docs/memory.rs` under its `use` lines, the module declared in `src/docs/mod.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MIB: usize = 1 << 20;
+
+    fn layout(n: usize) -> Layout {
+        Layout::from_size_align(n, 8).unwrap()
+    }
+
+    /// D31: an armed counter refuses the allocation that would take its live bytes past the
+    /// limit, and counts the bytes freed, so the same request fits again after a free.
+    #[test]
+    fn an_armed_counter_refuses_past_its_limit() {
+        let c = Counter::new();
+        c.arm(4 * MIB);
+        // SAFETY: each block is freed once, with the layout it was allocated with.
+        unsafe {
+            let a = c.alloc(layout(3 * MIB));
+            assert!(!a.is_null());
+            assert!(c.alloc(layout(2 * MIB)).is_null(), "3 + 2 MiB is past 4");
+            let z = c.alloc_zeroed(layout(MIB));
+            assert!(!z.is_null(), "3 + 1 MiB is the limit itself");
+            assert!(c.alloc_zeroed(layout(1)).is_null());
+            c.dealloc(a, layout(3 * MIB));
+            let b = c.alloc(layout(2 * MIB));
+            assert!(!b.is_null());
+            c.dealloc(b, layout(2 * MIB));
+            c.dealloc(z, layout(MIB));
+        }
+        assert_eq!(c.live.load(Relaxed), 0);
+    }
+
+    /// D31: a realloc counts only what it adds or gives back, and a refused one keeps the block.
+    #[test]
+    fn a_realloc_counts_its_difference() {
+        let c = Counter::new();
+        c.arm(4 * MIB);
+        // SAFETY: the block is valid until its dealloc, with the layout of its last size.
+        unsafe {
+            let a = c.alloc(layout(MIB));
+            a.write(7);
+            let a = c.realloc(a, layout(MIB), 3 * MIB);
+            assert!(!a.is_null());
+            assert_eq!(c.live.load(Relaxed), 3 * MIB as isize);
+            assert!(
+                c.realloc(a, layout(3 * MIB), 5 * MIB).is_null(),
+                "past 4 MiB"
+            );
+            assert_eq!(a.read(), 7, "the refused realloc left the block as it was");
+            let a = c.realloc(a, layout(3 * MIB), MIB);
+            assert_eq!(c.live.load(Relaxed), MIB as isize);
+            c.dealloc(a, layout(MIB));
+        }
+        assert_eq!(c.live.load(Relaxed), 0);
+    }
+
+    /// D31: a counter that was never armed, as in sfor's own process, counts nothing and
+    /// refuses nothing; a block allocated before `arm` and freed after it leaves the count
+    /// below 0, never wrapped around to a refusal of everything.
+    #[test]
+    fn a_counter_not_armed_counts_nothing() {
+        let c = Counter::new();
+        // SAFETY: each block is freed once, with its layout.
+        unsafe {
+            let before = c.alloc(layout(2 * MIB));
+            assert_eq!(c.live.load(Relaxed), 0);
+            c.arm(MIB);
+            c.dealloc(before, layout(2 * MIB));
+            assert_eq!(c.live.load(Relaxed), -2 * MIB as isize);
+            let a = c.alloc(layout(MIB));
+            assert!(!a.is_null());
+            c.dealloc(a, layout(MIB));
+        }
+    }
+
+    /// D31: the limit in MiB, as `child` arms it, saturates instead of overflowing.
+    #[test]
+    fn a_limit_in_mib_saturates() {
+        assert_eq!(bytes_of_mib(1024), 1024 * MIB);
+        assert_eq!(bytes_of_mib(u64::MAX), isize::MAX as usize);
+    }
+}
+```
+
+  `cargo test --lib docs::memory` does not compile (`Counter`, `bytes_of_mib`): RED. Then the
+  counter, the `#[global_allocator]` of every sfor process, armed by `isolated::child` (Step 4)
+  before anything else. A unit test calls a `Counter` of its own, never the process's:
+
+```rust
+//! The readers' memory counter (M4 plan, D31): the allocator of every sfor process is the
+//! system's, with a count of the bytes a document reader holds. `isolated::child` arms it
+//! with the reader's limit; past it an allocation is refused, the same on Linux, macOS and
+//! Windows, and the reader gives the memory warning, as one past `RLIMIT_DATA` gives it:
+//!
+//! - a `try_reserve` sees `Err`, which a reader returns as an error ending `out of memory`,
+//!   and `isolated::refused_memory` turns into the warning;
+//! - any other allocation goes to `std::alloc::handle_alloc_error`, whose default prints
+//!   `memory allocation of N bytes failed` and aborts the reader: its parent reads that line in
+//!   the reader's stderr and gives the warning (`isolated::why`).
+//!
+//! Not armed, in sfor's own process and in every test binary, each allocation and free costs
+//! one relaxed load of `limit`, a value no one writes there, and a branch: the count itself
+//! is never touched.
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering::Relaxed};
+
+/// The system's allocator, counting the live bytes once armed.
+pub struct Counter {
+    /// The most bytes live at once; 0 until `arm`, and then nothing is counted.
+    limit: AtomicUsize,
+    /// The bytes allocated since `arm` and not yet freed: below 0 when blocks allocated
+    /// before it are freed after it, which loosens the limit by those few bytes and never
+    /// makes it refuse everything.
+    live: AtomicIsize,
+}
+
+#[global_allocator]
+static COUNTER: Counter = Counter::new();
+
+/// From now on, in this process, an allocation that takes the live bytes past `bytes` is
+/// refused. Called once, by a reader, before its first document.
+pub fn arm(bytes: usize) {
+    COUNTER.arm(bytes);
+}
+
+/// `mib` MiB in bytes, at most `isize::MAX` (`SFOR_READER_MIB` may say anything).
+pub fn bytes_of_mib(mib: u64) -> usize {
+    mib.saturating_mul(1 << 20).min(isize::MAX as u64) as usize
+}
+
+impl Counter {
+    pub const fn new() -> Counter {
+        Counter {
+            limit: AtomicUsize::new(0),
+            live: AtomicIsize::new(0),
+        }
+    }
+
+    fn arm(&self, bytes: usize) {
+        self.live.store(0, Relaxed);
+        self.limit
+            .store(bytes.clamp(1, isize::MAX as usize), Relaxed);
+    }
+
+    /// Whether the counter counts: false until `arm`, and so in sfor's own process.
+    #[inline(always)]
+    fn armed(&self) -> bool {
+        self.limit.load(Relaxed) != 0
+    }
+
+    /// Whether `n` more bytes fit under the armed limit, counting them when they do.
+    fn take(&self, n: usize) -> bool {
+        let limit = self.limit.load(Relaxed) as isize;
+        // A Layout's size is at most isize::MAX.
+        let n = n as isize;
+        let before = self.live.fetch_add(n, Relaxed);
+        if before.saturating_add(n) > limit {
+            self.live.fetch_sub(n, Relaxed);
+            return false;
+        }
+        true
+    }
+
+    fn give(&self, n: usize) {
+        self.live.fetch_sub(n as isize, Relaxed);
+    }
+
+    /// An allocation while armed: counted first, given back if the system refuses it.
+    #[inline]
+    unsafe fn counted(&self, layout: Layout, zeroed: bool) -> *mut u8 {
+        if !self.take(layout.size()) {
+            return std::ptr::null_mut();
+        }
+        // SAFETY: the caller's layout, as GlobalAlloc::alloc requires; calloc for zeroed
+        // blocks, whose pages come zeroed.
+        let p = unsafe {
+            if zeroed {
+                System.alloc_zeroed(layout)
+            } else {
+                System.alloc(layout)
+            }
+        };
+        if p.is_null() {
+            self.give(layout.size());
+        }
+        p
+    }
+
+    #[inline]
+    unsafe fn counted_realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let old = layout.size();
+        if new_size > old && !self.take(new_size - old) {
+            // Refused: the block stays as it was, as a failed realloc leaves it.
+            return std::ptr::null_mut();
+        }
+        // SAFETY: `ptr` came from `System` with `layout`; `new_size` is the caller's.
+        let p = unsafe { System.realloc(ptr, layout, new_size) };
+        if p.is_null() {
+            if new_size > old {
+                self.give(new_size - old);
+            }
+        } else if new_size < old {
+            self.give(old - new_size);
+        }
+        p
+    }
+}
+
+impl Default for Counter {
+    fn default() -> Counter {
+        Counter::new()
+    }
+}
+
+// SAFETY: every block comes from `System` and goes back to it with the same layout; the
+// counter only refuses, it never changes a block. Not armed, each method is one load, one
+// branch and a jump to the system's own function, the last thing it does. `inline(never)`:
+// inlined at every allocation site by LTO, the counter made the release binary about 400 KB
+// larger (M4 plan, D31).
+unsafe impl GlobalAlloc for Counter {
+    #[inline(never)]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if self.armed() {
+            // SAFETY: the caller's contract, passed on.
+            return unsafe { self.counted(layout, false) };
+        }
+        // SAFETY: the caller's layout, as GlobalAlloc::alloc requires.
+        unsafe { System.alloc(layout) }
+    }
+
+    #[inline(never)]
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        if self.armed() {
+            // SAFETY: the caller's contract, passed on.
+            return unsafe { self.counted(layout, true) };
+        }
+        // SAFETY: as in alloc; the system's calloc.
+        unsafe { System.alloc_zeroed(layout) }
+    }
+
+    #[inline(never)]
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if self.armed() {
+            self.give(layout.size());
+        }
+        // SAFETY: `ptr` came from `System` with `layout`.
+        unsafe { System.dealloc(ptr, layout) }
+    }
+
+    #[inline(never)]
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        if self.armed() {
+            // SAFETY: the caller's contract, passed on.
+            return unsafe { self.counted_realloc(ptr, layout, new_size) };
+        }
+        // SAFETY: `ptr` came from `System` with `layout`; `new_size` is the caller's.
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+}
+```
+
+  GREEN. The end-to-end test that the counter, and not `RLIMIT_DATA`, ends a reader is
+  C11's `m4_22`; this chunk checks that the counter builds elsewhere: `cargo check --lib --bins
+  --target x86_64-pc-windows-gnu` (the probe: the four warnings of `191dbaf`'s Supervisor on
+  Windows, none of this chunk) and, with the target and a C compiler for it,
+  `--target aarch64-apple-darwin`.
 
 ### Task 4.3: the shared writers and the stubs
 
@@ -5523,6 +5878,15 @@ for column in ["deep TEXT DEFAULT (('deep default'))", "e REAL DEFAULT 1e-3", "h
     db.execute(f"ALTER TABLE defaults ADD COLUMN {column}")
 db.execute("INSERT INTO defaults (a) VALUES ('new')")
 db.execute("INSERT INTO defaults VALUES ('null', NULL, NULL, NULL, NULL, NULL, NULL, NULL)")
+# A sign, a bare word, a quoted type and a real as SQLite reads them (M4 plan r7, Codex #1,
+# Fable #1 and #3).
+db.execute("CREATE TABLE signed (a TEXT)")
+db.execute("INSERT INTO signed VALUES ('old')")
+db.commit()
+for column in ["p TEXT DEFAULT +'plus default'", "w TEXT DEFAULT current_word", 'q "INTEGER" DEFAULT 7.0',
+               "z TEXT DEFAULT -'abc'", "s TEXT DEFAULT -'7.0'", "r REAL DEFAULT 1e-5"]:
+    db.execute(f"ALTER TABLE signed ADD COLUMN {column}")
+db.execute("INSERT INTO signed (a) VALUES ('new')")
 db.execute("CREATE INDEX users_email ON users(email)")
 db.execute("CREATE VIEW v AS SELECT name FROM users")
 db.commit()
@@ -5546,7 +5910,7 @@ db.commit()
 db.close()
 ```
 
-- [ ] **Step 2:** `python3 scripts/gen-sqlite-fixtures.py` writes the three databases (9 728,
+- [ ] **Step 2:** `python3 scripts/gen-sqlite-fixtures.py` writes the three databases (13 312,
   69 632 and 1 024 bytes with Python 3.13's sqlite3, SQLite 3.46.1; the sizes may differ with
   another SQLite, the tests do not depend on them). Commit them: git reads them as binary.
   `shop.sqlite`'s tables `late` (`WITHOUT ROWID`, its key the last column), `comp` (`WITHOUT
@@ -5555,8 +5919,8 @@ db.close()
 
 ### Task 4.5: green, and the commit
 
-- [ ] **Step 1:** the whole suite (the probe's state after tanda 2, measured over `191dbaf`: 448
-  unit tests), clippy,
+- [ ] **Step 1:** the whole suite (the probe's state after tanda 2, measured over `191dbaf`:
+  457 unit tests), clippy,
   fmt, one commit per task.
 
 ## Chunk 5: object rows and the new kinds in the printers
@@ -10804,10 +11168,32 @@ mod tests {
         assert_eq!(c.ipk, Some(0));
     }
 
+    /// Fable r7 #1: a real prints as the `sqlite3` shell prints it, with `%!.15g`; each case is
+    /// SQLite 3.46.1's `CAST(x AS TEXT)` of the same value.
     #[test]
     fn values_print_as_sqlite_shows_them() {
         assert_eq!(Value::Float(100.0).shown(), "100.0");
         assert_eq!(Value::Float(1.5).shown(), "1.5");
+        for (f, shell) in [
+            (0.1 + 0.2, "0.3"),
+            (1.1 * 3.0, "3.3"),
+            (1.0 / 3.0, "0.333333333333333"),
+            (1e-5, "1.0e-05"),
+            (-2.5e-7, "-2.5e-07"),
+            (1e16, "1.0e+16"),
+            (1e300, "1.0e+300"),
+            (123456789012345.6, "123456789012346.0"),
+            (999999999999999.9, "1.0e+15"),
+            (8979436893026.125, "8979436893026.13"),
+            (-95185635704743.25, "-95185635704743.3"),
+            (0.0001, "0.0001"),
+            (40.7128, "40.7128"),
+            (-0.0, "0.0"),
+            (f64::INFINITY, "Inf"),
+            (f64::NEG_INFINITY, "-Inf"),
+        ] {
+            assert_eq!(Value::Float(f).shown(), shell, "{f:e}");
+        }
         assert_eq!(Value::Int(-3).shown(), "-3");
         assert_eq!(Value::Null.shown(), "");
         assert_eq!(Value::Blob(12).shown(), "[blob 12 bytes]");
@@ -10994,6 +11380,43 @@ mod tests {
         assert_eq!(d("", "1.50"), "1.5");
         assert_eq!(d("BLOB", "'7'"), "7");
         assert_eq!(d("", "abc"), "abc");
+        // Codex r7 #1: a unary plus is nothing to SQLite; only the three CURRENT_ keywords are
+        // the time of the insertion; a quoted type is a type.
+        assert_eq!(d("TEXT", "+'needle'"), "needle");
+        assert_eq!(d("TEXT", "((+'x'))"), "x");
+        assert_eq!(d("TEXT", "current_needle"), "current_needle");
+        assert_eq!(c("current_time"), None);
+        let q =
+            columns("CREATE TABLE t(a \"INTEGER\" DEFAULT 7.0, b [REAL], c 'INTEGER' PRIMARY KEY)");
+        assert_eq!((q.real, q.ipk), (vec![false, true, false], Some(2)));
+        assert_eq!(q.defaults[0], Some(Value::Int(7)));
+        // Fable r7 #3: a sign before what is not a number makes it one, an integer goes to a
+        // TEXT column as its value, and `_` is dropped.
+        assert_eq!(d("TEXT", "-'abc'"), "0");
+        assert_eq!(d("", "-X'01'"), "0");
+        assert_eq!(d("TEXT", "+'abc'"), "abc");
+        assert_eq!(d("TEXT", "-'7.0'"), "-7");
+        assert_eq!(d("TEXT", "-'12abc'"), "-12");
+        assert_eq!(d("TEXT", "1_000"), "1000");
+        assert_eq!(d("TEXT", "-1_0"), "-10");
+        assert_eq!(d("TEXT", "-007"), "-7");
+        assert_eq!(d("TEXT", "-1.50"), "-1.50");
+        assert_eq!(d("INTEGER", "9223372036854775808"), "9.22337203685478e+18");
+        assert_eq!(d("", "1e18"), "1.0e+18");
+        // Codex r7 #1: the rows before the ALTER and after it, in the eighth table; SQLite
+        // itself stores `-7.0` in the row written after, where the older one reads `-7`.
+        assert!(
+            text.contains("\nold\tplus default\tcurrent_word\t7\t0\t-7\t1.0e-05\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\nnew\tplus default\tcurrent_word\t7\t0\t-7.0\t1.0e-05\n"),
+            "{text}"
+        );
+        assert_eq!(text.matches("plus default").count(), 2);
+        assert_eq!(text.matches("current_word").count(), 2);
+        assert_eq!(trail(&e, "plus default"), ["signed", "row 1", "p"]);
+        assert_eq!(trail(&e, "current_word"), ["signed", "row 1", "w"]);
     }
 
     #[test]
@@ -11034,7 +11457,10 @@ mod tests {
   `old` and an empty cell (review r5, Codex #2); `defaults_are_read_as_sqlite_reads_them`
   over the round-5 code, which printed `old\t\t\t\t7.0\t7.0\t\t` for the first row of the
   seventh table, `defaults`, where SQLite gives `old`, `deep default`, `0.001`, `42`, `7`,
-  `7`, `-1` and `1E+3` (review r6, Codex #1, Fable #2).
+  `7`, `-1` and `1E+3` (review r6, Codex #1, Fable #2); `values_print_as_sqlite_shows_them`
+  over the round-6 code, which printed `0.30000000000000004` for `0.1 + 0.2` (review r7, Fable
+  #1), and `defaults_are_read_as_sqlite_reads_them`, which found no constant in `+'needle'`
+  (review r7, Codex #1, and the NIT Fable #3).
 
 - [ ] **Step 3:** the reader (D15, D16), from SQLite's file format document: the 100-byte
   header, b-tree pages (`0x0d` table leaf, `0x05` table interior, `0x0a` index leaf, `0x02`
@@ -11084,11 +11510,67 @@ impl Value {
         match self {
             Value::Null => String::new(),
             Value::Int(i) => i.to_string(),
-            Value::Float(f) if f.fract() == 0.0 && f.abs() < 1e15 => format!("{f:.1}"),
-            Value::Float(f) => f.to_string(),
+            Value::Float(f) => real(*f),
             Value::Text(t) => t.clone(),
             Value::Blob(n) => format!("[blob {n} bytes]"),
         }
+    }
+}
+
+/// A real as the `sqlite3` shell prints it, and `CAST(x AS TEXT)`: SQLite's `%!.15g`, 15
+/// significant digits, rounded half away from zero as SQLite rounds them, the zeros at the end
+/// dropped but one after the point, and an exponent of at least two digits below 1e-4 and from
+/// 1e15 on (M4 plan r7, Fable #1: `0.1 + 0.2` is `0.3`, where Rust's shortest form is
+/// `0.30000000000000004`).
+fn real(f: f64) -> String {
+    if f.is_nan() {
+        return "NaN".into();
+    }
+    if f.is_infinite() {
+        return if f < 0.0 { "-Inf" } else { "Inf" }.into();
+    }
+    if f == 0.0 {
+        return "0.0".into();
+    }
+    // 41 digits, exact as Rust prints them, of which the 16th rounds the first 15: Rust's own
+    // rounding at 15 is half to even, and an exact half (`8979436893026.125`) goes up in SQLite.
+    let e = format!("{:.40e}", f.abs());
+    let (mantissa, exp) = e.split_once('e').unwrap_or((&e, "0"));
+    let mut exp: i32 = exp.parse().unwrap_or(0);
+    let mut d: Vec<u8> = mantissa.bytes().filter(u8::is_ascii_digit).collect();
+    let up = d.get(15).is_some_and(|&c| c >= b'5');
+    d.truncate(15);
+    if up {
+        match d.iter().rposition(|&c| c != b'9') {
+            Some(i) => {
+                d[i] += 1;
+                d[i + 1..].fill(b'0');
+            }
+            None => {
+                d.fill(b'0');
+                d[0] = b'1';
+                exp += 1;
+            }
+        }
+    }
+    let digits = String::from_utf8(d).unwrap_or_default();
+    let digits = digits.trim_end_matches('0');
+    let sign = if f < 0.0 { "-" } else { "" };
+    if !(-4..15).contains(&exp) {
+        let (first, rest) = digits.split_at(1);
+        let rest = if rest.is_empty() { "0" } else { rest };
+        let es = if exp < 0 { '-' } else { '+' };
+        return format!("{sign}{first}.{rest}e{es}{:02}", exp.unsigned_abs());
+    }
+    if exp < 0 {
+        let zeros = "0".repeat(exp.unsigned_abs() as usize - 1);
+        return format!("{sign}0.{zeros}{digits}");
+    }
+    let whole = exp as usize + 1;
+    if digits.len() <= whole {
+        format!("{sign}{digits}{}.0", "0".repeat(whole - digits.len()))
+    } else {
+        format!("{sign}{}.{}", &digits[..whole], &digits[whole..])
     }
 }
 
@@ -11557,11 +12039,12 @@ fn columns(sql: &str) -> Columns {
             continue;
         }
         let Some(name) = first.name() else { continue };
-        // The type: the words after the name, up to a constraint or a parenthesis.
+        // The type: the words after the name, up to a constraint or a parenthesis; a quoted
+        // one is a type too (`"INTEGER"`, M4 plan r7, Codex #1), never a keyword.
         let ty: Vec<String> = part[1..]
             .iter()
             .take_while(|t| {
-                matches!(t, Tok::Word(_))
+                matches!(t, Tok::Word(_) | Tok::Quoted(_))
                     && ![
                         "CONSTRAINT",
                         "PRIMARY",
@@ -11673,8 +12156,10 @@ enum Lit {
     /// A number, and the text a TEXT column keeps of it: as written, a hexadecimal one in
     /// decimal.
     Num(Value, String),
-    /// NULL or a blob, which no affinity changes.
+    /// NULL, which no affinity changes.
     Other(Value),
+    /// A blob's bytes, which no affinity changes either.
+    Blob(Vec<u8>),
 }
 
 impl Lit {
@@ -11683,6 +12168,7 @@ impl Lit {
         match self {
             Lit::Text(t) => t.clone(),
             Lit::Num(v, _) | Lit::Other(v) => v.shown(),
+            Lit::Blob(b) => Value::Blob(b.len()).shown(),
         }
     }
 
@@ -11691,6 +12177,7 @@ impl Lit {
     fn with_affinity(self, a: Affinity) -> Value {
         match (self, a) {
             (Lit::Other(v), _) => v,
+            (Lit::Blob(b), _) => Value::Blob(b.len()),
             (Lit::Num(_, t), Affinity::Text) => Value::Text(t),
             (Lit::Num(v, _), Affinity::Blob) => v,
             (Lit::Num(v, _), a) => numeric(v, a),
@@ -11738,7 +12225,9 @@ fn decimal(s: &str) -> Option<Value> {
 }
 
 /// A numeric literal as SQLite reads it: decimal, with a point or an exponent, or hexadecimal
-/// (`0x2a`, 64 bits in two's complement); `_` may separate digits.
+/// (`0x2a`, 64 bits in two's complement); `_` may separate digits, and SQLite drops it. An
+/// integer that fits in 64 bits is its value, also to a TEXT column (`007` is `7`, `1_000` is
+/// `1000`); any other number keeps its digits as written (M4 plan r7, Fable #3).
 fn number(w: &str) -> Option<Lit> {
     let digits = w.replace('_', "");
     if let Some(h) = digits
@@ -11748,13 +12237,81 @@ fn number(w: &str) -> Option<Lit> {
         let n = u64::from_str_radix(h, 16).ok()? as i64;
         return Some(Lit::Num(Value::Int(n), n.to_string()));
     }
-    Some(Lit::Num(decimal(&digits)?, w.to_string()))
+    let v = decimal(&digits)?;
+    let t = match v {
+        Value::Int(n) => n.to_string(),
+        _ => digits,
+    };
+    Some(Lit::Num(v, t))
+}
+
+/// A value made a number, as SQLite's `sqlite3VdbeMemNumerify` makes one before a sign: the
+/// number at the start of a text (after white space), an integer when it has no fraction, and
+/// 0 for a text that starts with none.
+fn numerify(t: &str) -> Value {
+    let b = t
+        .trim_start_matches(|c: char| c.is_ascii_whitespace())
+        .as_bytes();
+    let digits = |from: usize| from + b[from..].iter().take_while(|c| c.is_ascii_digit()).count();
+    let mut end = usize::from(matches!(b.first(), Some(b'+' | b'-')));
+    let start = end;
+    end = digits(end);
+    let mut whole = end > start;
+    if b.get(end) == Some(&b'.') {
+        let after = digits(end + 1);
+        whole |= after > end + 1;
+        end = after;
+    }
+    if !whole {
+        return Value::Int(0);
+    }
+    if matches!(b.get(end), Some(b'e' | b'E')) {
+        let mut e = end + 1;
+        e += usize::from(matches!(b.get(e), Some(b'+' | b'-')));
+        if digits(e) > e {
+            end = digits(e);
+        }
+    }
+    let n = std::str::from_utf8(&b[..end]).unwrap_or("0");
+    match n.parse::<i64>() {
+        Ok(i) => Value::Int(i),
+        Err(_) => numeric(Value::Float(n.parse().unwrap_or(0.0)), Affinity::Numeric),
+    }
+}
+
+/// `-` before a constant, as `sqlite3ValueFromExpr` reads it: before a number as written, the
+/// number with the sign (`-1.50` stays as written to a TEXT column); before anything else, the
+/// value made a number and negated (`-'abc'` and `-X'01'` are `0`, `-'7.0'` is `-7`: M4 plan r7,
+/// Fable #3). `written` is whether the constant is a numeric literal.
+fn negative(lit: Lit, written: bool) -> Option<Lit> {
+    let v = match lit {
+        Lit::Num(Value::Int(n), _) if written => {
+            let n = n.wrapping_neg();
+            return Some(Lit::Num(Value::Int(n), n.to_string()));
+        }
+        Lit::Num(_, t) if written => {
+            let t = format!("-{t}");
+            return Some(Lit::Num(decimal(&t)?, t));
+        }
+        Lit::Num(v, _) => v,
+        Lit::Text(t) => numerify(&t),
+        Lit::Blob(b) => numerify(&String::from_utf8_lossy(&b)),
+        Lit::Other(v) => return Some(Lit::Other(v)),
+    };
+    let v = match v {
+        Value::Int(i64::MIN) => Value::Float(-(i64::MIN as f64)),
+        Value::Int(n) => Value::Int(-n),
+        Value::Float(f) => Value::Float(-f),
+        _ => return None,
+    };
+    let t = v.shown();
+    Some(Lit::Num(v, t))
 }
 
 /// The constant a `DEFAULT` names at the start of `toks`, and how many tokens it takes: a
 /// string, a number, `NULL`, `TRUE` or `FALSE`, a blob, a bare word (which SQLite takes for a
 /// string), a sign before one of these, or one of these in parentheses, nested or not. None for
-/// an expression.
+/// an expression, and for `CURRENT_DATE`, `CURRENT_TIME` and `CURRENT_TIMESTAMP`.
 fn constant(toks: &[Tok]) -> Option<(Lit, usize)> {
     match toks {
         [Tok::Punct('('), rest @ ..] => {
@@ -11772,39 +12329,26 @@ fn constant(toks: &[Tok]) -> Option<(Lit, usize)> {
         }
         [Tok::Quoted(s), ..] => Some((Lit::Text(s.clone()), 1)),
         [Tok::Word(x), Tok::Quoted(h), ..] if x.eq_ignore_ascii_case("X") => {
-            Some((Lit::Other(Value::Blob(h.len() / 2)), 2))
+            let bytes = h.as_bytes().chunks(2).filter_map(|c| {
+                std::str::from_utf8(c)
+                    .ok()
+                    .and_then(|c| u8::from_str_radix(c, 16).ok())
+            });
+            Some((Lit::Blob(bytes.collect()), 2))
         }
-        [Tok::Punct(sign @ ('-' | '+')), rest @ ..] => {
-            // -9223372036854775808 is an integer, though its digits alone are not.
-            if *sign == '-'
-                && let [Tok::Word(w), ..] = rest
-                && let Ok(n) = format!("-{w}").parse::<i64>()
-            {
-                return Some((Lit::Num(Value::Int(n), format!("-{w}")), 2));
-            }
+        // A unary plus is no operator to SQLite: `+'needle'` is `'needle'` (M4 plan r7, Codex
+        // #1).
+        [Tok::Punct('+'), rest @ ..] => constant(rest).map(|(lit, n)| (lit, n + 1)),
+        [Tok::Punct('-'), rest @ ..] => {
             let (lit, n) = constant(rest)?;
-            let (v, t) = match lit {
-                Lit::Num(v, t) => (v, t),
-                Lit::Text(t) => {
-                    let v = decimal(&t)?;
-                    let t = v.shown();
-                    (v, t)
-                }
-                Lit::Other(_) => return None,
-            };
-            if *sign == '+' {
-                return Some((Lit::Num(v, t), n + 1));
-            }
-            let v = match v {
-                Value::Int(i) => Value::Int(i.checked_neg()?),
-                Value::Float(f) => Value::Float(-f),
-                _ => return None,
-            };
-            let t = t
-                .strip_prefix('-')
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("-{t}"));
-            Some((Lit::Num(v, t), n + 1))
+            // A numeric literal, in parentheses or not.
+            let written = rest
+                .iter()
+                .find(|t| **t != Tok::Punct('('))
+                .is_some_and(|t| {
+                    matches!(t, Tok::Word(w) if w.starts_with(|c: char| c.is_ascii_digit() || c == '.'))
+                });
+            Some((negative(lit, written)?, n + 1))
         }
         [Tok::Word(w), ..] if w.starts_with(|c: char| c.is_ascii_digit() || c == '.') => {
             Some((number(w)?, 1))
@@ -11818,7 +12362,14 @@ fn constant(toks: &[Tok]) -> Option<(Lit, usize)> {
         }
         // A function, or the time of the insertion: not constants.
         [Tok::Word(_), Tok::Punct('('), ..] => None,
-        [Tok::Word(w), ..] if w.to_ascii_uppercase().starts_with("CURRENT_") => None,
+        // Exactly these three: `current_needle` is a bare word, a string (M4 plan r7, Codex #1).
+        [Tok::Word(w), ..]
+            if ["CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP"]
+                .iter()
+                .any(|k| w.eq_ignore_ascii_case(k)) =>
+        {
+            None
+        }
         [Tok::Word(w), ..] => Some((Lit::Text(w.clone()), 1)),
         _ => None,
     }
@@ -12965,7 +13516,19 @@ fn m4_21_a_document_past_the_readers_limit_ends_its_reader() {
     stdin.write_all(path).unwrap();
     stdin.flush().unwrap();
     let asked = std::time::Instant::now();
-    let status = reader.wait().unwrap();
+    // A limit of the test's own (M4 plan r7, Codex #2): a reader whose watchdog fails is killed
+    // and reaped, and the test fails, instead of waiting on the FIFO for ever.
+    let status = loop {
+        if let Some(s) = reader.try_wait().unwrap() {
+            break s;
+        }
+        if asked.elapsed() > std::time::Duration::from_secs(10) {
+            let _ = reader.kill();
+            let _ = reader.wait();
+            panic!("the reader still read the FIFO 10 s after its 1 s limit");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
     let took = asked.elapsed();
     drop(stdin);
     assert_eq!(status.code(), Some(3), "{status:?}");
@@ -12973,6 +13536,37 @@ fn m4_21_a_document_past_the_readers_limit_ends_its_reader() {
         took >= std::time::Duration::from_millis(900) && took < std::time::Duration::from_secs(10),
         "{took:?}"
     );
+}
+
+/// M4 plan, D31: the reader's own count of its memory ends it at its limit, the same on every
+/// system. With `RLIMIT_DATA` far above the count (`SFOR_READER_RLIMIT_MIB`, 4 096 MiB), as on
+/// macOS and Windows, where no `RLIMIT_DATA` holds, the workbook of `m4_16` still gives the
+/// warning at 16 MiB, and the other document is read.
+#[test]
+fn m4_22_the_readers_own_count_ends_it_at_its_limit() {
+    let fx = fixture();
+    let row: &[&str] = &["needle in a big sheet"];
+    let rows: Vec<&[&str]> = vec![row; 200_000];
+    std::fs::write(fx.path().join("m4/big.xlsx"), doc::xlsx(&[("S", &rows)])).unwrap();
+    let o = run(fx
+        .sfor([
+            "--docs",
+            "--flat",
+            "-c",
+            "needle",
+            "m4/big.xlsx",
+            "m4/report.docx",
+        ])
+        .env("SFOR_READER_MIB", "16")
+        .env("SFOR_READER_RLIMIT_MIB", "4096"));
+    assert!(
+        stderr(&o)
+            .contains("m4/big.xlsx: xlsx: reading it needed more than the 16 MiB a reader may use"),
+        "{}",
+        stderr(&o)
+    );
+    assert!(stdout(&o).contains("m4/report.docx:3"), "{}", stdout(&o));
+    assert_eq!(code(&o), 0);
 }
 ```
 
@@ -12999,7 +13593,12 @@ fn m4_21_a_document_past_the_readers_limit_ends_its_reader() {
   over the reader's life (review r6, Fable #4; with the limit counted over the reader's life
   it gave two warnings, at the 9th and the 18th workbook). `m4_21`: a reader idle past its
   limit reads on, and one whose document never ends (a FIFO) exits `LATE` about the limit
-  later (review r6, Codex #2). `m4_17` (the worker's flag is no pattern: `sfor
+  later (review r6, Codex #2), within a limit of the test's own, past which it kills and reaps
+  the reader and fails (review r7, Codex #2: with `SFOR_READER_SECONDS=1000`, the round-6 test
+  still waited at 40 s, and this one fails in 11.6 s). `m4_22`: the reader's own count of its
+  memory ends it, with `RLIMIT_DATA` far above (`SFOR_READER_RLIMIT_MIB=4096`), as macOS and
+  Windows have it (D31); RED over the probe with the counter not armed, which read the
+  workbook. `m4_17` (the worker's flag is no pattern: `sfor
   __extract-document FILE` searches it, as rg), `m4_18` (paths not UTF-8, with a line break,
   with a carriage return before the extension and at the very end, the latter with
   `--format docx`: «No such file or directory» over the round-3 reader, review r5, Codex #3)
@@ -15021,13 +15620,18 @@ for i in range(20000):
 #     --docs reads their first bytes: M4 plan r1, Fable #5). Its ratio to rg is printed: over
 #     these small files it is sfor's own, M1–M3's, 1.04–1.10 × with or without --docs, which
 #     put a ceiling of 1.1 × rg here at the mercy of the noise (M4 plan r6, Fable #5);
+#   - without --docs, sfor against M3's (SFOR_BASE_BIN, the sfor of 191dbaf), the sparse pattern
+#     over the whole corpus: ≤ 1.03 ×, the median of three series (what M4 adds without --docs,
+#     the readers' memory counter of D31 included; M4 plan r7, Fable #2); skipped without
+#     SFOR_BASE_BIN;
 #   - --binary with the sparse pattern over the object files: sfor − rg ≤ the largest matching
 #     object ÷ 100 MB/s + the matching objects ÷ (100 MB/s × threads) + 0.05 s;
 #   - --docs with the sparse pattern over the documents: sfor ≤ rg over their texts (texts/)
 #     + the texts' bytes ÷ (2 MB/s × threads) + 0.1 s, and sfor finds the lines rg finds.
 # Usage: scripts/bench-m4.sh [CORPUS_DIR]  (generated there when missing; a temporary one by
 # default). Needs python3, hyperfine, jq, awk and GNU stat. SFOR_BIN replaces the sfor under
-# test; SFOR_RG, else /usr/bin/rg, is the reference and must be ripgrep 14.1.1.
+# test; SFOR_RG, else /usr/bin/rg, is the reference and must be ripgrep 14.1.1; SFOR_BASE_BIN is
+# M3's sfor, for the docs-off case.
 set -euo pipefail
 export LC_ALL=C
 cargo build --release --quiet
@@ -15100,6 +15704,27 @@ median docs-none '"$SFOR_RG_PATH" --color never -e "$SFOR_BENCH_NONE" -- "$SFOR_
 median docs-added '"$SFOR_BIN_PATH" --color never --flat -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR/text" "$SFOR_BENCH_DIR/bin"' \
   '"$SFOR_BIN_PATH" --color never --flat --docs -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR/text" "$SFOR_BENCH_DIR/bin"' \
   sfor 'sfor --docs'; within 1.05
+if [ -n "${SFOR_BASE_BIN:-}" ]; then
+  # Three series in alternating order, and the median of their ratios: one series of the same
+  # code with and without D31's counter gave 0.98–1.04 here (M4 plan r7).
+  export SFOR_BASE_PATH="$SFOR_BASE_BIN"
+  m3='"$SFOR_BASE_PATH" --color never --flat -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'
+  m4='"$SFOR_BIN_PATH" --color never --flat -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'
+  ratios=""
+  for s in 1 2 3; do
+    if [ "$s" = 2 ]; then
+      median docs-off-$s "$m4" "$m3" 'sfor M4' 'sfor M3' >/dev/null; r=$(awk -v a="$SFOR_S" -v b="$RG_S" 'BEGIN { print b / a }')
+    else
+      median docs-off-$s "$m3" "$m4" 'sfor M3' 'sfor M4' >/dev/null; r=$(awk -v a="$SFOR_S" -v b="$RG_S" 'BEGIN { print a / b }')
+    fi
+    ratios="$ratios $r"
+  done
+  r=$(echo $ratios | tr ' ' '\n' | sort -g | sed -n 2p)
+  printf "%-14s sfor M4 / sfor M3, the median of%s: %.3f\n" docs-off "$(printf ' %.3f' $ratios)" "$r"
+  awk -v r="$r" 'BEGIN { exit !(r <= 1.03) }' || { echo "  FAIL: over 1.03 × M3"; fail=1; }
+else
+  echo "docs-off       skipped: SFOR_BASE_BIN, the sfor of 191dbaf, is not set"
+fi
 
 # 3. --binary over the object files.
 "$sfor" --color never --flat --binary -e "$sparse" -- "$dir/bin" >"$iso/s.out" 2>"$iso/s.err" || true
@@ -15132,16 +15757,22 @@ exit "$fail"
 - [ ] **Step 2:** `scripts/bench-m4.sh` exits 0 (its `docs-none` case runs over the text files
   and the object files, which have no extension and so are detected by their first bytes:
   review r1, Fable #5; it prints the ratio to rg, and `docs-added` holds `--docs` to 1.05 ×
-  sfor without it over the same files: review r6, Fable #5); `SFOR_RG=/nonexistent scripts/bench-m4.sh`
+  sfor without it over the same files: review r6, Fable #5), run with `SFOR_BASE_BIN` set to M3's
+  binary, built from `191dbaf` in a worktree of its own (`git worktree add /tmp/sfor-m3
+  191dbaf`, `cargo build --release` there, then `git worktree remove`), so that `docs-off`
+  runs (review r7, Fable #2; the probe measured 1.012, 1.034 and 1.020: if it fails, find
+  what M4 adds without `--docs`, and report it; D23); `SFOR_RG=/nonexistent scripts/bench-m4.sh`
   exits 1. Paste its lines into the report. Then `PATH=/usr/bin:$PATH scripts/bench.sh`,
-  `scripts/bench-code.sh` and `scripts/bench-m3.sh` still exit 0 (to verify in chunk 13: the
-  probe ran only `bench-m4.sh`).
+  `scripts/bench-code.sh` and `scripts/bench-m3.sh` still exit 0 (to verify in chunk 13 on the
+  merged code; the probe ran them in round 7, and `bench-m3.sh`'s `none` gave 1.12 × rg once
+  and 1.07 the next time, where ten alternated series put M4 at 1.008 × M3 on that corpus:
+  «Amendment (18/10, Sebastián)»).
 
 ### Task 13.3: the binary
 
 - [ ] **Step 1:** `cargo build --release && ls -l target/release/sfor`: at most 23 000 000
   bytes (spec §11 #22); report the size, and the stripped size (`strip -o /tmp/sfor.s
-  target/release/sfor`). The probe: 19 239 280 bytes, 17 811 632 stripped (16 598 640 and 15 381 072 at `191dbaf`).
+  target/release/sfor`). The probe: 19 356 872 bytes, 17 918 960 stripped (16 598 640 and 15 381 072 at `191dbaf`).
 
 ## Chunk 14: documentation
 
