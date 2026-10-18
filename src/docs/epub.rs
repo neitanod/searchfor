@@ -187,9 +187,18 @@ fn body(xhtml: &str, b: &mut Builder) {
     // Depth inside `pre`, whose white space is kept.
     let mut pre = 0usize;
     let mut in_body = false;
-    let flush = |line: &mut String, b: &mut Builder| {
-        b.line(line);
+    // `line` holds the text of a `pre`, which is written with its spaces.
+    let mut kept = false;
+    // Only `collapse` writes a collapsible space (a ' '), and only between words; a no-break
+    // space is text, never trimmed (Codex M4 code r4 #3).
+    let flush = |line: &mut String, kept: &mut bool, b: &mut Builder| {
+        if *kept {
+            b.verbatim(line);
+        } else {
+            b.verbatim(line.trim_matches(' '));
+        }
         line.clear();
+        *kept = false;
     };
     for ev in Pull::new(xhtml) {
         match ev {
@@ -211,16 +220,22 @@ fn body(xhtml: &str, b: &mut Builder) {
                     .filter(|d| (1..=6).contains(d))
                     && !empty
                 {
-                    flush(&mut line, b);
+                    flush(&mut line, &mut kept, b);
                     heading = Some((level, String::new()));
                 } else if l == "br" {
-                    // A space: a block is one line (spec §5.8; Codex M4 code r3 #3).
+                    // A space that collapses with the white space around it: a block is one
+                    // line (spec §5.8; Codex M4 code r3 #3, Fable r4 #2). In a `pre` it ends
+                    // the line, as its line breaks do.
                     match heading.as_mut() {
-                        Some(h) => h.1.push(' '),
-                        None => line.push(' '),
+                        Some(h) => collapse(&mut h.1, " "),
+                        None if pre > 0 => {
+                            kept = true;
+                            flush(&mut line, &mut kept, b);
+                        }
+                        None => collapse(&mut line, " "),
                     }
                 } else if block(l) {
-                    flush(&mut line, b);
+                    flush(&mut line, &mut kept, b);
                 }
             }
             Ev::End { name, .. } => {
@@ -236,31 +251,39 @@ fn body(xhtml: &str, b: &mut Builder) {
                     let (level, text) = heading.take().unwrap();
                     b.heading(level, &text);
                 } else if block(l) {
-                    flush(&mut line, b);
+                    flush(&mut line, &mut kept, b);
                 }
             }
-            Ev::Text(t) if skip == 0 && in_body => {
-                let out = match heading.as_mut() {
-                    Some(h) => &mut h.1,
-                    None => &mut line,
-                };
-                if pre > 0 {
-                    out.push_str(&t);
-                } else {
-                    collapse(out, &t);
+            Ev::Text(t) if skip == 0 && in_body => match heading.as_mut() {
+                Some(h) if pre > 0 => h.1.push_str(&t),
+                Some(h) => collapse(&mut h.1, &t),
+                // Each line of a `pre` is a line, with its spaces (Fable M4 code r4 #3).
+                None if pre > 0 => {
+                    let mut parts = t.split('\n');
+                    line.push_str(parts.next().unwrap_or(""));
+                    kept = true;
+                    for part in parts {
+                        if line.ends_with('\r') {
+                            line.pop();
+                        }
+                        flush(&mut line, &mut kept, b);
+                        line.push_str(part);
+                        kept = true;
+                    }
                 }
-            }
+                None => collapse(&mut line, &t),
+            },
             _ => {}
         }
         if b.full() {
             return;
         }
     }
-    flush(&mut line, b);
+    flush(&mut line, &mut kept, b);
 }
 
 /// Appends `t` to `out` with its white space collapsed, as a browser shows it: a run of it is
-/// one space, none at the start of a line (a `br` is one too).
+/// one space, none at the start of a line (a `br` outside a `pre` is one too).
 fn collapse(out: &mut String, t: &str) {
     let mut last_space = out.is_empty() || out.ends_with(' ');
     for c in t.chars() {
@@ -420,14 +443,48 @@ mod tests {
             "<pre>a  b</pre>",
             "<h2>Big<br/>head</h2>",
             "<p>after needle</p>",
+            // Code review r4, Fable #2: a `br` collapses with the white space around it.
+            "<p><br/>brfirst needle six</p>",
+            "<p>a<br/><br/>needle nineteen</p>",
+            "<p>c <br/> d<br/></p>",
         );
         let d = fixture::epub(&[("Arrival", ch)], true);
         let e = extract(Kind::Epub, &d).unwrap();
         assert_eq!(
             String::from_utf8_lossy(&e.text),
-            "one two\nthree four\nA needle in the water.\na  b\nBig head\nafter needle\n"
+            concat!(
+                "one two\nthree four\nA needle in the water.\na  b\nBig head\nafter needle\n",
+                "brfirst needle six\na needle nineteen\nc d\n"
+            )
         );
         assert_eq!(trail(&d, "after needle"), ["Arrival", "Big head"]);
+    }
+
+    /// Code review r4, Fable #3: each line of a `pre` is a line, with its spaces, as a browser
+    /// shows it and as a code block of Markdown is; Codex #3: with the spaces at its end.
+    #[test]
+    fn each_line_of_a_pre_is_a_line() {
+        let ch = concat!(
+            "<h2>Code</h2>",
+            "<pre><code>fn main() {\n    let x = 1;\n\n    needle();\n}\n</code></pre>",
+            "<pre>one<br/>  two</pre>",
+            // Codex M4 code r4 #3: a `pre` keeps its spaces at the end of a line too, and a
+            // no-break space is never collapsed nor trimmed.
+            "<pre>  a  b  \n c </pre>",
+            "<p>after\n needle</p>",
+            "<p>a&nbsp;</p>",
+            "<p>&#160; b &nbsp; </p>",
+        );
+        let d = fixture::epub(&[("Arrival", ch)], true);
+        let e = extract(Kind::Epub, &d).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&e.text),
+            concat!(
+                "Code\nfn main() {\n    let x = 1;\n    needle();\n}\none\n  two\n",
+                "  a  b  \n c \nafter needle\na\u{a0}\n\u{a0} b \u{a0}\n"
+            )
+        );
+        assert_eq!(trail(&d, "    needle();"), ["Arrival", "Code"]);
     }
 
     #[test]
