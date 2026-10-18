@@ -94,6 +94,7 @@ fn titles(
                     name,
                     attrs,
                     empty: false,
+                    ..
                 } if local(name) == "nav" => {
                     if in_toc {
                         depth += 1;
@@ -104,7 +105,7 @@ fn titles(
                         depth = 0;
                     }
                 }
-                Ev::End { name } if local(name) == "nav" && in_toc => {
+                Ev::End { name, .. } if local(name) == "nav" && in_toc => {
                     if depth == 0 {
                         in_toc = false;
                     } else {
@@ -115,6 +116,7 @@ fn titles(
                     name,
                     attrs,
                     empty: false,
+                    ..
                 } if in_toc && local(name) == "a" => {
                     link = attr(attrs, "href").map(|h| (resolve(nav, &h), String::new()));
                 }
@@ -123,7 +125,7 @@ fn titles(
                         l.1.push_str(&t);
                     }
                 }
-                Ev::End { name } if local(name) == "a" => {
+                Ev::End { name, .. } if local(name) == "a" => {
                     if let Some((part, title)) = link.take() {
                         let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
                         if !title.is_empty() {
@@ -154,7 +156,7 @@ fn titles(
             Ev::Start {
                 name, empty: false, ..
             } if local(name) == "text" => in_text = true,
-            Ev::End { name } if local(name) == "text" => in_text = false,
+            Ev::End { name, .. } if local(name) == "text" => in_text = false,
             Ev::Text(t) if in_text => {
                 if let Some(l) = label.last_mut() {
                     l.push_str(&t);
@@ -168,7 +170,7 @@ fn titles(
                     }
                 }
             }
-            Ev::End { name } if local(name) == "navPoint" => {
+            Ev::End { name, .. } if local(name) == "navPoint" => {
                 label.pop();
             }
             _ => {}
@@ -215,7 +217,7 @@ fn body(xhtml: &str, b: &mut Builder) {
                     flush(&mut line, b);
                 }
             }
-            Ev::End { name } => {
+            Ev::End { name, .. } => {
                 let l = local(name);
                 if matches!(l, "script" | "style" | "head") {
                     skip = skip.saturating_sub(1);
@@ -323,6 +325,54 @@ mod tests {
             names.iter().map(|n| n.text.as_str()).collect::<Vec<_>>(),
             ["Arrival", "The Harbour", "Later"]
         );
+    }
+
+    /// Every element of `xml` with the prefix `x`, bound where the default namespace was.
+    fn prefixed(xml: &str) -> String {
+        let mut out = String::new();
+        let mut rest = xml;
+        while let Some(i) = rest.find('<') {
+            out.push_str(&rest[..=i]);
+            rest = &rest[i + 1..];
+            let slash = rest.starts_with('/');
+            if slash {
+                out.push('/');
+                rest = &rest[1..];
+            }
+            if rest.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                out.push_str("x:");
+            }
+        }
+        out.push_str(rest);
+        out.replace("xmlns=", "xmlns:x=")
+    }
+
+    /// Codex M4 code r2 #1, in EPUB: the reader knows its elements by their local names, so
+    /// a book whose XHTML, package and table of contents use a prefix reads as one without.
+    #[test]
+    fn an_epub_with_prefixed_elements_reads_the_same() {
+        assert_eq!(
+            prefixed(r#"<?xml version="1.0"?><html xmlns="u"><p>a<br/></p></html>"#),
+            r#"<?xml version="1.0"?><x:html xmlns:x="u"><x:p>a<x:br/></x:p></x:html>"#
+        );
+        for nav in [true, false] {
+            let d = fixture::epub(&[("1. Arrival", CH1), ("2. The Storm", CH2)], nav);
+            let p = fixture::rezip(&d, |name, data| {
+                if name == "mimetype" {
+                    return data;
+                }
+                prefixed(&String::from_utf8(data).unwrap()).into_bytes()
+            });
+            assert_eq!(
+                extract(Kind::Epub, &p).unwrap().text,
+                extract(Kind::Epub, &d).unwrap().text
+            );
+            assert_eq!(
+                trail(&p, "Second"),
+                ["1. Arrival", "The Harbour", "At night"]
+            );
+            assert_eq!(trail(&p, "No heading"), ["2. The Storm"]);
+        }
     }
 
     #[test]

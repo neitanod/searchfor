@@ -1,7 +1,7 @@
 //! OpenDocument text, spreadsheets and presentations (spec §5.8), read from `content.xml`:
 //! `2 Costs › table 1 › row 3 › Price`, `Budget › B12`, `slide 3 › notes`.
 use super::table::Table;
-use super::xml::{Ev, Pull, attr, local};
+use super::xml::{Ev, Ns, Pull, attr, local};
 use super::zipped::Zip;
 use super::{Builder, DocError, column_letters};
 use std::collections::HashMap;
@@ -22,10 +22,12 @@ fn content(bytes: &[u8]) -> Result<(String, HashMap<String, u8>), DocError> {
     for xml in [&styles, &content] {
         for ev in Pull::new(xml) {
             if let Ev::Start {
-                name: "style:style",
+                name,
+                ns: Ns::Style,
                 attrs,
                 ..
             } = ev
+                && local(name) == "style"
                 && let Some(n) = attr(attrs, "name")
             {
                 if let Some(p) = attr(attrs, "parent-style-name") {
@@ -109,17 +111,27 @@ impl Flow {
 
     fn event(&mut self, ev: &Ev, b: &mut Builder) {
         match ev {
-            Ev::Start { name, attrs, empty } => {
+            Ev::Start {
+                name,
+                ns,
+                attrs,
+                empty,
+            } => {
                 let l = local(name);
-                if self.skip > 0 || matches!(l, "note-citation" | "annotation" | "tracked-changes")
+                if self.skip > 0
+                    || matches!(
+                        (ns, l),
+                        (Ns::Text, "note-citation" | "tracked-changes")
+                            | (Ns::Office, "annotation")
+                    )
                 {
                     if !empty {
                         self.skip += 1;
                     }
                     return;
                 }
-                match l {
-                    "p" | "h" if !empty => {
+                match (ns, l) {
+                    (Ns::Text, "p" | "h") if !empty => {
                         let level = if l == "h" {
                             Some(
                                 attr(attrs, "outline-level")
@@ -139,15 +151,15 @@ impl Flow {
                             ..Para::default()
                         });
                     }
-                    "s" => {
+                    (Ns::Text, "s") => {
                         let n = attr(attrs, "c")
                             .and_then(|v| v.parse::<usize>().ok())
                             .unwrap_or(1);
                         self.push(&" ".repeat(n.min(100)));
                     }
-                    "tab" => self.push("\t"),
-                    "line-break" => self.push("\n"),
-                    "table" if !empty => {
+                    (Ns::Text, "tab") => self.push("\t"),
+                    (Ns::Text, "line-break") => self.push("\n"),
+                    (Ns::Table, "table") if !empty => {
                         if self.tables.is_empty() {
                             self.count += 1;
                             self.table_seg =
@@ -155,7 +167,7 @@ impl Flow {
                         }
                         self.tables.push(Table::default());
                     }
-                    "table-cell" => {
+                    (Ns::Table, "table-cell") => {
                         if let Some(t) = self.tables.last_mut() {
                             let n = attr(attrs, "number-columns-repeated")
                                 .and_then(|v| v.parse::<usize>().ok())
@@ -169,13 +181,13 @@ impl Flow {
                     _ => {}
                 }
             }
-            Ev::End { name } => {
+            Ev::End { name, ns } => {
                 if self.skip > 0 {
                     self.skip -= 1;
                     return;
                 }
-                match local(name) {
-                    "p" | "h" => {
+                match (ns, local(name)) {
+                    (Ns::Text, "p" | "h") => {
                         let Some(para) = self.paras.pop() else {
                             return;
                         };
@@ -197,7 +209,7 @@ impl Flow {
                             }
                         }
                     }
-                    "table-row" => {
+                    (Ns::Table, "table-row") => {
                         if self.tables.len() == 1 {
                             self.tables[0].end_row(b);
                         } else if let Some(t) = self.tables.last_mut() {
@@ -206,7 +218,7 @@ impl Flow {
                             self.tables[n - 2].add_text(&row);
                         }
                     }
-                    "table" => {
+                    (Ns::Table, "table") => {
                         self.tables.pop();
                         if self.tables.is_empty()
                             && let Some(s) = self.table_seg.take()
@@ -252,8 +264,15 @@ pub fn odt(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     let mut body = false;
     for ev in Pull::new(&xml) {
         match &ev {
-            Ev::Start { name, .. } if *name == "office:text" => body = true,
-            Ev::End { name } if *name == "office:text" => body = false,
+            Ev::Start {
+                name,
+                ns: Ns::Office,
+                ..
+            } if local(name) == "text" => body = true,
+            Ev::End {
+                name,
+                ns: Ns::Office,
+            } if local(name) == "text" => body = false,
             _ if body => flow.event(&ev, b),
             _ => {}
         }
@@ -271,22 +290,31 @@ pub fn odp(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     for ev in Pull::new(&xml) {
         match &ev {
             Ev::Start {
-                name, empty: false, ..
-            } if *name == "draw:page" => {
+                name,
+                ns: Ns::Draw,
+                empty: false,
+                ..
+            } if local(name) == "page" => {
                 n += 1;
                 slide = Some(b.open("slide", &format!("slide {n}")));
             }
-            Ev::End { name } if *name == "draw:page" => {
+            Ev::End { name, ns: Ns::Draw } if local(name) == "page" => {
                 if let Some(s) = slide.take() {
                     b.close(s);
                 }
             }
             Ev::Start {
-                name, empty: false, ..
-            } if *name == "presentation:notes" && slide.is_some() => {
+                name,
+                ns: Ns::Presentation,
+                empty: false,
+                ..
+            } if local(name) == "notes" && slide.is_some() => {
                 notes = Some(b.open("notes", "notes"));
             }
-            Ev::End { name } if *name == "presentation:notes" => {
+            Ev::End {
+                name,
+                ns: Ns::Presentation,
+            } if local(name) == "notes" => {
                 if let Some(s) = notes.take() {
                     b.close(s);
                 }
@@ -358,15 +386,20 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     let mut para_depth = 0usize;
     for ev in Pull::new(&xml) {
         match ev {
-            Ev::Start { name, attrs, empty } => match name {
-                "table:table" if !empty => {
+            Ev::Start {
+                name,
+                ns,
+                attrs,
+                empty,
+            } => match (ns, local(name)) {
+                (Ns::Table, "table") if !empty => {
                     let n = attr(attrs, "name")
                         .map(|s| s.into_owned())
                         .unwrap_or_default();
                     sheet = Some(b.open("sheet", &n));
                     row = 0;
                 }
-                "table:table-row" => {
+                (Ns::Table, "table-row") => {
                     repeat_row = repeat(attrs, "number-rows-repeated")?;
                     col = 0;
                     cells.clear();
@@ -374,7 +407,7 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                         row = add(row, repeat_row)?;
                     }
                 }
-                "table:table-cell" | "table:covered-table-cell" => {
+                (Ns::Table, "table-cell" | "covered-table-cell") => {
                     let rep = repeat(attrs, "number-columns-repeated")?;
                     let value = stored(attrs);
                     if empty {
@@ -386,7 +419,7 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                         cell = Some((col, rep, String::new(), value));
                     }
                 }
-                "text:p" if !empty => {
+                (Ns::Text, "p") if !empty => {
                     if let Some(c) = cell.as_mut()
                         && !c.2.is_empty()
                     {
@@ -394,16 +427,16 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                     }
                     para_depth += 1;
                 }
-                "text:s" => {
+                (Ns::Text, "s") => {
                     if let Some(c) = cell.as_mut() {
                         c.2.push(' ');
                     }
                 }
                 _ => {}
             },
-            Ev::End { name } => match name {
-                "text:p" => para_depth = para_depth.saturating_sub(1),
-                "table:table-cell" | "table:covered-table-cell" => {
+            Ev::End { name, ns } => match (ns, local(name)) {
+                (Ns::Text, "p") => para_depth = para_depth.saturating_sub(1),
+                (Ns::Table, "table-cell" | "covered-table-cell") => {
                     if let Some((c, rep, text, value)) = cell.take() {
                         let shown = value.unwrap_or(text);
                         if !shown.trim().is_empty() {
@@ -412,7 +445,7 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                         col = add(c, rep)?;
                     }
                 }
-                "table:table-row" => {
+                (Ns::Table, "table-row") => {
                     let writes = if cells.is_empty() {
                         0
                     } else {
@@ -431,7 +464,7 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                     }
                     row = add(row, repeat_row)?;
                 }
-                "table:table" => {
+                (Ns::Table, "table") => {
                     if let Some(s) = sheet.take() {
                         b.close(s);
                     }
@@ -621,6 +654,87 @@ mod tests {
             (&["Title", "a needle margin"], Some("the needle joke")),
             (&["find the needle"], None),
         ]);
+        assert_eq!(trail(Kind::Odp, &d, "margin"), ["slide 1"]);
+        assert_eq!(trail(Kind::Odp, &d, "joke"), ["slide 1", "notes"]);
+        assert_eq!(trail(Kind::Odp, &d, "find"), ["slide 2"]);
+    }
+
+    const OFFICE: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
+    const TEXT: &str = "urn:oasis:names:tc:opendocument:xmlns:text:1.0";
+    const TABLE: &str = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";
+    const STYLE: &str = "urn:oasis:names:tc:opendocument:xmlns:style:1.0";
+    const DRAW: &str = "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0";
+    const PRES: &str = "urn:oasis:names:tc:opendocument:xmlns:presentation:1.0";
+
+    fn odf_with(mime: &str, content: String) -> Vec<u8> {
+        fixture::zip(
+            &[
+                ("mimetype", mime.as_bytes().to_vec()),
+                ("content.xml", content.into_bytes()),
+            ],
+            &["mimetype"],
+        )
+    }
+
+    /// Codex M4 code r2 #1: the elements are known by their namespace and local name, so a
+    /// document that binds the OpenDocument namespaces to other prefixes, or to none, reads as
+    /// the same document with the usual ones.
+    #[test]
+    fn odt_elements_are_known_by_namespace_not_by_prefix() {
+        let d = odf_with(
+            "application/vnd.oasis.opendocument.text",
+            format!(
+                r#"<o:document-content xmlns:o="{OFFICE}" xmlns:t="{TEXT}" xmlns:tb="{TABLE}" xmlns:s="{STYLE}"><o:automatic-styles><s:style s:name="P1" s:family="paragraph" s:parent-style-name="Heading_20_2"/></o:automatic-styles><o:body><o:text><t:h t:outline-level="1">Intro</t:h><t:p>first needle</t:p><t:p t:style-name="P1">Scope</t:p><tb:table tb:name="T"><tb:table-row><tb:table-cell><t:p>Item</t:p></tb:table-cell><tb:table-cell><t:p>Price</t:p></tb:table-cell></tb:table-row><tb:table-row><tb:table-cell><t:p>Pens</t:p></tb:table-cell><tb:table-cell><t:p>1.50 needle</t:p></tb:table-cell></tb:table-row></tb:table></o:text></o:body></o:document-content>"#
+            ),
+        );
+        assert_eq!(trail(Kind::Odt, &d, "first"), ["Intro"]);
+        assert_eq!(
+            trail(Kind::Odt, &d, "1.50"),
+            ["Intro", "Scope", "table 1", "row 2", "Price"]
+        );
+        // The office namespace as the default one: `text` without a prefix is `office:text`.
+        let d = odf_with(
+            "application/vnd.oasis.opendocument.text",
+            format!(
+                r#"<document-content xmlns="{OFFICE}" xmlns:text="{TEXT}"><body><text><text:h text:outline-level="1">Intro</text:h><text:p>a needle</text:p></text></body></document-content>"#
+            ),
+        );
+        assert_eq!(trail(Kind::Odt, &d, "a needle"), ["Intro"]);
+        // The usual prefix bound to another namespace is not OpenDocument's.
+        let d = odf_with(
+            "application/vnd.oasis.opendocument.text",
+            format!(
+                r#"<office:document-content xmlns:office="{OFFICE}" xmlns:text="{TEXT}"><office:body><office:text><text:p>kept needle</text:p><text:p xmlns:text="urn:example:other">foreign needle</text:p><text:p>last needle</text:p></office:text></office:body></office:document-content>"#
+            ),
+        );
+        assert_eq!(
+            extract(Kind::Odt, &d).unwrap().text,
+            b"kept needle\nlast needle\n"
+        );
+    }
+
+    #[test]
+    fn ods_elements_are_known_by_namespace_not_by_prefix() {
+        let d = odf_with(
+            "application/vnd.oasis.opendocument.spreadsheet",
+            format!(
+                r#"<o:document-content xmlns:o="{OFFICE}" xmlns:x="{TABLE}" xmlns:y="{TEXT}"><o:body><o:spreadsheet><x:table x:name="Budget"><x:table-row><x:table-cell o:value-type="string"><y:p>Item</y:p></x:table-cell><x:covered-table-cell/><x:table-cell o:value-type="float" o:value="1.5"><y:p>1,50</y:p></x:table-cell></x:table-row><x:table-row><x:table-cell x:number-columns-repeated="2"/><x:table-cell><y:p>a<y:s/>needle</y:p></x:table-cell></x:table-row></x:table></o:spreadsheet></o:body></o:document-content>"#
+            ),
+        );
+        let e = extract(Kind::Ods, &d).unwrap();
+        assert_eq!(e.text, b"Item\t1.5\na needle\n");
+        assert_eq!(trail(Kind::Ods, &d, "needle"), ["Budget", "C2"]);
+        assert_eq!(trail(Kind::Ods, &d, "1.5"), ["Budget", "C1"]);
+    }
+
+    #[test]
+    fn odp_elements_are_known_by_namespace_not_by_prefix() {
+        let d = odf_with(
+            "application/vnd.oasis.opendocument.presentation",
+            format!(
+                r#"<o:document-content xmlns:o="{OFFICE}" xmlns:d="{DRAW}" xmlns:pr="{PRES}" xmlns:t="{TEXT}"><o:body><o:presentation><d:page d:name="p1"><d:frame><d:text-box><t:p>a needle margin</t:p></d:text-box></d:frame><pr:notes><d:frame pr:class="notes"><d:text-box><t:p>the needle joke</t:p></d:text-box></d:frame></pr:notes></d:page><d:page d:name="p2"><d:frame><d:text-box><t:p>find the needle</t:p></d:text-box></d:frame></d:page></o:presentation></o:body></o:document-content>"#
+            ),
+        );
         assert_eq!(trail(Kind::Odp, &d, "margin"), ["slide 1"]);
         assert_eq!(trail(Kind::Odp, &d, "joke"), ["slide 1", "notes"]);
         assert_eq!(trail(Kind::Odp, &d, "find"), ["slide 2"]);

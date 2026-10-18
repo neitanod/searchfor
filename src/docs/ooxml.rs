@@ -3,7 +3,7 @@
 //! Only the main parts are read: the document body, the sheets, the slides and their notes
 //! (headers, footers, footnotes, comments and charts are left for later: M4 plan, D18).
 use super::table::Table;
-use super::xml::{Ev, Pull, attr, local, prefixed};
+use super::xml::{Ev, Ns, Pull, attr, local, prefixed};
 use super::zipped::{Zip, resolve};
 use super::{Builder, DocError, column_letters};
 use std::collections::HashMap;
@@ -18,7 +18,7 @@ pub struct Flow<'s> {
     /// Inside `w:t` or `a:t`.
     in_text: bool,
     /// Depth inside elements whose text is not shown (`w:instrText`, `w:delText`,
-    /// `mc:Fallback`).
+    /// `mc:Fallback`, and the tab stops `w:tabs` of a paragraph's properties).
     skip: usize,
     tables: Vec<Table>,
     /// Top-level tables so far.
@@ -41,9 +41,18 @@ impl<'s> Flow<'s> {
 
     pub fn event(&mut self, ev: &Ev, b: &mut Builder) {
         match ev {
-            Ev::Start { name, attrs, empty } => {
+            Ev::Start {
+                name,
+                ns,
+                attrs,
+                empty,
+            } => {
                 let l = local(name);
-                if self.skip > 0 || matches!(l, "instrText" | "delText") || *name == "mc:Fallback" {
+                // By namespace, never by prefix (Codex M4 code r2 #1).
+                if self.skip > 0
+                    || matches!(l, "instrText" | "delText")
+                    || matches!((ns, l), (Ns::Mc, "Fallback") | (Ns::Word, "tabs"))
+                {
                     if !empty {
                         self.skip += 1;
                     }
@@ -53,9 +62,7 @@ impl<'s> Flow<'s> {
                     "p" if !empty => self.paras.push((String::new(), None)),
                     "t" if !empty => self.in_text = true,
                     "br" | "cr" => self.push("\n"),
-                    "tab" if name.starts_with("w:") && self.paras.last().is_some() => {
-                        self.push("\t")
-                    }
+                    "tab" if *ns == Ns::Word && self.paras.last().is_some() => self.push("\t"),
                     "pStyle" => {
                         if let (Some(v), Some(p)) = (attr(attrs, "val"), self.paras.last_mut()) {
                             p.1 = self.styles.get(v.as_ref()).copied().or(p.1);
@@ -85,7 +92,7 @@ impl<'s> Flow<'s> {
                     _ => {}
                 }
             }
-            Ev::End { name } => {
+            Ev::End { name, .. } => {
                 let l = local(name);
                 if self.skip > 0 {
                     self.skip -= 1;
@@ -197,7 +204,7 @@ fn heading_styles(xml: &str) -> HashMap<String, u8> {
                 }
                 _ => {}
             },
-            Ev::End { name } if local(name) == "style" => id = None,
+            Ev::End { name, .. } if local(name) == "style" => id = None,
             _ => {}
         }
     }
@@ -313,7 +320,7 @@ fn shared_strings(xml: &str) -> Vec<String> {
                 "rPh" => phonetic = !empty,
                 _ => {}
             },
-            Ev::End { name } => match local(name) {
+            Ev::End { name, .. } => match local(name) {
                 "si" => out.push(std::mem::take(&mut cur)),
                 "t" => in_t = false,
                 "rPh" => phonetic = false,
@@ -337,7 +344,9 @@ fn cells(xml: &str, shared: &[String], b: &mut Builder) {
     let mut in_v = false;
     for ev in Pull::new(xml) {
         match ev {
-            Ev::Start { name, attrs, empty } => match local(name) {
+            Ev::Start {
+                name, attrs, empty, ..
+            } => match local(name) {
                 "row" => {
                     row_n = attr(attrs, "r")
                         .and_then(|r| r.parse().ok())
@@ -361,7 +370,7 @@ fn cells(xml: &str, shared: &[String], b: &mut Builder) {
                 "v" | "t" if !empty => in_v = true,
                 _ => {}
             },
-            Ev::End { name } => match local(name) {
+            Ev::End { name, .. } => match local(name) {
                 "v" | "t" => in_v = false,
                 "c" => {
                     if let Some((r, ty, v)) = cell.take() {
@@ -482,7 +491,7 @@ fn notes_body(xml: &str, b: &mut Builder) {
                     );
                 }
             }
-            Ev::End { name } if local(name) == "sp" => {
+            Ev::End { name, .. } if local(name) == "sp" => {
                 if let Some((evs, true)) = shape.take() {
                     let mut flow = Flow::new(&none);
                     for e in &evs {
@@ -639,6 +648,52 @@ mod extract_tests {
         });
         let e = extract(Kind::Pptx, &d).unwrap();
         assert_eq!(e.text, b"one two\n");
+    }
+
+    /// Codex M4 code r2 #1, in Word: the two names the reader knows by their prefix, the tab
+    /// `w:tab` and the `mc:Fallback` it skips, are known by their namespace, so a document
+    /// that binds them to other prefixes reads the same. A tab stop of the paragraph's
+    /// properties is not a tab of its text.
+    #[test]
+    fn word_names_are_known_by_namespace_not_by_prefix() {
+        let usual = fixture::docx(&[p("one TAB two"), p("ALT"), p("STOP after needle")]);
+        let usual = fixture::rezip(&usual, |name, data| {
+            if name != "word/document.xml" {
+                return data;
+            }
+            String::from_utf8(data)
+                .unwrap()
+                .replace(" TAB ", "</w:t><w:tab/><w:t>")
+                .replace(
+                    "<w:r><w:t xml:space=\"preserve\">ALT</w:t></w:r>",
+                    concat!(
+                        r#"<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">"#,
+                        r#"<mc:Choice Requires="wps"><w:r><w:t>choice</w:t></w:r></mc:Choice>"#,
+                        r#"<mc:Fallback><w:r><w:t>fallback</w:t></w:r></mc:Fallback></mc:AlternateContent>"#
+                    ),
+                )
+                .replace(
+                    "<w:p><w:r><w:t xml:space=\"preserve\">STOP ",
+                    r#"<w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="720"/></w:tabs></w:pPr><w:r><w:t xml:space="preserve">"#,
+                )
+                .into_bytes()
+        });
+        let e = extract(Kind::Docx, &usual).unwrap();
+        // The builder writes a tab as a space, as in the rest of the text.
+        assert_eq!(e.text, b"one two\nchoice\nafter needle\n");
+        let other = fixture::rezip(&usual, |name, data| {
+            if name != "word/document.xml" {
+                return data;
+            }
+            String::from_utf8(data)
+                .unwrap()
+                .replace("w:", "x:")
+                .replace("xmlns:w=", "xmlns:x=")
+                .replace("mc:", "m:")
+                .replace("xmlns:mc=", "xmlns:m=")
+                .into_bytes()
+        });
+        assert_eq!(extract(Kind::Docx, &other).unwrap().text, e.text);
     }
 
     #[test]

@@ -706,6 +706,9 @@ const XML: &[&str] = &[
     "<row r=\"999999999\">", "<c r=\"XFD1048576\" t=\"s\"><v>99999</v></c>", "&amp;", "&#x0;", "&#xFFFFFF;", "&bogus;",
     "<![CDATA[", "]]>", "<!--", "-->", "\"", "'", "=", "needle", "ñandú", "\0", "\u{feff}",
     "<h1>", "</h1>", "<br/>", "<script>", "<nav epub:type=\"toc\">", "<a href=\"../../../x\">",
+    // Namespace declarations (Codex M4 code r2 #1).
+    " xmlns=\"\"", " xmlns:text=\"urn:x\"", " xmlns:o=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\"",
+    "<o:text>", "</o:text>", " xmlns", "xmlns:=\"\"",
 ];
 
 fn mutate(rng: &mut Rng, mut b: Vec<u8>, pool: &[&str]) -> Vec<u8> {
@@ -758,10 +761,24 @@ fn document_seeds() -> Vec<(Kind, Vec<u8>)> {
         out.extend(x.encode_utf16().flat_map(u16::to_le_bytes));
         out
     });
+    // An OpenDocument text whose namespaces are bound to other prefixes (Codex M4 code r2 #1).
+    let renamed = doc::rezip(&doc::odt(&blocks), |name, data| {
+        if name != "content.xml" {
+            return data;
+        }
+        String::from_utf8(data)
+            .unwrap()
+            .replace("office:", "o:")
+            .replace("xmlns:office=", "xmlns:o=")
+            .replace("text:", "t:")
+            .replace("xmlns:text=", "xmlns:t=")
+            .into_bytes()
+    });
     vec![
         (Kind::Docx, doc::docx(&blocks)),
         (Kind::Docx, utf16),
         (Kind::Odt, doc::odt(&blocks)),
+        (Kind::Odt, renamed),
         (Kind::Xlsx, doc::xlsx(&[("S", sheet), ("T", sheet)])),
         (Kind::Ods, doc::ods(&[("S", sheet)])),
         (Kind::Pptx, doc::pptx(slides)),
