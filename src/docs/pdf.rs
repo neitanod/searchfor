@@ -792,9 +792,10 @@ fn font<'a>(r: &Reader<'a>, d: &'a Dictionary) -> Result<Font<'a>, DocError> {
                     let first = first as u32;
                     match doc.dereference(&w[i + 1]).map(|(_, o)| o) {
                         Ok(Object::Array(list)) => {
+                            // Codes past the last one there is are none (Fable r1 #3).
                             for (k, v) in list.iter().enumerate() {
-                                if let Some(v) = num(v) {
-                                    widths.insert(first + k as u32, v);
+                                if let (Some(v), Some(c)) = (num(v), first.checked_add(k as u32)) {
+                                    widths.insert(c, v);
                                 }
                             }
                             i += 2;
@@ -805,7 +806,7 @@ fn font<'a>(r: &Reader<'a>, d: &'a Dictionary) -> Result<Font<'a>, DocError> {
                             else {
                                 break;
                             };
-                            for c in first..=(last as u32).min(first + 65_535) {
+                            for c in first..=(last as u32).min(first.saturating_add(65_535)) {
                                 widths.insert(c, v);
                             }
                             i += 3;
@@ -827,8 +828,11 @@ fn font<'a>(r: &Reader<'a>, d: &'a Dictionary) -> Result<Font<'a>, DocError> {
         let first = d.get(b"FirstChar").ok().and_then(num).unwrap_or(0.0) as u32;
         if let Ok(w) = d.get_deref(b"Widths", doc).and_then(Object::as_array) {
             for (k, v) in w.iter().enumerate().take(256) {
-                if let Some(v) = doc.dereference(v).ok().and_then(|(_, o)| num(o)) {
-                    widths.insert(first + k as u32, v * scale);
+                if let (Some(v), Some(c)) = (
+                    doc.dereference(v).ok().and_then(|(_, o)| num(o)),
+                    first.checked_add(k as u32),
+                ) {
+                    widths.insert(c, v * scale);
                 }
             }
         }
@@ -2135,6 +2139,39 @@ mod tests {
             &[],
         );
         assert_eq!(text_of(&pdf), "needle here\n");
+    }
+
+    /// Fable r1 #3: a `/FirstChar` or a `/W` code at the end of the codes gives its widths to
+    /// the codes there are, never wrapping to code 0 or panicking.
+    #[test]
+    fn widths_past_the_last_code_are_dropped() {
+        let max = Object::Integer(i64::from(u32::MAX));
+        let font = simple_font(|f| {
+            f.set("FirstChar", max.clone());
+            f.set("Widths", Object::Array(vec![600.into(), 600.into()]));
+        });
+        let pdf = pdf_with(font, b"BT /F1 12 Tf 72 700 Td (needle) Tj ET", &[]);
+        assert_eq!(text_of(&pdf), "needle\n");
+        let map = cmap(2, &[(1, "n"), (2, "e")]);
+        for w in [
+            vec![max.clone(), Object::Array(vec![600.into(), 600.into()])],
+            vec![max.clone(), max.clone(), 600.into()],
+        ] {
+            let mut doc =
+                Document::load_mem(&type0(map.clone(), b"BT /F1 12 Tf <0001> Tj ET")).unwrap();
+            for o in doc.objects.values_mut() {
+                if let Ok(d) = o.as_dict_mut()
+                    && let Ok(fonts) = d.get_mut(b"DescendantFonts")
+                    && let Ok(a) = fonts.as_array_mut()
+                    && let Ok(cid) = a[0].as_dict_mut()
+                {
+                    cid.set("W", Object::Array(w.clone()));
+                }
+            }
+            let mut out = Vec::new();
+            doc.save_to(&mut out).unwrap();
+            assert_eq!(text_of(&out), "n\n");
+        }
     }
 
     fn compressed_zeros(n: usize) -> Stream {
