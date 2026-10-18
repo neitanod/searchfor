@@ -276,3 +276,19 @@ is a decision; the agent's measurements are the reasons given at the time.
   limit, the same on Linux, macOS and Windows, with `setrlimit` kept as a second barrier on Linux,
   and a Windows Job Object in M5. **Decision**: «Acepto la sugerencia de sumar el contador de
   memoria propio.» It goes into M4.
+
+---
+
+# Follow-up decision in the Hilo (18/10/2026): the command is `s4`
+
+- **Question**: an `s4` alias for `sfor`, or `s4` as the command's name? Recommendation: keep
+  `sfor` as the binary and install `s4` as a link.
+- **Decision**: «Que el comando sea s4 y el producto se siga llamando searchfor para SEO.» The
+  binary and the command are `s4`; the product, the repository, the crate, the README titles and
+  the user directories (`~/.config/searchfor`, `~/.local/share/searchfor`) stay `searchfor`.
+- **Delegated details, decided by the agent**: messages start with `s4:` as ripgrep's start with
+  `rg:`; the environment variables take the product's name, like the directories
+  (`SEARCHFOR_FORMATS_DIR`, `SEARCHFOR_GRAMMARS_DIR`, `SEARCHFOR_GRAMMAR_INDEX`,
+  `SEARCHFOR_READER_MIB`, …), since nothing is published yet and a two-letter prefix collides
+  easily; the rename lands after chunk 11 and before tanda 5, so the README, the skill and the
+  snapshots of chunk 14 already show `s4`.
