@@ -287,7 +287,9 @@ impl Builder {
 
     /// A heading of `level` (1 = top): closes the open headings of that level or deeper, and
     /// writes `text` as a line that is the new heading's label and its searchable name, as a
-    /// Markdown heading's.
+    /// Markdown heading's. A heading that repeats the title of the chapter it opens in (an
+    /// EPUB's nav entry and its `h1`) holds its line only, so the Trail names the chapter once;
+    /// what follows nests in the chapter (pending C8 of M4).
     pub fn heading(&mut self, level: u8, text: &str) {
         let name = one_line(text);
         if name.is_empty() {
@@ -295,6 +297,8 @@ impl Builder {
         }
         self.end_row();
         self.close_levels(HEADING, level);
+        let repeats = matches!(self.open.last(), Some(&(top, Some((CHAPTER, _))))
+            if self.segments[top].segment.name == name);
         let start = self.text.len();
         if !self.room(name.len() + 1) {
             return;
@@ -307,6 +311,11 @@ impl Builder {
         s.segment.level = Some(level);
         s.name = Some(vec![(0..name.len(), start..end)]);
         s.name_anchor = start;
+        if repeats {
+            s.range.end = end + 1;
+            self.segments.push(s);
+            return;
+        }
         self.segments.push(s);
         self.open.push((id, Some((HEADING, level))));
     }

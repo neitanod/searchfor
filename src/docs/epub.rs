@@ -307,6 +307,24 @@ mod tests {
         assert!(memchr::memmem::find(&e.text, b"needle & more").is_some());
     }
 
+    /// Pending C8: a chapter whose first heading repeats its title (pandoc writes the nav
+    /// entry and the `h1` alike) is in the Trail once; the heading is still a heading, which
+    /// `--in-headings` finds, and its subheadings nest under the chapter.
+    #[test]
+    fn a_heading_that_repeats_its_chapter_is_in_the_trail_once() {
+        let ch = "<h1>Arrival</h1><p>A needle in the water.</p><h2>The Harbour</h2><p>Second needle.</p><h1>Later</h1><p>Third needle.</p>";
+        let d = fixture::epub(&[("Arrival", ch)], true);
+        assert_eq!(trail(&d, "A needle"), ["Arrival"]);
+        assert_eq!(trail(&d, "Second"), ["Arrival", "The Harbour"]);
+        assert_eq!(trail(&d, "Third"), ["Arrival", "Later"]);
+        let e = extract(Kind::Epub, &d).unwrap();
+        let names = crate::trail::names_of(&e.outline);
+        assert_eq!(
+            names.iter().map(|n| n.text.as_str()).collect::<Vec<_>>(),
+            ["Arrival", "The Harbour", "Later"]
+        );
+    }
+
     #[test]
     fn an_epub2_ncx_names_the_chapters_too() {
         let d = fixture::epub(&[("1. Arrival", CH1), ("2. The Storm", CH2)], false);
