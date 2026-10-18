@@ -688,3 +688,379 @@ fn generated_files_do_not_panic_sfor() {
     }
     eprintln!("fuzz: {files} files through s4");
 }
+
+// M4 (plan, Task 12.1): the Extractors and the `object` Processor over mutated files. Each seed
+// is a file the fixture writers make; a mutation flips, deletes, repeats or inserts bytes,
+// cuts the file, or, inside a zip, does the same to the XML of one part and zips it again.
+// Nothing may panic, take more than 2 s, or give an Outline outside its text.
+
+use searchfor::docs::{self, Kind, fixture as doc};
+use searchfor::processors::object::{self, fixture as obj};
+use std::time::Duration;
+
+/// Bytes the XML mutations insert.
+#[rustfmt::skip]
+const XML: &[&str] = &[
+    "<", ">", "</", "/>", "<w:p>", "</w:p>", "<w:t>", "</w:t>", "<w:tbl>", "<w:tr>", "<w:tc>",
+    "</w:tc>", "<a:p>", "<text:p>", "<text:h text:outline-level=\"9\">", "<table:table-cell table:number-columns-repeated=\"99999999\"/>",
+    "<row r=\"999999999\">", "<c r=\"XFD1048576\" t=\"s\"><v>99999</v></c>", "&amp;", "&#x0;", "&#xFFFFFF;", "&bogus;",
+    "<![CDATA[", "]]>", "<!--", "-->", "\"", "'", "=", "needle", "ñandú", "\0", "\u{feff}",
+    "<h1>", "</h1>", "<br/>", "<script>", "<nav epub:type=\"toc\">", "<a href=\"../../../x\">",
+];
+
+fn mutate(rng: &mut Rng, mut b: Vec<u8>, pool: &[&str]) -> Vec<u8> {
+    for _ in 0..1 + rng.below(4) {
+        let at = rng.below(b.len() + 1);
+        match rng.below(6) {
+            0 if !b.is_empty() => {
+                let i = at.min(b.len() - 1);
+                b[i] ^= 1 << rng.below(8);
+            }
+            1 => {
+                let end = (at + rng.below(64)).min(b.len());
+                b.drain(at..end);
+            }
+            2 => {
+                let end = (at + rng.below(256)).min(b.len());
+                let copy = b[at..end].to_vec();
+                b.splice(at..at, copy);
+            }
+            3 => b.truncate(at),
+            _ => {
+                let s = rng.pick(pool).as_bytes().to_vec();
+                b.splice(at..at, s);
+            }
+        }
+    }
+    b
+}
+
+/// The seeds of each document kind.
+fn document_seeds() -> Vec<(Kind, Vec<u8>)> {
+    let blocks = [
+        doc::h(1, "1 Intro"),
+        doc::p("needle é"),
+        doc::h(2, "1.1 ñandú"),
+        doc::table(&[&["A", "B"], &["needle", "日本"], &["x"]]),
+        doc::p("after"),
+    ];
+    let sheet: &[&[&str]] = &[&["Item", "Price"], &["needle", "1.5"], &["", "", "x"]];
+    let slides: &[(&[&str], Option<&str>)] =
+        &[(&["T", "needle"], Some("notes needle")), (&["2"], None)];
+    let sqlite = |n: &str| std::fs::read(common::source_dir().join("docs").join(n)).unwrap();
+    vec![
+        (Kind::Docx, doc::docx(&blocks)),
+        (Kind::Odt, doc::odt(&blocks)),
+        (Kind::Xlsx, doc::xlsx(&[("S", sheet), ("T", sheet)])),
+        (Kind::Ods, doc::ods(&[("S", sheet)])),
+        (Kind::Pptx, doc::pptx(slides)),
+        (Kind::Odp, doc::odp(slides)),
+        (
+            Kind::Epub,
+            doc::epub(&[("1", "<h1>H</h1><p>needle</p>"), ("2", "<p>x</p>")], true),
+        ),
+        (Kind::Epub, doc::epub(&[("1", "<p>needle</p>")], false)),
+        (
+            Kind::Pdf,
+            doc::pdf(
+                &[&["1 Intro", "needle"], &["2 Costs", "é needle"]],
+                &[(1, "1 Intro", 1), (2, "2 Costs", 2)],
+            ),
+        ),
+        (Kind::Sqlite, sqlite("shop.sqlite")),
+        (Kind::Sqlite, sqlite("many.sqlite")),
+    ]
+}
+
+/// The checks of one extraction: no panic, ended within 2 s whatever it returns, and an
+/// Outline inside its text. A case that never ends is the supervisor's (`supervised`).
+fn check_doc(kind: Kind, bytes: &[u8]) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let got = catch_unwind(AssertUnwindSafe(|| docs::extract(kind, bytes)));
+    let took = started.elapsed();
+    if took > DEADLINE {
+        return Err(format!("took {took:?}"));
+    }
+    let e = match got {
+        Err(e) => {
+            let msg = e
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default();
+            return Err(format!("panic: {msg}"));
+        }
+        Ok(Err(_)) => return Ok(()),
+        Ok(Ok(e)) => e,
+    };
+    if std::str::from_utf8(&e.text).is_err() || e.text.contains(&0) {
+        return Err("text is not UTF-8 without NUL".into());
+    }
+    for s in &e.outline.segments {
+        if s.range.start > s.range.end || s.range.end > e.text.len() {
+            return Err(format!("Segment {:?} over {} bytes", s.range, e.text.len()));
+        }
+    }
+    check_names(&searchfor::trail::names_of(&e.outline), &e.text)
+}
+
+const DEADLINE: Duration = Duration::from_secs(2);
+/// In a child process of `supervised`: the first case it runs.
+const CHILD_FROM: &str = "SEARCHFOR_FUZZ_CHILD_FROM";
+
+/// Runs the cases of the test `test` in a child process, this test binary running only that
+/// test with `CHILD_FROM` set, and watches it (code review of the M4 plan r2, Codex #7). The
+/// child prints `fuzzcase run N` before case N, `fuzzcase end N` after it, followed by its
+/// failure if it failed, and `fuzzcase done` at the end. A case that prints nothing for
+/// `limit` (plus a second for the child's start) has its child killed and reaped, and the
+/// cases after it run in a new child; one whose child dies (an abort, out of memory) fails
+/// too. Returns the failures.
+fn supervised(test: &str, limit: Duration) -> Vec<String> {
+    use std::io::BufRead;
+    let mut failures = Vec::new();
+    let mut from = 0usize;
+    'children: loop {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture", "--test-threads", "1"])
+            .env(CHILD_FROM, from.to_string())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in out.lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut running: Option<usize> = None;
+        let mut wait = limit + Duration::from_secs(1);
+        loop {
+            match rx.recv_timeout(wait) {
+                Ok(line) => {
+                    wait = limit;
+                    let Some(msg) = line.strip_prefix("fuzzcase ") else {
+                        continue;
+                    };
+                    if msg == "done" {
+                        let _ = child.wait();
+                        return failures;
+                    }
+                    let (what, rest) = msg.split_once(' ').unwrap_or((msg, ""));
+                    let (n, failure) = rest.split_once(' ').unwrap_or((rest, ""));
+                    let n: usize = n.parse().unwrap();
+                    match what {
+                        "run" => running = Some(n),
+                        _ => {
+                            running = None;
+                            if !failure.is_empty() {
+                                failures.push(failure.replace("\\n", "\n"));
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    let timed_out = e == std::sync::mpsc::RecvTimeoutError::Timeout;
+                    if timed_out {
+                        child.kill().unwrap();
+                    }
+                    // Reaped: the child is gone, and its memory with it.
+                    let status = child.wait().unwrap();
+                    let Some(n) = running else {
+                        failures.push(format!("the child stopped between cases ({status})"));
+                        return failures;
+                    };
+                    failures.push(if timed_out {
+                        format!("case {n}: still running after {limit:?}, killed")
+                    } else {
+                        format!("case {n}: the child died ({status})")
+                    });
+                    from = n + 1;
+                    continue 'children;
+                }
+            }
+        }
+    }
+}
+
+/// In a child of `supervised`: runs the cases from `CHILD_FROM` on, reporting each.
+fn run_cases(cases: impl Iterator<Item = (Kind, Vec<u8>)>) {
+    let from: usize = std::env::var(CHILD_FROM).unwrap().parse().unwrap();
+    std::panic::set_hook(Box::new(|_| {}));
+    for (i, (kind, bytes)) in cases.enumerate() {
+        if i < from {
+            continue;
+        }
+        println!("fuzzcase run {i}");
+        let failure = check_doc(kind, &bytes)
+            .err()
+            .map(|e| {
+                format!("{kind:?}: {e}\n  input: \"{}\"", bytes.escape_ascii()).replace('\n', "\\n")
+            })
+            .unwrap_or_default();
+        println!("fuzzcase end {i} {failure}");
+    }
+    println!("fuzzcase done");
+}
+
+/// The mutated documents, in order: the same for every child.
+fn mutated_documents() -> impl Iterator<Item = (Kind, Vec<u8>)> {
+    let mut rng = Rng(seed() ^ 2);
+    let n = count() / 4;
+    document_seeds()
+        .into_iter()
+        .flat_map(move |(kind, seed_bytes)| {
+            let mut out = Vec::with_capacity(n);
+            for _ in 0..n {
+                let zipped = seed_bytes.starts_with(b"PK\x03\x04");
+                let bytes = if zipped && rng.below(2) == 0 {
+                    // The XML of one part, changed and zipped again.
+                    let mut target = None;
+                    doc::rezip(&seed_bytes, |name, data| {
+                        if target.is_none() && name.ends_with("ml") && rng.below(3) == 0 {
+                            target = Some(name.to_string());
+                            return mutate(&mut rng, data, XML);
+                        }
+                        data
+                    })
+                } else {
+                    mutate(&mut rng, seed_bytes.clone(), XML)
+                };
+                out.push((kind, bytes));
+            }
+            out
+        })
+}
+
+#[test]
+fn mutated_documents_do_not_panic_the_extractors() {
+    if std::env::var_os(CHILD_FROM).is_some() {
+        return run_cases(mutated_documents());
+    }
+    let tried = mutated_documents().count();
+    let failures = supervised("mutated_documents_do_not_panic_the_extractors", DEADLINE);
+    eprintln!("fuzz: {tried} documents, {} failures", failures.len());
+    assert!(
+        failures.is_empty(),
+        "{} of {tried} documents failed; the first ones:\n{}",
+        failures.len(),
+        failures[..failures.len().min(3)].join("\n")
+    );
+}
+
+/// The supervisor's own test: in its child, case 1 never ends, spinning and allocating, and
+/// case 3 panics; the supervisor kills and reaps the child at case 1, goes on from case 2 in a
+/// new one, and reports both.
+#[test]
+fn the_supervisor_kills_a_case_that_never_ends() {
+    const TEST: &str = "the_supervisor_kills_a_case_that_never_ends";
+    if let Ok(from) = std::env::var(CHILD_FROM) {
+        let from: usize = from.parse().unwrap();
+        for i in from..5 {
+            println!("fuzzcase run {i}");
+            if i == 1 {
+                let mut hog: Vec<Vec<u8>> = Vec::new();
+                loop {
+                    hog.push(vec![1; 1 << 20]);
+                    if hog.len() > 64 {
+                        hog.clear();
+                    }
+                }
+            }
+            let failure = if i == 3 { "Pdf: panic: boom" } else { "" };
+            println!("fuzzcase end {i} {failure}");
+        }
+        println!("fuzzcase done");
+        return;
+    }
+    let started = std::time::Instant::now();
+    let failures = supervised(TEST, Duration::from_millis(300));
+    assert_eq!(
+        failures,
+        [
+            "case 1: still running after 300ms, killed",
+            "Pdf: panic: boom"
+        ]
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn mutated_objects_do_not_panic_the_object_processor() {
+    let mut rng = Rng(seed() ^ 3);
+    let spec = obj::Spec::new()
+        .section(".text", b"\x55\xc3\0\0")
+        .section(".rodata", b"\0hello\0version=needle\0")
+        .sized("v", 1, 7, 15)
+        .symbol("_ZN4core3fmt5write17h0123456789abcdefE", 0, 0);
+    let mo = spec.clone();
+    let seeds = vec![
+        obj::elf(&spec).file,
+        obj::pe(&spec).file,
+        obj::macho(&mo).file,
+        obj::fat(&[
+            (0x0100_0007, obj::macho(&mo).file),
+            (
+                0x0100_000c,
+                obj::macho(&mo.clone().machine(0x0100_000c)).file,
+            ),
+        ])
+        .0,
+    ];
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut failures = Vec::new();
+    let mut tried = 0;
+    for s in &seeds {
+        for _ in 0..count() / 4 {
+            tried += 1;
+            let bytes = mutate(&mut rng, s.clone(), COMMON);
+            let anchors: Vec<usize> = (0..4).map(|_| rng.below(bytes.len() + 1)).collect();
+            let got = catch_unwind(AssertUnwindSafe(|| {
+                let lines = searchfor::trail::LineIndex::new(&bytes);
+                if let Some(m) = object::Map::parse(&bytes) {
+                    for &a in &anchors {
+                        let _ = m.trail(a, &lines);
+                    }
+                }
+                let hits: Vec<_> = anchors
+                    .iter()
+                    .map(|&a| a..(a + 3).min(bytes.len()))
+                    .collect();
+                let mut sorted = hits.clone();
+                sorted.sort_by_key(|h| h.start);
+                object::rows::rows(&bytes, &sorted, None, &lines)
+            }));
+            match got {
+                Err(_) => failures.push(format!("panic\n  input: \"{}\"", bytes.escape_ascii())),
+                Ok(rows) => {
+                    for r in rows {
+                        let end = r.absolute_offset as usize + r.len;
+                        if end > bytes.len() || r.submatches.iter().any(|s| s.end > r.len) {
+                            failures.push(format!(
+                                "row {}..{end} over {} bytes",
+                                r.absolute_offset,
+                                bytes.len()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    std::panic::set_hook(hook);
+    eprintln!("fuzz: {tried} object files, {} failures", failures.len());
+    assert!(
+        failures.is_empty(),
+        "{} of {tried} failed:\n{}",
+        failures.len(),
+        failures[..failures.len().min(3)].join("\n")
+    );
+}
