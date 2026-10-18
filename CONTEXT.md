@@ -70,8 +70,8 @@ _Avoid_: breadcrumb, path, context, scope
 
 **Segment**:
 One step of a **Trail**: a heading, a function, a key, an element of HTML or XML, a row or column
-of a CSV file, a subtitle cue, a section of a binary, or a page, sheet or table of a document read
-by an **Extractor**.
+of a CSV file, a subtitle cue, the image, section or symbol of an object file, or a chapter, page,
+sheet, cell, slide, table, row or column of a document read by an **Extractor**.
 _Avoid_: crumb, node, level
 
 **Section**:
@@ -82,7 +82,8 @@ _Avoid_: block, region
 
 **Extractor**:
 A built-in component, enabled with `--docs`, that turns a document ripgrep cannot read (PDF,
-Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB, SQLite) into searchable text plus its structure.
+Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB, SQLite) into searchable text plus its structure, an
+Outline of that text, before the search.
 _Avoid_: converter, preprocessor (ripgrep's `--pre` is the external variant)
 
 ## Relationships
@@ -93,8 +94,8 @@ _Avoid_: converter, preprocessor (ripgrep's `--pre` is the external variant)
 - A **Trail** is made of zero or more **Segments**; an empty Trail means the Match sits at the
   top level of its file
 - Every **Segment** delimits one **Section**
-- An **Extractor** gives the text it extracts a **Trail** of its own (page, sheet, slide,
-  table, row, column)
+- An **Extractor** gives the text it extracts a **Trail** of its own (chapter, page, sheet,
+  cell, slide, notes, table, row, column); no **Processor** runs on that text
 - A **Helper Processor** serves the files of one **Format** during one search
 - A **Grammar Helper** carries exactly one **Grammar**; the `treesitter` **Processor** uses it
   when its Grammar is not compiled in
@@ -118,8 +119,13 @@ _Avoid_: converter, preprocessor (ripgrep's `--pre` is the external variant)
 >
 > **Dev:** "And a match inside a PDF?"
 > **Domain expert:** "Only with `--docs`: the PDF **Extractor** turns it into text and gives
-> each line a **Trail** like `page 42 › Chapter 3`; without `--docs`, searchfor treats the PDF
-> as ripgrep does."
+> each line a **Trail** like `Chapter 3 › page 42`, the bookmark holding the page; without
+> `--docs`, searchfor treats the PDF as ripgrep does."
+>
+> **Dev:** "And a match inside `/usr/bin/ls`?"
+> **Domain expert:** "Named on the command line, it is an object file: the **Match** prints at
+> its hex offset with the **Trail** `ELF x86-64 › .rodata`, and the symbol when there is one.
+> Walked without `--binary`, ripgrep stops at its first NUL, and so does searchfor."
 
 ## Flagged ambiguities
 

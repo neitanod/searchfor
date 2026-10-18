@@ -1,12 +1,13 @@
 # searchfor — v1 design
 
-Status: draft · 2026-10-17, aligned with the M1 implementation, the M2 decisions of the Hilo
+Status: draft · 2026-10-18, aligned with the M1 implementation, the M2 decisions of the Hilo
 (8449–8459), the M2 implementation (v0.2), the decisions of the M3 plan and the M3
-implementation (v0.3) · Task 768 · source of
+implementation (v0.3), and the decisions of the M4 plan · Task 768 · source of
 truth for decisions: [grill-respuestas.md](grill-respuestas.md) (numbers below, like **#6**, refer
-to its questions; four-digit numbers are Hilo messages; «M2 plan» and «M3 plan» mark a decision
-taken in [the M2 plan](../plans/2026-10-17-searchfor-m2.md) or
-[the M3 plan](../plans/2026-10-17-searchfor-m3.md) where Sebastián left it open)
+to its questions; four-digit numbers are Hilo messages; «M2 plan», «M3 plan» and «M4 plan» mark
+a decision taken in [the M2 plan](../plans/2026-10-17-searchfor-m2.md),
+[the M3 plan](../plans/2026-10-17-searchfor-m3.md) or
+[the M4 plan](../plans/2026-10-18-searchfor-m4.md) where Sebastián left it open)
 and [../../CONTEXT.md](../../CONTEXT.md) for the vocabulary.
 
 ## 1. Goal
@@ -29,7 +30,7 @@ contract. That combination is the product.
 |---|---|---|
 | Formats | Markdown, YAML, JSON, TOML, code via tree-sitter, HTML, XML, CSV and TSV, subtitles (SubRip, WebVTT), ELF/PE/Mach-O; with `--docs`, PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite (§3, M4) | #1, 8380, 8390, 8395 |
 | Engine | ripgrep's crates in-process ([ADR 0001](../adr/0001-embed-ripgrep-engine-as-library.md)) | #2 |
-| Flags | Full ripgrep flag compatibility as the target, plus searchfor's own flags | #3 |
+| Flags | Full ripgrep flag compatibility as the target, plus searchfor's own flags; ripgrep's `--pre` and `-z` from M4 (§5.9) | #3, 8395 |
 | Structural search | `--within`, `--expand`, `--in-headings` | #4 |
 | Detection | extension, exact name, shebang, magic bytes, `--format` override | #5 |
 | Format Definitions | embedded TOML + user directory + export command ([ADR 0002](../adr/0002-format-definitions-as-embedded-toml.md)) | #6 |
@@ -75,18 +76,20 @@ paths ─▶ walker (ignore crate: .gitignore, -g, -t, --hidden…)
    of matching files.
 2. **`--in-headings` is the exception**: it needs Trails to decide what counts as a Match, so
    with it every candidate file is processed. It is documented as slower.
-3. **Documents with `--docs` (M4, decisions 8393–8395).** PDF, Word/ODT, Excel/ODS,
-   PowerPoint/ODP, EPUB and SQLite are searched only when `--docs` is given. Built-in
-   extractors, written in Rust with no external programs, turn each document into text plus
-   its structure (chapter, sheet, slide, table, row, column), and that text goes through the
-   same searcher, Detector and Processor as a file on disk. Without `--docs` those files are
-   treated as ripgrep treats them. `--docs` is independent of `-z`, which keeps ripgrep's
-   meaning (single-stream compressed files). ripgrep's `--pre` is implemented in the same
-   milestone. Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope (8390).
-4. **Binary files.** ripgrep prints `binary file matches` and stops. When the Detector
-   recognises an object Format (ELF, PE, Mach-O), searchfor searches the whole file and
-   describes each Match (§5.7). Any other binary file keeps ripgrep's behaviour, including
-   `-a/--text` and `--binary`.
+3. **What is searched (M4).** A file is searched as it is, or, as in ripgrep, through
+   `--pre` or `-z` (§5.9), or with `--docs` in the text an Extractor takes from a document
+   (decisions 8393–8395, §5.8): PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite. A
+   document is told by its name (or, without an extension, its first bytes) before the search,
+   extracted, and its text goes through the same searcher, filters and printers as a file; its
+   Trails come from the Extractor's Outline, so no Processor runs on it. Without `--docs` those
+   files are treated as ripgrep treats them, at no extra cost. `--docs` is independent of `-z`,
+   which keeps ripgrep's meaning (single-stream compressed files). Archive Formats (zip, tar, 7z,
+   rar, deb, rpm, jar) are out of scope (8390).
+4. **Binary files.** ripgrep prints `binary file matches` and stops. For an object file (ELF,
+   PE, Mach-O) with a Match where ripgrep finds one — named on the command line, or with
+   `--binary` or `-a` — searchfor searches the whole file and prints each printable string with
+   Matches at its hex offset, with its Trail (§5.7). A walked object file without `--binary`, and
+   any other binary file, keep ripgrep's behaviour, including `-a/--text` and `--binary`.
 5. **Dense Matches (pending, M5).** The pipeline keeps the Trails of a whole file before
    printing it, so a file where every line matches costs time and memory in proportion to its
    Matches, in every Format. Measured in the M3 plan on 50 MB files where every line matches
@@ -105,14 +108,25 @@ Signals, in order; the first one that decides wins:
    `--format '*.conf=toml'` to map a glob).
 2. Exact file name (`Dockerfile`, `Makefile`, `.bashrc`, `Cargo.lock`).
 3. Extension.
-4. Leading magic bytes (ELF, `MZ`/PE, Mach-O, PDF `%PDF`, SQLite, zip `PK\x03\x04` for the
-   Office and EPUB documents of `--docs`; `<?xml` for XML, M3 plan).
+4. Leading magic bytes (`%PDF-`, `SQLite format 3\0`, the `mimetype` of OpenDocument and EPUB
+   files at byte 30 for the documents of `--docs`, M4 plan; `<?xml` for XML, M3 plan; ELF,
+   `MZ`/PE and Mach-O for object files, below).
 5. Shebang on the first line (`#!/usr/bin/env bash` → bash).
 
 Magic bytes and shebangs (signals 4 and 5) are read only for a file whose name has no extension
 (M2 plan). A file with an extension no Definition claims (`.txt`, `.c`) is decided Plain by its
 path alone, so it keeps ripgrep's printing path even though the code Definitions declare
-shebangs; Object Formats (M4) list their extensions (`.so`, `.o`, `.dll`) besides their magic.
+shebangs.
+
+Two M4 exceptions (M4 plan, D5, D10):
+
+- **Object Formats** (`elf`, `pe`, `macho`) name no extension: binaries are often named without
+  a telling one (`libc.so.6`, `ls`, `app.bin`). In every file with a Match whose name decides
+  no other Format, its first bytes are compared with their magic, read only once the file has a
+  Match, so a binary costs nothing more until then (8385).
+- **Document Formats** (`processor = "docs"`) take part in detection only with `--docs`, and
+  then before the search, since the search runs on their text: by name, or, for a name without
+  an extension, by its first bytes, read for that.
 
 A file no signal decides is **Plain**: its Matches print with an empty Trail, exactly like
 ripgrep. There is no content-sniffing heuristic.
@@ -156,8 +170,8 @@ kinds = { namespace_definition = "namespace", class_declaration = "class", inter
 
 ### 4.3 Processors
 
-A Processor gets the bytes of one file (or of a document's extracted text), its Format
-Definition parameters and the list of Matches (line numbers and byte offsets). It returns, for
+A Processor gets the bytes of one file (or of what `--pre` or `-z` gave for it, §5.9), its
+Format Definition parameters and the list of Matches (line numbers and byte offsets). It returns, for
 each Match, its Trail, and for each Segment its Section (start and end line). That contract is
 the same for built-in Processors and Helper Processors: for a Helper Processor, sfor implements
 it by speaking protocol v1 (§4.4).
@@ -170,8 +184,8 @@ it by speaking protocol v1 (§4.4).
 | `markup` | HTML, XML (the Definition's `syntax`) | a tag scanner of our own (§5.4) |
 | `csv` | CSV, TSV | `csv-core`, which reads fields and reports the bytes each one takes (§5.5) |
 | `subtitles` | SubRip (`.srt`), WebVTT (`.vtt`) | a line scanner of our own (§5.6) |
-| `object` | ELF, PE, Mach-O | goblin |
-| `docs` extractors | PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB, SQLite, only with `--docs` (M4) | Rust crates, no external programs; chosen in the M4 plan |
+| `object` | ELF, PE, Mach-O (§5.7) | goblin 0.10, and rustc-demangle for Rust symbol names (M4 plan, D3) |
+| `docs` | PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB, SQLite, only with `--docs` (§5.8). Not a Processor that runs on a file: the Definition names the Extractor (`extractor` in `[params]`), which builds the text and its Outline before the search | lopdf 0.45 for PDF; the zip crate and an XML reader of our own for the zip-based formats; a SQLite reader of our own (M4 plan, D12, D13, D15) |
 | `external` | anything | a Helper Processor named in the Definition (§4.4) |
 
 `keypath` uses native parsers instead of tree-sitter (M2 research, 2026-10-16): tree-sitter-yaml
@@ -272,7 +286,7 @@ sfor sends a file's own path only when it is a regular file whose bytes sfor sea
 outside `/dev` and `/proc`, and then it sends the resolved (canonical) path, never the one typed. For anything else — stdin, `/dev/stdin`, `/dev/fd/N` or a FIFO named
 on the command line (a helper must never reopen a stream; `/dev/stdin` redirected from a file is
 a regular file, and in the helper it is the protocol pipe), a file whose BOM sfor removed or whose UTF-16 it transcoded, a path that is not
-UTF-8, a document's extracted text with `--docs` (M4) — sfor writes the bytes it searched to a
+UTF-8, the output of `--pre` or of a decompressor with `-z` (M4) — sfor writes the bytes it searched to a
 temporary file of the run, removed after the answer, and sends that path, so `byte` always
 counts the bytes at `path`.
 
@@ -623,21 +637,223 @@ no parameters (M3 plan).
       12:<i>needle</i>
   ```
 
-### 5.7 Object files (#12)
+### 5.7 Object files (#12, 8390)
 
-Trail: `ELF x86-64 › .rodata › main.version+0x10`. The Match line shows the offset in hex and
-the printable string around the Match, as `strings` would extract it. The nearest symbol is the
-closest preceding symbol in the same section; when the binary is stripped, that Segment is
-omitted.
+The `object` Processor reads ELF, PE and Mach-O files, fat (universal) Mach-O files included,
+with goblin (M4 plan, D3). Its Definitions (`elf`, `pe`, `macho`) name no extension: an object
+Format is told by its magic bytes in every binary file that has a Match, whatever its name, since
+binaries are often named without a telling extension (`libc.so.6`, `ls`; §4.1, M4 plan D5).
 
-### 5.8 Documents (`--docs`, M4)
+- **Where it applies (M4 plan, D4).** Only where ripgrep already finds a Match (8390): a file
+  named on the command line, any file with `--binary`, or any file with `-a`. A walked object
+  file without `--binary` stops at its first NUL, as in ripgrep, and prints nothing. With `-v`,
+  and in `-c`, `--count-matches`, `-l`, `--files-without-match`, `-q` and `--no-trail`, the file
+  prints exactly what ripgrep prints. A file whose bytes start like an object Format but that
+  goblin does not read prints as ripgrep prints it, without a warning (D9).
+- **Rows (D6).** Where ripgrep prints `binary file matches (found "\0" byte around offset N)`,
+  sfor searches the whole file (ripgrep's search stopped at its first Match; this one reads on,
+  and only for a file with a Match, 8385) and prints one row per printable string that holds
+  Matches, as `strings` reads it: printable ASCII, tabs and valid UTF-8 characters that are not
+  controls, at most 4096 bytes on each side of its Matches. A control byte inside a Match prints
+  as `.`. The row is located by the hex offset of its first Match, printed where a line number
+  is printed:
 
-Decisions 8390 and 8393–8395 replaced the Containers of the first draft. Archive Formats (zip,
-tar, 7z, rar, deb, rpm, jar) are out of scope. PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB
-and SQLite are searched with `--docs` (§3): their extractor returns the text and the
-structure, and the Trail shows it, for example `report.pdf › 3 Results › 3.2 Costs` or
-`data.sqlite › users › row 12 › email`. The exact Trail of each document Format is fixed in
-the M4 plan.
+  ```
+  bin/app:0x68: ELF x86-64 › .rodata › main.version+0xe │ version=1.2.3-needle
+  bin/app:0x77: ELF x86-64 › .rodata │ another needle here
+  ```
+
+  and in the tree layout:
+
+  ```
+  bin/app
+    ELF x86-64
+      .rodata
+        main.version+0xe
+          0x68:version=1.2.3-needle
+        0x77:another needle here
+  ```
+
+  `-m N` keeps the first N rows. Context lines (`-A`, `-B`, `-C`) are not printed for rows, and
+  no `--` goes between them. `--within` keeps the rows whose Trail it selects, and `--expand`
+  prints the rows themselves: a Section of a binary is not text (D8).
+- **Trail (D7).** `ELF x86-64 › .rodata › main.version+0x10`:
+  - the image (`kind = "object"`): the Format and the architecture, `ELF x86-64`, `ELF aarch64`,
+    `PE x86-64`, `PE i386`, `Mach-O arm64`, `Mach-O x86-64`; a machine without a name shows its
+    number (`ELF machine 0x9999`). Each architecture of a fat Mach-O is an image over its slice
+    of the file; a Match in the fat header has an empty Trail;
+  - the section (`kind = "section"`) whose bytes in the file hold the Match: its name as the file
+    has it (`.rodata`, `.rdata`), and for Mach-O `segment,section` (`__TEXT,__cstring`). Sections
+    without bytes in the file (`.bss`, zero-fill) are not sections here; a Match outside every
+    section (headers, padding) has the image only;
+  - the symbol (`kind = "symbol"`): the closest symbol of that section at or before the Match,
+    with the distance in hex when it is not 0 (`main.version+0x10`). An ELF symbol whose size
+    (`st_size`) ends before the Match does not name it. ELF reads `.symtab` and `.dynsym`; PE its
+    exports and the COFF symbol table that MinGW leaves in images, without section symbols
+    (`.rdata`) and `.`-names; Mach-O its `N_SECT` symbols, without the assembler's local labels
+    (`ltmp1`, `L_.str`). Rust symbols are demangled without their hash
+    (`core::fmt::write`); other names, C++ included, print as the table has them. When the
+    section has no such symbol — a stripped binary — the Segment is omitted.
+  - `line` and `end_line` are the lines `rg -a` would count, which tools may ignore.
+- `--in-headings` does not search section or symbol names in M4 (D11): an object file gives no
+  names.
+- **`--json`.** A row is a `match` message whose `lines` is the printable string,
+  `absolute_offset` the offset of the string and `line_number` the line `rg -a` gives it; the
+  hex offset printed is `absolute_offset` plus the first submatch's `start`. The `end` message
+  counts the whole search: `bytes_searched` is the file's size, `matched_lines` the rows,
+  `matches` the Matches, and `binary_offset` is null (a deviation from ripgrep, in
+  `docs/rg-compat.md`).
+- Image and audio metadata, WebAssembly and Java `.class` stay in M6 (8385); they will be more
+  Formats of this kind (M4 plan, D1).
+
+### 5.8 Documents (`--docs`, 8393–8395)
+
+With `--docs`, PDF, Word, Excel, PowerPoint, OpenDocument text, spreadsheet and presentation,
+EPUB and SQLite files are searched in the text their Extractor takes from them. The Extractors
+are built in, written in Rust with no external programs (lopdf for PDF, the zip crate for the
+zip-based formats, readers of our own for their XML and for SQLite: M4 plan, D12, D13, D15). The
+extracted text goes through the same searcher, filters and printers as a file; its Trails come
+from the Outline the Extractor builds while it reads, and its path stays the document's.
+Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip is never opened
+(8390).
+
+- **Which files (D10).** A document Format is told by its extension, or, for a name without an
+  extension, by its first bytes: `%PDF-`, `SQLite format 3\0`, or the `mimetype` an
+  OpenDocument or EPUB file stores first (`application/vnd.oasis.opendocument.text`,
+  `application/epub+zip`). Word, Excel and PowerPoint files have no such signature and are told
+  by their extension only. The extensions:
+
+  | Format | Extensions | Extractor |
+  |---|---|---|
+  | `pdf` | `pdf` | PDF |
+  | `docx` | `docx`, `docm`, `dotx`, `dotm` | Word |
+  | `xlsx` | `xlsx`, `xlsm`, `xltx`, `xltm` | Excel |
+  | `pptx` | `pptx`, `pptm`, `potx`, `potm`, `ppsx`, `ppsm` | PowerPoint |
+  | `odt` | `odt`, `ott` | OpenDocument text |
+  | `ods` | `ods`, `ots` | OpenDocument spreadsheet |
+  | `odp` | `odp`, `otp` | OpenDocument presentation |
+  | `epub` | `epub` | EPUB |
+  | `sqlite` | `sqlite`, `sqlite3`, `db`, `db3`, `s3db`, `sl3` | SQLite |
+
+  Their Definitions say `processor = "docs"` and name the Extractor in `[params]`, so a user
+  Definition can give another extension to an Extractor (`extensions = ["ai"]`,
+  `extractor = "pdf"`). The binary formats of Office 97–2003 (`.doc`, `.xls`, `.ppt`) are not
+  read (D18).
+- **Without `--docs`** these Formats are never detected: the files are searched as ripgrep
+  searches them, at no extra cost, and print as ripgrep prints them; `--list-formats` still lists
+  them.
+- **Text.** One line per paragraph, heading, list item or table row; control characters
+  (line breaks inside a cell, tabs inside a paragraph, NUL) become spaces, so a line is one line
+  and the text never looks binary (D25); empty lines are left out. A table row is one line whose
+  cells are separated by tabs. Line numbers count the lines of that text.
+- **Trails (D20)**, real output over the test fixtures (one-line layout):
+
+  ```
+  report.docx:4: 1 Intro › 1.1 Scope │ Scope needle.
+  report.docx:7: 2 Costs › table 1 › row 2 › Price │ Pens	1.50 needle
+  budget.xlsx:3: Budget › A3 │ needle pins	2
+  deck.pptx:3: slide 1 › notes │ tell the needle joke
+  book.epub:2: 1. Arrival › The Harbour │ A needle in the water.
+  report.pdf:3: 1 Intro › page 2 │ intro needle
+  shop.sqlite:12: users › row 12 › email │ 12	User 12	ana.needle@example.com	18.0
+  ```
+
+  - **Word and OpenDocument text**: headings (`kind = "heading"`, with their `level`) nest as
+    Markdown's: a Word paragraph whose style is named `heading N` (Word names its built-in
+    styles in English whatever the language of its interface) or has an outline level; an
+    OpenDocument `text:h`, or a paragraph whose style, or a parent of it, has an outline level
+    or is the built-in `Heading N`. A table is `table N` (`kind = "table"`, numbered from 1 in
+    the document; a table inside a table cell is text of that cell), a row `row R` (`kind =
+    "row"`, from 1, the first row included), and a cell a `column` Segment named by the text of
+    the first row's cell above it (cut at 40 characters with `…`), or `column K` when that cell
+    is empty. The first row names the columns: a Match in it has no column Segment. The
+    document's body only: headers, footers, footnotes, comments and text boxes outside the
+    body are left for later (D18).
+  - **Excel and OpenDocument spreadsheet**: `Sheet › B12`: the sheet (`kind = "sheet"`, by its
+    name) and the cell (`kind = "cell"`, by its reference). A row is a line of its non-empty
+    cells. A value prints as stored: shared and inline strings as text, booleans as `TRUE` or
+    `FALSE`, a formula as its cached value, a number as written in the file (a date is its serial
+    number) (D18). Repeated empty rows and cells of an OpenDocument sheet are counted, never
+    written; a repeated cell with a value is written up to 1000 times.
+  - **PowerPoint and OpenDocument presentation**: `slide N` (`kind = "slide"`, from 1 in the
+    order of the presentation) holds the text of its shapes and tables; its speaker notes come
+    after it as `slide N › notes` (`kind = "notes"`), without the placeholders of the slide
+    image, its number, the date, the header and the footer.
+  - **EPUB**: the documents of the spine in reading order, each a chapter (`kind = "chapter"`)
+    named by its first entry in the table of contents (the EPUB 3 navigation document, else
+    the EPUB 2 NCX), or `chapter N` without one; inside, `h1`–`h6` are headings. A line per block
+    element (`p`, `div`, `li`, `td`…); `script`, `style` and the `head` are not text. XML's
+    entities, character references and the common HTML entities (`&nbsp;`, `&mdash;`, `&copy;`…)
+    are decoded.
+  - **PDF**: `3 Results › 3.2 Costs › page 42`. Each page is `page N` (`kind = "page"`, its
+    1-based position, not its label). The bookmarks are chapters (`kind = "chapter"`, with their
+    `level`) that hold pages: a bookmark starts at the line of the page it points to that starts
+    with its title, or at the top of that page, and a page split by a bookmark is a `page N`
+    Segment under each chapter it holds part of (D14). The text of each page is laid out from the
+    positions its content stream gives each string: a string lower or higher than the last by
+    half its size starts a line, one further right than where the last ended by 0.15 of its size
+    gets a space, and so does a `TJ` kerning of more than 0.1 em; ligatures (`ﬁ`) print as their
+    letters (D13). Text drawn as images (scans) has no text: OCR is out of scope.
+  - **SQLite**: `users › row 12 › email`. Every table of `sqlite_schema` whose name does not
+    start with `sqlite_` (`kind = "table"`), its rows in key order, each a line of its values
+    separated by tabs: `row N` (`kind = "row"`) is the row's rowid, and the position in key order
+    for a `WITHOUT ROWID` table; each value is a `column` Segment named by its column in the
+    table's `CREATE TABLE`. Values print as the `sqlite3` shell shows them: an `INTEGER PRIMARY
+    KEY` is the rowid, an integral value of a REAL column `3.0`, NULL empty, a blob
+    `[blob N bytes]`; UTF-16 databases are transcoded. Indexes, views and triggers are not read,
+    nor a `-wal` file beside the database, so changes not yet checkpointed into it are not found
+    (D15, D16).
+  - Page, sheet, slide, table, row, column, cell, chapter and notes names are not in the text, so
+    `--in-headings` finds only headings in documents (D11). `--within` uses every Segment.
+    `--expand` prints the Section of the last Segment: a cell's or column's is its row, a page's
+    the page.
+- **What cannot be read (D10, D17).** A file whose bytes do not start as its Format's (a `.db`
+  that is not SQLite) is searched as ripgrep searches it, silently. A document the Extractor
+  cannot read is searched as ripgrep searches it too, after one warning that `--no-messages`
+  silences, and the exit code does not change:
+
+  ```
+  sfor: locked.pdf: pdf: encrypted, and the empty password does not open it
+  sfor: broken.docx: docx: not a zip file the reader can open (invalid Zip archive: Could not find EOCD)
+  ```
+
+  An encrypted PDF that opens with the empty password (most of them: the password only guards
+  printing or copying) is read. A zip-based document with an encrypted part is `encrypted`. The
+  limits against decompression bombs and huge documents: a zip part decompresses to at most
+  256 MiB and a PDF stream to at most 64 MiB, or the document is not read (`… is over the 256 MiB
+  limit`); at most 512 MiB of text are extracted from one document, and past that the text is
+  cut, with the warning `sfor: <path>: <format>: the text is cut at 512 MiB`. A malformed part
+  ends the text of that part where the reader stops; nothing in a document makes sfor panic
+  (the fuzz of §11 #27).
+- **With the other flags.** `--docs` is independent of `-z`, which keeps ripgrep's meaning
+  (single-stream compressed files), and of `-a` and `--binary`, which apply to the files that
+  are not documents: an extracted text has no binary data. A file that `--pre` (when its globs
+  take the file) or `-z` (when its extension has a decompressor) reads is never extracted, so
+  `report.pdf.gz` with `-z --docs` is searched as decompressed bytes (§5.9, D21). The filters
+  (`-g`, `-t`, `--hidden`, ignore files, and `--max-filesize` once M5 implements it) select
+  documents by their path and size on disk, as any file. `--no-trail`, `-c`, `--count-matches`, `-l`, `--files-without-match`
+  and `-q` work on the extracted text and print what ripgrep would print for it (D22).
+
+### 5.9 `--pre` and `-z` (M4)
+
+ripgrep's input transforms work as in ripgrep 14.1.1 (M4 plan, D2, D21):
+
+- `--pre COMMAND` searches the standard output of `COMMAND PATH` instead of PATH, with the file
+  also on the command's standard input; an empty COMMAND or `--no-pre` turns it off.
+  `--pre-glob GLOB` (repeatable, gitignore syntax, `!` excludes) limits it to the files the globs
+  take. A command that cannot start, or that exits with an error, is ripgrep's error, exit code 2
+  when nothing matched: `sfor: a.txt: preprocessor command could not start: '"./pre" "a.txt"':
+  No such file or directory (os error 2)`, or `… preprocessor command failed: '…':` followed by
+  the command's stderr between two rules.
+- `-z/--search-zip` searches files with a compressed extension (gzip, bzip2, xz, LZ4, LZMA,
+  Brotli, Zstd) through their decompressors on `PATH`, ripgrep's list; when the decompressor is
+  missing the file is searched as it is, silently. `--no-search-zip` turns it off.
+- `-z` and `--pre` override each other: the one given last wins. Stdin is never transformed.
+- What a transform outputs is searched as stdin is: the reader of the search, binary detection
+  as the file would have it, and, for a Helper Processor, a temporary file with the output
+  (§4.4, Paths). In the Trail layouts the output gets the Trails of the Format the file's path
+  says (`--pre` over `notes.md` gives Markdown Trails); a document or object Format gives none,
+  the file prints as Plain. `--no-trail` prints what ripgrep prints.
 
 ## 6. Output (#13–#15)
 
@@ -665,7 +881,8 @@ md/guide.md:12: Deploy guide › Install › Linux › bash │ apt install need
 ```
 
 The layout is `path:line: Trail │ text`; with an empty Trail (Plain files) it is
-`path:line: text`. A line with Matches in Segments with different Trails (two table cells)
+`path:line: text`. An object file's row has its hex offset in place of the line,
+`path:0x68: Trail │ string` (§5.7). A line with Matches in Segments with different Trails (two table cells)
 prints once per Trail. `--no-trail` prints exactly what ripgrep would print, for scripts that
 expect it.
 
@@ -730,8 +947,9 @@ one line, wrapped here):
   `matches` count the Matches in names (a deviation from ripgrep, in `docs/rg-compat.md`). A
   Match over contiguous pieces of a name — an entity, an escape, a byte that is not UTF-8 between
   letters — is one submatch over all of them and counts once (M3 plan, D35).
-- A document searched with `--docs` (M4) keeps the document in `path`; its structure appears
-  as Segments of `trail`.
+- A document searched with `--docs` keeps the document in `path`; its structure appears as
+  Segments of `trail`, and `lines`, `line_number` and `absolute_offset` refer to its extracted
+  text (§5.8). An object file's row is described in §5.7.
 - Added field names are stable from v0.1; new ones may appear, existing ones are never renamed.
   Their schema lives in `docs/json-schema.json`.
 - `--json --no-trail` prints the same messages as `rg --json`; only the timings differ.
@@ -820,7 +1038,7 @@ v0.3 release binary, which adds `markup`, `csv` (with `csv-core`) and `subtitles
 | `--fragment-width <N>` | Fragment width when there is no terminal |
 | `--list-formats`, `--export-formats <DIR>` | Format Definitions |
 | `--install-grammar <LANG>`, `--list-grammars` | Grammar Helpers (§7) |
-| `--docs` | search PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite through the built-in extractors (M4, 8395) |
+| `--docs` | search PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite through the built-in Extractors (§5.8, 8395) |
 | `--mcp` | run as an MCP server over stdio |
 
 Management actions are flags, not subcommands, because `sfor formats` must keep meaning
@@ -847,16 +1065,22 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
 
 1. `sfor PATTERN` over a tree with no structured files prints byte-for-byte what `rg PATTERN`
    prints when given `--no-trail`, for the flags marked implemented in `docs/rg-compat.md`.
-2. Every Format of §2 has a fixture under `tests/fixtures/` and a snapshot test of its tree,
-   one-line and JSON output.
+2. Every Format of §2 has a fixture and a snapshot test of its tree, one-line and JSON output.
+   The fixture is under `tests/fixtures/`, or, for M4's documents and object files, written by
+   the tests with the writers of `searchfor::docs::fixture` and
+   `searchfor::processors::object::fixture` (M4 plan, D19).
 3. A Match inside a fenced code block under `## Linux` under `# Install` gets the Trail
    `Install › Linux › bash`.
 4. A Match in `config.yaml` at `server.ports[2].host` gets that Trail.
 5. A Match inside a PHP method gets `Cart › addItem` in the one-line output, and the tree
    output shows the class's and the method's signatures.
-6. A Match in a stripped ELF binary shows format, section, offset and string, and no symbol.
-7. With `--docs`, a Match in a PDF gets the PDF's chapter Trail; without `--docs`, the PDF
-   is treated as ripgrep treats it. A zip is never opened (8390).
+6. A Match in a stripped ELF binary shows format, section, offset and string, and no symbol;
+   in an ELF with symbols, the symbol and the distance to it (`ELF x86-64 › .rodata ›
+   main.version+0xe`); in a PE and in each architecture of a fat Mach-O, the same three
+   Segments (§5.7). A walked object file without `--binary` prints nothing, as rg; `-v`, `-c`
+   and `--no-trail` print what rg prints.
+7. With `--docs`, a Match in a PDF gets the PDF's chapter Trail (`1 Intro › page 2`); without
+   `--docs`, the PDF is treated as ripgrep treats it. A zip is never opened (8390).
 8. A 20 000-character minified JSON line with three Matches prints Fragments no wider than
    the terminal, with correct omitted counts.
 9. `--within "Install › Linux"` keeps only Matches under that Trail; `--expand` prints each
@@ -903,3 +1127,29 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
     output, and as the decoded name in `--json`.
 22. The release binary (`target/release/sfor`, Linux x86-64, the profile of `Cargo.toml`) weighs
     at most 23 MB (8612; 20 MB until then, M3 plan).
+23. With `--docs`, a Match in each document Format gets the Trail of §5.8: `1 Intro › 1.1 Scope`
+    and `2 Costs › table 1 › row 2 › Price` in Word and OpenDocument text, `Budget › A3` in Excel
+    and OpenDocument spreadsheets, `slide 1 › notes` in PowerPoint and OpenDocument
+    presentations, `1. Arrival › The Harbour` in EPUB, `users › row 12 › email` in SQLite.
+24. An encrypted PDF that needs a password and a document that is not what its name says print
+    one warning each and are searched as rg searches them; `--no-messages` silences the
+    warnings and the exit code does not change.
+25. `--pre`, `--pre-glob`, `--no-pre`, `-z` and `--no-search-zip` print, with `--no-trail`, what
+    rg 14.1.1 prints, errors and exit codes included; the one of `-z` and `--pre` given last
+    wins.
+26. Performance of M4 (`scripts/bench-m4.sh`, M4 plan D23): over a corpus of documents, object
+    files and text files, without `--docs` and `--binary`, with a pattern no file matches, a
+    sparse one and `--no-trail`, sfor takes at most 1.1 × rg; `--docs` over files that are not
+    documents, at most 1.1 × rg; `--binary` over object files with a sparse pattern, sfor's time
+    over rg's is at most the largest matching object ÷ 100 MB/s plus all matching objects ÷
+    (100 MB/s × threads) plus 0.05 s; `--docs` over the documents, sfor's time over rg's on their
+    extracted texts is at most the texts' size ÷ (2 MB/s × threads) plus 0.1 s. In
+    `tests/perf.rs`: a 50 MB ELF with three Matches, also with 200 000 symbols, within `rg -a`'s
+    time plus 1 s and its RSS plus 64 MiB; a large document of each zip-based Format and PDF within
+    rg's time over its text plus the text ÷ its Format's rate (docx 12, odt 10, epub 20, pdf 7,
+    xlsx 2, ods 1, pptx 1.3 MB/s) plus 1 s; and a zip bomb refused within 5 s and 256 MiB plus
+    rg's RSS plus 64 MiB.
+27. The fuzz of `tests/fuzz.rs` runs the Extractors over mutated documents (bytes changed, cut,
+    repeated, and the XML inside the zip changed) and the `object` Processor over mutated object
+    files: nothing panics, an extraction takes at most 2 s, and every Segment and name lies
+    inside the extracted text.
