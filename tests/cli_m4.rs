@@ -543,6 +543,8 @@ fn m4_10_structural_flags_on_documents_and_objects() {
                 "--flat",
                 "--within",
                 "Costs",
+                "--sort",
+                "path",
                 "needle",
                 "m4/report.docx",
                 "m4/report.pdf"
