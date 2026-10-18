@@ -795,7 +795,8 @@ queries real Rust code at about 3 MB/s per thread. Only files with Matches are p
 The v0.2 release binary (Linux x86-64, thin LTO), with the eight Grammars, keypath, the
 Helper Processor host and the index client, weighs 16.4 MB, 15.2 MB stripped (2026-10-17). The
 v0.3 release binary, which adds `markup`, `csv` (with `csv-core`) and `subtitles`, weighs 16.6 MB
-(16 575 912 bytes), 15.4 MB stripped (2026-10-17), under the M3 plan's ceiling of 20 MB.
+(16 575 912 bytes), 15.4 MB stripped (2026-10-17), under the M3 plan's ceiling of 20 MB. Since
+8612 the ceiling is 23 MB (§11 #22).
 
 ## 8. Command line (#3, #4)
 
@@ -900,3 +901,5 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
     `cue 2 00:00:04,000 --> 00:00:06,000` in the tree, the same with a BOM and CRLF line ends.
 21. A key `"a\nb"` in JSON, TOML, YAML or JavaScript prints `a\nb` on one row in tree and one-line
     output, and as the decoded name in `--json`.
+22. The release binary (`target/release/sfor`, Linux x86-64, the profile of `Cargo.toml`) weighs
+    at most 23 MB (8612; 20 MB until then, M3 plan).

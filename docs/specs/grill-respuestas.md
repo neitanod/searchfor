@@ -238,3 +238,12 @@ is a decision; the agent's measurements are the reasons given at the time.
 - **Still valid from M1** (8385): the search must be as fast as ripgrep, the added cost belongs
   to the files with Matches only, and a Match with no structure prints the way ripgrep prints
   it.
+
+---
+
+# Follow-up decisions in the Hilo (17/10/2026): the size of the binary
+
+- **8612** — «21 o 22 Mb no cambian gran cosa respecto de 20. Que el límite sea 23Mb.» The
+  ceiling on the release binary (`target/release/sfor`, Linux x86-64) moves from the 20 MB the
+  M3 plan set to 23 MB: one or two megabytes more make no real difference. M4's dependencies
+  are measured against 23 MB.
