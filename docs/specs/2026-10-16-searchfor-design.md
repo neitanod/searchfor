@@ -2,10 +2,10 @@
 
 Status: draft · 2026-10-18, aligned with the M1 implementation, the M2 decisions of the Hilo
 (8449–8459), the M2 implementation (v0.2), the decisions of the M3 plan and the M3
-implementation (v0.3), and the decisions of the M4 plan · Task 768 · source of
-truth for decisions: [grill-respuestas.md](grill-respuestas.md) (numbers below, like **#6**, refer
-to its questions; four-digit numbers are Hilo messages; «M2 plan», «M3 plan» and «M4 plan» mark
-a decision taken in [the M2 plan](../plans/2026-10-17-searchfor-m2.md),
+implementation (v0.3), the decisions of the M4 plan and the M4 implementation (v0.4) · Task
+768 · source of truth for decisions: [grill-respuestas.md](grill-respuestas.md) (numbers below,
+like **#6**, refer to its questions; four-digit numbers are Hilo messages; «M2 plan», «M3 plan»
+and «M4 plan» mark a decision taken in [the M2 plan](../plans/2026-10-17-searchfor-m2.md),
 [the M3 plan](../plans/2026-10-17-searchfor-m3.md) or
 [the M4 plan](../plans/2026-10-18-searchfor-m4.md) where Sebastián left it open)
 and [../../CONTEXT.md](../../CONTEXT.md) for the vocabulary.
@@ -659,7 +659,8 @@ binaries are often named without a telling extension (`libc.so.6`, `ls`; §4.1, 
   Matches, as `strings` reads it: printable ASCII, tabs and valid UTF-8 characters that are not
   controls, at most 4096 bytes on each side of its Matches. A control byte inside a Match prints
   as `.`. The row is located by the hex offset of its first Match, printed where a line number
-  is printed:
+  is printed (real output of `s4 -H --flat needle bin/app` and `s4 --tree needle bin/app` over
+  the object files of `tests/cli_m4.rs`, from their `m4/` directory):
 
   ```
   bin/app:0x68: ELF x86-64 › .rodata › main.version+0xe │ version=1.2.3-needle
@@ -754,7 +755,10 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
   and the text never looks binary (D25); empty lines are left out. A table row is one line whose
   cells are separated by tabs: an empty cell keeps its tab, and a value its spaces. Line
   numbers count the lines of that text.
-- **Trails (D20)**, real output over the test fixtures (one-line layout):
+- **Trails (D20)**, real output over the test fixtures (one-line layout): lines of
+  `s4 --docs -H --flat needle` over the documents of `tests/cli_m4.rs`, from their `m4/`
+  directory, one or two per Format, and over `tests/fixtures/docs/shop.sqlite`, from its
+  directory:
 
   ```
   report.docx:4: 1 Intro › 1.1 Scope │ Scope needle.
@@ -1073,10 +1077,11 @@ v0.3 release binary, which adds `markup`, `csv` (with `csv-core`) and `subtitles
 - **ripgrep compatibility.** ripgrep 14.1.1 has 146 flag names: 104 flags in `rg --help`,
   30 `--no-` negations and 12 negations with other names (counted from its source in M1, C2).
   v1 accepts all of them by name; they are implemented in order of use. v0.1 implements 51
-  and accepts the other 95 as «not supported yet». A flag that is accepted but not yet
-  implemented fails with `s4: --<flag> is not supported yet` and exit code 2, never silently
-  ignored. The compatibility table lives in `docs/rg-compat.md` and is checked by a test that
-  parses `rg --help`.
+  and accepts the other 95 as «not supported yet»; v0.4 implements 56 (M4 adds `--pre`,
+  `--pre-glob`, `--no-pre`, `-z` and `--no-search-zip`) and accepts the other 90. A flag that
+  is accepted but not yet implemented fails with `s4: --<flag> is not supported yet` and exit
+  code 2, never silently ignored. The compatibility table lives in `docs/rg-compat.md` and is
+  checked by a test that parses `rg --help`.
 - **searchfor's own flags** use names ripgrep does not use:
 
 | Flag | Meaning |
