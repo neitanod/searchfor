@@ -202,6 +202,24 @@ pub fn render_markdown() -> String {
 const DEVIATIONS: &str = "
 ## Known deviations
 
+### Usage errors
+
+A command line s4 cannot parse (a flag without its value, an unknown flag, a value that is no
+number or none of the flag's choices) exits 2, as in rg 14.1.1, with the message of clap, the
+parser s4 has used since M1, where rg prints its own. Every flag behaves this way, `--pre` and
+`--pre-glob` included (code review m4-code-r3, Fable #3):
+
+```sh
+s4 needle --pre    # error: a value is required for '--pre <COMMAND>' but none was supplied
+rg needle --pre    # rg: missing value for flag --pre: missing argument for option '--pre'
+```
+
+Clap's message ends with `For more information, try '--help'.`, and for an unknown flag it
+also prints the usage line, after a similar flag when there is one. The errors found once the command line
+is parsed (an unknown file type, a glob or a pattern that does not parse) are rg's, and come in
+rg's order: the file types, the globs, the `--pre-glob` globs, the patterns (code review
+m4-code-r3, Codex #4).
+
 ### A binary file or stdin with a context, in the Trail layouts
 
 On a file named on the command line or on stdin, with a NUL and a context (`-A`, `-B`, `-C`),
@@ -523,5 +541,13 @@ mod tests {
         assert!(md.contains("| `--pcre2` | `-P` | no | not yet |"));
         let rows = md.lines().filter(|l| l.starts_with("| `--")).count();
         assert_eq!(rows, RG_FLAGS.len());
+    }
+
+    #[test]
+    fn usage_errors_are_a_known_deviation() {
+        // Code review m4-code-r3, Fable #3.
+        let md = render_markdown();
+        assert!(md.contains("\n### Usage errors\n"));
+        assert!(md.contains("missing value for flag --pre"));
     }
 }
