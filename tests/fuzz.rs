@@ -807,14 +807,17 @@ fn check_doc(kind: Kind, bytes: &[u8]) -> Result<(), String> {
 const DEADLINE: Duration = Duration::from_secs(2);
 /// In a child process of `supervised`: the first case it runs.
 const CHILD_FROM: &str = "SEARCHFOR_FUZZ_CHILD_FROM";
+/// How long `supervised` waits for a child that runs no case.
+const BETWEEN: Duration = Duration::from_secs(60);
 
 /// Runs the cases of the test `test` in a child process, this test binary running only that
 /// test with `CHILD_FROM` set, and watches it (code review of the M4 plan r2, Codex #7). The
 /// child prints `fuzzcase run N` before case N, `fuzzcase end N` after it, followed by its
 /// failure if it failed, and `fuzzcase done` at the end. A case that prints nothing for
-/// `limit` (plus a second for the child's start) has its child killed and reaped, and the
-/// cases after it run in a new child; one whose child dies (an abort, out of memory) fails
-/// too. Returns the failures.
+/// `limit` has its child killed and reaped, and the cases after it run in a new child; one
+/// whose child dies (an abort, out of memory) fails too. Between cases, while the child starts
+/// or makes the next case, the limit is `BETWEEN`: making a seed's cases takes 0.5 s alone and
+/// passed 3 s with the suite running beside it on a loaded machine. Returns the failures.
 fn supervised(test: &str, limit: Duration) -> Vec<String> {
     use std::io::BufRead;
     let mut failures = Vec::new();
@@ -837,11 +840,10 @@ fn supervised(test: &str, limit: Duration) -> Vec<String> {
             }
         });
         let mut running: Option<usize> = None;
-        let mut wait = limit + Duration::from_secs(1);
         loop {
+            let wait = if running.is_some() { limit } else { BETWEEN };
             match rx.recv_timeout(wait) {
                 Ok(line) => {
-                    wait = limit;
                     let Some(msg) = line.strip_prefix("fuzzcase ") else {
                         continue;
                     };
@@ -953,13 +955,17 @@ fn mutated_documents_do_not_panic_the_extractors() {
 
 /// The supervisor's own test: in its child, case 1 never ends, spinning and allocating, and
 /// case 3 panics; the supervisor kills and reaps the child at case 1, goes on from case 2 in a
-/// new one, and reports both.
+/// new one, and reports both. Making case 4 takes twice the limit, as making a seed's cases may
+/// on a loaded machine: no case runs then, so the supervisor waits for it.
 #[test]
 fn the_supervisor_kills_a_case_that_never_ends() {
     const TEST: &str = "the_supervisor_kills_a_case_that_never_ends";
     if let Ok(from) = std::env::var(CHILD_FROM) {
         let from: usize = from.parse().unwrap();
         for i in from..5 {
+            if i == 4 {
+                std::thread::sleep(Duration::from_millis(600));
+            }
             println!("fuzzcase run {i}");
             if i == 1 {
                 let mut hog: Vec<Vec<u8>> = Vec::new();
