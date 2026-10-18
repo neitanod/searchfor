@@ -44,7 +44,7 @@ branch and is merged back after its tanda, as `ciclo` stage 7 describes
 (`using-git-worktrees`, `finishing-a-development-branch`). Line numbers in the diffs are those
 of `191dbaf` and only hints: locate code by the names given. The code of this plan was built
 and tested in a probe copy of the repository, frozen as
-`/tmp/subtask/m4-plan/m4tree-57edf0f` (see «Verified for this plan»).
+`/tmp/subtask/m4-plan/m4tree-eea167a` (see «Verified for this plan»).
 
 ---
 
@@ -115,37 +115,38 @@ ones it describes marked «M4 plan».
 | D5 | Object Formats name no extension and are told by their magic in every file with a Match, read only once the file has one (`Detector::object`) | `libc.so.6`, `ls` and `app.bin` say nothing by their name; reading 16 bytes of a file that already has a Match costs nothing that 8385 forbids |
 | D6 | A row is the printable string around its Matches, as `strings` reads it (printable ASCII, tab, valid UTF-8 non-controls, at most 4096 bytes on each side), located by the hex offset of its first Match where a line number goes; a control byte of a Match prints as `.`; in `--json` a row keeps rg -a's `line_number` and the string's `absolute_offset` | #12 asked for the offset in hex and the printable string around the Match; a line of a binary is meaningless, and the JSON stays valid against rg's schema |
 | D7 | The symbol is the closest at or before the Match in its section; an ELF symbol's `st_size` bounds it; PE uses exports and COFF symbols (no section symbols, no `.`-names); Mach-O skips stabs and the `l`/`L` local labels; a fat Mach-O is one image per architecture | The spec's «closest preceding symbol», refined by what the probe showed on real binaries: `another needle` after `version_string` got `version_string+0x1d` from gcc's ELF, `.rdata+0xe` from MinGW's PE and `ltmp1+0xe` from clang's arm64 Mach-O |
-| D8 | Object rows have no context lines and no `--`; `--within` drops rows it does not keep (`filter::retain_rows`); `--expand` prints the rows | A binary's Section is not text; the M1 `retain` turns a dropped Match on the same line as a kept one into a context line, and two rows of one binary often share an `rg -a` line |
+| D8 | Object rows have no context lines and no `--`; a row is one string, printed once, at its first Match and with that Match's Trail, its Matches highlighted together (the JSON keeps each Match's Trail); `--within` keeps the Matches it keeps, with their Trails, and drops a row with none (`filter::retain_rows`); `-m` after `--within` counts rows; `--expand` prints the rows | A binary's Section is not text; the M1 `retain` turns a dropped Match on the same line as a kept one into a context line, and two rows of one binary often share an `rg -a` line, so `-m` by line would keep them all; a Trail names the distance into its symbol, so rows grouped by Trail would print a string once per Match (code review of this plan r1, Codex #7–#9) |
 | D9 | A file with an object magic that goblin does not read prints as rg prints it, without a warning | A text file named `x` that starts with `MZ` is not a broken PE |
-| D10 | Documents by extension, or for a name without an extension by `%PDF-`, `SQLite format 3\0` or the OpenDocument/EPUB `mimetype` at byte 30; a file whose bytes do not start as its Format's is searched as rg, silently; one the Extractor cannot read warns once (`sfor: <path>: <format>: <reason>`) and is searched as rg; the exit code does not change | Office files have no fixed signature, and an extension-less zip must not be opened to find out (8390); a `.db` that is not SQLite is normal; a broken document is the user's to know about, but must not hide ripgrep's Matches in its bytes |
+| D10 | Documents by extension, or for a name without an extension by `%PDF-`, `SQLite format 3\0` or the OpenDocument/EPUB `mimetype` at byte 30; only a regular file is a document: stdin, `/dev/fd/N` or a FIFO is searched as rg, read once; a file whose bytes do not start as its Format's (`Kind::looks_like`, the same bytes as the magic) is searched as rg, silently; one the Extractor cannot read warns once (`sfor: <path>: <format>: <reason>`) and is searched as rg; the exit code does not change | Office files have no fixed signature, and an extension-less zip must not be opened to find out (8390); a `.db` that is not SQLite is normal; a broken document is the user's to know about, but must not hide ripgrep's Matches in its bytes; a stream read for its first bytes is gone for the search (r1, Codex #3); `%PDF-` anywhere in the first 1024 bytes made a PDF a document by its name and not without one (r1, Fable #12) |
 | D11 | `--in-headings` finds in documents only the names that are in the text (headings); object files give no names | Pages, sheets, slides, tables and chapters have no text to map a Match to (the M3 rule for `cue `); section and symbol names live in string tables, an M6 refinement |
 | D12 | An XML pull reader of our own (`docs::xml`) for the Office, OpenDocument and EPUB parts, instead of quick-xml | Those parts are written by programs and well formed; the reader is 200 lines with entity decoding, and one dependency less; at a construct it cannot read the part ends there, as M3's XML scanner ends its structure |
-| D13 | lopdf 0.45 reads PDF objects, fonts, streams and encryption; the text is laid out by our code from the content streams: a new line when a string moves half its size up or down, a space for a gap of 0.15 of its size (only when its font gave widths), and for a `TJ` kerning past 0.1 em; ligatures expanded | lopdf's own `extract_text` joins positioned strings without spaces or line breaks; measured against `pdftotext` on six PDFs from five producers: word recall 0.93–1.00, bigram recall 0.875–1.00, and faster than pdftotext on the two long ones (0.41 s against 2.5 s, 0.14 s against 0.35 s) |
+| D13 | lopdf 0.45 reads PDF objects, fonts, streams and encryption; a font's strings decode through its ToUnicode map when it has one that reads, else through its `/Encoding`; the text is laid out by our code from the content streams: a new line when a string moves half its size up or down, a space for a gap of 0.15 of its size (only when its font gave widths), and for a `TJ` kerning past 0.1 em; ligatures expanded | lopdf's own `extract_text` joins positioned strings without spaces or line breaks; measured against `pdftotext` on six PDFs from five producers: word recall 0.93–1.00, bigram recall 0.875–1.00, and faster than pdftotext on the two long ones (0.41 s against 2.5 s, 0.14 s against 0.35 s). lopdf reads `/Encoding` before `/ToUnicode`, and a subset font's codes mean what its map says (r1, Codex #5) |
 | D14 | A PDF bookmark is a chapter that holds pages; it starts at the line of its page that starts with its title, or at the top of the page; a page split by a bookmark is a `page N` Segment under each chapter it holds part of; `page N` is the 1-based position | A Trail goes from the root down, and a chapter holds pages; LibreOffice's PDFs point every bookmark of a one-page document at page 1, which at page granularity put the whole page under the last bookmark |
-| D15 | A SQLite reader of our own: `sqlite_schema`, then each table's b-tree (interior and leaf, table and index pages, overflow pages); `row N` is the rowid (the position for `WITHOUT ROWID`); values as the `sqlite3` shell prints them | No C compiler in the build and no C library in the binary (rusqlite bundles SQLite's C); read-only access to the file format is a few hundred lines; the rowid is what `SELECT … WHERE rowid = 12` uses. It replaces the M3 plan's forward reference (its D5 said M4's `row 12` would be the 12th row) |
+| D15 | A SQLite reader of our own: `sqlite_schema`, then each table's b-tree (interior and leaf, table and index pages, overflow pages); `row N` is the rowid (the position for `WITHOUT ROWID`); values as the `sqlite3` shell prints them, in the order of `CREATE TABLE` (a `WITHOUT ROWID` table stores its PRIMARY KEY columns first, in the key's order) | No C compiler in the build and no C library in the binary (rusqlite bundles SQLite's C); read-only access to the file format is a few hundred lines; the rowid is what `SELECT … WHERE rowid = 12` uses. It replaces the M3 plan's forward reference (its D5 said M4's `row 12` would be the 12th row). The key's order was measured with SQLite: `t(payload TEXT, k TEXT PRIMARY KEY) WITHOUT ROWID` stores `k, payload` (r1, Codex #4, Fable #2) |
 | D16 | SQLite: indexes, views and triggers are not read, nor a `-wal` file | Tables hold the data; a WAL is a second file, and changes in it reach the database at the next checkpoint |
-| D17 | Limits: 512 MiB of text per document (cut, with a warning); 256 MiB per zip part and 64 MiB per PDF stream (refused, with a warning); 100 000 bookmarks; forms nested 8 deep; a repeated ODF cell or row with a value written at most 1000 times; b-trees 40 deep | Decompression bombs and pathological files must neither fill the memory nor hang sfor; the perf test bounds a 300 MiB zip bomb |
-| D18 | Office documents: the body, the cell values as stored (dates as serial numbers, formulas' cached values) and the slides with their notes; not headers, footers, footnotes, comments, charts, embedded objects, nor the 97–2003 binary formats | What 8393 asked to find; each other part is a reader more, M6 candidates |
+| D17 | Limits: 512 MiB of text per document (cut, with a warning; a PDF page stops being drawn when its text reaches what is left); 256 MiB per zip part and 1 GiB for all the parts one document reads; 64 MiB per PDF stream (pages, Forms, fonts' ToUnicode maps, object streams) and 1 GiB for the pages', Forms' and maps' together; 8 000 000 units of Form work per PDF (16 per Form drawn plus one per operation it runs); refused with one warning, `… is over the N MiB limit` or `its Forms run more than 8000000 operations`, while a stream that does not decompress draws nothing; 100 000 bookmarks; forms nested 8 deep; a repeated ODF cell or row with a value written at most 1000 times, and a repeat past the largest number an error; b-trees 40 deep | Decompression bombs and pathological files must neither fill the memory nor hang sfor. Round 1 of this plan's review found a ToUnicode map read without a limit (791 MiB for a 714 KB PDF), a page of Forms drawing Forms (16⁷ draws), twelve 200 MiB sheets each under the part limit (4.7 s), and ODF repeats that overflow (Codex #1, #2, #10; Fable #1, #3); the perf tests bound a 300 MiB zip bomb, a 300 MiB ToUnicode map and a workbook of six 200 MiB sheets |
+| D18 | Office documents: the body, the cell values as stored (Excel: dates as serial numbers, formulas' cached values; ODS: by `office:value-type`, the number of a float, percentage or currency, the date, time or boolean value, else the text) and the slides with their notes; not headers, footers, footnotes, comments, charts, embedded objects, nor the 97–2003 binary formats | What 8393 asked to find; each other part is a reader more, M6 candidates. An ODS cell shown as `$1.50` stores `1.5`, as an XLSX one does (r1, Codex #6) |
 | D19 | Test documents and object files are written by code in the repository (`docs::fixture`, `processors::object::fixture`, `#[doc(hidden)] pub` so the integration tests use them), the SQLite ones by `scripts/gen-sqlite-fixtures.py` (Python's standard library) and committed; all MIT OR Apache-2.0 | No third-party file, so no licence question; a writer documents exactly what each byte is |
 | D20 | Trails: Word/ODT `heading › heading › table N › row R › Column` (the first row names the columns, 40 characters); Excel/ODS `Sheet › B12`; PowerPoint/ODP `slide N › notes`; EPUB `chapter › headings`; PDF `chapters › page N`; SQLite `table › row ROWID › column` | Each says where a person finds the text in the program that opens the document; a cell reference is what a spreadsheet shows |
-| D21 | Order: `--pre` (when its globs take the file), then `-z` (when the extension has a decompressor), then `--docs`; a file `--pre` or `-z` reads is never extracted; stdin is never transformed; `--pre`'s output gets the Trails of the Format its path says (Plain for a document or object Format) | ripgrep's order for the first two; a decompressed stream has no name of its own to say what it is |
+| D21 | Order: `--pre` (when its globs take the file), then `-z` (when the extension has a decompressor), then `--docs`; a file `--pre` or `-z` reads is never extracted; stdin is never transformed; `--pre`'s output gets the Trails of the Format its path says; what a transform outputs is never an object file nor a document, whatever its bytes, `--format` or `-a` say: no object rows, no `object` or `docs` Processor (Plain) | ripgrep's order for the first two; a decompressed stream has no name of its own to say what it is; `--pre cat` over an ELF printed object rows before (r1, Codex #11) |
 | D22 | `--docs` also changes `--no-trail`, `-c`, `-l` and `-q`: they work on the extracted text, in ripgrep's layout | `--docs` is sfor's flag, not ripgrep's; a script that counts Matches with `--docs -c` wants the documents' |
 | D23 | Benchmark (`scripts/bench-m4.sh`) and ceilings (`tests/perf.rs`) as in §11 #26: 1.1 × rg where M4 adds nothing; objects at 100 MB/s; documents at 2 MB/s of text per thread on top of rg's search of their text; per-format rates in `tests/perf.rs` about a third of the probe's | The rates measured in the probe (MB/s of text): docx 41, odt 36, epub 66, PDF 23 (generated) and 1.2–1.8 (real), xlsx 5.6, ods 3.4, pptx 4.0, SQLite 16–17; a third leaves room for a loaded machine, as M3's ceilings did. Memory: rg's plus six times the text, plus 400 bytes per cell Segment of a spreadsheet, plus 64 MiB (the probe: 228 MiB for the 600 000 cells of an XLSX with 18 MB of text) |
-| D24 | The binary's growth is measured and reported: 16.6 MB (16 598 640 bytes at `191dbaf`) → 19.0 MB (19 015 120 bytes), under 23 MB (8612) | Spec §11 #22 |
-| D25 | Extracted text never holds a control character (line breaks inside a cell, tabs inside a paragraph, NUL become spaces) and has no empty lines | A row of a table stays one line, and the searcher never sees binary data in a document |
+| D24 | The binary's growth is measured and reported: 16.6 MB (16 598 640 bytes at `191dbaf`) → 19.0 MB (19 041 208 bytes), under 23 MB (8612) | Spec §11 #22 |
+| D25 | Extracted text never holds a control character (line breaks inside a cell, tabs inside a paragraph, NUL become spaces) and has no empty lines; a row writes a tab before each cell but the first, empty cells included, and a cell's spaces as they are | A row of a table stays one line, and the searcher never sees binary data in a document; a SQLite row `(NULL, 'needle')` is `\tneedle`, so a search anchored at a column finds it (r1, Codex #12, Fable #11) |
 | D26 | The JSON statistics of an object file count the whole search (`bytes_searched` = file size, `matched_lines` = rows, `binary_offset` null), documented in `docs/rg-compat.md` | rg stops at the first Match of a binary; sfor reads on to describe each one |
 | D27 | Without `--docs` the document Formats are never detected (`Detector::with_docs`); `--list-formats` lists them; `--format pdf` without `--docs` prints the file as Plain | 8395 «without --docs those files are treated as ripgrep does», at no cost |
-| D28 | The fuzz mutates documents (bytes changed, cut, repeated; and the XML inside the zip, zipped again) and object files; nothing may panic, an extraction takes at most 2 s, and every Segment and name lies inside its text | It found a heading name with a NUL (fixed in `Builder`), and a panic in `xml::unescape` at `&` before a multi-byte letter (fixed) |
+| D28 | The fuzz mutates documents (bytes changed, cut, repeated; and the XML inside the zip, zipped again) and object files; nothing may panic, an extraction ends within 2 s whatever it returns, watched from another thread so that one that never ends fails the run, and every Segment and name lies inside its text | It found a heading name with a NUL (fixed in `Builder`), and a panic in `xml::unescape` at `&` before a multi-byte letter (fixed); a slow extraction that ended in an error passed, and a hang hung the run (r1, Codex #13) |
 
 ## Verified for this plan (2026-10-17 and 2026-10-18)
 
 Outputs in `/tmp/subtask/m4-plan/outputs/`. The probe `/tmp/subtask/m4-plan/m4v2` is a git
-repository of its own with three commits: the repository at `1610a50`, the repository at
-`191dbaf`, and M4's code over the latter (cherry-picked from the first probe, see «Rebase on
-M3's final code»). The frozen copy `/tmp/subtask/m4-plan/m4tree-57edf0f` is that probe at its commit
-`57edf0f`; every code block below was generated from it
-(`/tmp/subtask/m4-plan/plan/gen.py`, diffs against its commit `05699bc`, which is `191dbaf`).
-The working probe may change with the reviews; the frozen one does not.
+repository of its own with four commits: the repository at `1610a50`, the repository at
+`191dbaf`, M4's code over the latter (`57edf0f`, cherry-picked from the first probe, see «Rebase
+on M3's final code»), and the fixes of the first review of this plan (`eea167a`, see «Review
+round 1»). The frozen copy `/tmp/subtask/m4-plan/m4tree-eea167a` is that probe at its commit
+`eea167a`; every code block below was generated from it (`/tmp/subtask/m4-plan/plan/gen.py`,
+diffs against its commit `05699bc`, which is `191dbaf`). The working probe may change with the
+reviews; the frozen one does not.
 
 - `rustc 1.90.0`, `cargo 1.90.0`, `/usr/bin/rg` 14.1.1 (also first on `PATH` here), 20 cores;
   for the probes, Python 3.13.3 with SQLite 3.46.1, pdftotext (poppler) 25.03.0, qpdf 12.0.0,
@@ -160,8 +161,9 @@ The working probe may change with the reviews; the frozen one does not.
   `cargo check --offline --workspace --all-targets` passes from the local cache. quick-xml
   0.42.0, the M3 plan's candidate, also resolved, and was dropped (D12).
 - **Binary.** `target/release/sfor` of `191dbaf`: 16 598 640 bytes (15 381 072 stripped); of the
-  frozen copy: 19 015 120 bytes (17 614 608 stripped), 2.4 MB more, under 23 MB (8612). Over
-  `1610a50` the probe had measured 16 583 992 and 19 000 368.
+  frozen copy: 19 041 208 bytes (17 638 160 stripped), 2.4 MB more, under 23 MB (8612); before
+  the fixes of review round 1, 19 015 120. Over `1610a50` the probe had measured 16 583 992 and
+  19 000 368.
 - **Object files.** Over binaries built from one C file (`version_string` and a second string
   literal): gcc's ELF gives `ELF x86-64 › .rodata › version_string+0xe` and, for the second
   string, past the symbol's size, `ELF x86-64 › .rodata`; the stripped ELF, `ELF x86-64 ›
@@ -184,54 +186,78 @@ The working probe may change with the reviews; the frozen one does not.
   ones, faster than pdftotext), xlsx 5.6 and ods 3.4 (600 000 cells), pptx 4.0 then 5.3 (5 000
   slides, after the relationships by id; 20 000 slides took 1.7 s before), SQLite 16–17
   (16 and 86 MB databases).
-- **Every tanda builds** (`/tmp/subtask/m4-plan/states/build.py`, run over `1610a50` with the
-  code of `9187999`, which differs from the frozen copy's only in four NUL bytes of two object
-  tests, written as `\0` since, three comments and the rebase): the repository at `1610a50`
-  with only what tanda 1, then 1–2, 1–3 and 1–4 write (the later files as their stubs, and the
-  `offsets: false` literals) passes `cargo clippy --workspace --all-targets -- -D warnings`,
-  `cargo test --lib` (403, 437, 464 and 464 tests) and `cargo test --test cli --test cli_m2
-  --test cli_m3` (42, 16, 17), and after tanda 4 also `--test cli_m4` (11). The first run of this
-  check found that the shared writer helpers, `pub(crate)` then, are dead code to clippy while the
-  format writers are stubs; they are `pub` now (Task 4.3).
+- **Every tanda builds** (`/tmp/subtask/m4-plan/states/build.py`, over `191dbaf` with the code
+  of the frozen copy): the repository with only what tanda 1, then 1–2, 1–3 and 1–4 write (the
+  later files as their stubs, and the `offsets: false` literals) passes `cargo clippy
+  --workspace --all-targets -- -D warnings`, `cargo test --lib` (409, 448, 484 and 484 tests)
+  and `cargo test --test cli --test cli_m2 --test cli_m3` (42, 16, 19), and after tanda 4 also
+  `--test cli_m4` (14). The first run of this check, in round 0, found that the shared writer
+  helpers, `pub(crate)` then, are dead code to clippy while the format writers are stubs; they
+  are `pub` now (Task 4.3).
 - **Frozen copy, whole suite:** `cargo build --workspace`, `cargo clippy --workspace
   --all-targets -- -D warnings` (no findings), `cargo fmt --check` and
-  `SFOR_REQUIRE_REFERENCE=1 cargo test --workspace` pass: 469 unit tests and 2 ignored, `cli` 42,
-  `cli_m2` 16 (with `m2_07` updated), `cli_m3` 19, `cli_m4` 11, `fuzz` 4, `helpers` 22,
+  `SFOR_REQUIRE_REFERENCE=1 cargo test --workspace` pass: 484 unit tests and 2 ignored, `cli` 42,
+  `cli_m2` 16 (with `m2_07` updated), `cli_m3` 19, `cli_m4` 14, `fuzz` 5, `helpers` 22,
   `rg_compat` 37, and the helpers' own.
 - **Rebase on M3's final code.** The probe was first built over `1610a50` (frozen then as
   `m4tree-7134553`, removed). Its changes were cherry-picked onto `191dbaf`: every diff applied
   but those of `src/output/{mod,tree,stream}.rs`, where M3's final code had turned `Row::bytes`
   into a shared `Row::line` (`LineText`) and split `tree::write_row_text` out of `write_row`;
   the resolution keeps M3's structure and adds `Row::offset` beside `line` and an `offset`
-  argument to `write_row_text`. Only the diff of `src/output/tree.rs` differs from the earlier
-  plan's; the others apply as they were, at other line numbers. The measurements below (states,
-  RED, fuzz, perf, benchmark) were taken over `1610a50`; none involves the conflicting code but
-  the tree printer's offset, which `m4_01`'s tree snapshots check over `191dbaf`.
+  argument to `write_row_text`. Only the diff of `src/output/tree.rs` differed from the earlier
+  plan's.
+- **Review round 1** (`reviews/m4-plan-r1/{codex,fable}.md`). Each fix was written test first
+  and seen RED over the round-0 code (`57edf0f`), then GREEN; the PDF, SQLite, ODF and zip
+  findings with adversarial fixtures written by the tests themselves, and Fable's own files
+  (`/tmp/subtask/m4-plan-r1-fable/exp/`) run through the release binary: `tounicode-bomb.pdf`
+  (714 KB, a 700 MiB ToUnicode map) took 791 016 KiB and 2.56 s in round 0 and is refused in
+  0.09 s with 75 224 KiB; `multipart-bomb.xlsx` (twelve 200 MiB sheets) took 4.68 s and is
+  refused in 1.79 s with 230 800 KiB; `wr.sqlite` (`PRIMARY KEY(c)` and `PRIMARY KEY(y, x)`
+  of `WITHOUT ROWID` tables) gave `t › row 1 › b │ valC	valA needle	valB` and gives
+  `t › row 1 › a │ valA needle	valB	valC`.
+  What changed, by chunk: C1 `magic_at` and `may_be_document` (D10, Fable #5, #12); C2 the
+  `/bin/ls` test on Linux only (Fable #7); C4 the Builder's cells (D25), `remaining` and
+  `mark_cut`, `looks_like` at byte 0 (D10), the zip's budget per document (D17) and three SQLite
+  tables; C5 one row per object row (D8); C6 a saturating row number; C7 checked repeats and
+  stored values (D17, D18); C9 the PDF Reader (D13, D17); C10 the key order of `WITHOUT ROWID`
+  (D15); C11 `m4_12`–`m4_14`, `m4_06` and the SQLite snapshots of `m4_01`, `m4_10`'s pattern,
+  documents only for regular files, `retain_rows` with `-m`, no object or document from a
+  transform (D8, D10, D21); C12 the watchdog (D28); C13 the two bomb tests and `docs-none`
+  over the object files too (D17, Fable #5). No chunk or tanda was added or moved and no
+  dependency changed; C1 gains `src/formats/definition.rs`. The decisions of 8385, 8390,
+  8393–8395, 8612 and #12 hold as they were.
 - **RED** over the stubs of C1 and C4 with each module's tests (`/tmp/subtask/m4-plan/red/run.py`,
-  at `9187999`): object
-  `mod.rs` does not compile (`demangle`), `rows.rs` 6 FAIL, `preprocess.rs` 2 FAIL, `ooxml.rs` does
-  not compile (4 functions), `odf.rs` 4 FAIL, `epub.rs` 2 FAIL and 1 passes (an error either way),
-  `pdf.rs` and `sqlite.rs` do not compile. `tests/cli_m4.rs` over the state after tanda 3 (no
-  pipeline yet): 10 of its 11 tests FAIL, and `m4_11` (without `--docs`, as rg) passes, as it
-  must. The two fuzz findings (D28) FAILED before their fixes, as the inputs in Task 12.1 show.
-- **Fuzz:** default count, 4 tests in 34 s (debug); `SFOR_FUZZ_N=20000` (release), 55 000
-  documents and 20 000 object files in 69 s, no failure after the two fixes of D28, each found
-  by an earlier run of the same count.
-- **Perf ceilings** (release, `SFOR_REQUIRE_REFERENCE=1`): 50 MB ELF 0.053 s and 58 MiB against
-  `rg -a` 0.118 s and 56 MiB; with 200 000 symbols 0.145 s and 94 MiB against 0.111 s and 62 MiB;
-  zip bomb (298 KiB, 300 MiB inside) refused in 0.35 s with 263 MiB; documents:
-  docx 0.34 s (15 MB of text, budget 2.27 s,
-  47 MiB), odt 0.41 s (2.52 s, 39 MiB), epub 0.23 s (1.77 s, 37 MiB), PDF 0.36 s (7 MB, 2.08 s,
-  26 MiB), xlsx 1.37 s (18 MB, 10.38 s, 228 MiB), ods 1.95 s (19.75 s, 254 MiB), pptx 0.53 s
-  (1.7 MB, 2.33 s, 35 MiB; 1.68 s before the relationships by id), rg over each text at most
-  0.014 s.
+  over the frozen copy): object `mod.rs` does not compile (`demangle`), `rows.rs` 6 FAIL,
+  `preprocess.rs` 2 FAIL, `ooxml.rs` does not compile (4 functions), `odf.rs` 5 FAIL and 1 passes
+  (an error either way), `epub.rs` 2 FAIL and 1 passes (likewise), `pdf.rs` and `sqlite.rs` do
+  not compile. In round 0, `tests/cli_m4.rs` over the state after tanda 3 (no pipeline yet): 10
+  of its 11 tests FAIL, and `m4_11` (without `--docs`, as rg) passes, as it must. The two fuzz
+  findings (D28) FAILED before their fixes, as the inputs in Task 12.1 show.
+- **Fuzz:** default count, 5 tests in 34 s (debug); `SFOR_FUZZ_N=20000` (release), the whole
+  file in 213 s with the watchdog (one thread per extraction), no failure. In round 0, before the
+  watchdog, the two M4 tests took 69 s.
+- **Perf ceilings** (release, `SFOR_REQUIRE_REFERENCE=1`, six tests): 50 MB ELF 0.053 s and
+  58 MiB against `rg -a` 0.120 s and 56 MiB; with 200 000 symbols 0.132 s and 95 MiB against
+  0.106 s and 62 MiB; zip bomb (298 KiB, 300 MiB inside) refused in 0.35 s with 262 MiB;
+  workbook of six 200 MiB sheets (1 196 KiB) refused in 1.75 s with 223 MiB; PDF bomb (299 KiB,
+  a 300 MiB ToUnicode map) refused in 0.10 s with 72 MiB; documents: docx 0.40 s (15 MB of
+  text, budget 2.27 s, 47 MiB), odt 0.47 s (2.52 s, 39 MiB), epub 0.28 s (1.77 s, 37 MiB), PDF
+  0.39 s (7 MB, 2.08 s, 26 MiB), xlsx 1.41 s (18 MB, 10.38 s, 228 MiB), ods 1.93 s (19.75 s,
+  254 MiB), pptx 0.53 s (1.7 MB, 2.33 s, 36 MiB; 1.68 s before the relationships by id), rg over
+  each text at most 0.014 s.
 - **Benchmark** (`scripts/bench-m4.sh`, 1 080 documents, 300 ELF files from `/usr/bin` and
-  `/usr/lib`, 20 000 text files, 12 threads): none 1.08 × rg, sparse 1.05 ×, `--no-trail` 1.04 ×,
-  `--docs` without documents 1.08 ×, `--binary` 1.08 × (extra 0.002 s, budget 0.054 s), `--docs`
-  over the documents 0.074 s against rg's 0.012 s over their texts (extra 0.062 s, budget
-  0.780 s for 16 MB of text). With 3 000 text files the same corpus gave 1.10 × and, for
-  `--docs` without documents, 1.14 ×: a 14–20 ms run is decided by process start, as the M3 plan
-  saw with 5 004 files.
+  `/usr/lib`, 20 000 text files, 12 threads, 40 runs per case): none 1.02 × rg, sparse 1.06 ×,
+  `--no-trail` 1.03 ×, `--docs` without documents (text and object files) 1.08 ×, `--binary`
+  1.02 × (extra 0.001 s, budget 0.054 s), `--docs` over the documents 0.077 s against rg's
+  0.012 s over their texts (extra 0.064 s, budget 0.780 s for 16 MB of text). `docs-none` is
+  near its ceiling for sfor's start, not for `--docs`: over the same files `hyperfine -N`
+  (80 runs) gives rg 43.1 ms, sfor 45.1 ms, sfor `--docs` 45.2 ms, and with the first bytes of
+  the 300 object files not read at all 46.4 ms against 46.0 ms, so reading them from the
+  search's own descriptor (Fable #5's other fix) would save nothing measurable; before
+  `magic_at` and `may_be_document`, `--docs` cost 1.3 ms there. With 15 runs per case the
+  ratio of two 45 ms medians moved by ±3 % between runs (1.04–1.13), hence 40. With 3 000 text
+  files the corpus gave, in round 0, 1.10 × and, for `--docs` without documents, 1.14 ×: a
+  14–20 ms run is decided by process start, as the M3 plan saw with 5 004 files.
 
 **To verify** (each in the chunk named): the C1 and C5 RED runs (chunks 1, 5); a real EPUB
 (chunk 8); M1's `scripts/bench.sh`, M2's `scripts/bench-code.sh` and M3's `scripts/bench-m3.sh`
@@ -258,9 +284,9 @@ M4 is done when all of these hold; each names the test or script that measures i
    `SFOR_REQUIRE_REFERENCE=1 cargo test --test cli_m4` so it cannot skip.
 7. Spec §11 #26: `scripts/bench-m4.sh` exits 0, and `PATH=/usr/bin:$PATH scripts/bench.sh`,
    `scripts/bench-code.sh` and `scripts/bench-m3.sh` still exit 0 (C13).
-8. The five M4 tests of `tests/perf.rs` pass in release with the reference required:
+8. The six M4 tests of `tests/perf.rs` pass in release with the reference required:
    `SFOR_REQUIRE_REFERENCE=1 cargo test --release --test perf -- --ignored object_ elf_
-   documents_ zip_bomb`. A run that printed `skipping:` does not count.
+   documents_ zip_bomb pdf_bomb`. A run that printed `skipping:` does not count.
 9. Spec §11 #27: the M4 fuzz of `tests/fuzz.rs` passes with its default count and with
    `SFOR_FUZZ_N=20000` once before the merge.
 10. `Cargo.lock` gains only the packages listed in Task 1.1; `cargo tree -i regex-automata`,
@@ -279,11 +305,12 @@ M4 is done when all of these hold; each names the test or script that measures i
    first 16 bytes, read then (`head_of`, in `plain_file`), or over the Source's head in
    `describe`. Only then is the whole file searched again (`Ctx::object`).
 3. **Reading through something** (`preprocess::Through`). `Ctx::target` sets `through` (`Pre`,
-   `Zip` or `Docs`) and makes such a Target not `regular`, so every path that opens a file
+   `Zip`, or `Docs` for a regular file only) and makes such a Target not `regular`, so every path that opens a file
    treats it as a pipe: it is read once, kept by a `Tee` where needed, and never memory-mapped
    or searched in memory as a file. `Ctx::open_input` gives each path its reader: stdin, a
    document's text, `--pre`'s or the decompressor's output, or the file. `disk_of` gives None
-   for such a Target, so a Helper Processor gets a temporary file of what was searched.
+   for such a Target, so a Helper Processor gets a temporary file of what was searched. What
+   `Pre` or `Zip` gives is never described as an object file or a document (D21).
 4. **Documents.** `Ctx::prepare`, called by the walk for each Target, reads a `Through::Docs`
    file, checks its first bytes (`Kind::looks_like`) and extracts it (`docs::extract`), keeping
    the `Extracted` (text, Outline, `cut`) in `Target::doc`; on failure it warns and turns the
@@ -293,10 +320,11 @@ M4 is done when all of these hold; each names the test or script that measures i
    `chapter` (not in the text), `open`/`close` for pages, sheets, slides, tables and notes, and
    `start_row`/`cell`/`end_row` for rows of cells separated by tabs; `docs::table::Table` turns
    a table's rows into rows whose first one names the columns.
-5. **Object rows.** `Described::offsets` marks them. `output::match_rows` puts the hex offset
-   of a row's first submatch in `Row::offset`; flat's `Head` and tree's `write_row` print it in
-   place of the line number; `Rows` puts no `--` between rows. The filter keeps rows with
-   `retain_rows` (D8).
+5. **Object rows.** `Described::offsets` marks them. `output::match_rows` makes one `Row` of
+   each, with the Trail of its first submatch and the hex offset of that submatch in
+   `Row::offset`; flat's `Head` and tree's `write_row` print it in place of the line number;
+   `Rows` puts no `--` between rows. The filter keeps each row's Matches with `retain_rows`,
+   which also applies `-m` by row (D8).
 6. **Stubs keep every tanda building.** C1 writes every `mod` line of its tanda, the
    dependencies, the Definitions, the Detector, the CLI flags, `Described::offsets` and a stub
    for `processors/object/{mod,rows,fixture}.rs` and `preprocess.rs`; C4 writes the shared
@@ -315,7 +343,7 @@ M4 is done when all of these hold; each names the test or script that measures i
 Cargo.toml, Cargo.lock                         goblin, rustc-demangle, zip, lopdf (C1 only)
 formats/{elf,pe,macho}.toml                    object Definitions (C1)
 formats/{pdf,docx,xlsx,pptx,odt,ods,odp,epub,sqlite}.toml   document Definitions (C1)
-src/formats/{builtin,detector,mod}.rs          embedding, with_docs, object, tests (C1)
+src/formats/{builtin,definition,detector,mod}.rs   embedding, magic_at, with_docs, object (C1)
 src/cli/{mod,rg_flags}.rs, docs/rg-compat.md   -z, --pre, --pre-glob, --docs (C1)
 src/model.rs, src/processors/mod.rs            Described::offsets, object, docs (C1)
 src/lib.rs                                     `preprocess` (C1), `docs` (C4)
@@ -340,7 +368,7 @@ README.md, README.es.md, skills/searchfor/SKILL.md, docs/json-schema.json, the s
 
 | Chunk | Content | Depends on | Files and folders (exclusive within its tanda) | Tanda |
 |---|---|---|---|---|
-| C1 | Dependencies, Definitions, Detector, CLI flags, `Described::offsets`, `object` in the Processors, stubs of `object` and `preprocess` | — | `Cargo.toml`, `Cargo.lock`, `formats/*.toml` (the 12 new), `src/formats/{builtin,detector,mod}.rs`, `src/cli/{mod,rg_flags}.rs`, `docs/rg-compat.md`, `src/model.rs`, `src/lib.rs`, `src/processors/mod.rs`, `src/processors/object/**` (stubs), `src/preprocess.rs` (stub), `src/app.rs`, `src/filter.rs`, `src/output/{mod,stream}.rs` (the `Described` literals only), `tests/cli_m2.rs` | 1 |
+| C1 | Dependencies, Definitions, Detector, CLI flags, `Described::offsets`, `object` in the Processors, stubs of `object` and `preprocess` | — | `Cargo.toml`, `Cargo.lock`, `formats/*.toml` (the 12 new), `src/formats/{builtin,definition,detector,mod}.rs`, `src/cli/{mod,rg_flags}.rs`, `docs/rg-compat.md`, `src/model.rs`, `src/lib.rs`, `src/processors/mod.rs`, `src/processors/object/**` (stubs), `src/preprocess.rs` (stub), `src/app.rs`, `src/filter.rs`, `src/output/{mod,stream}.rs` (the `Described` literals only), `tests/cli_m2.rs` | 1 |
 | C2 | `object`: `Map`, Trails, rows, and the object writers | C1 | `src/processors/object/{mod,rows,fixture}.rs` | 2 |
 | C3 | `--pre`, `--pre-glob`, `-z` | C1 | `src/preprocess.rs` | 2 |
 | C4 | The shared modules of `docs` (Builder, tables, XML, zip), the shared writers, the stubs of the Extractors and their writers, the SQLite fixtures | C1 | `src/lib.rs`, `src/docs/**`, `scripts/gen-sqlite-fixtures.py`, `tests/fixtures/docs/**` | 2 |
@@ -729,38 +757,139 @@ diff --git a/src/formats/builtin.rs b/src/formats/builtin.rs
 
 ### Task 1.4: the Detector
 
-**Files:** `src/formats/detector.rs`.
+**Files:** `src/formats/definition.rs`, `src/formats/detector.rs`.
 
-- [ ] **Step 1:** `with_docs`, `active` and `object`, and the test fixture `elfy` renamed `myfy`
-  with a magic that is not ELF's, which the built-in `elf` claims now (its tests would detect
-  `elf` instead):
+- [ ] **Step 1:** `FormatDefinition::magic_at`, which compares a magic with a file's first
+  bytes as it reads its hex, in place of `magic_bytes`, which allocated each magic for each
+  file: with `--docs`, every file named without an extension is detected before its search, and
+  the allocations made `--docs` over the benchmark's 300 object files cost 2.1 ms of CPU more
+  than without it, 0.8 ms after (review r1, Fable #5). Test first (`magic_decodes` asserts
+  `magic_at` instead of `magic_bytes`), RED: `magic_at` does not exist:
+
+```diff
+diff --git a/src/formats/definition.rs b/src/formats/definition.rs
+--- a/src/formats/definition.rs
++++ b/src/formats/definition.rs
+@@ -70,18 +70,20 @@ impl FormatDefinition {
+         Ok(d)
+     }
+ 
+-    /// Each magic entry as (offset, bytes). `parse` has already checked the hex strings.
+-    pub fn magic_bytes(&self) -> Vec<(usize, Vec<u8>)> {
+-        self.magic
+-            .iter()
+-            .map(|m| {
+-                let bytes = (0..m.hex.len())
+-                    .step_by(2)
+-                    .map(|i| u8::from_str_radix(&m.hex[i..i + 2], 16).unwrap())
+-                    .collect();
+-                (m.offset, bytes)
+-            })
+-            .collect()
++    /// True when the bytes of one magic entry are at its offset in `head`. Compared as they
++    /// are read, so a file's detection allocates nothing (M4 plan r1, Fable #5: --docs looks
++    /// at the first bytes of every file named without an extension).
++    pub fn magic_at(&self, head: &[u8]) -> bool {
++        self.magic.iter().any(|m| {
++            let hex = m.hex.as_bytes();
++            let want = (0..hex.len() / 2).map(|i| {
++                std::str::from_utf8(&hex[2 * i..2 * i + 2])
++                    .ok()
++                    .and_then(|h| u8::from_str_radix(h, 16).ok())
++            });
++            head.get(m.offset..m.offset + hex.len() / 2)
++                .is_some_and(|got| got.iter().zip(want).all(|(b, w)| w == Some(*b)))
++        })
+     }
+ }
+ 
+@@ -126,6 +128,8 @@ mod tests {
+             known,
+         )
+         .unwrap();
+-        assert_eq!(d.magic_bytes(), vec![(0, vec![0x7f, b'E', b'L', b'F'])]);
++        assert!(d.magic_at(b"\x7fELF\x02"));
++        assert!(!d.magic_at(b"\x7fEL"));
++        assert!(!d.magic_at(b"\x7fELG"));
+     }
+ }
+```
+
+- [ ] **Step 2:** `with_docs`, `active`, `object` and `may_be_document`, with `detect` and
+  `object` comparing through `magic_at`. `with_docs` gathers the names and extensions the
+  document Formats claim, so `may_be_document` tells with one set lookup that `a.txt` is no
+  document, before `detect` walks every Definition: `--docs` asks it of every file, and over
+  the benchmark's 20 000 text files the walk cost 23 ms of CPU and 1.3 ms of wall time (review
+  r1, Fable #5; test `only_some_names_may_be_documents`). And the
+  test fixture `elfy` renamed `myfy` with a magic that is not ELF's, which the built-in `elf`
+  claims now (its tests would detect `elf` instead):
 
 ```diff
 diff --git a/src/formats/detector.rs b/src/formats/detector.rs
 --- a/src/formats/detector.rs
 +++ b/src/formats/detector.rs
-@@ -11,6 +11,9 @@ enum Override {
+@@ -1,6 +1,7 @@
+ //! The Detector (spec §4.1): override, exact name, extension, magic bytes, shebang.
+ use super::{Registry, definition::FormatDefinition};
+ use globset::{Glob, GlobMatcher};
++use std::collections::HashSet;
+ use std::path::Path;
+ 
+ enum Override {
+@@ -11,6 +12,13 @@ enum Override {
  pub struct Detector<'r> {
      registry: &'r Registry,
      overrides: Vec<Override>,
 +    /// `--docs`: without it the document Formats (`processor = "docs"`) are never detected,
 +    /// so their files are Plain, as ripgrep reads them (spec §5.8).
 +    docs: bool,
++    /// With `--docs`, the exact names and the extensions (lowercase) the document Formats
++    /// claim (`may_be_document`).
++    doc_names: HashSet<String>,
++    doc_extensions: HashSet<String>,
  }
  
  impl<'r> Detector<'r> {
-@@ -33,6 +36,30 @@ impl<'r> Detector<'r> {
+@@ -33,9 +41,59 @@ impl<'r> Detector<'r> {
          Ok(Self {
              registry,
              overrides,
 +            docs: false,
-+        })
-+    }
-+
++            doc_names: HashSet::new(),
++            doc_extensions: HashSet::new(),
+         })
+     }
+ 
 +    /// Detects the document Formats too (`--docs`).
 +    pub fn with_docs(mut self, on: bool) -> Self {
 +        self.docs = on;
++        if on {
++            for d in self.registry.all().iter().filter(|d| d.processor == "docs") {
++                self.doc_names.extend(d.names.iter().cloned());
++                self.doc_extensions
++                    .extend(d.extensions.iter().map(|e| e.to_ascii_lowercase()));
++            }
++        }
 +        self
++    }
++
++    /// False when `path` cannot be a document, which a set lookup tells for most files, before
++    /// `detect` walks every Definition: --docs asks it of every file (M4 plan r1, Fable #5).
++    /// True with an override, for a name without an extension (its first bytes decide), and
++    /// for a name or extension a document Format claims.
++    pub fn may_be_document(&self, path: &Path) -> bool {
++        if !self.docs {
++            return false;
++        }
++        let (Some(name), Some(ext)) = (
++            path.file_name().and_then(|n| n.to_str()),
++            path.extension().and_then(|e| e.to_str()),
++        ) else {
++            return true;
++        };
++        !self.overrides.is_empty()
++            || self.doc_names.contains(name)
++            || self.doc_extensions.contains(&ext.to_ascii_lowercase())
 +    }
 +
 +    /// Whether `d` takes part in detection: a document Format only with `--docs`.
@@ -772,24 +901,25 @@ diff --git a/src/formats/detector.rs b/src/formats/detector.rs
 +    /// often named without a telling extension (`libc.so.6`, `ls`), so for a binary file with a
 +    /// Match the magic decides (spec §4.1, M4 plan D5).
 +    pub fn object(&self, head: &[u8]) -> Option<&'r FormatDefinition> {
-+        self.registry.all().iter().find(|d| {
-+            d.processor == "object"
-+                && d.magic_bytes()
-+                    .iter()
-+                    .any(|(off, bytes)| head.get(*off..off + bytes.len()) == Some(bytes.as_slice()))
-         })
-     }
- 
-@@ -51,7 +78,7 @@ impl<'r> Detector<'r> {
++        self.registry
++            .all()
++            .iter()
++            .find(|d| d.processor == "object" && d.magic_at(head))
++    }
++
+     /// `detect` before reading the file: Some when the path alone decides (an override, an
+     /// exact name, an extension, a name with an extension no Format claims, or no Format that
+     /// looks at the content), None when the Format may depend on the first bytes (magic bytes
+@@ -51,7 +109,7 @@ impl<'r> Detector<'r> {
              .registry
              .all()
              .iter()
 -            .any(|d| !d.magic_bytes().is_empty() || !d.shebangs.is_empty());
-+            .any(|d| self.active(d) && (!d.magic_bytes().is_empty() || !d.shebangs.is_empty()));
++            .any(|d| self.active(d) && (!d.magic.is_empty() || !d.shebangs.is_empty()));
          (!by_content).then_some(None)
      }
  
-@@ -69,14 +96,16 @@ impl<'r> Detector<'r> {
+@@ -69,14 +127,16 @@ impl<'r> Detector<'r> {
          }
          // A file name that is not UTF-8 skips the name and extension signals only.
          if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
@@ -810,21 +940,47 @@ diff --git a/src/formats/detector.rs b/src/formats/detector.rs
          {
              return Some(d);
          }
-@@ -85,9 +114,10 @@ impl<'r> Detector<'r> {
+@@ -84,11 +144,7 @@ impl<'r> Detector<'r> {
+         if path.extension().is_some() {
              return None;
          }
-         if let Some(d) = defs.iter().find(|d| {
+-        if let Some(d) = defs.iter().find(|d| {
 -            d.magic_bytes()
 -                .iter()
 -                .any(|(off, bytes)| head.get(*off..off + bytes.len()) == Some(bytes.as_slice()))
-+            self.active(d)
-+                && d.magic_bytes()
-+                    .iter()
-+                    .any(|(off, bytes)| head.get(*off..off + bytes.len()) == Some(bytes.as_slice()))
-         }) {
+-        }) {
++        if let Some(d) = defs.iter().find(|d| self.active(d) && d.magic_at(head)) {
              return Some(d);
          }
-@@ -119,7 +149,8 @@ mod tests {
+         let interp = shebang_interpreter(head)?;
+@@ -115,11 +171,35 @@ fn shebang_interpreter(head: &[u8]) -> Option<&str> {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn only_some_names_may_be_documents() {
++        let r = registry();
++        let d = Detector::new(&r, &[]).unwrap().with_docs(true);
++        let p = Path::new;
++        for (path, may) in [
++            ("a.txt", false),
++            ("src/main.rs", false),
++            ("r.pdf", true),
++            ("R.PDF", true),
++            ("app.db", true),
++            ("Makefile", true),
++            ("bin/ls", true),
++        ] {
++            assert_eq!(d.may_be_document(p(path)), may, "{path}");
++        }
++        assert!(!Detector::new(&r, &[]).unwrap().may_be_document(p("r.pdf")));
++        let forced = Detector::new(&r, &["*.txt=pdf".into()])
++            .unwrap()
++            .with_docs(true);
++        assert!(forced.may_be_document(p("a.txt")));
++    }
++
+     fn known(p: &str) -> bool {
          crate::processors::Processors::known(p)
      }
  
@@ -834,7 +990,7 @@ diff --git a/src/formats/detector.rs b/src/formats/detector.rs
      fn registry() -> Registry {
          let d = tempfile::tempdir().unwrap();
          std::fs::write(
-@@ -128,8 +159,8 @@ mod tests {
+@@ -128,8 +208,8 @@ mod tests {
          )
          .unwrap();
          std::fs::write(
@@ -845,7 +1001,7 @@ diff --git a/src/formats/detector.rs b/src/formats/detector.rs
          )
          .unwrap();
          std::fs::write(
-@@ -155,8 +186,8 @@ mod tests {
+@@ -155,8 +235,8 @@ mod tests {
              "makey"
          );
          assert_eq!(
@@ -856,7 +1012,7 @@ diff --git a/src/formats/detector.rs b/src/formats/detector.rs
          );
          assert_eq!(
              det.detect(Path::new("run"), b"#!/usr/bin/env -S fish -e\n")
-@@ -174,7 +205,7 @@ mod tests {
+@@ -174,7 +254,7 @@ mod tests {
          let name = |p: &str| det.detect_by_path(Path::new(p)).map(|d| d.map(|d| &d.name));
          assert_eq!(name("a.md"), Some(Some(&"markdown".to_string())));
          assert_eq!(name("Makefile"), Some(Some(&"makey".to_string())));
@@ -865,7 +1021,7 @@ diff --git a/src/formats/detector.rs b/src/formats/detector.rs
          assert_eq!(name("data"), None);
          let (builtin, _) = Registry::load(None, &known);
          let det = Detector::new(&builtin, &[]).unwrap();
-@@ -198,12 +229,12 @@ mod tests {
+@@ -198,12 +278,12 @@ mod tests {
              det.detect(Path::new("run.txt"), b"#!/usr/bin/env fish\n")
                  .is_none()
          );
@@ -881,7 +1037,7 @@ diff --git a/src/formats/detector.rs b/src/formats/detector.rs
          );
          // So a file with an unclaimed extension is Plain from its path alone.
          assert_eq!(det.detect_by_path(Path::new("data.txt")), Some(None));
-@@ -216,11 +247,11 @@ mod tests {
+@@ -216,11 +296,11 @@ mod tests {
          let det = Detector::new(&reg, &[]).unwrap();
          // Exact name beats extension, extension beats magic, magic beats shebang.
          assert_eq!(
@@ -895,7 +1051,7 @@ diff --git a/src/formats/detector.rs b/src/formats/detector.rs
              "markdown"
          );
          assert_eq!(
-@@ -250,7 +281,7 @@ mod tests {
+@@ -250,7 +330,7 @@ mod tests {
          let det = Detector::new(&reg, &["makey".into()]).unwrap();
          assert_eq!(det.detect(Path::new("x.md"), b"").unwrap().name, "makey");
          assert_eq!(
@@ -904,7 +1060,7 @@ diff --git a/src/formats/detector.rs b/src/formats/detector.rs
              "makey"
          );
      }
-@@ -263,8 +294,8 @@ mod tests {
+@@ -263,8 +343,8 @@ mod tests {
          let det = Detector::new(&reg, &[]).unwrap();
          let name = std::ffi::OsStr::from_bytes(b"\xff\xfe");
          assert_eq!(
@@ -923,7 +1079,8 @@ diff --git a/src/formats/detector.rs b/src/formats/detector.rs
 
 - [ ] **Step 1:** `-z`, `--no-search-zip`, `--pre`, `--no-pre`, `--pre-glob` and `--docs`, and
   the last of `-z` and `--pre` winning (D2). `pre` is an `OsString`, as clap's `PathBuf` parser
-  refuses the empty value that turns `--pre` off:
+  refuses the empty value that turns `--pre` off. The diff also shows the test
+  `z_and_pre_override_each_other`, which Task 1.2 wrote: skip that hunk:
 
 ```diff
 diff --git a/src/cli/mod.rs b/src/cli/mod.rs
@@ -1019,7 +1176,8 @@ diff --git a/src/cli/mod.rs b/src/cli/mod.rs
 ```
 
 - [ ] **Step 2:** the five ripgrep flags implemented, and the deviations of object files and
-  documents in `docs/rg-compat.md` (D26):
+  documents in `docs/rg-compat.md` (D26). The diff also shows the five names Task 1.2 added to
+  `expected`: skip that hunk:
 
 ````diff
 diff --git a/src/cli/rg_flags.rs b/src/cli/rg_flags.rs
@@ -1133,7 +1291,9 @@ diff --git a/src/model.rs b/src/model.rs
   compiler lists them.
 
 - [ ] **Step 3:** `object` as a built-in, `docs` as a known name that serves no file (design
-  note 1):
+  note 1). The diff also shows the test
+  `object_is_built_in_and_docs_is_known_but_describes_nothing`, which Task 1.2 wrote: skip that
+  hunk:
 
 ```diff
 diff --git a/src/processors/mod.rs b/src/processors/mod.rs
@@ -1321,9 +1481,8 @@ impl Preprocess {
 
 - [ ] **Step 1:** `cargo test --lib -- the_m4_definitions z_and_pre object_is_built_in
   implemented_flags rg_compat_doc_is_current` and `cargo test --test cli_m2`: GREEN.
-- [ ] **Step 2:** the whole suite (the probe's state after C1, measured over `1610a50`: 403 unit
-  tests, `cli` 42, `cli_m2` 16, `cli_m3` 17; M3's final code adds 5 unit tests and 2 of
-  `cli_m3`), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt`, and one
+- [ ] **Step 2:** the whole suite (the probe's state after C1, measured over `191dbaf`: 409 unit
+  tests and 2 ignored, `cli` 42, `cli_m2` 16, `cli_m3` 19), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt`, and one
   commit per task (`git add -- <files>`).
 
 ## Chunk 2: the `object` Processor
@@ -1977,6 +2136,8 @@ mod tests {
         assert_eq!(t[0].kind, "object");
     }
 
+    /// Linux's `/bin/ls` is an ELF that links glibc; macOS's is a Mach-O (M4 plan r1, Fable #7).
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_real_ls_binary_parses() {
         // The machine's own ELF, when there is one: a smoke test, not a fixture.
@@ -2406,7 +2567,8 @@ fn macho(m: &goblin::mach::MachO, range: Range<usize>) -> Image {
 
 - [ ] **Step 4:** `cargo test --lib processors::object::tests`: 12 tests pass.
   `the_real_ls_binary_parses` reads `/bin/ls` when the machine has one and passes vacuously
-  otherwise; it is a smoke test, not a fixture.
+  otherwise; it is a smoke test, not a fixture, and runs on Linux only: macOS's `/bin/ls` is a
+  Mach-O without `GLIBC_2.`, and M5 brings CI to macOS (review r1, Fable #7).
 
 ### Task 2.3: the rows (src/processors/object/rows.rs)
 
@@ -2833,6 +2995,26 @@ pub mod docs;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fable r1 #12: a document is told by the bytes its Format's magic looks at, by name or
+    /// not.
+    #[test]
+    fn documents_look_like_their_magic() {
+        let defs = crate::formats::builtin::BUILTIN;
+        for (kind, name, head) in [
+            (Kind::Pdf, "pdf", &b"%PDF-1.7\n"[..]),
+            (Kind::Sqlite, "sqlite", b"SQLite format 3\0"),
+            (Kind::Docx, "docx", b"PK\x03\x04"),
+        ] {
+            let file = format!("{name}.toml");
+            let def = defs.iter().find(|d| d.0 == file).map(|d| d.1).unwrap();
+            let def = crate::formats::definition::FormatDefinition::parse(def, |_| true).unwrap();
+            assert!(kind.looks_like(head), "{name}");
+            assert!(def.magic.is_empty() || def.magic_at(head), "{name}");
+            let late = [b"junk ".as_slice(), head].concat();
+            assert!(!kind.looks_like(&late), "{name}");
+        }
+    }
     use crate::trail::trail_for;
 
     fn trail(e: &Extracted, needle: &str) -> Vec<String> {
@@ -2945,6 +3127,33 @@ mod tests {
         );
     }
 
+    /// Codex r1 #12: every cell writes its tab, also an empty one before the first value, and
+    /// a value keeps its spaces.
+    #[test]
+    fn empty_cells_keep_their_tabs_and_values_their_spaces() {
+        let mut b = Builder::new(MAX_TEXT);
+        b.start_row(Some("row 1"));
+        b.cell("column", "a", "");
+        b.cell("column", "b", "");
+        b.cell("column", "c", "  needle ");
+        b.cell("column", "d", "");
+        b.start_row(Some("row 2"));
+        b.cell("column", "a", " ");
+        b.cell("column", "b", "");
+        b.end_row();
+        let e = b.finish();
+        assert_eq!(e.text, b"\t\t  needle \t\n");
+        assert_eq!(trail(&e, "needle"), ["row 1", "c"]);
+        let c = e
+            .outline
+            .segments
+            .iter()
+            .find(|s| s.segment.name == "c")
+            .unwrap();
+        // Up to the line break: the tabs of the empty cell after it are its own.
+        assert_eq!(c.range, 2..13);
+    }
+
     #[test]
     fn control_characters_become_spaces_and_empty_lines_are_skipped() {
         let mut b = Builder::new(MAX_TEXT);
@@ -2978,13 +3187,17 @@ mod tests {
 }
 ```
 
-  `cargo test --lib docs::tests` does not compile: RED. Then the module (design note 4):
+  `cargo test --lib docs::tests` does not compile: RED. Then the module (design note 4). The
+  Builder gives an Extractor what is left of the text limit (`remaining`) and lets it say it
+  stopped there (`mark_cut`), which the PDF Extractor needs to stop drawing a page (D17); a
+  row writes its cells' tabs and spaces as they are (D25); `Kind::looks_like` tests the bytes
+  the magic of each Format tests (D10):
 
 ```rust
 //! The Extractors of `--docs` (spec §5.8): each turns a document ripgrep cannot read into text
 //! and an Outline of that text, which the pipeline then searches and describes like a file
-//! (M4 plan, design note 4). No external programs: lopdf for PDF, zip and quick-xml for the
-//! Office, OpenDocument and EPUB formats, a reader of our own for SQLite.
+//! (M4 plan, design note 4). No external programs: lopdf for PDF, zip and an XML reader of our
+//! own (`xml`, D12) for the Office, OpenDocument and EPUB formats, a reader of our own for SQLite.
 pub mod epub;
 #[doc(hidden)]
 pub mod fixture;
@@ -3032,13 +3245,15 @@ impl Kind {
         })
     }
 
-    /// Whether `head`, the first bytes of a file, can be a document of this kind: `%PDF-` in
-    /// the first 1024 bytes, a zip's local header, SQLite's header string. A file whose name
+    /// Whether `head`, the first bytes of a file, can be a document of this kind: `%PDF-`, a
+    /// zip's local header, SQLite's header string, each where the magic bytes of its Format
+    /// look for it, at the start, so a document is one whatever its name (M4 plan r1, Fable
+    /// #12). A file whose name
     /// says it is a document but whose bytes do not is not one, and is searched as ripgrep
     /// searches it, without a warning (M4 plan, D10).
     pub fn looks_like(self, head: &[u8]) -> bool {
         match self {
-            Kind::Pdf => memchr::memmem::find(&head[..head.len().min(1024)], b"%PDF-").is_some(),
+            Kind::Pdf => head.starts_with(b"%PDF-"),
             Kind::Sqlite => head.starts_with(b"SQLite format 3\0"),
             _ => head.starts_with(b"PK\x03\x04"),
         }
@@ -3119,7 +3334,11 @@ struct Row {
     /// The row's Segment, when the row has one.
     seg: Option<usize>,
     line_start: usize,
-    /// Each cell: its Segment's kind and name, and where its text starts.
+    /// The cells written so far, empty ones included: each but the first writes its tab first.
+    written: usize,
+    /// Every cell so far is empty or white space: the row writes nothing.
+    blank: bool,
+    /// Each cell with text: its Segment's kind and name, and where its text starts.
     cells: Vec<(&'static str, String, usize)>,
 }
 
@@ -3161,6 +3380,17 @@ impl Builder {
     /// The text reached its limit: the Extractor may stop walking.
     pub fn full(&self) -> bool {
         self.cut
+    }
+
+    /// The bytes of text the document has room for still.
+    pub fn remaining(&self) -> usize {
+        self.max.saturating_sub(self.text.len())
+    }
+
+    /// The Extractor stopped before the end of the document because its text would not fit:
+    /// the text is cut.
+    pub fn mark_cut(&mut self) {
+        self.cut = true;
     }
 
     fn room(&mut self, more: usize) -> bool {
@@ -3273,24 +3503,31 @@ impl Builder {
         self.row = Some(Row {
             seg,
             line_start: at,
+            written: 0,
+            blank: true,
             cells: Vec::new(),
         });
     }
 
     /// One cell of the current row, a Segment of `kind` (`column` in a table, `cell` in a
     /// spreadsheet) named `name`, whose Section is the row (M3 plan, D10). A cell holds the tab
-    /// after it, so a Match on the tab belongs to the cell before it, as in CSV. An empty cell
-    /// writes nothing but its tab, and has no Segment.
+    /// after it, so a Match on the tab belongs to the cell before it, as in CSV. Every cell but
+    /// the first writes a tab before it, so an empty cell is an empty field (Codex r1 #12); a
+    /// value is written as it is, its spaces included; an empty cell has no Segment.
     pub fn cell(&mut self, kind: &'static str, name: &str, text: &str) {
         if self.row.is_none() || !self.room(text.len() + 1) {
             return;
         }
         let row = self.row.as_mut().unwrap();
-        if !row.cells.is_empty() {
+        if row.written > 0 {
             self.text.push(b'\t');
         }
+        row.written += 1;
         let start = self.text.len();
-        clean(text.trim(), &mut self.text);
+        clean(text, &mut self.text);
+        if !text.trim().is_empty() {
+            row.blank = false;
+        }
         if self.text.len() > start {
             // A cell without a name (a table's first row, which names the columns) has no
             // Segment; its text still makes the row non-empty.
@@ -3302,7 +3539,7 @@ impl Builder {
     pub fn end_row(&mut self) {
         let Some(row) = self.row.take() else { return };
         let end = self.text.len();
-        if row.cells.is_empty() {
+        if row.blank {
             // A row without text writes nothing (its tabs are removed) and has no Segment.
             self.text.truncate(row.line_start);
             return;
@@ -3362,7 +3599,8 @@ pub fn column_letters(mut i: usize) -> String {
 }
 ```
 
-  `cargo test --lib docs::tests`: GREEN.
+  The module declares the modules Tasks 4.2 and 4.3 write, so it compiles only after them:
+  `cargo test --lib docs::tests` is GREEN at the end of Task 4.3 (review r1, Fable #8).
 
 ### Task 4.2: the XML reader, the zip container and the tables
 
@@ -3649,12 +3887,34 @@ pub fn unescape(s: &str) -> Cow<'_, str> {
   `str` slice) instead of its bytes, the case `&eedle é` panics: it is the input the fuzz found
   (D28), kept as a test.
 
-- [ ] **Step 2:** the zip container (D17):
+- [ ] **Step 2:** the zip container (D17): 256 MiB per part, and 1 GiB for all the parts one
+  document reads (`the_parts_of_a_document_share_a_budget`, RED before `left` exists: it does
+  not compile; review r1, Fable #3):
 
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fable r1 #3: every part a document reads spends one budget, so many parts under the
+    /// limit of one are refused too.
+    #[test]
+    fn the_parts_of_a_document_share_a_budget() {
+        let parts: Vec<(&str, Vec<u8>)> = ["a.xml", "b.xml", "c.xml"]
+            .iter()
+            .map(|n| (*n, vec![b' '; 400]))
+            .collect();
+        let bytes = super::super::fixture::zip(&parts, &[]);
+        let mut z = Zip::open(&bytes).unwrap();
+        z.left = 1000;
+        assert_eq!(z.bytes("a.xml").unwrap().unwrap().len(), 400);
+        assert_eq!(z.bytes("b.xml").unwrap().unwrap().len(), 400);
+        let e = z.bytes("c.xml").unwrap_err();
+        assert!(
+            matches!(&e, DocError::TooLarge(what, 1024) if what == "the whole document, decompressed,"),
+            "{e}"
+        );
+    }
 
     #[test]
     fn hrefs_resolve_against_their_part() {
@@ -3681,23 +3941,31 @@ mod tests {
 
 ```rust
 //! The zip container of the Office, OpenDocument and EPUB formats: its parts, read whole and
-//! never more than a limit each, so a zip bomb fails instead of filling the memory (D17).
+//! never more than a limit each and never more than a limit all together, so a zip bomb fails
+//! instead of filling the memory or taking minutes (D17).
 //! Only the parts a format names are read; nothing else in the zip is opened (8390).
 use super::DocError;
 use std::io::Read;
 
 /// The most bytes one part may decompress to (256 MiB).
 pub const MAX_PART: u64 = 256 << 20;
+/// The most bytes all the parts one document reads may decompress to, together (1 GiB).
+pub const MAX_DOCUMENT: u64 = 1 << 30;
 
 pub struct Zip<'a> {
     archive: zip::ZipArchive<std::io::Cursor<&'a [u8]>>,
+    /// What is left of `MAX_DOCUMENT`.
+    left: u64,
 }
 
 impl<'a> Zip<'a> {
     pub fn open(bytes: &'a [u8]) -> Result<Zip<'a>, DocError> {
         let archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
             .map_err(|e| DocError::broken(format!("not a zip file the reader can open ({e})")))?;
-        Ok(Zip { archive })
+        Ok(Zip {
+            archive,
+            left: MAX_DOCUMENT,
+        })
     }
 
     /// The part `name`, as text (UTF-8, invalid bytes replaced). None when it is missing.
@@ -3723,14 +3991,24 @@ impl<'a> Zip<'a> {
             return Err(DocError::Encrypted);
         }
         let mut out = Vec::with_capacity(f.size().min(1 << 20) as usize);
-        let read = (&mut f).take(MAX_PART + 1).read_to_end(&mut out);
+        let read = (&mut f)
+            .take(MAX_PART.min(self.left) + 1)
+            .read_to_end(&mut out);
         read.map_err(|e| DocError::broken(format!("{name}: {e}")))?;
-        if out.len() as u64 > MAX_PART {
+        let n = out.len() as u64;
+        if n > MAX_PART {
             return Err(DocError::TooLarge(
                 name.to_string(),
                 (MAX_PART >> 20) as usize,
             ));
         }
+        if n > self.left {
+            return Err(DocError::TooLarge(
+                "the whole document, decompressed,".into(),
+                (MAX_DOCUMENT >> 20) as usize,
+            ));
+        }
+        self.left -= n;
         Ok(Some(out))
     }
 }
@@ -4082,43 +4360,45 @@ pub fn pdf_encrypted(_pages: &[&[&str]], _user: &str) -> Vec<u8> {
   `src/docs/ooxml.rs`:
 
 ```rust
-//! Word, Excel and PowerPoint (spec §5.8). Stub of C1; Chunk 4 writes it.
+//! Word, Excel and PowerPoint (spec §5.8). Stub of Chunk 4; Chunk 6 writes it.
 use super::{Builder, DocError};
 
 pub fn docx(_bytes: &[u8], _b: &mut Builder) -> Result<(), DocError> {
-    Err(DocError::broken("written in Chunk 4"))
+    Err(DocError::broken("written in Chunk 6"))
 }
 
 pub fn xlsx(_bytes: &[u8], _b: &mut Builder) -> Result<(), DocError> {
-    Err(DocError::broken("written in Chunk 4"))
+    Err(DocError::broken("written in Chunk 6"))
 }
 
 pub fn pptx(_bytes: &[u8], _b: &mut Builder) -> Result<(), DocError> {
-    Err(DocError::broken("written in Chunk 4"))
+    Err(DocError::broken("written in Chunk 6"))
 }
 ```
 
   `src/docs/odf.rs`:
 
 ```rust
-//! OpenDocument (spec §5.8). Stub of C1; Chunk 5 writes it.
+//! OpenDocument (spec §5.8). Stub of Chunk 4; Chunk 7 writes it.
 use super::{Builder, DocError};
 
 pub fn odt(_bytes: &[u8], _b: &mut Builder) -> Result<(), DocError> {
-    Err(DocError::broken("written in Chunk 5"))
+    Err(DocError::broken("written in Chunk 7"))
 }
 
 pub fn ods(_bytes: &[u8], _b: &mut Builder) -> Result<(), DocError> {
-    Err(DocError::broken("written in Chunk 5"))
+    Err(DocError::broken("written in Chunk 7"))
 }
 
 pub fn odp(_bytes: &[u8], _b: &mut Builder) -> Result<(), DocError> {
-    Err(DocError::broken("written in Chunk 5"))
+    Err(DocError::broken("written in Chunk 7"))
 }
 ```
 
   and `src/docs/epub.rs`, `src/docs/pdf.rs`, `src/docs/sqlite.rs`, with one `pub fn
   extract(bytes, b)` each and «Chunk 8», «Chunk 9», «Chunk 10».
+
+- [ ] **Step 4:** `cargo test --lib docs::`: the tests of Tasks 4.1 and 4.2 are GREEN.
 
 ### Task 4.4: the SQLite fixtures
 
@@ -4160,6 +4440,15 @@ db.execute("INSERT INTO notes VALUES (2, ?, NULL)", ("long " * 300 + "needle at 
 db.execute("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID")
 for k in ["beta", "alpha", "gamma"]:
     db.execute("INSERT INTO kv VALUES (?, ?)", (k, f"value of {k}" + (" needle" if k == "gamma" else "")))
+# A WITHOUT ROWID table stores its primary key first: `late` holds (k, payload) on disk, `comp`
+# (c, a, b); the reader must name each value by its declared column (Codex r1 #4).
+db.execute("CREATE TABLE late (payload TEXT, k TEXT PRIMARY KEY) WITHOUT ROWID")
+db.execute("INSERT INTO late VALUES ('needle payload', 'k1')")
+db.execute("CREATE TABLE comp (a TEXT, b REAL, c TEXT, PRIMARY KEY (c, a)) WITHOUT ROWID")
+db.execute("INSERT INTO comp VALUES ('a1', 3.0, 'c1')")
+# A NULL before a value: its field stays, empty (Codex r1 #12).
+db.execute("CREATE TABLE gaps (x TEXT, y TEXT)")
+db.execute("INSERT INTO gaps VALUES (NULL, 'needle gap')")
 db.execute("CREATE INDEX users_email ON users(email)")
 db.execute("CREATE VIEW v AS SELECT name FROM users")
 db.commit()
@@ -4183,14 +4472,17 @@ db.commit()
 db.close()
 ```
 
-- [ ] **Step 2:** `python3 scripts/gen-sqlite-fixtures.py` writes the three databases (7 680,
+- [ ] **Step 2:** `python3 scripts/gen-sqlite-fixtures.py` writes the three databases (9 728,
   69 632 and 1 024 bytes with Python 3.13's sqlite3, SQLite 3.46.1; the sizes may differ with
   another SQLite, the tests do not depend on them). Commit them: git reads them as binary.
+  `shop.sqlite`'s tables `late` (`WITHOUT ROWID`, its key the last column), `comp` (`WITHOUT
+  ROWID`, a key of two columns in another order) and `gaps` (a NULL first column) are the cases
+  of review r1 (Codex #4 and #12, Fable #2).
 
 ### Task 4.5: green, and the commit
 
-- [ ] **Step 1:** the whole suite (the probe's state after tanda 2, measured over `1610a50`: 437 unit
-  tests; 442 with M3's final code), clippy,
+- [ ] **Step 1:** the whole suite (the probe's state after tanda 2, measured over `191dbaf`: 448
+  unit tests), clippy,
   fmt, one commit per task.
 
 ## Chunk 5: object rows and the new kinds in the printers
@@ -4200,15 +4492,19 @@ db.close()
 **Files:** `src/output/mod.rs`, `src/output/flat.rs`, `src/output/tree.rs`,
 `src/output/stream.rs`.
 
-- [ ] **Step 1:** the tests first: the fixture `object_rows` (in `output::fixture`),
-  `object_rows_print_the_hex_offset_of_their_match` (flat), `labels_of_the_m4_kinds` and
-  `object_rows_in_the_tree` (tree), as in the hunks of their `tests` modules below. RED: they do
+- [ ] **Step 1:** the tests first: the fixtures `object_rows` and `object_row_twice` (in
+  `output::fixture`), `object_rows_print_the_hex_offset_of_their_match` and
+  `an_object_row_with_two_matches_is_one_row` (flat), `labels_of_the_m4_kinds`,
+  `object_rows_in_the_tree` and `an_object_row_with_two_matches_is_one_row` (tree), as in the
+  hunks of their `tests` modules below. `object_row_twice` is one string with two Matches of
+  one symbol, `s` and `s+0x7`: before D8's single row it printed twice, once per Trail (measured
+  over the frozen copy of round 0; review r1, Codex #9). RED: they do
   not compile before `object_rows` sets `offsets`, and with it the rows print their line number
   `1` and the labels `page N` (to verify in chunk 5: the probe wrote them together with the
   code).
 
-- [ ] **Step 2:** `Row::offset`, filled by `match_rows` when `Described::offsets`, no `--`
-  between object rows, flat's `Head` with the offset in hex, tree's `write_row` and
+- [ ] **Step 2:** `Row::offset`, filled by `match_rows` when `Described::offsets`, which makes one
+  row of each object row (design note 5), no `--` between object rows, flat's `Head` with the offset in hex, tree's `write_row` and
   `write_row_text` (M3's final code split the latter out for `LineText`) with it, the labels of
   the new kinds, and `offset: None` in the three `Row` literals of `stream.rs`. The
   `offsets: false` lines in these diffs are C1's:
@@ -4227,17 +4523,30 @@ diff --git a/src/output/mod.rs b/src/output/mod.rs
      /// The line, shared by the rows of a Match line.
      pub line: Rc<LineText<'a>>,
      pub subs: Vec<(usize, usize)>,
-@@ -324,6 +327,9 @@ fn match_rows<'a>(
+@@ -310,7 +313,10 @@ fn match_rows<'a>(
+     o: &RenderOptions,
+ ) -> Vec<Row<'a>> {
+     let bytes = m.bytes(src);
+-    let groups: Vec<(&'a [Segment], Subs)> = if m.submatches.is_empty() || omitted(bytes, o) {
++    // An object file's row is one string: one row, with the Trail of its first Match (spec
++    // §5.7; code review of the M4 plan r1, Codex #9).
++    let one = d.offsets || m.submatches.is_empty() || omitted(bytes, o);
++    let groups: Vec<(&'a [Segment], Subs)> = if one {
+         vec![(trail_of(d, i, 0), subs_of(&m.submatches))]
+     } else {
+         group_by_trail(
+@@ -324,6 +330,10 @@ fn match_rows<'a>(
      groups
          .into_iter()
          .map(|(trail, subs)| Row {
++            // At its first Match (spec §5.7).
 +            offset: d
 +                .offsets
-+                .then(|| m.absolute_offset + subs.first().map_or(0, |s| s.0) as u64),
++                .then(|| m.absolute_offset + m.submatches.first().map_or(0, |s| s.start) as u64),
              trail,
              line_number: m.line_number,
              line: line.clone(),
-@@ -371,7 +377,8 @@ impl<'a> Rows<'a> {
+@@ -371,7 +381,8 @@ impl<'a> Rows<'a> {
          let line = match item {
              Item::Match(m) | Item::Context(m) => m,
          };
@@ -4247,7 +4556,7 @@ diff --git a/src/output/mod.rs b/src/output/mod.rs
          if gap {
              // A group without a Match keeps an empty Trail.
              self.ready.extend(self.pending.drain(..));
-@@ -384,6 +391,7 @@ impl<'a> Rows<'a> {
+@@ -384,6 +395,7 @@ impl<'a> Rows<'a> {
                  let row = Row {
                      trail: self.last.unwrap_or(&[]),
                      line_number: c.line_number,
@@ -4255,7 +4564,7 @@ diff --git a/src/output/mod.rs b/src/output/mod.rs
                      line: Rc::new(LineText::new(c.bytes(self.src))),
                      subs: subs_of(&c.submatches),
                      is_match: false,
-@@ -646,6 +654,34 @@ pub(crate) mod fixture {
+@@ -646,6 +658,56 @@ pub(crate) mod fixture {
          (line, bytes)
      }
  
@@ -4287,10 +4596,32 @@ diff --git a/src/output/mod.rs b/src/output/mod.rs
 +        (src, d)
 +    }
 +
++    /// An object file's row holding two Matches of one symbol, whose Trails differ in the
++    /// distance into the symbol (code review of the M4 plan r1, Codex #9).
++    pub fn object_row_twice() -> (Vec<u8>, Described) {
++        let src = b"\x7fELF\0\0needle needle\0".to_vec();
++        let mut l = Line::owned(1, 6, b"needle needle");
++        l.submatches = vec![
++            Submatch { start: 0, end: 6 },
++            Submatch { start: 7, end: 13 },
++        ];
++        let at = |n: &str| {
++            vec![
++                seg("object", "ELF x86-64", 1, 1),
++                seg("section", ".rodata", 1, 1),
++                seg("symbol", n, 1, 1),
++            ]
++        };
++        let mut d = described(&src, vec![Item::Match(l)], vec![vec![at("s"), at("s+0x7")]]);
++        d.offsets = true;
++        d.format = Some("elf".into());
++        (src, d)
++    }
++
      /// Line `n` as a Match, with one submatch per occurrence of `needle`.
      pub fn mat(src: &[u8], n: u64) -> Item {
          let (line, bytes) = ranged(src, n);
-@@ -695,6 +731,7 @@ pub(crate) mod fixture {
+@@ -695,6 +757,7 @@ pub(crate) mod fixture {
              format: Some("markdown".into()),
              trails,
              sections: Vec::new(),
@@ -4374,7 +4705,7 @@ diff --git a/src/output/flat.rs b/src/output/flat.rs
      if !r.is_match {
          let prefix = |w: &mut dyn WriteColor| head.write(w);
          let avail = o.width.saturating_sub(head.width());
-@@ -305,6 +329,34 @@ mod tests {
+@@ -305,6 +329,48 @@ mod tests {
          String::from_utf8(w.into_inner()).unwrap()
      }
  
@@ -4404,6 +4735,20 @@ diff --git a/src/output/flat.rs b/src/output/flat.rs
 +            ..flat()
 +        };
 +        assert!(plain(&d, &src, &o).starts_with("ELF x86-64"));
++    }
++
++    /// Codex r1 #9: a string with two Matches is one row, at its first Match and with its
++    /// Trail, both Matches highlighted.
++    #[test]
++    fn an_object_row_with_two_matches_is_one_row() {
++        let (src, d) = object_row_twice();
++        assert_eq!(
++            plain(&d, &src, &flat()),
++            "docs/a.md:0x6: ELF x86-64 › .rodata › s │ needle needle\n"
++        );
++        let colored = ansi(&d, &src, &flat());
++        assert_eq!(colored.lines().count(), 1, "{colored}");
++        assert_eq!(colored.matches("needle\x1b[0m").count(), 2, "{colored}");
 +    }
 +
      fn ansi(d: &Described, src: &[u8], o: &RenderOptions) -> String {
@@ -4506,7 +4851,7 @@ diff --git a/src/output/tree.rs b/src/output/tree.rs
          }
          Ok(())
      }
-@@ -244,6 +264,25 @@ mod tests {
+@@ -244,6 +264,35 @@ mod tests {
          assert_eq!(label(&sig), "fn m(\\u{1b})");
      }
  
@@ -4526,6 +4871,16 @@ diff --git a/src/output/tree.rs b/src/output/tree.rs
 +        assert_eq!(
 +            plain(&d, &src, &opts()),
 +            "docs/a.md\n  ELF x86-64\n    .rodata\n      main.version+0x8\n        0xe:version=needle\n      0x1e:another needle\n"
++        );
++    }
++
++    /// Codex r1 #9: a string with two Matches is one row, under its first Match's Trail.
++    #[test]
++    fn an_object_row_with_two_matches_is_one_row() {
++        let (src, d) = crate::output::fixture::object_row_twice();
++        assert_eq!(
++            plain(&d, &src, &opts()),
++            "docs/a.md\n  ELF x86-64\n    .rodata\n      s\n        0x6:needle needle\n"
 +        );
 +    }
 +
@@ -5271,7 +5626,7 @@ fn cells(xml: &str, shared: &[String], b: &mut Builder) {
                 "row" => {
                     row_n = attr(attrs, "r")
                         .and_then(|r| r.parse().ok())
-                        .unwrap_or(row_n + 1);
+                        .unwrap_or(row_n.saturating_add(1));
                     col = 0;
                     b.start_row(None);
                     if empty {
@@ -5596,6 +5951,62 @@ mod tests {
         assert_eq!(trail(Kind::Ods, &d, "1.5"), ["Budget", "B2"]);
     }
 
+    fn ods_of(rows: &str) -> Vec<u8> {
+        let body = format!(
+            r#"<office:spreadsheet><table:table table:name="S">{rows}</table:table></office:spreadsheet>"#
+        );
+        fixture::zip(
+            &[
+                ("mimetype", b"application/vnd.oasis.opendocument.spreadsheet".to_vec()),
+                ("content.xml", format!("<office:document-content><office:body>{body}</office:body></office:document-content>").into_bytes()),
+            ],
+            &["mimetype"],
+        )
+    }
+
+    /// Codex r1 #6: a cell prints its stored value, by its `office:value-type`, not the text a
+    /// format made of it; a formula's is its cached value.
+    #[test]
+    fn ods_cells_print_their_stored_values() {
+        let d = ods_of(concat!(
+            r#"<table:table-row>"#,
+            r#"<table:table-cell office:value-type="currency" office:value="1.5"><text:p>$1.50</text:p></table:table-cell>"#,
+            r#"<table:table-cell office:value-type="boolean" office:boolean-value="true"><text:p>VERDADERO</text:p></table:table-cell>"#,
+            r#"<table:table-cell office:value-type="date" office:date-value="2026-10-18"><text:p>18/10/2026</text:p></table:table-cell>"#,
+            r#"<table:table-cell office:value-type="time" office:time-value="PT01H00M00S"><text:p>01:00</text:p></table:table-cell>"#,
+            r#"<table:table-cell table:formula="of:=1+1" office:value-type="float" office:value="2"><text:p>2,00</text:p></table:table-cell>"#,
+            r#"<table:table-cell office:value-type="string"><text:p>needle</text:p></table:table-cell>"#,
+            r#"</table:table-row>"#,
+        ));
+        let e = extract(Kind::Ods, &d).unwrap();
+        assert_eq!(e.text, b"1.5\tTRUE\t2026-10-18\tPT01H00M00S\t2\tneedle\n");
+        assert_eq!(trail(Kind::Ods, &d, "needle"), ["S", "F1"]);
+    }
+
+    /// Codex r1 #10: repeat counts near `usize::MAX` are an error of the document, never a
+    /// panic or a wrapped row number.
+    #[test]
+    fn huge_repeats_are_an_error_not_an_overflow() {
+        let max = usize::MAX;
+        for rows in [
+            format!(
+                r#"<table:table-row table:number-rows-repeated="{max}"><table:table-cell/></table:table-row><table:table-row><table:table-cell office:value-type="string"><text:p>needle</text:p></table:table-cell></table:table-row>"#
+            ),
+            format!(
+                r#"<table:table-row><table:table-cell table:number-columns-repeated="{max}"/><table:table-cell office:value-type="string"><text:p>needle</text:p></table:table-cell></table:table-row>"#
+            ),
+            format!(
+                r#"<table:table-row table:number-rows-repeated="{max}"><table:table-cell office:value-type="string"><text:p>needle</text:p></table:table-cell></table:table-row><table:table-row><table:table-cell office:value-type="string"><text:p>x</text:p></table:table-cell></table:table-row>"#
+            ),
+        ] {
+            let got = std::panic::catch_unwind(|| extract(Kind::Ods, &ods_of(&rows)));
+            assert!(
+                matches!(got, Ok(Err(super::super::DocError::Broken(_)))),
+                "{rows}"
+            );
+        }
+    }
+
     #[test]
     fn odp_slides_and_notes() {
         let d = fixture::odp(&[
@@ -5630,14 +6041,19 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3:** `cargo test --lib docs::odf`: the 4 tests FAIL («written in Chunk 7»): RED.
+- [ ] **Step 3:** `cargo test --lib docs::odf`: 5 tests FAIL («written in Chunk 7»);
+  `huge_repeats_are_an_error_not_an_overflow` passes over the stub too, which also errs: RED.
 
 - [ ] **Step 4:** the Extractors. A paragraph is a heading when it is `text:h` or when its
   style, or a parent of it, has an outline level or is `Heading_20_N`: LibreOffice's import of
   HTML writes `<text:p text:style-name="P1">` whose parent is `Heading_20_1`, which carries no
   `default-outline-level` (seen in the probe). White space in ODF text collapses, and `text:s`
   says how many spaces it means. `number-rows-repeated` and `number-columns-repeated` of empty
-  cells are only counted (D17):
+  cells are only counted, with checked additions, so a repeat of `18446744073709551615` is an
+  error and not an overflow (D17; `huge_repeats_are_an_error_not_an_overflow` panicked before:
+  review r1, Codex #10). A cell is searched by its stored value, by its `office:value-type`
+  (D18; `ods_cells_print_their_stored_values` is RED over the round-0 code, which read the
+  displayed `<text:p>`, `$1.50` for the stored `1.5`: Codex #6):
 
 ```rust
 //! OpenDocument text, spreadsheets and presentations (spec §5.8), read from `content.xml`:
@@ -5908,6 +6324,38 @@ pub fn odp(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     Ok(())
 }
 
+/// The value a spreadsheet cell stores, by its `office:value-type` (Codex r1 #6): a number,
+/// percentage or currency as its `office:value`, a date or time as its ISO value, a boolean as
+/// TRUE or FALSE, a string as its text (or the `office:string-value` of a formula). A formula's
+/// value is its cached one. None: the cell's text, as for a cell without a type.
+fn stored(attrs: &str) -> Option<String> {
+    let v = |a: &str| attr(attrs, a).map(|s| s.into_owned());
+    match attr(attrs, "value-type").as_deref()? {
+        "float" | "percentage" | "currency" => v("value"),
+        "date" => v("date-value"),
+        "time" => v("time-value"),
+        "boolean" => v("boolean-value").map(|b| {
+            if b == "true" {
+                "TRUE".into()
+            } else {
+                "FALSE".into()
+            }
+        }),
+        _ => v("string-value"),
+    }
+}
+
+/// `a + b`, or the error of a document whose repeat counts take a row or column number past
+/// what a machine word holds (Codex r1 #10).
+fn add(a: usize, b: usize) -> Result<usize, DocError> {
+    a.checked_add(b)
+        .ok_or_else(|| DocError::broken("a repeated row or column goes past the largest number"))
+}
+
+fn repeat(attrs: &str, name: &str) -> usize {
+    attr(attrs, name).and_then(|v| v.parse().ok()).unwrap_or(1)
+}
+
 pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     let (xml, _) = content(bytes)?;
     let mut sheet = None;
@@ -5916,8 +6364,8 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     // The row being read: its repeat count and its cells (column, repeat, text).
     let mut cells: Vec<(usize, usize, String)> = Vec::new();
     let mut repeat_row = 1usize;
-    // The cell being read: its column, repeat count, text, value.
-    let mut cell: Option<(usize, usize, String, String)> = None;
+    // The cell being read: its column, repeat count, text, stored value.
+    let mut cell: Option<(usize, usize, String, Option<String>)> = None;
     let mut para_depth = 0usize;
     for ev in Pull::new(&xml) {
         match ev {
@@ -5930,29 +6378,21 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                     row = 0;
                 }
                 "table:table-row" => {
-                    repeat_row = attr(attrs, "number-rows-repeated")
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(1);
+                    repeat_row = repeat(attrs, "number-rows-repeated");
                     col = 0;
                     cells.clear();
                     if empty {
-                        row += repeat_row;
+                        row = add(row, repeat_row)?;
                     }
                 }
                 "table:table-cell" | "table:covered-table-cell" => {
-                    let rep = attr(attrs, "number-columns-repeated")
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(1usize);
-                    let value = attr(attrs, "value")
-                        .or_else(|| attr(attrs, "date-value"))
-                        .or_else(|| attr(attrs, "boolean-value"))
-                        .map(|s| s.into_owned())
-                        .unwrap_or_default();
+                    let rep = repeat(attrs, "number-columns-repeated");
+                    let value = stored(attrs);
                     if empty {
-                        if !value.is_empty() {
-                            cells.push((col, rep, value));
+                        if let Some(v) = value.filter(|v| !v.is_empty()) {
+                            cells.push((col, rep, v));
                         }
-                        col += rep;
+                        col = add(col, rep)?;
                     } else {
                         cell = Some((col, rep, String::new(), value));
                     }
@@ -5976,11 +6416,11 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                 "text:p" => para_depth = para_depth.saturating_sub(1),
                 "table:table-cell" | "table:covered-table-cell" => {
                     if let Some((c, rep, text, value)) = cell.take() {
-                        let shown = if text.trim().is_empty() { value } else { text };
+                        let shown = value.unwrap_or(text);
                         if !shown.trim().is_empty() {
                             cells.push((c, rep, shown));
                         }
-                        col = c + rep;
+                        col = add(c, rep)?;
                     }
                 }
                 "table:table-row" => {
@@ -5990,16 +6430,17 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                         repeat_row.min(MAX_REPEAT)
                     };
                     for k in 0..writes {
-                        let r = row + k + 1;
+                        let r = add(row, k + 1)?;
                         b.start_row(None);
                         for (c, rep, text) in &cells {
                             for j in 0..(*rep).min(MAX_REPEAT) {
-                                b.cell("cell", &format!("{}{r}", column_letters(c + j)), text);
+                                let at = add(*c, j)?;
+                                b.cell("cell", &format!("{}{r}", column_letters(at)), text);
                             }
                         }
                         b.end_row();
                     }
-                    row += repeat_row;
+                    row = add(row, repeat_row)?;
                 }
                 "table:table" => {
                     if let Some(s) = sheet.take() {
@@ -6712,6 +7153,250 @@ mod tests {
         }
     }
 
+    use lopdf::{Dictionary, Document, Object, Stream, StringFormat};
+
+    /// A one-page PDF whose page draws `content` with the font `font` as `/F1` and the Form
+    /// XObjects `forms` (name, content, compressed) as `/Fm0`, `/Fm1`…, each with the page's
+    /// resources.
+    fn pdf_with(font: Dictionary, content: &[u8], forms: &[(&[u8], bool)]) -> Vec<u8> {
+        let mut doc = Document::with_version("1.5");
+        let id = Object::String(b"searchfor-adverse".to_vec(), StringFormat::Hexadecimal);
+        doc.trailer.set("ID", Object::Array(vec![id.clone(), id]));
+        let pages_id = doc.new_object_id();
+        let res_id = doc.new_object_id();
+        // A stream is an object of its own, referred to.
+        let mut font = font;
+        for (_, v) in font.iter_mut() {
+            if let Object::Stream(st) = v {
+                *v = Object::Reference(doc.add_object(st.clone()));
+            }
+        }
+        let font_id = doc.add_object(font);
+        let mut xo = Dictionary::new();
+        for (i, (body, compressed)) in forms.iter().enumerate() {
+            let mut d = Dictionary::new();
+            d.set("Type", Object::Name(b"XObject".to_vec()));
+            d.set("Subtype", Object::Name(b"Form".to_vec()));
+            d.set("Resources", Object::Reference(res_id));
+            let mut st = Stream::new(d, body.to_vec());
+            if *compressed {
+                st.compress().unwrap();
+            }
+            xo.set(format!("Fm{i}"), Object::Reference(doc.add_object(st)));
+        }
+        let mut fonts = Dictionary::new();
+        fonts.set("F1", Object::Reference(font_id));
+        let mut res = Dictionary::new();
+        res.set("Font", Object::Dictionary(fonts));
+        res.set("XObject", Object::Dictionary(xo));
+        doc.objects.insert(res_id, Object::Dictionary(res));
+        let content_id = doc.add_object(Stream::new(Dictionary::new(), content.to_vec()));
+        let mut page = Dictionary::new();
+        page.set("Type", Object::Name(b"Page".to_vec()));
+        page.set("Parent", Object::Reference(pages_id));
+        page.set("Contents", Object::Reference(content_id));
+        page.set("Resources", Object::Reference(res_id));
+        let page_id = doc.add_object(page);
+        let mut pages = Dictionary::new();
+        pages.set("Type", Object::Name(b"Pages".to_vec()));
+        pages.set("Count", Object::Integer(1));
+        pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages.set(
+            "MediaBox",
+            Object::Array(vec![0.into(), 0.into(), 612.into(), 792.into()]),
+        );
+        doc.objects.insert(pages_id, Object::Dictionary(pages));
+        let mut cat = Dictionary::new();
+        cat.set("Type", Object::Name(b"Catalog".to_vec()));
+        cat.set("Pages", Object::Reference(pages_id));
+        let cat_id = doc.add_object(cat);
+        doc.trailer.set("Root", Object::Reference(cat_id));
+        let mut out = Vec::new();
+        doc.save_to(&mut out).unwrap();
+        out
+    }
+
+    /// A ToUnicode CMap mapping each `(code, text)` (codes of `width` bytes).
+    fn cmap(width: usize, map: &[(u32, &str)]) -> Vec<u8> {
+        let hex = |c: u32| format!("{c:0w$X}", w = width * 2);
+        let mut s = format!(
+            "/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n/CMapName /T def /CMapType 2 def\n1 begincodespacerange <{}> <{}> endcodespacerange\n{} beginbfchar\n",
+            hex(0),
+            "FF".repeat(width),
+            map.len()
+        );
+        for (c, t) in map {
+            let u: String = t.encode_utf16().map(|u| format!("{u:04X}")).collect();
+            s.push_str(&format!("<{}> <{u}>\n", hex(*c)));
+        }
+        s.push_str("endbfchar\nendcmap\nCMapName currentdict /CMap defineresource pop end end\n");
+        s.into_bytes()
+    }
+
+    fn simple_font(extra: impl FnOnce(&mut Dictionary)) -> Dictionary {
+        let mut f = Dictionary::new();
+        f.set("Type", Object::Name(b"Font".to_vec()));
+        f.set("Subtype", Object::Name(b"Type1".to_vec()));
+        f.set("BaseFont", Object::Name(b"ABCDEF+Subset".to_vec()));
+        extra(&mut f);
+        f
+    }
+
+    fn text_of(pdf: &[u8]) -> String {
+        String::from_utf8(extract(Kind::Pdf, pdf).unwrap().text).unwrap()
+    }
+
+    /// Codex r1 #5: a simple font that declares both `/Encoding` and `/ToUnicode` is read
+    /// through its ToUnicode map, which says what a subset font's codes mean; its ligatures
+    /// expand.
+    #[test]
+    fn to_unicode_comes_before_the_encoding() {
+        let map = cmap(
+            1,
+            &[
+                (0x41, "n"),
+                (0x42, "e"),
+                (0x43, "d"),
+                (0x44, "l"),
+                (0x45, "\u{fb01}"),
+            ],
+        );
+        let font = simple_font(|f| {
+            f.set("Encoding", Object::Name(b"WinAnsiEncoding".to_vec()));
+            f.set(
+                "ToUnicode",
+                Object::Stream(Stream::new(Dictionary::new(), map)),
+            );
+        });
+        let pdf = pdf_with(
+            font,
+            b"BT /F1 12 Tf 72 700 Td (ABBCDB) Tj 0 -20 Td (EAB) Tj ET",
+            &[],
+        );
+        assert_eq!(text_of(&pdf), "needle\nfine\n");
+    }
+
+    /// A Type0 font with Identity-H and a ToUnicode map, its words separated by `TJ` kerning.
+    #[test]
+    fn a_type0_font_reads_its_two_byte_codes() {
+        let map = cmap(
+            2,
+            &[(1, "n"), (2, "e"), (3, "d"), (4, "l"), (5, "h"), (6, "r")],
+        );
+        let mut cid = Dictionary::new();
+        cid.set("Type", Object::Name(b"Font".to_vec()));
+        cid.set("Subtype", Object::Name(b"CIDFontType2".to_vec()));
+        cid.set("DW", Object::Integer(500));
+        let mut font = Dictionary::new();
+        font.set("Type", Object::Name(b"Font".to_vec()));
+        font.set("Subtype", Object::Name(b"Type0".to_vec()));
+        font.set("Encoding", Object::Name(b"Identity-H".to_vec()));
+        font.set(
+            "DescendantFonts",
+            Object::Array(vec![Object::Dictionary(cid)]),
+        );
+        font.set(
+            "ToUnicode",
+            Object::Stream(Stream::new(Dictionary::new(), map)),
+        );
+        let pdf = pdf_with(
+            font,
+            b"BT /F1 12 Tf 72 700 Td [<000100020002000300040002> -400 <0005000200060002>] TJ ET",
+            &[],
+        );
+        assert_eq!(text_of(&pdf), "needle here\n");
+    }
+
+    fn compressed_zeros(n: usize) -> Stream {
+        let mut st = Stream::new(Dictionary::new(), vec![b' '; n]);
+        st.compress().unwrap();
+        st
+    }
+
+    /// Codex r1 #1: a ToUnicode map and a Form that decompress past 64 MiB make the document
+    /// fail, with the limit, instead of being read whole.
+    #[test]
+    fn a_bomb_in_a_font_or_a_form_is_refused() {
+        let font = simple_font(|f| f.set("ToUnicode", Object::Stream(compressed_zeros(65 << 20))));
+        let pdf = pdf_with(font, b"BT /F1 12 Tf (A) Tj ET", &[]);
+        let e = extract(Kind::Pdf, &pdf).unwrap_err();
+        assert!(matches!(&e, DocError::TooLarge(..)), "{e}");
+        let font = simple_font(|_| {});
+        let bomb = vec![b' '; 65 << 20];
+        let pdf = pdf_with(font, b"/Fm0 Do", &[(&bomb, true)]);
+        let e = extract(Kind::Pdf, &pdf).unwrap_err();
+        assert!(matches!(&e, DocError::TooLarge(..)), "{e}");
+    }
+
+    /// Fable r1 #3: the streams of all the pages, Forms and fonts of a document spend one
+    /// budget.
+    #[test]
+    fn the_streams_of_a_document_share_a_budget() {
+        let doc = Document::with_version("1.5");
+        let r = super::Reader::new(&doc);
+        r.inflated(super::MAX_INFLATED).unwrap();
+        let e = r.inflated(1).unwrap_err();
+        assert!(matches!(&e, DocError::TooLarge(_, 1024)), "{e}");
+    }
+
+    /// Fable r1 #10: a Form whose stream does not decompress draws nothing, and the page goes on.
+    #[test]
+    fn a_form_that_does_not_decompress_draws_nothing() {
+        let page = b"/Fm0 Do BT /F1 12 Tf (needle) Tj ET";
+        let pdf = pdf_with(simple_font(|_| {}), page, &[(&[b' '; 4096], true)]);
+        let mut doc = Document::load_mem(&pdf).unwrap();
+        for o in doc.objects.values_mut() {
+            if let Object::Stream(st) = o
+                && st.dict.get(b"Filter").is_ok()
+            {
+                st.set_content(b"not flate".to_vec());
+            }
+        }
+        let mut broken = Vec::new();
+        doc.save_to(&mut broken).unwrap();
+        assert_eq!(text_of(&broken), "needle\n");
+    }
+
+    /// Eight nested Forms, each drawing the next sixteen times: 16⁷ draws of the last one.
+    fn fan_out(text: bool) -> Vec<u8> {
+        let mut forms: Vec<Vec<u8>> = Vec::new();
+        for i in 0..8 {
+            let mut body = if text {
+                b"BT /F1 12 Tf (needle ) Tj ET ".to_vec()
+            } else {
+                Vec::new()
+            };
+            if i < 7 {
+                for _ in 0..16 {
+                    body.extend(format!("/Fm{} Do ", i + 1).as_bytes());
+                }
+            }
+            forms.push(body);
+        }
+        let refs: Vec<(&[u8], bool)> = forms.iter().map(|f| (f.as_slice(), false)).collect();
+        pdf_with(simple_font(|_| {}), b"/Fm0 Do", &refs)
+    }
+
+    /// Codex r1 #2: the text limit holds while the page is drawn, and the work of the content
+    /// streams has a budget, so a page of Forms drawing Forms ends quickly either way.
+    #[test]
+    fn a_page_of_forms_drawing_forms_stops_at_its_budgets() {
+        let started = std::time::Instant::now();
+        let e = super::super::extract_with(Kind::Pdf, &fan_out(true), 1 << 20).unwrap();
+        assert!(e.cut);
+        assert!(e.text.len() <= 1 << 20, "{}", e.text.len());
+        let e = extract(Kind::Pdf, &fan_out(false)).unwrap_err();
+        assert!(
+            matches!(&e, DocError::Broken(m) if m.contains("operations")),
+            "{e}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
     #[test]
     fn tj_kerning_wide_enough_is_a_space() {
         use lopdf::content::{Content, Operation};
@@ -6733,32 +7418,34 @@ mod tests {
             Operation::new("ET", vec![]),
         ];
         let data = Content { operations: ops }.encode().unwrap();
+        let ops = Content::decode(&data).unwrap().operations;
         let doc = lopdf::Document::with_version("1.5");
-        let cache = super::FontCache::default();
-        let res = super::Res::new(&doc, Vec::new(), &cache);
-        let mut out = super::Layout::default();
-        super::run(
-            &doc,
-            &data,
-            &res,
-            &cache,
-            super::Matrix::IDENTITY,
-            &mut out,
-            0,
-        );
+        let r = super::Reader::new(&doc);
+        let res = super::Res::new(&r, Vec::new()).unwrap();
+        let mut out = super::Layout::new(usize::MAX);
+        super::run(&r, &ops, &res, super::Matrix::IDENTITY, &mut out, 0).unwrap();
         assert_eq!(out.out, "needle here");
     }
 }
 ```
 
-- [ ] **Step 3:** `cargo test --lib docs::pdf` does not compile: `Res`, `Layout`, `Matrix`,
-  `FontCache` and `run` do not exist: RED.
+- [ ] **Step 3:** `cargo test --lib docs::pdf` does not compile: `Reader`, `Res`, `Layout`,
+  `Matrix`, `run` and `MAX_INFLATED` do not exist: RED. The four adversarial tests of review r1 were also run
+  against the round-0 code, which had none of their fixes: `to_unicode_comes_before_the_encoding`
+  gave `ABBCDB` (WinAnsi), `a_type0_font_reads_its_two_byte_codes` gave spaces (its fixture's
+  map was a direct stream then, which lopdf does not read; it is an object now), the bombs
+  were read whole, and the page of Forms drawing Forms ran for over 60 s.
 
-- [ ] **Step 4:** the Extractor (D13, D14, D17). Fonts are read once per document
-  (`FontCache`): before it, one 296-page PDF took 0.54 s, after it 0.41 s. lopdf prefers a font's
-  `/Encoding` to its `/ToUnicode` for simple fonts and maps Identity-H fonts through their
-  ToUnicode CMap; widths come from `/Widths` (simple fonts, scaled by `FontMatrix` for Type 3) or
-  `/W` and `/DW` (CID fonts):
+- [ ] **Step 4:** the Extractor (D13, D14, D17). A `Reader` holds what the pages of a document
+  share: its fonts and its Forms, each read once (before the font cache one 296-page PDF took
+  0.54 s, after it 0.41 s; a Form is decompressed, decoded and given its resources once, which
+  took a page of 16⁷ Form draws from 9 s to 0.18 s in release), and its budgets: the bytes all
+  its streams decompress to, and the work of its Forms. A font with a ToUnicode map is read
+  through it (lopdf reads `/Encoding` first, so the map is read from a copy of the font without
+  `/Encoding`, holding the map already decompressed and counted); widths come from `/Widths`
+  (simple fonts, scaled by `FontMatrix` for Type 3) or `/W` and `/DW` (CID fonts). Every stream
+  is read with `MAX_STREAM`, and lopdf's `MemoryLimitExceeded` is `TooLarge`, any other
+  decompression error an empty page or Form:
 
 ```rust
 //! PDF (spec §5.8): `3 Results › 3.2 Costs › page 42`. lopdf reads the file, its fonts and its
@@ -6768,15 +7455,24 @@ mod tests {
 //! it, as does a TJ kerning of more than 0.1 em. The bookmarks are chapters, each starting at the
 //! line of the page it points to that starts with its title, or at the top of that page (D14).
 use super::{Builder, DocError};
-use lopdf::content::Content;
-use lopdf::{Dictionary, Document, Encoding, Object, ObjectId};
-use std::cell::RefCell;
+use lopdf::content::{Content, Operation};
+use lopdf::{DecompressError, Dictionary, Document, Encoding, Object, ObjectId, Stream};
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
-/// The most bytes one stream may decompress to (64 MiB): a page or object stream past it makes
-/// the document fail, as a decompression bomb (D17).
+/// The most bytes one stream may decompress to (64 MiB): a page, Form, font or object stream
+/// past it makes the document fail, as a decompression bomb (D17).
 const MAX_STREAM: usize = 64 << 20;
+/// The most bytes all the page, Form and font streams of a document may decompress to, together
+/// (1 GiB): many pages sharing one large stream are a bomb too (D17).
+const MAX_INFLATED: usize = 1 << 30;
+/// The most work the Forms of a document may do: each time a Form is drawn it spends
+/// `FORM_DRAW` plus one for each of its operations. A small Form drawn by Forms drawn by Forms
+/// is a bomb of work (D17).
+const MAX_FORM_WORK: usize = 8_000_000;
+/// The work of drawing a Form, before its operations run.
+const FORM_DRAW: usize = 16;
 /// Form XObjects nested deeper than this are not read.
 const MAX_FORM_DEPTH: usize = 8;
 /// At most this many bookmarks are read.
@@ -6796,14 +7492,32 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     let mut marks = bookmarks(&doc, &numbers);
     marks.sort_by_key(|m| m.2);
     let mut marks = marks.into_iter().peekable();
-    let cache = FontCache::default();
+    let r = Reader::new(&doc);
     for (n, id) in &pages {
-        let mut text = Layout::default();
-        let res = Res::of_page(&doc, *id, &cache);
+        let mut text = Layout::new(b.remaining());
+        let res = Res::of_page(&r, *id)?;
         match doc.get_page_content_with_limit(*id, MAX_STREAM) {
-            Ok(content) => run(&doc, &content, &res, &cache, Matrix::IDENTITY, &mut text, 0),
-            Err(lopdf::Error::Decompress(e)) => return Err(DocError::broken(e)),
-            Err(_) => {}
+            Ok(content) => {
+                r.inflated(content.len())?;
+                if let Ok(content) = Content::decode(&content) {
+                    run(
+                        &r,
+                        &content.operations,
+                        &res,
+                        Matrix::IDENTITY,
+                        &mut text,
+                        0,
+                    )?;
+                }
+            }
+            // A stream past the limit fails the document; any other error leaves the page
+            // empty (lopdf reads a stream that does not decompress as it is, which draws
+            // nothing), and the next page is read.
+            Err(e) => {
+                if let Ok(e) = too_large(e, "a page's content") {
+                    return Err(e);
+                }
+            }
         }
         let lines: Vec<&str> = text.out.lines().collect();
         // Each bookmark of this page starts at the first line, from the previous one's, that
@@ -6844,6 +7558,9 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
         if let Some(p) = page {
             b.close(p);
         }
+        if text.full {
+            b.mark_cut();
+        }
         if b.full() {
             break;
         }
@@ -6856,11 +7573,22 @@ fn squeeze(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn load_error(e: lopdf::Error) -> DocError {
+/// `e` as the error of a stream of `what` over its 64 MiB, when it is that.
+fn too_large(e: lopdf::Error, what: &str) -> Result<DocError, lopdf::Error> {
     match e {
-        lopdf::Error::Decryption(_) | lopdf::Error::InvalidPassword => DocError::Encrypted,
-        lopdf::Error::Decompress(e) => DocError::broken(e),
-        e => DocError::broken(format!("not a PDF lopdf can read ({e})")),
+        lopdf::Error::Decompress(DecompressError::MemoryLimitExceeded { .. }) => {
+            Ok(DocError::TooLarge(what.into(), MAX_STREAM >> 20))
+        }
+        e => Err(e),
+    }
+}
+
+fn load_error(e: lopdf::Error) -> DocError {
+    match too_large(e, "a stream of the file") {
+        Ok(e) => e,
+        Err(lopdf::Error::Decryption(_) | lopdf::Error::InvalidPassword) => DocError::Encrypted,
+        Err(lopdf::Error::Decompress(e)) => DocError::broken(e),
+        Err(e) => DocError::broken(format!("not a PDF lopdf can read ({e})")),
     }
 }
 
@@ -7022,6 +7750,114 @@ fn num(o: &Object) -> Option<f64> {
     }
 }
 
+/// What a document's pages share as they are read: its fonts and Forms, read once each, and
+/// the budgets all its pages spend (D17).
+struct Reader<'a> {
+    doc: &'a Document,
+    fonts: RefCell<HashMap<ObjectId, Rc<Font<'a>>>>,
+    /// Each Form, read the first time it is drawn.
+    forms: RefCell<HashMap<ObjectId, Rc<Form<'a>>>>,
+    inflated: Cell<usize>,
+    work: Cell<usize>,
+}
+
+impl<'a> Reader<'a> {
+    fn new(doc: &'a Document) -> Self {
+        Reader {
+            doc,
+            fonts: RefCell::default(),
+            forms: RefCell::default(),
+            inflated: Cell::new(0),
+            work: Cell::new(0),
+        }
+    }
+
+    /// Spends `n` decompressed bytes of the document's `MAX_INFLATED`.
+    fn inflated(&self, n: usize) -> Result<(), DocError> {
+        let total = self.inflated.get().saturating_add(n);
+        self.inflated.set(total);
+        if total > MAX_INFLATED {
+            return Err(DocError::TooLarge(
+                "the whole document, decompressed,".into(),
+                MAX_INFLATED >> 20,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Spends the work of drawing a Form of `ops` operations.
+    fn draw(&self, ops: usize) -> Result<(), DocError> {
+        let total = self.work.get().saturating_add(FORM_DRAW + ops);
+        self.work.set(total);
+        if total > MAX_FORM_WORK {
+            return Err(DocError::broken(format!(
+                "its Forms run more than {MAX_FORM_WORK} operations"
+            )));
+        }
+        Ok(())
+    }
+
+    /// The font `d`, object `id`.
+    fn font(&self, id: Option<ObjectId>, d: &'a Dictionary) -> Result<Rc<Font<'a>>, DocError> {
+        let Some(id) = id else {
+            return Ok(Rc::new(font(self, d)?));
+        };
+        if let Some(f) = self.fonts.borrow().get(&id) {
+            return Ok(f.clone());
+        }
+        let f = Rc::new(font(self, d)?);
+        self.fonts.borrow_mut().insert(id, f.clone());
+        Ok(f)
+    }
+
+    /// The Form `s`, object `id`: no operations when its stream does not decompress or decode.
+    fn form(&self, id: Option<ObjectId>, s: &'a Stream) -> Result<Rc<Form<'a>>, DocError> {
+        if let Some(f) = id.and_then(|id| self.forms.borrow().get(&id).cloned()) {
+            return Ok(f);
+        }
+        let ops = match s.decompressed_content_with_limit(MAX_STREAM) {
+            Ok(data) => {
+                self.inflated(data.len())?;
+                Content::decode(&data)
+                    .map(|c| c.operations)
+                    .unwrap_or_default()
+            }
+            Err(e) => match too_large(e, "a Form") {
+                Ok(e) => return Err(e),
+                Err(_) => Vec::new(),
+            },
+        };
+        let matrix = s
+            .dict
+            .get(b"Matrix")
+            .ok()
+            .and_then(|m| m.as_array().ok())
+            .and_then(|a| Matrix::from(a))
+            .unwrap_or(Matrix::IDENTITY);
+        // A Form without resources of its own uses its parent's.
+        let res = match s
+            .dict
+            .get_deref(b"Resources", self.doc)
+            .and_then(Object::as_dict)
+        {
+            Ok(own) => Some(Res::new(self, vec![own])?),
+            Err(_) => None,
+        };
+        let f = Rc::new(Form { ops, matrix, res });
+        if let Some(id) = id {
+            self.forms.borrow_mut().insert(id, f.clone());
+        }
+        Ok(f)
+    }
+}
+
+/// A Form XObject: its operations, its matrix, and its own resources if it has them.
+struct Form<'a> {
+    ops: Vec<Operation>,
+    matrix: Matrix,
+    res: Option<Res<'a>>,
+}
+
 /// A font of a page or form: how its strings decode and how wide each code is.
 struct Font<'a> {
     encoding: Option<Encoding<'a>>,
@@ -7039,12 +7875,9 @@ struct Res<'a> {
     fonts: BTreeMap<Vec<u8>, Rc<Font<'a>>>,
 }
 
-/// The fonts read so far, by object: pages share their fonts, and a font's widths and its
-/// ToUnicode map are read once per document.
-type FontCache<'a> = RefCell<HashMap<ObjectId, Rc<Font<'a>>>>;
-
 impl<'a> Res<'a> {
-    fn of_page(doc: &'a Document, page: ObjectId, cache: &FontCache<'a>) -> Res<'a> {
+    fn of_page(r: &Reader<'a>, page: ObjectId) -> Result<Res<'a>, DocError> {
+        let doc = r.doc;
         let mut dicts = Vec::new();
         if let Ok((own, inherited)) = doc.get_page_resources(page) {
             dicts.extend(own);
@@ -7054,13 +7887,14 @@ impl<'a> Res<'a> {
                     .filter_map(|id| doc.get_dictionary(*id).ok()),
             );
         }
-        Res::new(doc, dicts, cache)
+        Res::new(r, dicts)
     }
 
-    fn new(doc: &'a Document, dicts: Vec<&'a Dictionary>, cache: &FontCache<'a>) -> Res<'a> {
+    fn new(r: &Reader<'a>, dicts: Vec<&'a Dictionary>) -> Result<Res<'a>, DocError> {
+        let doc = r.doc;
         let mut fonts = BTreeMap::new();
-        for r in &dicts {
-            let Ok(f) = r.get_deref(b"Font", doc).and_then(Object::as_dict) else {
+        for d in &dicts {
+            let Ok(f) = d.get_deref(b"Font", doc).and_then(Object::as_dict) else {
                 continue;
             };
             for (k, v) in f.iter() {
@@ -7070,38 +7904,67 @@ impl<'a> Res<'a> {
                 let Ok((id, Object::Dictionary(d))) = doc.dereference(v) else {
                     continue;
                 };
-                let f = match id {
-                    Some(id) => cache
-                        .borrow_mut()
-                        .entry(id)
-                        .or_insert_with(|| Rc::new(font(doc, d)))
-                        .clone(),
-                    None => Rc::new(font(doc, d)),
-                };
-                fonts.insert(k.clone(), f);
+                fonts.insert(k.clone(), r.font(id, d)?);
             }
         }
-        Res { dicts, fonts }
+        Ok(Res { dicts, fonts })
     }
 
-    /// The Form XObject `name`.
-    fn form(&self, doc: &'a Document, name: &[u8]) -> Option<&'a lopdf::Stream> {
+    /// The Form XObject `name`, and its object.
+    fn form(&self, doc: &'a Document, name: &[u8]) -> Option<(Option<ObjectId>, &'a Stream)> {
         for r in &self.dicts {
             let Ok(xo) = r.get_deref(b"XObject", doc).and_then(Object::as_dict) else {
                 continue;
             };
-            if let Ok((_, Object::Stream(s))) = xo.get(name).and_then(|o| doc.dereference(o)) {
+            if let Ok((id, Object::Stream(s))) = xo.get(name).and_then(|o| doc.dereference(o)) {
                 let is_form =
                     s.dict.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Form");
-                return is_form.then_some(s);
+                return is_form.then_some((id, s));
             }
         }
         None
     }
 }
 
-fn font<'a>(doc: &'a Document, d: &'a Dictionary) -> Font<'a> {
-    let encoding = d.get_font_encoding(doc).ok();
+/// How the strings of the font `d` decode: through its ToUnicode map when it has one that
+/// reads, which says what each code means even in a subset font whose `/Encoding` does not
+/// (D13); else through its `/Encoding`. A stream of either past `MAX_STREAM` fails the document.
+fn encoding<'a>(r: &Reader<'a>, d: &'a Dictionary) -> Result<Option<Encoding<'a>>, DocError> {
+    let doc = r.doc;
+    if let Ok(map) = d.get_deref(b"ToUnicode", doc).and_then(Object::as_stream) {
+        let plain = match map.get_plain_content_with_limit(MAX_STREAM) {
+            Ok(plain) => Some(plain),
+            Err(e) => match too_large(e, "a font's ToUnicode map") {
+                Ok(e) => return Err(e),
+                Err(_) => None,
+            },
+        };
+        if let Some(plain) = plain {
+            r.inflated(plain.len())?;
+            // lopdf reads `/Encoding` first, so the map is read from a copy of the font
+            // without it, holding the map already decompressed.
+            let mut only_map = d.clone();
+            only_map.remove(b"Encoding");
+            only_map.set("ToUnicode", Stream::new(Dictionary::new(), plain));
+            if let Ok(Encoding::UnicodeMapEncoding(m)) =
+                only_map.get_font_encoding_with_limit(doc, MAX_STREAM)
+            {
+                return Ok(Some(Encoding::UnicodeMapEncoding(m)));
+            }
+        }
+    }
+    match d.get_font_encoding_with_limit(doc, MAX_STREAM) {
+        Ok(e) => Ok(Some(e)),
+        Err(e) => match too_large(e, "a font's ToUnicode map") {
+            Ok(e) => Err(e),
+            Err(_) => Ok(None),
+        },
+    }
+}
+
+fn font<'a>(r: &Reader<'a>, d: &'a Dictionary) -> Result<Font<'a>, DocError> {
+    let doc = r.doc;
+    let encoding = encoding(r, d)?;
     let composite = d.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Type0");
     let mut widths = HashMap::new();
     let mut default = 500.0;
@@ -7173,22 +8036,25 @@ fn font<'a>(doc: &'a Document, d: &'a Dictionary) -> Font<'a> {
             default = missing * scale;
         }
     }
-    Font {
+    Ok(Font {
         encoding,
         bytes: if composite { 2 } else { 1 },
         widths,
         default,
-    }
+    })
 }
 
 /// The text of a page as it is laid out: where the last string ended, to decide whether the
 /// next one starts a line or needs a space.
-#[derive(Default)]
 struct Layout {
     out: String,
     /// The last string: where it ended (x, y, in device space), its size, and whether its
     /// font gave the widths of its glyphs.
     last: Option<Last>,
+    /// The bytes of text the document has room for still: the page stops being drawn when
+    /// its text reaches them (D17).
+    room: usize,
+    full: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -7200,10 +8066,25 @@ struct Last {
 }
 
 impl Layout {
+    fn new(room: usize) -> Self {
+        Layout {
+            out: String::new(),
+            last: None,
+            room,
+            full: false,
+        }
+    }
+
     /// `space` is a TJ kerning wide enough to be a space before `s`. Without the widths of the
     /// last string's glyphs, where it ended is a guess, so only that kerning makes a space.
     fn push(&mut self, s: &str, x: f64, y: f64, last: Last, space: bool) {
-        if s.is_empty() {
+        if s.is_empty() || self.full {
+            return;
+        }
+        // A ligature's letters take no more bytes than it does, and a string writes at most
+        // one break or space before it.
+        if self.out.len() + s.len() + 1 > self.room {
+            self.full = true;
             return;
         }
         if let Some(l) = self.last {
@@ -7243,19 +8124,17 @@ struct State {
     rise: f64,
 }
 
-/// Runs a content stream, writing the text it shows into `out`.
+/// Runs the operations of a content stream, writing the text they show into `out`, until the
+/// text is full. Each Form drawn spends the document's `MAX_FORM_WORK`.
 fn run<'a>(
-    doc: &'a Document,
-    data: &[u8],
+    r: &Reader<'a>,
+    ops: &[Operation],
     res: &Res<'a>,
-    cache: &FontCache<'a>,
     ctm: Matrix,
     out: &mut Layout,
     depth: usize,
-) {
-    let Ok(content) = Content::decode(data) else {
-        return;
-    };
+) -> Result<(), DocError> {
+    let doc = r.doc;
     let keys: Vec<&Vec<u8>> = res.fonts.keys().collect();
     let mut gs = State {
         ctm,
@@ -7271,7 +8150,10 @@ fn run<'a>(
     let (mut tm, mut tlm) = (Matrix::IDENTITY, Matrix::IDENTITY);
     // A TJ kerning wide enough to be a space, waiting for the next string.
     let mut kern_space = false;
-    for op in &content.operations {
+    for op in ops {
+        if out.full {
+            break;
+        }
         let o = &op.operands;
         let n = |i: usize| o.get(i).and_then(num).unwrap_or(0.0);
         match op.operator.as_str() {
@@ -7352,35 +8234,25 @@ fn run<'a>(
                 let Some(name) = o.first().and_then(|n| n.as_name().ok()) else {
                     continue;
                 };
-                let Some(stream) = res.form(doc, name) else {
+                let Some((id, stream)) = res.form(doc, name) else {
                     continue;
                 };
-                let m = stream
-                    .dict
-                    .get(b"Matrix")
-                    .ok()
-                    .and_then(|m| m.as_array().ok())
-                    .and_then(|a| Matrix::from(a))
-                    .unwrap_or(Matrix::IDENTITY);
-                let Ok(content) = stream.decompressed_content_with_limit(MAX_STREAM) else {
-                    continue;
-                };
-                // A form without resources of its own uses its parent's.
-                match stream
-                    .dict
-                    .get_deref(b"Resources", doc)
-                    .and_then(Object::as_dict)
-                {
-                    Ok(own) => {
-                        let inner = Res::new(doc, vec![own], cache);
-                        run(doc, &content, &inner, cache, m.then(gs.ctm), out, depth + 1);
-                    }
-                    Err(_) => run(doc, &content, res, cache, m.then(gs.ctm), out, depth + 1),
-                }
+                let form = r.form(id, stream)?;
+                r.draw(form.ops.len())?;
+                let inner = form.res.as_ref().unwrap_or(res);
+                run(
+                    r,
+                    &form.ops,
+                    inner,
+                    form.matrix.then(gs.ctm),
+                    out,
+                    depth + 1,
+                )?;
             }
             _ => {}
         }
     }
+    Ok(())
 }
 
 /// Writes one string: decoded, placed where the text matrix puts it, and the matrix advanced
@@ -7417,7 +8289,8 @@ fn show(s: &[u8], font: Option<&Font>, gs: &State, tm: &mut Matrix, out: &mut La
 }
 ```
 
-- [ ] **Step 5:** GREEN. Then the quality check of D13 over real PDFs against `pdftotext`
+- [ ] **Step 5:** GREEN: 11 tests, 9 s in debug, 7 of them for the page of Forms. Then the
+  quality check of D13 over real PDFs against `pdftotext`
   (poppler): extract both, and compare the multiset of words of 3 letters or more (recall and
   precision) and of adjacent word pairs (recall), with
   `/tmp/subtask/m4-plan/cmp.py` of the probe. The probe's PDFs came from the system's
@@ -7511,6 +8384,27 @@ mod tests {
         assert!(!text.contains("CREATE"));
     }
 
+    /// Codex r1 #4 and #12: a WITHOUT ROWID table stores its primary key first; each value is
+    /// named by its declared column and written in the declared order, with its affinity; a NULL
+    /// keeps its empty field.
+    #[test]
+    fn values_follow_their_declared_columns() {
+        let e = extracted("shop.sqlite");
+        let text = String::from_utf8_lossy(&e.text);
+        assert_eq!(trail(&e, "needle payload"), ["late", "row 1", "payload"]);
+        assert!(text.contains("\nneedle payload\tk1\n"), "{text}");
+        assert!(text.contains("\na1\t3.0\tc1\n"), "{text}");
+        assert!(text.contains("\n\tneedle gap\n"), "{text}");
+        assert_eq!(trail(&e, "needle gap"), ["gaps", "row 1", "y"]);
+        let c = columns("CREATE TABLE t(a, b, c, PRIMARY KEY (c DESC, a)) WITHOUT ROWID");
+        assert_eq!(c.stored, [2, 0, 1]);
+        assert_eq!(
+            columns("CREATE TABLE t(a, b PRIMARY KEY) WITHOUT ROWID").stored,
+            [1, 0]
+        );
+        assert_eq!(columns("CREATE TABLE t(a, b)").stored, [0, 1]);
+    }
+
     #[test]
     fn interior_pages_keep_every_row_in_order() {
         let e = extracted("many.sqlite");
@@ -7546,7 +8440,10 @@ mod tests {
   header, b-tree pages (`0x0d` table leaf, `0x05` table interior, `0x0a` index leaf, `0x02`
   index interior), cells with their payload and overflow pages, records with their serial types.
   An interior index cell holds a row between its children, so a `WITHOUT ROWID` table is walked
-  in key order. A REAL column's integral values are stored as integers and shown as `3.0`:
+  in key order; its records hold the PRIMARY KEY columns first, in the key's order
+  (`Columns::stored`, from a column's `PRIMARY KEY` or the table's `PRIMARY KEY (…)`), and are
+  put back in declared order (`values_follow_their_declared_columns`; review r1, Codex #4,
+  Fable #2). A REAL column's integral values are stored as integers and shown as `3.0`:
 
 ```rust
 //! SQLite (spec §5.8): `users › row 12 › email`. A reader of the file format of our own (M4
@@ -7855,6 +8752,10 @@ struct Columns {
     /// The `INTEGER PRIMARY KEY`, which a row stores as NULL: its value is the rowid.
     ipk: Option<usize>,
     without_rowid: bool,
+    /// The declared column of each value as a record stores it: in order, except in a
+    /// `WITHOUT ROWID` table, which stores its primary key's columns first, in the key's order,
+    /// then the others (Codex r1 #4).
+    stored: Vec<usize>,
 }
 
 fn columns(sql: &str) -> Columns {
@@ -7901,7 +8802,8 @@ fn columns(sql: &str) -> Columns {
     let mut names = Vec::new();
     let mut types = Vec::new();
     let mut ipk = None;
-    let mut table_pk: Option<String> = None;
+    // The primary key's columns, by name, from a column's `PRIMARY KEY` or the table's.
+    let mut pk: Vec<String> = Vec::new();
     for p in parts {
         let p = p.trim();
         let upper = p.to_ascii_uppercase();
@@ -7910,34 +8812,43 @@ fn columns(sql: &str) -> Columns {
             first,
             "CONSTRAINT" | "PRIMARY" | "UNIQUE" | "CHECK" | "FOREIGN"
         ) {
-            if upper.starts_with("PRIMARY")
+            if upper.contains("PRIMARY KEY")
                 && let (Some(a), Some(b)) = (p.find('('), p.rfind(')'))
             {
-                let cols: Vec<&str> = p[a + 1..b].split(',').collect();
-                if cols.len() == 1 {
-                    table_pk = Some(unquote(cols[0].split_whitespace().next().unwrap_or("")));
-                }
+                pk = p[a + 1..b].split(',').map(|c| split_name(c).0).collect();
             }
             continue;
         }
         let (name, rest) = split_name(p);
         let rest = rest.to_ascii_uppercase();
         let ty = rest.split_whitespace().next().unwrap_or("");
-        if ty == "INTEGER" && rest.contains("PRIMARY KEY") && !rest.contains("DESC") {
-            ipk = Some(names.len());
+        if rest.contains("PRIMARY KEY") {
+            pk = vec![name.clone()];
+            if ty == "INTEGER" && !rest.contains("DESC") {
+                ipk = Some(names.len());
+            }
         }
         names.push(name);
         types.push(ty.to_string());
     }
+    let key: Vec<usize> = pk
+        .iter()
+        .filter_map(|k| names.iter().position(|n| n.eq_ignore_ascii_case(k)))
+        .collect();
     if ipk.is_none()
-        && let Some(pk) = table_pk
+        && let [only] = key.as_slice()
+        && types[*only] == "INTEGER"
     {
         // A table constraint `PRIMARY KEY(id)` over an INTEGER column makes it the rowid too.
-        ipk = names
-            .iter()
-            .zip(&types)
-            .position(|(n, t)| n.eq_ignore_ascii_case(&pk) && t == "INTEGER");
+        ipk = Some(*only);
     }
+    let stored = if without_rowid {
+        let mut s = key.clone();
+        s.extend((0..names.len()).filter(|i| !key.contains(i)));
+        s
+    } else {
+        (0..names.len()).collect()
+    };
     let real = types
         .iter()
         .map(|t| !t.contains("INT") && ["REAL", "FLOA", "DOUB"].iter().any(|r| t.contains(r)))
@@ -7947,6 +8858,7 @@ fn columns(sql: &str) -> Columns {
         real,
         ipk: if without_rowid { None } else { ipk },
         without_rowid,
+        stored,
     }
 }
 
@@ -8007,8 +8919,16 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     for (name, root, sql) in tables {
         let cols = columns(&sql);
         let t = b.open("table", &name);
-        let r = db.walk(root, &mut |rowid, values| {
+        let r = db.walk(root, &mut |rowid, stored| {
             b.start_row(Some(&format!("row {rowid}")));
+            // The values in their declared order: a record may hold fewer (columns added
+            // since), which are NULL, or more, which keep their stored place.
+            let n = cols.names.len().max(stored.len());
+            let mut values = vec![Value::Null; n];
+            for (k, v) in stored.into_iter().enumerate() {
+                let at = cols.stored.get(k).copied().unwrap_or(k);
+                values[at] = v;
+            }
             for (i, v) in values.iter().enumerate() {
                 let col = cols
                     .names
@@ -8348,7 +9268,9 @@ fn m4_06_document_trails() {
         ok(&fx, &["--docs", "--flat", "needle", "docs/shop.sqlite"]),
         "12: users › row 12 › email │ 12\tUser 12\tana.needle@example.com\t18.0\n\
          42: notes › row 2 › body │ …[+1365] g long long long long long long long long long long long long long long long long long long long long long long long long long long long needle at the end\t\n\
-         45: kv › row 3 › v │ gamma\tvalue of gamma needle\n"
+         45: kv › row 3 › v │ gamma\tvalue of gamma needle\n\
+         46: late › row 1 › payload │ needle payload\tk1\n\
+         48: gaps › row 1 › y │ \tneedle gap\n"
     );
 }
 
@@ -8576,9 +9498,11 @@ fn m4_10_structural_flags_on_documents_and_objects() {
         ),
         "7-7: 2 Costs › table 1 › row 2 › Price\nPens\t1.50 needle\n\n"
     );
+    // At its first Match, past the start of its string, as without --expand (M4 plan r1,
+    // Fable #4).
     assert_eq!(
-        ok(&fx, &["--flat", "--expand", "another", "m4/bin/app"]),
-        "0x6f: ELF x86-64 › .rodata │ another needle here\n"
+        ok(&fx, &["--flat", "--expand", "needle here", "m4/bin/app"]),
+        "0x77: ELF x86-64 › .rodata │ another needle here\n"
     );
 }
 
@@ -8601,6 +9525,177 @@ fn m4_11_without_docs_documents_are_ripgreps() {
         assert!(!stdout(&f).contains(" › page "), "{args:?}");
     }
 }
+
+/// Runs `c` with `input` on its stdin, failing the test past 20 s instead of hanging.
+fn run_within(c: &mut std::process::Command, input: &[u8]) -> std::process::Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = c
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let input = input.to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    });
+    let started = std::time::Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() > std::time::Duration::from_secs(20) {
+            child.kill().unwrap();
+            panic!("{c:?} still runs after 20 s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    writer.join().unwrap();
+    child.wait_with_output().unwrap()
+}
+
+/// Codex r1 #3: with --docs, a path that is not a regular file (stdin by name, a descriptor, a
+/// FIFO) is never a document: its bytes are read once, by the search, as rg reads them.
+#[cfg(unix)]
+#[test]
+fn m4_12_docs_reads_streams_once() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = fixture();
+    let fifo = fx.path().join("m4/pipe.pdf");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    for path in ["/dev/stdin", "/dev/fd/0", "m4/pipe.pdf"] {
+        // The FIFO is named like a document, and its writer writes once.
+        let feed = || {
+            let fifo = fifo.clone();
+            (path == "m4/pipe.pdf")
+                .then(|| std::thread::spawn(move || std::fs::write(fifo, b"a fifo needle\n")))
+        };
+        let writer = feed();
+        let s = run_within(
+            &mut fx.sfor(["--docs", "--no-trail", "needle", path]),
+            b"a needle\n",
+        );
+        if let Some(w) = writer {
+            w.join().unwrap().unwrap();
+        }
+        assert_eq!(stderr(&s), "", "{path}");
+        let writer = feed();
+        let r = run_within(&mut fx.rg(["needle", path]), b"a needle\n");
+        if let Some(w) = writer {
+            w.join().unwrap().unwrap();
+        }
+        assert_eq!(code(&r), 0, "{path}");
+        assert_eq!(code(&s), code(&r), "{path}");
+        assert_eq!(stdout(&s), stdout(&r), "{path}");
+    }
+}
+
+/// Codex r1 #7 and #8: --within keeps the Matches of an object row that are within, not the
+/// whole row, and -m after it counts rows, which share their line.
+#[test]
+fn m4_13_within_on_object_rows() {
+    let fx = fixture();
+    let rodata = b"\0first needle|second needle\0third needle\0fourth needle\0";
+    let spec = obj::Spec::new()
+        .section(".text", b"\xc3\0\0\0")
+        .section(".rodata", rodata)
+        .sized("one", 1, 1, 13)
+        .sized("two", 1, 14, 13);
+    let elf = obj::elf(&spec).file;
+    std::fs::write(fx.path().join("m4/bin/two"), &elf).unwrap();
+    let at = |s: &[u8]| format!("{:#x}", memchr::memmem::find(&elf, s).unwrap());
+    assert_eq!(
+        ok(&fx, &["--flat", "--within", "two", "needle", "m4/bin/two"]),
+        format!(
+            "{}: ELF x86-64 › .rodata › two+0x7 │ first needle|second needle\n",
+            at(b"needle\0third")
+        )
+    );
+    let json = ok(&fx, &["--json", "--within", "two", "needle", "m4/bin/two"]);
+    let m: Vec<serde_json::Value> = json
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .filter(|v: &serde_json::Value| v["type"] == "match")
+        .collect();
+    assert_eq!(m.len(), 1, "{json}");
+    let subs = m[0]["data"]["submatches"].as_array().unwrap();
+    assert_eq!(subs.len(), 1, "{json}");
+    assert_eq!(subs[0]["start"], 20, "{json}");
+    // Three rows on one line: -m1 keeps the first.
+    assert_eq!(
+        ok(
+            &fx,
+            &[
+                "--flat",
+                "--within",
+                ".rodata",
+                "-m1",
+                "needle",
+                "m4/bin/two"
+            ]
+        ),
+        format!(
+            "{}: ELF x86-64 › .rodata › one+0x6 │ first needle|second needle\n",
+            at(b"needle|")
+        )
+    );
+}
+
+/// Codex r1 #11: what a transform outputs gets no object rows and no object Processor, even
+/// when its bytes are an object file or --format names one: it prints as Plain (spec §5.9).
+#[test]
+fn m4_14_transformed_objects_print_as_plain() {
+    let fx = fixture();
+    let gz = std::process::Command::new("gzip")
+        .args(["-k", "m4/bin/app"])
+        .current_dir(fx.path())
+        .status()
+        .unwrap();
+    assert!(gz.success());
+    for args in [
+        &["--pre", "cat", "needle", "m4/bin/app"][..],
+        &["--pre", "cat", "-a", "needle", "m4/bin/app"],
+        &["--pre", "cat", "--format", "elf", "needle", "m4/bin/app"],
+        &["-z", "needle", "m4/bin/app.gz"],
+        &["-z", "-a", "--format", "elf", "needle", "m4/bin/app.gz"],
+    ] {
+        for layout in ["--flat", "--tree", "--json"] {
+            let o = run(&mut fx.sfor(args.iter().copied().chain([layout])));
+            assert_eq!(code(&o), 0, "{args:?} {layout}: {}", stderr(&o));
+            let out = stdout(&o);
+            if layout == "--json" {
+                for v in out
+                    .lines()
+                    .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+                {
+                    if v["type"] == "match" {
+                        assert_eq!(v["data"]["trail"], serde_json::json!([]), "{args:?}: {out}");
+                        assert_eq!(
+                            v["data"]["format"],
+                            serde_json::Value::Null,
+                            "{args:?}: {out}"
+                        );
+                    }
+                }
+            } else {
+                assert!(
+                    !out.contains("ELF x86-64") && !out.contains(" › ") && !out.contains("0x"),
+                    "{args:?} {layout}: {out}"
+                );
+            }
+        }
+        if common::reference_rg() && !args.contains(&"--format") {
+            let s = run(&mut fx.sfor(args.iter().copied().chain(["--no-trail"])));
+            let r = run(&mut fx.rg(args));
+            assert_eq!(stdout(&s), stdout(&r), "{args:?}");
+        }
+    }
+}
 ```
 
 - [ ] **Step 2:** `cargo test --test cli_m4`: RED. Before this chunk an object file prints
@@ -8608,39 +9703,67 @@ fn m4_11_without_docs_documents_are_ripgreps() {
   and `--pre` and `-z` are parsed but unused, so `m4_08` differs from rg (to verify in chunk
   11: the probe wrote the tests after the pipeline, and corrected several of their first
   expectations against its output, each checked by eye: hex offsets, line numbers, a Fragment's
-  count, and the order of several files, which `--sort path` now fixes).
+  count, and the order of several files, which `--sort path` now fixes). The tests of review
+  r1 were seen RED against the round-0 pipeline: `m4_12` (`/dev/stdin` with `--docs` exited 1,
+  its bytes read by the detection), `m4_13` (`--within two` kept the row at `one+0x6`;
+  `--within .rodata -m1` printed three rows of one line), `m4_14` (`--pre cat` over an ELF
+  printed `0x68: ELF x86-64 › .rodata › main.version+0xe`, and with the object Processor alone
+  disabled `--format elf` still named the Format `elf`). `m4_10` searches `needle here`, whose
+  Match is past the start of its string, so its offset `0x77` tells the first Match from the
+  string (review r1, Fable #4: the round-0 code already printed `0x77` there).
 
 ### Task 11.2: `retain_rows`
 
 **Files:** `src/filter.rs`.
 
-- [ ] **Step 1:** the filter of object rows (D8):
+- [ ] **Step 1:** the filter of object rows (D8): each row keeps its kept Matches and their
+  Trails, a row with none is dropped, and `max` stops at `-m` rows:
 
 ```diff
 diff --git a/src/filter.rs b/src/filter.rs
 --- a/src/filter.rs
 +++ b/src/filter.rs
-@@ -24,6 +24,19 @@ pub fn within(trail: &Trail, wanted: &[String]) -> bool {
+@@ -24,6 +24,39 @@ pub fn within(trail: &Trail, wanted: &[String]) -> bool {
  /// a Match with none kept becomes a Context line when it lies within `before`/`after` lines of
  /// a kept Match, and is dropped otherwise. Context lines stay only near a kept Match.
  /// `stats.binary_cut` is moved so it still counts the items found before the binary data.
-+/// `retain` for an object file's rows (M4 plan, D8): a row none of whose Matches is kept is
-+/// dropped. Rows are strings, not lines, so none becomes a context line.
-+pub fn retain_rows(d: &mut Described, keep: &[Vec<bool>]) {
++/// `retain` for an object file's rows (M4 plan, D8): a row keeps only its kept Matches and
++/// their Trails, and a row with none kept is dropped (code review of the M4 plan r1, Codex #7).
++/// Rows are strings, not lines, so none becomes a context line. With `max`, the first `max`
++/// rows that stay: rows share their lines, so -m counts rows (Codex #8).
++pub fn retain_rows(d: &mut Described, keep: &[Vec<bool>], max: Option<u64>) {
 +    let items = std::mem::take(&mut d.file.items);
 +    let trails = std::mem::take(&mut d.trails);
-+    for ((item, t), k) in items.into_iter().zip(trails).zip(keep) {
-+        if k.iter().any(|&b| b) {
-+            d.file.items.push(item);
-+            d.trails.push(t);
++    let max = max.map_or(usize::MAX, |m| usize::try_from(m).unwrap_or(usize::MAX));
++    for ((item, ts), ks) in items.into_iter().zip(trails).zip(keep) {
++        if d.file.items.len() == max {
++            break;
 +        }
++        let Item::Match(mut m) = item else { continue };
++        if !ks.iter().any(|&b| b) {
++            continue;
++        }
++        debug_assert_eq!(ks.len(), m.submatches.len());
++        m.submatches = m
++            .submatches
++            .into_iter()
++            .zip(ks)
++            .filter_map(|(s, &k)| k.then_some(s))
++            .collect();
++        let ts = ts
++            .into_iter()
++            .zip(ks)
++            .filter_map(|(t, &k)| k.then_some(t))
++            .collect();
++        d.file.items.push(Item::Match(m));
++        d.trails.push(ts);
 +    }
 +}
 +
  pub fn retain(d: &mut Described, keep: &[Vec<bool>], before: usize, after: usize) {
      debug_assert_eq!(keep.len(), d.trails.len());
      // Lines of the kept Matches, in file order (items are sorted by line).
-@@ -236,6 +249,7 @@ mod tests {
+@@ -236,6 +269,7 @@ mod tests {
              format: Some("markdown".into()),
              trails,
              sections: vec![],
@@ -8659,16 +9782,18 @@ diff --git a/src/filter.rs b/src/filter.rs
     `--docs` is given, the Detector `with_docs(args.docs)`; `Ctx` gets `pre` (`Preprocess`) and
     `docs` (the Detector, with `--docs`).
   - `Target` gets `through` and `doc`; `Ctx::target` sets `through` (`Preprocess::through`, else
-    `Ctx::document`) and makes the Target not `regular` when it is set.
+    for a regular file `Ctx::document`, which asks `Detector::may_be_document` first) and makes
+    the Target not `regular` when it is set.
   - `Ctx::walk` passes every Target through `Ctx::prepare` (design note 4); `Ctx::open_input`
     opens what is searched (design note 3), and replaces `File::open` in `search_raw`,
     `stream_file`, `search_first`, `search_unnamed` and `read_probed`; every in-memory branch
     requires `through.is_none()`.
   - `trail_file`: its fast path only without `through`; `plain_file` returns false for a file
     with a Match whose first bytes are an object magic (`head_of`, design note 2).
-  - `describe`: a document's Trails from its Outline (`outline_trails`); else `Ctx::object`;
-    else as before. `--within` and `--expand` move to `Ctx::filter`, which uses `retain_rows`
-    and no Sections for object rows.
+  - `describe`: a document's Trails from its Outline (`outline_trails`); else, unless a
+    transform gave the bytes, `Ctx::object`; else as before, a transform's output without an
+    `object` or `docs` Format (D21). `--within` and `--expand` move to `Ctx::filter`, which uses
+    `retain_rows` (with `-m`) and no Sections for object rows.
   - `names_of`: a document's names from its Outline.
   - `disk_of`: None with `through`.
 
@@ -8785,11 +9910,17 @@ diff --git a/src/app.rs b/src/app.rs
              });
          }
          let is_dir = d.file_type().is_some_and(|t| t.is_dir());
-@@ -583,14 +605,102 @@ impl Ctx<'_> {
+@@ -583,14 +605,108 @@ impl Ctx<'_> {
          // The walker only yields regular files, and its file type costs no system call; a path
          // named on the command line may be a link to anything, so it alone is looked up.
          let regular = d.file_type().is_some_and(|t| t.is_file()) || (explicit && rewindable(p));
-+        let through = self.pre.through(p).or_else(|| self.document(p));
++        // Only a regular file can be a document: its first bytes are read before the search
++        // and the file is opened again, which a FIFO, a descriptor or stdin by name would not
++        // survive (code review of the M4 plan r1, Codex #3).
++        let through = self
++            .pre
++            .through(p)
++            .or_else(|| regular.then(|| self.document(p)).flatten());
          Some(Target {
              path: shown.to_path_buf(),
              fs: Some(p.to_path_buf()),
@@ -8804,7 +9935,7 @@ diff --git a/src/app.rs b/src/app.rs
 +    /// With --docs, `Through::Docs` for a file whose Format is a document Format: by its name,
 +    /// or, for a name without an extension, by its first bytes (read only then).
 +    fn document(&self, p: &Path) -> Option<Through> {
-+        let det = self.docs?;
++        let det = self.docs.filter(|d| d.may_be_document(p))?;
 +        let def = match det.detect_by_path(p) {
 +            Some(d) => d?,
 +            None => {
@@ -8889,7 +10020,7 @@ diff --git a/src/app.rs b/src/app.rs
      /// Searches a file on disk or stdin, streaming (passthrough and the quiet path). A file
      /// searched in memory is mapped.
      fn search_raw<S: Sink<Error = std::io::Error>>(
-@@ -602,9 +712,8 @@ impl Ctx<'_> {
+@@ -602,9 +718,8 @@ impl Ctx<'_> {
          searcher.set_binary_detection(search::binary_detection(self.args, t.explicit));
          let m = &self.matcher;
          match &t.fs {
@@ -8901,7 +10032,7 @@ diff --git a/src/app.rs b/src/app.rs
          }
      }
  
-@@ -777,9 +886,13 @@ impl Ctx<'_> {
+@@ -777,9 +892,13 @@ impl Ctx<'_> {
      fn trail_file(&self, st: &mut TrailState, t: &Target, detector: &Detector, ro: &RenderOptions) {
          // Without structural flags, rows are printed as the searcher reports them: Plain files,
          // and files on disk whose Processor builds an Outline (code review r1, Fable #1).
@@ -8917,7 +10048,7 @@ diff --git a/src/app.rs b/src/app.rs
                  Some(Some(def)) if t.regular => {
                      if let Some(p) = processors::by_name(&def.processor)
                          && builds_outline(p)
-@@ -893,17 +1006,30 @@ impl Ctx<'_> {
+@@ -893,17 +1012,30 @@ impl Ctx<'_> {
      /// A Plain file without structural flags, printed row by row as the searcher reports
      /// them, without a model of the file (code review r1, Fable #1). In memory, as ripgrep
      /// (explicit files, at most 10), through the Source, which says whether a BOM makes the
@@ -8951,7 +10082,7 @@ diff --git a/src/app.rs b/src/app.rs
      }
  
      /// Whether the file on disk at `path` has a Match, searched up to its first one without
-@@ -1043,8 +1169,7 @@ impl Ctx<'_> {
+@@ -1043,8 +1175,7 @@ impl Ctx<'_> {
              StreamSink::new(&mut w, &self.matcher, self.args.invert_match, ro, &jo, file);
          let m = &self.matcher;
          let r = match (how, &t.fs) {
@@ -8961,7 +10092,7 @@ diff --git a/src/app.rs b/src/app.rs
                  Ok(f) => searcher.search_reader(m, f, &mut sink),
                  Err(e) => Err(e),
              },
-@@ -1104,7 +1229,7 @@ impl Ctx<'_> {
+@@ -1104,7 +1235,7 @@ impl Ctx<'_> {
                  Err(())
              }
          };
@@ -8970,7 +10101,7 @@ diff --git a/src/app.rs b/src/app.rs
              let src = open(p)?;
              // A BOM: a reader search that decodes it, as ripgrep's (`Source::as_read`).
              let in_memory = !src.had_bom;
-@@ -1148,16 +1273,13 @@ impl Ctx<'_> {
+@@ -1148,16 +1279,13 @@ impl Ctx<'_> {
              Some(p) if t.regular => {
                  File::open(p).and_then(|f| st.unnumbered.search_reader(&self.matcher, f, &mut sink))
              }
@@ -8994,11 +10125,12 @@ diff --git a/src/app.rs b/src/app.rs
                  };
                  let tee = kept.insert(Tee {
                      inner,
-@@ -1251,7 +1373,27 @@ impl Ctx<'_> {
+@@ -1251,8 +1379,33 @@ impl Ctx<'_> {
          let found = if self.args.in_headings {
              self.names_of(st, t, detector)?
          } else {
 -            self.search_first(st, t, detector)?.map(|(src, fm)| {
+-                let def = detector.detect(&src.path, src.head());
 +            let Some((src, fm)) = self.search_first(st, t, detector)? else {
 +                return Ok(None);
 +            };
@@ -9016,14 +10148,20 @@ diff --git a/src/app.rs b/src/app.rs
 +                };
 +                return self.filter(st, t, src, d);
 +            }
-+            if let Some(d) = self.object(st, detector, &src, &fm)? {
++            // What a transform outputs is no object file nor document, whatever its bytes or
++            // --format say: Plain (spec §5.9; code review of the M4 plan r1, Codex #11).
++            let transformed = matches!(t.through, Some(Through::Pre | Through::Zip));
++            if !transformed && let Some(d) = self.object(st, detector, &src, &fm)? {
 +                return self.filter(st, t, src, d);
 +            }
 +            Some({
-                 let def = detector.detect(&src.path, src.head());
++                let def = detector.detect(&src.path, src.head()).filter(|d| {
++                    !(transformed && matches!(d.processor.as_str(), "object" | "docs"))
++                });
                  // A binary file's coordinates follow NUL conversion: no Processor (step 7). A
                  // Format without a Processor, or whose Processor fails, is Plain (D33).
-@@ -1281,13 +1423,25 @@ impl Ctx<'_> {
+                 let described = def
+@@ -1281,13 +1434,25 @@ impl Ctx<'_> {
                      format,
                      trails,
                      sections: Vec::new(),
@@ -9050,27 +10188,25 @@ diff --git a/src/app.rs b/src/app.rs
          let searched_to = d.file.items.last().map_or(0, |i| item_line(i).line_number);
          if let Some(w) = &self.args.within {
              let wanted = filter::parse_within(w);
-@@ -1296,10 +1450,17 @@ impl Ctx<'_> {
+@@ -1296,9 +1461,15 @@ impl Ctx<'_> {
                  .iter()
                  .map(|ts| ts.iter().map(|t| filter::within(t, &wanted)).collect())
                  .collect();
 -            filter::retain(&mut d, &keep, self.args.before(), self.args.after());
-+            // An object file's rows have no context: a row the filter drops is gone (D8).
-+            let before = if d.offsets { 0 } else { self.args.before() };
++            // An object file's rows have no context: a row the filter drops is gone, and -m
++            // counts the rows it keeps (D8).
 +            if d.offsets {
-+                filter::retain_rows(&mut d, &keep);
++                filter::retain_rows(&mut d, &keep, self.args.max_count);
 +            } else {
-+                filter::retain(&mut d, &keep, before, self.args.after());
++                filter::retain(&mut d, &keep, self.args.before(), self.args.after());
 +            }
              // -m counts the lines the filter kept (code review r1, Fable #3).
-             if let Some(m) = self.args.max_count {
--                filter::limit(&mut d, m, self.args.before(), self.max_count_after());
-+                let after = if d.offsets { 0 } else { self.max_count_after() };
-+                filter::limit(&mut d, m, before, after);
+-            if let Some(m) = self.args.max_count {
++            if let Some(m) = self.args.max_count.filter(|_| !d.offsets) {
+                 filter::limit(&mut d, m, self.args.before(), self.max_count_after());
                  if d.file.stats.binary_offset.is_some() && !self.detected_by(&d, t, searched_to) {
                      d.file.stats.binary_offset = None;
-                     d.file.stats.binary_cut = None;
-@@ -1307,12 +1468,103 @@ impl Ctx<'_> {
+@@ -1307,12 +1478,103 @@ impl Ctx<'_> {
                  }
              }
          }
@@ -9175,7 +10311,7 @@ diff --git a/src/app.rs b/src/app.rs
      /// --in-headings: the Source and its names, and the Matches in them. A Plain file has no
      /// names: searched, nothing found (code review r1, Fable #5), and not read when its path
      /// says so.
-@@ -1390,30 +1642,39 @@ impl Ctx<'_> {
+@@ -1390,30 +1652,39 @@ impl Ctx<'_> {
                  replaced = true;
              }
          }
@@ -9238,7 +10374,7 @@ diff --git a/src/app.rs b/src/app.rs
          };
          let mut found = self.heading_matches(&src, &names);
          // What rg detects: `-m` and its after context may stop its search first.
-@@ -1464,7 +1725,8 @@ impl Ctx<'_> {
+@@ -1464,7 +1735,8 @@ impl Ctx<'_> {
          Ok(found.map(|(file, trails, sections)| {
              let d = Described {
                  file,
@@ -9248,7 +10384,7 @@ diff --git a/src/app.rs b/src/app.rs
                  trails,
                  // With --expand, the Section of each named Segment (code review r1, Fable #4).
                  sections: if self.args.expand {
-@@ -1483,15 +1745,12 @@ impl Ctx<'_> {
+@@ -1483,15 +1755,12 @@ impl Ctx<'_> {
          let report = |e: &dyn std::fmt::Display| {
              self.msgs.error(format_args!("{}: {e}", t.path.display()));
          };
@@ -9270,7 +10406,7 @@ diff --git a/src/app.rs b/src/app.rs
          };
          let detection = search::binary_detection(self.args, t.explicit);
          let quit = detection.quit_byte().is_some();
-@@ -1604,7 +1863,7 @@ impl Ctx<'_> {
+@@ -1604,7 +1873,7 @@ impl Ctx<'_> {
          if (!quit && detection.convert_byte().is_none()) || !src.bytes().contains(&0) {
              return Ok(None);
          }
@@ -9279,7 +10415,7 @@ diff --git a/src/app.rs b/src/app.rs
          if in_memory {
              let ahead = &src.bytes()[..src.bytes().len().min(64 * 1024)];
              return Ok(Some(BinaryProbe {
-@@ -1645,15 +1904,12 @@ impl Ctx<'_> {
+@@ -1645,15 +1914,12 @@ impl Ctx<'_> {
          let report = |e: &dyn std::fmt::Display| {
              self.msgs.error(format_args!("{}: {e}", t.path.display()));
          };
@@ -9301,7 +10437,7 @@ diff --git a/src/app.rs b/src/app.rs
          };
          let mut tee = Tee {
              inner,
-@@ -1945,6 +2201,10 @@ fn builds_outline(p: &dyn Processor) -> bool {
+@@ -1945,6 +2211,10 @@ fn builds_outline(p: &dyn Processor) -> bool {
  /// resolve to a regular file. Anything else reaches the helper as a temporary copy (spec §4.4).
  /// Called only for files with Matches (D8, review r4, Codex #2).
  fn disk_of(t: &Target, src: &Source) -> Option<PathBuf> {
@@ -9312,7 +10448,7 @@ diff --git a/src/app.rs b/src/app.rs
      let real = std::fs::canonicalize(t.fs.as_deref()?).ok()?;
      if real.starts_with("/dev") || real.starts_with("/proc") {
          return None;
-@@ -1953,12 +2213,28 @@ fn disk_of(t: &Target, src: &Source) -> Option<PathBuf> {
+@@ -1953,12 +2223,28 @@ fn disk_of(t: &Target, src: &Source) -> Option<PathBuf> {
      (m.is_file() && !src.had_bom && m.len() == src.bytes().len() as u64).then_some(real)
  }
  
@@ -9347,7 +10483,7 @@ diff --git a/src/app.rs b/src/app.rs
   `tests/snapshots/cli_m4__*.snap` in full. The one-line and tree snapshots of the probe are
   those of `m4_02`, `m4_06` and the spec's examples; the JSON ones carry `"format"` and
   validate against the schema. Then `SFOR_REQUIRE_REFERENCE=1 cargo test --test cli_m4`:
-  11 tests pass.
+  14 tests pass.
 - [ ] **Step 3:** the whole suite: every M1–M3 test passes unchanged (the fixture copy now holds
   `tests/fixtures/docs/*.sqlite`, which rg and sfor without `--docs` search alike).
 
@@ -9357,14 +10493,18 @@ diff --git a/src/app.rs b/src/app.rs
 
 **Files:** `tests/fuzz.rs`, and `src/docs/fixture/mod.rs` only if `rezip` is missing (C4 writes it).
 
-- [ ] **Step 1:** the two tests (D28): mutated documents through `docs::extract`, mutated
-  object files through `object::Map` and `object::rows`:
+- [ ] **Step 1:** the three tests (D28): mutated documents through `docs::extract`, each on a
+  thread of its own that the test waits for at most 2 s (`within`), mutated object files
+  through `object::Map` and `object::rows`, and `the_deadline_holds_for_every_extraction`, the
+  test of that watchdog: a rejected document that is late fails, one that never ends fails
+  within the limit instead of hanging, a panic fails (RED before `check_extraction` and
+  `within` exist: it does not compile; review r1, Codex #13):
 
 ```diff
 diff --git a/tests/fuzz.rs b/tests/fuzz.rs
 --- a/tests/fuzz.rs
 +++ b/tests/fuzz.rs
-@@ -688,3 +688,232 @@ fn generated_files_do_not_panic_sfor() {
+@@ -688,3 +688,281 @@ fn generated_files_do_not_panic_sfor() {
      }
      eprintln!("fuzz: {files} files through sfor");
  }
@@ -9451,26 +10591,23 @@ diff --git a/tests/fuzz.rs b/tests/fuzz.rs
 +    ]
 +}
 +
-+/// The checks of one extraction: no panic, under 2 s, and an Outline inside its text.
++/// The checks of one extraction: no panic, ended within 2 s whatever it returns, and an
++/// Outline inside its text.
 +fn check_doc(kind: Kind, bytes: &[u8]) -> Result<(), String> {
-+    let started = std::time::Instant::now();
-+    let got = catch_unwind(AssertUnwindSafe(|| docs::extract(kind, bytes)));
-+    let took = started.elapsed();
-+    let e = match got {
-+        Err(e) => {
-+            let msg = e
-+                .downcast_ref::<String>()
-+                .cloned()
-+                .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
-+                .unwrap_or_default();
-+            return Err(format!("panic: {msg}"));
-+        }
-+        Ok(Err(_)) => return Ok(()),
-+        Ok(Ok(e)) => e,
++    let bytes = bytes.to_vec();
++    check_extraction(std::time::Duration::from_secs(2), move || {
++        docs::extract(kind, &bytes)
++    })
++}
++
++fn check_extraction(
++    limit: std::time::Duration,
++    extract: impl FnOnce() -> Result<docs::Extracted, docs::DocError> + Send + 'static,
++) -> Result<(), String> {
++    let e = match within(limit, extract)? {
++        Err(_) => return Ok(()),
++        Ok(e) => e,
 +    };
-+    if took > std::time::Duration::from_secs(2) {
-+        return Err(format!("took {took:?}"));
-+    }
 +    if std::str::from_utf8(&e.text).is_err() || e.text.contains(&0) {
 +        return Err("text is not UTF-8 without NUL".into());
 +    }
@@ -9480,6 +10617,58 @@ diff --git a/tests/fuzz.rs b/tests/fuzz.rs
 +        }
 +    }
 +    check_names(&searchfor::trail::names_of(&e.outline), &e.text)
++}
++
++/// Runs `f` on a thread of its own and waits for it at most `limit`: its result, or why not. A
++/// case that never ends fails the fuzz instead of hanging it, its thread left behind (code
++/// review of the M4 plan r1, Codex #13).
++fn within<T: Send + 'static>(
++    limit: std::time::Duration,
++    f: impl FnOnce() -> T + Send + 'static,
++) -> Result<T, String> {
++    let (tx, rx) = std::sync::mpsc::channel();
++    std::thread::spawn(move || {
++        let _ = tx.send(catch_unwind(AssertUnwindSafe(f)));
++    });
++    match rx.recv_timeout(limit) {
++        Ok(Ok(v)) => Ok(v),
++        Ok(Err(e)) => {
++            let msg = e
++                .downcast_ref::<String>()
++                .cloned()
++                .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
++                .unwrap_or_default();
++            Err(format!("panic: {msg}"))
++        }
++        Err(_) => Err(format!("still running after {limit:?}")),
++    }
++}
++
++#[test]
++fn the_deadline_holds_for_every_extraction() {
++    let limit = std::time::Duration::from_millis(100);
++    let slow = std::time::Duration::from_millis(400);
++    // A rejected document is late too.
++    let e = check_extraction(limit, move || {
++        std::thread::sleep(slow);
++        Err(docs::DocError::broken("refused"))
++    });
++    assert!(e.is_err_and(|e| e.starts_with("still running")));
++    // One that never ends fails the run instead of hanging it.
++    let started = std::time::Instant::now();
++    let e = check_extraction(limit, || {
++        loop {
++            std::thread::park();
++        }
++    });
++    assert!(e.is_err_and(|e| e.starts_with("still running")));
++    assert!(started.elapsed() < slow);
++    let e = check_extraction(limit, || panic!("boom"));
++    assert_eq!(e, Err("panic: boom".to_string()));
++    assert_eq!(
++        check_extraction(limit, || Err(docs::DocError::Encrypted)),
++        Ok(())
++    );
 +}
 +
 +#[test]
@@ -9612,13 +10801,14 @@ diff --git a/tests/fuzz.rs b/tests/fuzz.rs
 
 **Files:** `tests/perf.rs`.
 
-- [ ] **Step 1:** the five tests (spec §11 #26, D17, D23):
+- [ ] **Step 1:** the six tests (spec §11 #26, D17, D23), the PDF bomb (a ToUnicode map of
+  300 MiB) and the zip of six 200 MiB sheets among them (review r1, Fable #1 and #3):
 
 ```diff
 diff --git a/tests/perf.rs b/tests/perf.rs
 --- a/tests/perf.rs
 +++ b/tests/perf.rs
-@@ -1239,3 +1239,253 @@ fn the_rows_of_one_wide_line_cost_the_line_once() {
+@@ -1239,3 +1239,379 @@ fn the_rows_of_one_wide_line_cost_the_line_once() {
          );
      }
  }
@@ -9872,10 +11062,136 @@ diff --git a/tests/perf.rs b/tests/perf.rs
 +        common::stderr(&o)
 +    );
 +}
++
++/// A one-page PDF whose only font, without `/Encoding`, has a ToUnicode map that decompresses
++/// to `inflated` bytes of spaces.
++fn pdf_font_bomb(inflated: usize) -> Vec<u8> {
++    use lopdf::{Dictionary, Document, Object, Stream};
++    let mut doc = Document::with_version("1.5");
++    let mut map = Stream::new(Dictionary::new(), vec![b' '; inflated]);
++    map.compress().unwrap();
++    let map_id = doc.add_object(map);
++    let mut font = Dictionary::new();
++    font.set("Type", Object::Name(b"Font".to_vec()));
++    font.set("Subtype", Object::Name(b"Type1".to_vec()));
++    font.set("BaseFont", Object::Name(b"Helvetica".to_vec()));
++    font.set("ToUnicode", Object::Reference(map_id));
++    let font_id = doc.add_object(font);
++    let content = b"BT /F1 12 Tf 72 760 Td (needle here) Tj ET".to_vec();
++    let content_id = doc.add_object(Stream::new(Dictionary::new(), content));
++    let pages_id = doc.new_object_id();
++    let mut fonts = Dictionary::new();
++    fonts.set("F1", Object::Reference(font_id));
++    let mut res = Dictionary::new();
++    res.set("Font", Object::Dictionary(fonts));
++    let mut page = Dictionary::new();
++    page.set("Type", Object::Name(b"Page".to_vec()));
++    page.set("Parent", Object::Reference(pages_id));
++    page.set("Contents", Object::Reference(content_id));
++    page.set("Resources", Object::Dictionary(res));
++    let page_id = doc.add_object(page);
++    let mut pages = Dictionary::new();
++    pages.set("Type", Object::Name(b"Pages".to_vec()));
++    pages.set("Count", Object::Integer(1));
++    pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
++    pages.set(
++        "MediaBox",
++        Object::Array(vec![0.into(), 0.into(), 612.into(), 792.into()]),
++    );
++    doc.objects.insert(pages_id, Object::Dictionary(pages));
++    let mut cat = Dictionary::new();
++    cat.set("Type", Object::Name(b"Catalog".to_vec()));
++    cat.set("Pages", Object::Reference(pages_id));
++    let cat_id = doc.add_object(cat);
++    doc.trailer.set("Root", Object::Reference(cat_id));
++    let mut out = Vec::new();
++    doc.save_to(&mut out).unwrap();
++    out
++}
++
++/// Runs `sfor --docs --flat needle <name>` on the bomb `bytes`: it ends within 5 s and
++/// `extra_mib` plus rg's memory and 64 MiB, warning `warning`, and exits with `code`, as rg
++/// searching the file as it is.
++fn refuses_the_bomb(name: &str, bytes: &[u8], extra_mib: u64, warning: &str, code: i32) {
++    let fx = Fixture::new();
++    std::fs::write(fx.file(name), bytes).unwrap();
++    let Some(rg) = rg_bin() else { return };
++    let args = ["--docs", "--flat", "needle", name];
++    let (t, rss, _) = measure_to(&sfor_bin(), &fx, &args, None, Stdio::null(), code).unwrap();
++    let (_, base_rss) = measure(&rg, &fx, &["needle", name], code).unwrap();
++    eprintln!(
++        "{name} of {} KiB: {t:?}, RSS {} MiB",
++        bytes.len() >> 10,
++        rss / 1_048_576
++    );
++    assert!(t <= Duration::from_secs(5), "{t:?}");
++    assert!(rss <= base_rss + (extra_mib + 64) * 1_048_576, "RSS {rss}");
++    let o = common::run(
++        Command::new(sfor_bin())
++            .args(args)
++            .current_dir(fx.path())
++            .env_remove("RIPGREP_CONFIG_PATH")
++            .stdin(Stdio::null()),
++    );
++    assert!(
++        common::stderr(&o).contains(warning),
++        "{}",
++        common::stderr(&o)
++    );
++}
++
++/// D17 (Fable r1 #1): a PDF whose font's ToUnicode map decompresses past 64 MiB is refused with
++/// a warning, quickly and within 64 MiB plus rg's memory and 64 MiB, and is then searched as
++/// rg searches it.
++#[test]
++#[ignore]
++fn a_pdf_bomb_is_refused_within_its_limit() {
++    let _alone = alone();
++    refuses_the_bomb(
++        "bomb.pdf",
++        &pdf_font_bomb(300 << 20),
++        64,
++        "bomb.pdf: pdf: a font's ToUnicode map is over the 64 MiB limit",
++        // The page's content stream is not compressed: rg finds the needle in it.
++        0,
++    );
++}
++
++/// D17 (Fable r1 #3): a workbook of sheets under 256 MiB each and over 1 GiB together is
++/// refused with a warning, quickly and within 256 MiB plus rg's memory and 64 MiB, and is then
++/// searched as rg searches it.
++#[test]
++#[ignore]
++fn a_zip_bomb_of_many_parts_is_refused_within_its_limit() {
++    let _alone = alone();
++    let names = ["S1", "S2", "S3", "S4", "S5", "S6"];
++    let row: &[&str] = &["needle"];
++    let sheets: Vec<(&str, &[&[&str]])> = names
++        .iter()
++        .map(|n| (*n, std::slice::from_ref(&row)))
++        .collect();
++    let pad = " ".repeat(200 << 20);
++    let bomb = doc::rezip(&doc::xlsx(&sheets), |name, part| {
++        if !name.starts_with("xl/worksheets/") {
++            return part;
++        }
++        String::from_utf8(part)
++            .unwrap()
++            .replace("</sheetData>", &format!("{pad}</sheetData>"))
++            .into_bytes()
++    });
++    refuses_the_bomb(
++        "bomb.xlsx",
++        &bomb,
++        256,
++        "bomb.xlsx: xlsx: the whole document, decompressed, is over the 1024 MiB limit",
++        1,
++    );
++}
 ```
 
 - [ ] **Step 2:** `SFOR_REQUIRE_REFERENCE=1 cargo test --release --test perf -- --ignored
-  --nocapture --test-threads 1 object_ elf_ documents_ zip_bomb`; paste the measured lines into
+  --nocapture --test-threads 1 object_ elf_ documents_ zip_bomb pdf_bomb`; paste the measured lines into
   the chunk report. A RED run of each ceiling against a build that breaks what it bounds is
   to verify in chunk 13: the probe measured only the GREEN side (for instance, the zip bomb test
   against a `zipped::Zip::bytes` without its `take(MAX_PART + 1)`, which must exceed the RSS
@@ -10042,7 +11358,9 @@ for i in range(20000):
 # not decide a ratio: M3 plan, «Verified»), against ripgrep 14.1.1:
 #   - without --docs and --binary, a pattern no file matches, a sparse one and --no-trail:
 #     sfor ≤ 1.1 × rg (a document or a walked object costs what it costs rg: 8385);
-#   - --docs over the text files only: sfor ≤ 1.1 × rg (no document, no cost);
+#   - --docs over the text files and the object files, a pattern no file matches: sfor ≤ 1.1 ×
+#     rg (no document, no cost; the object files have no extension, so --docs reads their first
+#     bytes: M4 plan r1, Fable #5);
 #   - --binary with the sparse pattern over the object files: sfor − rg ≤ the largest matching
 #     object ÷ 100 MB/s + the matching objects ÷ (100 MB/s × threads) + 0.05 s;
 #   - --docs with the sparse pattern over the documents: sfor ≤ rg over their texts (texts/)
@@ -10074,7 +11392,8 @@ fail=0
 export SFOR_BENCH_DIR="$dir" SFOR_BENCH_PATTERN="$sparse" SFOR_BENCH_NONE="$none"
 
 median() {
-  hyperfine --ignore-failure --warmup 3 --runs 15 --export-json "$iso/$1.json" "$2" "$3" >/dev/null
+  # 40 runs: a ratio of two 45 ms medians of 15 runs moved by ±3 % between runs (M4 plan r1).
+  hyperfine --ignore-failure --warmup 5 --runs 40 --export-json "$iso/$1.json" "$2" "$3" >/dev/null
   if ! jq -e '[.results[].exit_codes[]] | all(. == 0 or . == 1)' "$iso/$1.json" >/dev/null; then
     echo "  FAIL $1: a timed run did not exit 0 or 1"; fail=1
   fi
@@ -10108,9 +11427,9 @@ median sparse '"$SFOR_RG_PATH" --color never -e "$SFOR_BENCH_PATTERN" -- "$SFOR_
 median no-trail '"$SFOR_RG_PATH" --color never -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"' \
   '"$SFOR_BIN_PATH" --color never --no-trail -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'; within
 
-# 2. --docs where there is no document.
-median docs-none '"$SFOR_RG_PATH" --color never -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR/text"' \
-  '"$SFOR_BIN_PATH" --color never --flat --docs -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR/text"'; within
+# 2. --docs where there is no document: text files, and object files without an extension.
+median docs-none '"$SFOR_RG_PATH" --color never -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR/text" "$SFOR_BENCH_DIR/bin"' \
+  '"$SFOR_BIN_PATH" --color never --flat --docs -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR/text" "$SFOR_BENCH_DIR/bin"'; within
 
 # 3. --binary over the object files.
 "$sfor" --color never --flat --binary -e "$sparse" -- "$dir/bin" >"$iso/s.out" 2>"$iso/s.err" || true
@@ -10140,7 +11459,9 @@ awk -v a="$SFOR_S" -v b="$RG_S" -v by="$text" -v t="$threads" \
 exit "$fail"
 ```
 
-- [ ] **Step 2:** `scripts/bench-m4.sh` exits 0; `SFOR_RG=/nonexistent scripts/bench-m4.sh`
+- [ ] **Step 2:** `scripts/bench-m4.sh` exits 0 (its `docs-none` case runs over the text files
+  and the object files, which have no extension and so are detected by their first bytes:
+  review r1, Fable #5); `SFOR_RG=/nonexistent scripts/bench-m4.sh`
   exits 1. Paste its lines into the report. Then `PATH=/usr/bin:$PATH scripts/bench.sh`,
   `scripts/bench-code.sh` and `scripts/bench-m3.sh` still exit 0 (to verify in chunk 13: the
   probe ran only `bench-m4.sh`).
@@ -10149,7 +11470,7 @@ exit "$fail"
 
 - [ ] **Step 1:** `cargo build --release && ls -l target/release/sfor`: at most 23 000 000
   bytes (spec §11 #22); report the size, and the stripped size (`strip -o /tmp/sfor.s
-  target/release/sfor`). The probe: 19 015 120 bytes, 17 614 608 stripped (16 598 640 and 15 381 072 at `191dbaf`).
+  target/release/sfor`). The probe: 19 041 208 bytes, 17 638 160 stripped (16 598 640 and 15 381 072 at `191dbaf`).
 
 ## Chunk 14: documentation
 
