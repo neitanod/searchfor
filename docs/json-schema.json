@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/neitanod/searchfor/blob/main/docs/json-schema.json",
   "title": "searchfor match data",
-  "description": "The `data` object of a `match` message of `sfor --json`. ripgrep's own fields (path, lines, line_number, absolute_offset, submatches) keep ripgrep's meaning and are not constrained here beyond what searchfor adds to them. Added field names are stable from v0.1: new fields may appear, existing ones are never renamed.",
+  "description": "The `data` object of a `match` message of `s4 --json`. ripgrep's own fields (path, lines, line_number, absolute_offset, submatches) keep ripgrep's meaning and are not constrained here beyond what searchfor adds to them. Added field names are stable from v0.1: new fields may appear, existing ones are never renamed.",
   "type": "object",
   "required": ["format", "trail", "fragment"],
   "properties": {

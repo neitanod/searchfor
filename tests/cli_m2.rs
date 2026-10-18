@@ -23,7 +23,7 @@ fn m2_01_every_format_in_three_layouts() {
     let fx = Fixture::new();
     for (name, file) in FORMATS {
         for (layout, flag) in [("tree", "--tree"), ("flat", "--flat"), ("json", "--json")] {
-            let o = run(&mut fx.sfor(["needle", file, flag]));
+            let o = run(&mut fx.s4(["needle", file, flag]));
             assert_eq!(code(&o), 0, "{name} {layout}: {}", stderr(&o));
             assert!(stderr(&o).is_empty(), "{name} {layout}: {}", stderr(&o));
             let mut out = stdout(&o);
@@ -39,7 +39,7 @@ fn m2_01_every_format_in_three_layouts() {
 fn m2_02_yaml_key_path() {
     // Spec §11 #4.
     let fx = Fixture::new();
-    let o = run(&mut fx.sfor(["needle.example", "data/config.yaml", "--flat"]));
+    let o = run(&mut fx.s4(["needle.example", "data/config.yaml", "--flat"]));
     assert_eq!(
         stdout(&o),
         "9: server › ports[2] › host │     - host: needle.example\n"
@@ -50,7 +50,7 @@ fn m2_02_yaml_key_path() {
 fn m2_03_php_method_and_signatures() {
     // Spec §11 #5.
     let fx = Fixture::new();
-    let flat = stdout(&run(&mut fx.sfor([
+    let flat = stdout(&run(&mut fx.s4([
         "needle: merge",
         "code/cart.php",
         "--flat",
@@ -59,7 +59,7 @@ fn m2_03_php_method_and_signatures() {
         flat,
         "10: Cart › addItem │         // needle: merge equal items\n"
     );
-    let tree = stdout(&run(&mut fx.sfor([
+    let tree = stdout(&run(&mut fx.s4([
         "needle: merge",
         "code/cart.php",
         "--tree",
@@ -74,7 +74,7 @@ fn m2_03_php_method_and_signatures() {
 #[test]
 fn m2_04_within_and_expand_on_code() {
     let fx = Fixture::new();
-    let o = stdout(&run(&mut fx.sfor([
+    let o = stdout(&run(&mut fx.s4([
         "needle",
         "code",
         "--within",
@@ -83,7 +83,7 @@ fn m2_04_within_and_expand_on_code() {
     ])));
     assert_eq!(o.lines().count(), 1, "{o}");
     assert!(o.starts_with("code/cart.php:10:"), "{o}");
-    let o = stdout(&run(&mut fx.sfor([
+    let o = stdout(&run(&mut fx.s4([
         "self.needle",
         "code/thing.rs",
         "--expand",
@@ -98,7 +98,7 @@ fn m2_04_within_and_expand_on_code() {
 #[test]
 fn m2_05_in_headings_on_names_and_keys() {
     let fx = Fixture::new();
-    let o = stdout(&run(&mut fx.sfor([
+    let o = stdout(&run(&mut fx.s4([
         "--in-headings",
         "^addItem$",
         "code",
@@ -108,7 +108,7 @@ fn m2_05_in_headings_on_names_and_keys() {
         o,
         "code/cart.php:8: Cart │     public function addItem(Item $item, int $qty = 1): void\n"
     );
-    let o = stdout(&run(&mut fx.sfor([
+    let o = stdout(&run(&mut fx.s4([
         "--in-headings",
         "^host$",
         "data/config.yaml",
@@ -122,11 +122,11 @@ fn m2_05_in_headings_on_names_and_keys() {
         ("data/config.yaml", "^ports$", 4),
         ("data/shop.toml", "^tags$", 13),
     ] {
-        let o = stdout(&run(&mut fx.sfor(["--in-headings", key, file, "--flat"])));
+        let o = stdout(&run(&mut fx.s4(["--in-headings", key, file, "--flat"])));
         assert_eq!(o.lines().count(), 1, "{file}: {o}");
         assert!(o.starts_with(&format!("{line}:")), "{file}: {o}");
     }
-    let o = stdout(&run(&mut fx.sfor([
+    let o = stdout(&run(&mut fx.s4([
         "--in-headings",
         "^ports$",
         "data/config.yaml",
@@ -151,10 +151,10 @@ fn m2_06_content_signals_only_without_extension() {
     )
     .unwrap();
     assert_eq!(
-        stdout(&run(&mut fx.sfor(["needle", "deploy", "--flat"]))),
+        stdout(&run(&mut fx.s4(["needle", "deploy", "--flat"]))),
         "3: run │   echo needle\n"
     );
-    let plain = stdout(&run(&mut fx.sfor(["needle", "notes.txt", "--flat"])));
+    let plain = stdout(&run(&mut fx.s4(["needle", "notes.txt", "--flat"])));
     assert_eq!(plain.lines().count(), 1, "{plain}");
     assert!(!plain.contains('›'), "notes.txt must be Plain: {plain}");
 }
@@ -162,7 +162,7 @@ fn m2_06_content_signals_only_without_extension() {
 #[test]
 fn m2_07_list_and_export_the_new_formats() {
     let fx = Fixture::new();
-    let o = stdout(&run(&mut fx.sfor(["--list-formats"])));
+    let o = stdout(&run(&mut fx.s4(["--list-formats"])));
     for (name, _) in FORMATS {
         assert!(
             o.lines()
@@ -173,7 +173,7 @@ fn m2_07_list_and_export_the_new_formats() {
     let out = tempfile::tempdir().unwrap();
     let target = out.path().join("t");
     assert_eq!(
-        code(&run(&mut fx.sfor([
+        code(&run(&mut fx.s4([
             std::ffi::OsStr::new("--export-formats"),
             target.as_os_str()
         ]))),
@@ -190,7 +190,7 @@ fn m2_07_list_and_export_the_new_formats() {
 #[test]
 fn m2_08_list_grammars_offline() {
     let fx = Fixture::new();
-    let o = run(&mut fx.sfor(["--list-grammars"]));
+    let o = run(&mut fx.s4(["--list-grammars"]));
     assert_eq!(code(&o), 0);
     assert_eq!(
         stdout(&o)
@@ -219,7 +219,7 @@ fn m2_09_utf16_and_bom_code_keeps_its_offsets() {
     utf16.extend(src.encode_utf16().flat_map(u16::to_le_bytes));
     std::fs::write(fx.file("utf16.php"), utf16).unwrap();
     for f in ["bom.php", "utf16.php"] {
-        let o = stdout(&run(&mut fx.sfor(["needle: merge", f, "--flat"])));
+        let o = stdout(&run(&mut fx.s4(["needle: merge", f, "--flat"])));
         assert!(o.starts_with("10: Cart › addItem │"), "{f}: {o}");
     }
 }
@@ -231,24 +231,24 @@ fn m2_10_a_missing_grammar_is_one_warning() {
     std::fs::write(fx.file("a.lua"), "-- needle\n").unwrap();
     std::fs::write(fx.file("b.lua"), "-- needle\n").unwrap();
     // Two files are searched in parallel, as rg: -j1 fixes their order for the comparison.
-    let o = run(&mut fx.sfor(["needle", "a.lua", "b.lua", "--flat", "-j1"]));
+    let o = run(&mut fx.s4(["needle", "a.lua", "b.lua", "--flat", "-j1"]));
     assert_eq!(code(&o), 0);
     assert_eq!(stderr(&o).lines().count(), 1, "{}", stderr(&o));
     // Plain exactly as a file no Definition claims (D33): the same bytes as a `.txt` copy.
     std::fs::copy(fx.file("a.lua"), fx.file("a.txt")).unwrap();
     std::fs::copy(fx.file("b.lua"), fx.file("b.txt")).unwrap();
     let plain = stdout(&run(
-        &mut fx.sfor(["needle", "a.txt", "b.txt", "--flat", "-j1"])
+        &mut fx.s4(["needle", "a.txt", "b.txt", "--flat", "-j1"])
     ));
     assert_eq!(stdout(&o).replace(".lua", ".txt"), plain);
-    let json = stdout(&run(&mut fx.sfor(["needle", "a.lua", "--json"])));
+    let json = stdout(&run(&mut fx.s4(["needle", "a.lua", "--json"])));
     let m: serde_json::Value = json
         .lines()
         .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
         .find(|v| v["type"] == "match")
         .unwrap();
     assert!(m["data"]["format"].is_null(), "{m}");
-    let list = stdout(&run(&mut fx.sfor(["--list-formats"])));
+    let list = stdout(&run(&mut fx.s4(["--list-formats"])));
     assert!(
         list.lines()
             .any(|l| l.starts_with("lua ") && l.ends_with("(unavailable)")),
@@ -265,7 +265,7 @@ fn m2_12_deep_json_is_not_a_crash() {
     s.push_str("\"needle\"");
     s.push_str(&"]".repeat(n));
     std::fs::write(fx.file("deep.json"), s).unwrap();
-    let o = run(&mut fx.sfor(["needle", "deep.json", "--flat", "--fragment-width", "60"]));
+    let o = run(&mut fx.s4(["needle", "deep.json", "--flat", "--fragment-width", "60"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(stdout(&o).lines().count(), 1);
 }
@@ -279,7 +279,7 @@ fn m2_13_files_without_matches_cost_nothing() {
     std::fs::write(fx.formats.path().join("ini.toml"), "name='ini'\nextensions=['ini']\nprocessor='external'\n[params]\ncommand=['/no/such/helper']\n").unwrap();
     std::fs::write(fx.file("a.lua"), "-- nothing\n").unwrap();
     std::fs::write(fx.file("a.ini"), "[s]\nk = v\n").unwrap();
-    let o = run(&mut fx.sfor(["zzqq-absent", "."]));
+    let o = run(&mut fx.s4(["zzqq-absent", "."]));
     assert_eq!(code(&o), 1);
     assert_eq!(stderr(&o), "");
 }
@@ -287,7 +287,7 @@ fn m2_13_files_without_matches_cost_nothing() {
 #[test]
 fn m2_11_json_carries_signatures() {
     let fx = Fixture::new();
-    let o = stdout(&run(&mut fx.sfor([
+    let o = stdout(&run(&mut fx.s4([
         "needle: merge",
         "code/cart.php",
         "--json",
@@ -316,12 +316,12 @@ fn m2_14_a_quoted_key_with_escapes_is_one_segment() {
             "const o = { \"a\\u0062c\": () => \"needle\", \"\": () => 'needle' };\n",
         )
         .unwrap();
-        let o = run(&mut fx.sfor(["needle", file.as_str(), "--flat"]));
+        let o = run(&mut fx.s4(["needle", file.as_str(), "--flat"]));
         assert_eq!(code(&o), 0, "{}", stderr(&o));
         let lines: Vec<String> = stdout(&o).lines().map(String::from).collect();
         assert_eq!(lines.len(), 2, "{ext}: {lines:?}");
         assert!(lines[0].starts_with("1: abc │ "), "{ext}: {lines:?}");
-        let o = stdout(&run(&mut fx.sfor([
+        let o = stdout(&run(&mut fx.s4([
             "--in-headings",
             "^abc$",
             file.as_str(),
@@ -353,10 +353,10 @@ fn m2_15_a_block_scalar_key_stays_on_one_line() {
         "a: 1\n? |\n  ñ multi\n  line\n: needle\n",
     )
     .unwrap();
-    let o = run(&mut fx.sfor(["needle", "k.yaml", "--flat"]));
+    let o = run(&mut fx.s4(["needle", "k.yaml", "--flat"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(stdout(&o), "5: ñ multi line │ : needle\n");
-    let o = stdout(&run(&mut fx.sfor(["needle", "k.yaml", "--json"])));
+    let o = stdout(&run(&mut fx.s4(["needle", "k.yaml", "--json"])));
     let m: serde_json::Value = o
         .lines()
         .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
@@ -364,7 +364,7 @@ fn m2_15_a_block_scalar_key_stays_on_one_line() {
         .unwrap();
     assert_eq!(m["data"]["trail"][0]["name"], "ñ multi line", "{o}");
     // A Match in the name maps to the line it is on.
-    let o = stdout(&run(&mut fx.sfor([
+    let o = stdout(&run(&mut fx.s4([
         "--in-headings",
         "multi line",
         "k.yaml",
@@ -384,12 +384,12 @@ fn m2_16_a_function_value_signature_ends_at_its_body() {
         "const o = { n: function () { return 'needle'; } };\nconst f = () => needle;\n",
     )
     .unwrap();
-    let o = run(&mut fx.sfor(["needle", "sig.js", "--tree"]));
+    let o = run(&mut fx.s4(["needle", "sig.js", "--tree"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let tree = stdout(&o);
     assert!(tree.contains("  n: function ()\n"), "{tree}");
     assert!(tree.contains("  f = () =>\n"), "{tree}");
-    let o = stdout(&run(&mut fx.sfor(["needle", "sig.js", "--json"])));
+    let o = stdout(&run(&mut fx.s4(["needle", "sig.js", "--json"])));
     let sigs: Vec<String> = o
         .lines()
         .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())

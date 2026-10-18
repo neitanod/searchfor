@@ -1,5 +1,5 @@
-//! Every document `--docs` reads is extracted in a child process: the same `sfor` binary run as
-//! `sfor __extract-document`, a worker that reads one request a line (`KIND MAX_TEXT PATH`)
+//! Every document `--docs` reads is extracted in a child process: the same `s4` binary run as
+//! `s4 __extract-document`, a worker that reads one request a line (`KIND MAX_TEXT PATH`)
 //! and writes each answer, with a limit on its memory (M4 plan, D30): its own count of the
 //! bytes it holds (`super::memory`, D31), the same on every system, and on Unix `RLIMIT_DATA`
 //! a little above, as a second barrier. The limits of each
@@ -19,13 +19,13 @@ use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// The first argument that makes `sfor` a worker of `extract`, with `PARENT` set. A word that
-/// starts with `--` is a flag to the command line, never a positional pattern (ripgrep and sfor
+/// The first argument that makes `s4` a worker of `extract`, with `PARENT` set. A word that
+/// starts with `--` is a flag to the command line, never a positional pattern (ripgrep and s4
 /// refuse an unknown one), so no search can mean it; and `PARENT`, which only `spawn` sets,
-/// ties it to the sfor that started it (M4 plan r4, Codex #4).
+/// ties it to the s4 that started it (M4 plan r4, Codex #4).
 pub const SUBCOMMAND: &str = "--__extract-document";
 /// The pid of the worker's parent, which the worker checks: it ends when the parent does.
-const PARENT: &str = "SFOR_READER_OF";
+const PARENT: &str = "SEARCHFOR_READER_OF";
 /// The most memory a worker may allocate (its heap, as `super::memory` counts it; a file it maps
 /// for reading does not count).
 pub const MEMORY_MIB: u64 = 1024;
@@ -43,7 +43,7 @@ pub const WALL: Duration = Duration::from_secs(60);
 const SERVES: usize = 64;
 /// How long a worker gives itself for one document, past the parent's `WALL`: an orphan, whose
 /// parent and watchdog are gone, ends there (M4 plan r5, Fable #1: a CPU limit over the
-/// worker's life ended a long but valid run). `SFOR_READER_SECONDS` lowers it, for the tests.
+/// worker's life ended a long but valid run). `SEARCHFOR_READER_SECONDS` lowers it, for the tests.
 const OWN_WALL: Duration = Duration::from_secs(WALL.as_secs() + 5);
 /// How long a dead worker's stderr may take to be read to its end: at once, unless another
 /// process holds a copy of the pipe.
@@ -90,7 +90,7 @@ impl Drop for Slot {
     }
 }
 
-/// Starts the worker process, from one thread that lives as long as sfor: Linux ends a worker
+/// Starts the worker process, from one thread that lives as long as s4: Linux ends a worker
 /// when the thread that started it ends (`PR_SET_PDEATHSIG`), and the walk's threads end one
 /// by one while others still use the pool.
 fn start() -> std::io::Result<Child> {
@@ -132,12 +132,12 @@ pub fn is_worker(args: &[std::ffi::OsString]) -> bool {
 }
 
 /// Starts a worker inside the Supervisor's lifecycle (M2 plan, D42): a SIGINT or SIGTERM to
-/// sfor kills and reaps it, and no worker starts after one (M4 plan r4, Codex #2).
+/// s4 kills and reaps it, and no worker starts after one (M4 plan r4, Codex #2).
 fn spawn() -> std::io::Result<Worker> {
     let started = crate::helper::host::cancel::GLOBAL.launch_reader(start);
     let shared = match started {
         Ok(c) => c?,
-        Err(_) => return Err(std::io::Error::other("sfor is ending")),
+        Err(_) => return Err(std::io::Error::other("s4 is ending")),
     };
     let (stdin, stdout, mut stderr) = pipes(&shared)?;
     let errors = Arc::new(Mutex::new(Vec::new()));
@@ -168,12 +168,12 @@ fn drain(stderr: &mut impl Read, errors: &Mutex<Vec<u8>>, done: std::sync::mpsc:
 }
 
 /// The worker's pipes. A signal's `cancel` may have reaped it between its start and here, and
-/// `Child::wait` closes its stdin: then sfor is ending (M4 plan r6, Fable #6).
+/// `Child::wait` closes its stdin: then s4 is ending (M4 plan r6, Fable #6).
 fn pipes(child: &Mutex<Child>) -> std::io::Result<(ChildStdin, ChildStdout, ChildStderr)> {
     let mut c = child.lock().unwrap_or_else(|e| e.into_inner());
     match (c.stdin.take(), c.stdout.take(), c.stderr.take()) {
         (Some(i), Some(o), Some(e)) => Ok((i, o, e)),
-        _ => Err(std::io::Error::other("sfor is ending")),
+        _ => Err(std::io::Error::other("s4 is ending")),
     }
 }
 
@@ -263,7 +263,7 @@ fn gone(w: &Worker) -> Option<std::process::ExitStatus> {
     child.wait().ok()
 }
 
-/// Ends the idle workers and waits for them, when `sfor` is done: a worker's memory is then
+/// Ends the idle workers and waits for them, when `s4` is done: a worker's memory is then
 /// counted with its parent's (`getrusage` of the children, which `/usr/bin/time` reports).
 pub fn finish() {
     let idle = std::mem::take(&mut *IDLE.lock().unwrap_or_else(|e| e.into_inner()));
@@ -303,25 +303,25 @@ fn path_of(b: Vec<u8>) -> std::path::PathBuf {
 
 /// The worker's own limit for one document, as `own_watchdog` reads it.
 fn reading_limit() -> Duration {
-    std::env::var("SFOR_READER_SECONDS")
+    std::env::var("SEARCHFOR_READER_SECONDS")
         .ok()
         .and_then(|v| v.parse().ok())
         .map_or(OWN_WALL, Duration::from_secs)
 }
 
-/// `MEMORY_MIB`, or for the tests of this limit `SFOR_READER_MIB`.
+/// `MEMORY_MIB`, or for the tests of this limit `SEARCHFOR_READER_MIB`.
 fn memory_mib() -> u64 {
-    std::env::var("SFOR_READER_MIB")
+    std::env::var("SEARCHFOR_READER_MIB")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(MEMORY_MIB)
 }
 
 /// The worker's `RLIMIT_DATA` in MiB: `HEADROOM_MIB` above its counter's `mib`, or
-/// `SFOR_READER_RLIMIT_MIB`, for the test that the counter cuts where no `RLIMIT_DATA` would.
+/// `SEARCHFOR_READER_RLIMIT_MIB`, for the test that the counter cuts where no `RLIMIT_DATA` would.
 #[cfg(unix)]
 fn rlimit_mib(mib: u64) -> u64 {
-    std::env::var("SFOR_READER_RLIMIT_MIB")
+    std::env::var("SEARCHFOR_READER_RLIMIT_MIB")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(mib.saturating_add(HEADROOM_MIB))
@@ -413,7 +413,7 @@ fn now_ms() -> u64 {
 }
 
 /// The worker's own watchdog, per document: when one document takes longer than `OWN_WALL`
-/// (or `SFOR_READER_SECONDS`), the worker exits with `LATE`. It ends an orphan on any system;
+/// (or `SEARCHFOR_READER_SECONDS`), the worker exits with `LATE`. It ends an orphan on any system;
 /// with a parent, the parent's `WALL` comes first. Returns when the current document started
 /// (0: none).
 fn own_watchdog() -> Arc<std::sync::atomic::AtomicU64> {
@@ -723,7 +723,7 @@ mod tests {
         c.wait().unwrap();
         let reaped = Mutex::new(c);
         let e = pipes(&reaped).expect_err("no pipes");
-        assert_eq!(e.to_string(), "sfor is ending");
+        assert_eq!(e.to_string(), "s4 is ending");
     }
 
     /// A refused `try_reserve` is the memory warning; and so is any answer of a document during

@@ -2,11 +2,11 @@
 
 # searchfor
 
-`sfor` es un buscador compatible con ripgrep que te dice **dónde** cae cada resultado dentro
+`s4` es un buscador compatible con ripgrep que te dice **dónde** cae cada resultado dentro
 de la estructura de su archivo.
 
 ````
-$ sfor needle-pkg md --tree
+$ s4 needle-pkg md --tree
 md/guide.md
   Deploy guide
     # Install
@@ -31,7 +31,7 @@ Markdown, YAML, JSON, TOML, el código en ocho lenguajes, HTML, XML, CSV, TSV, S
 tienen Trails (ver [Formatos](#formatos)), las líneas largas se
 muestran como Fragmentos, y `--within`, `--expand` e `--in-headings` filtran y expanden por
 estructura. Otros lenguajes se pueden describir con un [Helper Processor](#helper-processors),
-un programa aparte con el que sfor se comunica. Cualquier otro archivo es **Plain**: sus
+un programa aparte con el que s4 se comunica. Cualquier otro archivo es **Plain**: sus
 resultados se imprimen con el Trail vacío. Los demás Formatos llegan por hito (ver
 [Hoja de ruta](#hoja-de-ruta)).
 
@@ -52,7 +52,7 @@ v0.3 se instala desde el repositorio:
 cargo install --git https://github.com/neitanod/searchfor
 ```
 
-Los dos instalan el binario `sfor`. Los binarios precompilados, Homebrew y npm llegan en
+Los dos instalan el binario `s4`. Los binarios precompilados, Homebrew y npm llegan en
 v1.0.
 
 ## Formatos
@@ -80,13 +80,13 @@ v1.0.
 
 Un archivo sin extensión también se reconoce por su shebang (`#!/usr/bin/env python3`,
 `node`, `bash`…). Los Formatos de código los parsean Grammars de tree-sitter compiladas
-dentro de `sfor`; YAML, JSON y TOML, parsers nativos; HTML, XML, CSV, TSV y los subtítulos,
-scanners propios de sfor. `sfor --list-formats` los lista todos.
+dentro de `s4`; YAML, JSON y TOML, parsers nativos; HTML, XML, CSV, TSV y los subtítulos,
+scanners propios de s4. `s4 --list-formats` los lista todos.
 
 La misma ruta de claves en un archivo YAML y en uno JSON:
 
 ```
-$ sfor needle.example data --flat --sort path
+$ s4 needle.example data --flat --sort path
 data/config.json:8: server › ports[2] › host │       {"host": "needle.example", "port": 8443},
 data/config.yaml:9: server › ports[2] › host │     - host: needle.example
 ```
@@ -96,7 +96,7 @@ fuera del Trail. En el código, la salida de una línea imprime nombres y el ár
 línea que declara cada Segmento:
 
 ```
-$ sfor needle code/cart.php --tree
+$ s4 needle code/cart.php --tree
 code/cart.php
   class Cart
     public function addItem(Item $item, int $qty = 1): void
@@ -106,7 +106,7 @@ code/cart.php
 ```
 
 ```
-$ sfor needle code/cart.php --flat
+$ s4 needle code/cart.php --flat
 10: Cart › addItem │         // needle: merge equal items
 15: function needle_helper(): string
 17: needle_helper │     return "needle";
@@ -118,7 +118,7 @@ igual que un resultado en la línea de un título cae fuera de su sección.
 En HTML y XML el Trail es la ruta de elementos:
 
 ```
-$ sfor needle markup/page.html --flat
+$ s4 needle markup/page.html --flat
 4: head › title │   <title>Pricing needle</title>
 5: head › script │   <script>if (a < b) { label = "</div> needle"; }</script>
 12: nav.top.menu › ul › li[3] │       <li><a href="/needle">Needle</a>
@@ -138,7 +138,7 @@ imprimen con el Trail vacío.
 En CSV y TSV el Trail es la fila y el encabezado de la columna:
 
 ```
-$ sfor needle table/plans.csv --flat
+$ s4 needle table/plans.csv --flat
 3: row 2 › Plan │ 2,Bea,needle,"likes ""quotes"", and commas"
 5: row 3 › Notes │ lines with needle"
 7: row 4 › Notes │ 4,Dan,team,needle at the end,extra
@@ -151,7 +151,7 @@ En los subtítulos el Trail es el cue, nombrado por su número (o su identificad
 su tiempo de inicio tal como está escrito; el árbol muestra la línea de tiempos completa:
 
 ```
-$ sfor needle subs/movie.srt --tree
+$ s4 needle subs/movie.srt --tree
 subs/movie.srt
   cue 1 00:00:01,000 --> 00:00:03,500
     3:Where is the needle?
@@ -163,14 +163,14 @@ subs/movie.srt
 
 ## Uso
 
-`sfor PATRÓN [RUTAS…]` acepta los flags de ripgrep con los nombres de ripgrep. En una terminal
+`s4 PATRÓN [RUTAS…]` acepta los flags de ripgrep con los nombres de ripgrep. En una terminal
 la salida por defecto es el árbol; en un pipe es una línea por resultado,
 `ruta:línea: Trail │ texto`.
 
 ### Una línea por resultado (`--flat`, el default en un pipe)
 
 ```
-$ sfor needle md --flat
+$ s4 needle md --flat
 md/guide.md:7: Deploy guide › Install │ Intro paragraph with needle-intro.
 md/guide.md:12: Deploy guide › Install › Linux › bash │ apt install needle-pkg
 md/guide.md:16: Deploy guide › Install › Linux › step one │   - nested needle-item
@@ -189,7 +189,7 @@ columna.
 ### Sólo los resultados que caen bajo un Trail (`--within`)
 
 ```
-$ sfor needle md --within "install › linux" --flat
+$ s4 needle md --within "install › linux" --flat
 md/guide.md:12: Deploy guide › Install › Linux › bash │ apt install needle-pkg
 md/guide.md:16: Deploy guide › Install › Linux › step one │   - nested needle-item
 ```
@@ -202,7 +202,7 @@ se nombra con una parte sin la barra, entre `›` o `>`: `--within "network › 
 ### La Sección entera (`--expand`)
 
 ```
-$ sfor needle-10 md --expand --tree
+$ s4 needle-10 md --expand --tree
 md/guide.md
   Deploy guide
     # Install
@@ -225,7 +225,7 @@ se muestra como Fragmentos centrados en los resultados, con la cantidad de carac
 a cada lado:
 
 ```
-$ sfor needle misc/min.json --flat --fragment-width 120
+$ s4 needle misc/min.json --flat --fragment-width 120
 1: [0] │ …[+983] aaaaaaaaaaaaaaaaaneedleaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaneedleaaaaaaaaaaaaaaaaaa […+18926]
 1: [0] │ …[+14958] aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaneedleaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa […+4951]
 ```
@@ -259,7 +259,7 @@ nombre de un Formato incluido o instalado lo reemplaza, y un nombre nuevo agrega
 
 ripgrep 14.1.1 tiene 146 nombres de flag (104 flags, 30 negaciones `--no-` y 12 negaciones de
 otra forma). v0.3 implementa 51. Los otros 95 se aceptan por nombre y fallan con
-`sfor: --<flag> is not supported yet` y código de salida 2, así que ninguno se ignora en
+`s4: --<flag> is not supported yet` y código de salida 2, así que ninguno se ignora en
 silencio. La tabla está en [docs/rg-compat.md](docs/rg-compat.md). Los códigos de salida son
 los de ripgrep: 0 si algo coincidió, 1 si nada, 2 si hubo un error.
 
@@ -274,7 +274,7 @@ Diferencias conocidas con ripgrep 14.1.1:
 ## Helper Processors
 
 Un Helper Processor es un programa, escrito en cualquier lenguaje, que describe los archivos
-de un Formato: sfor lo arranca cuando el primer archivo de ese Formato tiene un resultado, le
+de un Formato: s4 lo arranca cuando el primer archivo de ese Formato tiene un resultado, le
 manda la ruta y las posiciones de los resultados de cada archivo como líneas JSON por su
 stdin, lee los Trails de su stdout, y le cierra el stdin cuando termina la búsqueda. Una
 Definición de Formato con `processor = "external"` lo nombra:
@@ -289,9 +289,9 @@ command    = ["sfor-example-helper"]
 mode       = "pool"
 ```
 
-`mode` dice cómo le pasa sfor los archivos:
+`mode` dice cómo le pasa s4 los archivos:
 
-- `pool` (el default): cada copia recibe un archivo por vez, y sfor arranca más copias, hasta
+- `pool` (el default): cada copia recibe un archivo por vez, y s4 arranca más copias, hasta
   la cantidad de threads de la búsqueda, cuando todas están ocupadas. Un programa que lee una
   línea, la contesta y lee la siguiente funciona en este modo.
 - `concurrent`: un solo proceso recibe varios archivos a la vez y puede contestarlos en
@@ -311,7 +311,7 @@ que describe archivos INI. Con la Definición de arriba en el directorio de form
 archivo `app.ini` escrito para este ejemplo:
 
 ```
-$ sfor needle app.ini --tree
+$ s4 needle app.ini --tree
 app.ini
   section database
     host
@@ -325,14 +325,14 @@ Los tres modos dan esta misma salida. El protocolo está en
 
 ## Grammars
 
-Las Grammars de los ocho Formatos de código están compiladas dentro de `sfor`. Cualquier otro
+Las Grammars de los ocho Formatos de código están compiladas dentro de `s4`. Cualquier otro
 lenguaje llega como un Grammar Helper: un Helper Processor que arma searchfor con una sola
 Grammar, y que `--install-grammar` baja del índice de Grammars, verifica contra su SHA-256 e
 instala con su Definición de Formato en `$XDG_DATA_HOME/searchfor/grammars/` (en Linux,
 `~/.local/share/searchfor/grammars/` por defecto).
 
 ```
-$ sfor --list-grammars
+$ s4 --list-grammars
 php            compiled in
 javascript     compiled in
 typescript     compiled in
@@ -348,19 +348,19 @@ publique los binarios de los Grammar Helpers para cada sistema, así que por aho
 `--install-grammar` no tiene nada para instalar. [`helpers/grammar/`](helpers/grammar) es el
 template del que se arman (Lua en v0.3), y
 [`scripts/build-grammar-helper.sh`](scripts/build-grammar-helper.sh) arma uno para el sistema
-en el que corre e imprime su entrada del índice. `SFOR_GRAMMAR_INDEX` apunta sfor a otro
+en el que corre e imprime su entrada del índice. `SEARCHFOR_GRAMMAR_INDEX` apunta s4 a otro
 índice, por ejemplo uno propio con `file://`.
 
 ## Para agentes de IA
 
 Un agente que encuentra un resultado con `rg` suele abrir el archivo entero para saber en qué
-sección cae la línea. `sfor` imprime esa sección en el Trail, y `--expand` imprime la sección
+sección cae la línea. `s4` imprime esa sección en el Trail, y `--expand` imprime la sección
 misma, así que el agente lee la parte del archivo que importa y nada más.
 
 En qué sección cae cada resultado:
 
 ```
-$ sfor --json needle md | jq -r 'select(.type == "match") | .data.trail | map(.name) | join(" › ")'
+$ s4 --json needle md | jq -r 'select(.type == "match") | .data.trail | map(.name) | join(" › ")'
 Deploy guide › Install
 Deploy guide › Install › Linux › bash
 Deploy guide › Install › Linux › step one
@@ -375,7 +375,7 @@ Deploy guide › Setext Title
 Leer sólo las secciones que caen bajo un título:
 
 ````
-$ sfor needle md --within linux --expand --flat
+$ s4 needle md --within linux --expand --flat
 md/guide.md:11-13: Deploy guide › Install › Linux › bash
 ```bash
 apt install needle-pkg
@@ -390,7 +390,7 @@ md/guide.md:15-16: Deploy guide › Install › Linux › step one
 Leer sólo el método en el que cae un resultado, en el código:
 
 ```
-$ sfor needle code --within "Cart › addItem" --expand --flat
+$ s4 needle code --within "Cart › addItem" --expand --flat
 code/cart.php:8-12: Cart › addItem
     public function addItem(Item $item, int $qty = 1): void
     {
@@ -403,7 +403,7 @@ code/cart.php:8-12: Cart › addItem
 Leer cada función con un nombre como `helper` que tenga un resultado:
 
 ```
-$ sfor needle code --within helper --expand --flat --sort path
+$ s4 needle code --within helper --expand --flat --sort path
 code/cart.php:15-18: needle_helper
 function needle_helper(): string
 {

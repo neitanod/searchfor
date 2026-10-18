@@ -1,4 +1,4 @@
-//! Helper Processor protocol v1 (spec §4.4): the lines sfor and a helper exchange. The host
+//! Helper Processor protocol v1 (spec §4.4): the lines s4 and a helper exchange. The host
 //! (`host.rs`) and the helper loop (`serve.rs`) both use these types; nothing builds JSON by hand.
 use crate::model::{Name, Trail};
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ pub struct MatchPos {
     pub byte: u64,
 }
 
-/// One line from sfor to a helper.
+/// One line from s4 to a helper.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
 pub enum Request {
@@ -59,7 +59,7 @@ impl Request {
     }
 }
 
-/// One line from a helper to sfor. Exactly one of `protocol` (to `hello`), `trails`, `names`
+/// One line from a helper to s4. Exactly one of `protocol` (to `hello`), `trails`, `names`
 /// or `error` is expected; unknown fields are ignored.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Reply {

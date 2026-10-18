@@ -2,7 +2,7 @@
 //! m2-code-r1; M3 plan, Task 6.2): generated inputs
 //! with lone CRs, CRLF, BOMs, multi-byte keys and values, and truncated files, looking for
 //! panics and for name pieces outside their text, outside their Source, or over other bytes.
-//! The generator is seeded, so a failure reproduces; `SFOR_FUZZ_SEED` and `SFOR_FUZZ_N` (inputs
+//! The generator is seeded, so a failure reproduces; `SEARCHFOR_FUZZ_SEED` and `SEARCHFOR_FUZZ_N` (inputs
 //! per Format) change the seed and the count.
 mod common;
 
@@ -526,14 +526,14 @@ fn run(t: &Target, p: &dyn Processor, bytes: &[u8], rng: &mut Rng) -> Result<(),
 }
 
 fn count() -> usize {
-    std::env::var("SFOR_FUZZ_N")
+    std::env::var("SEARCHFOR_FUZZ_N")
         .ok()
         .and_then(|n| n.parse().ok())
         .unwrap_or(1000)
 }
 
 fn seed() -> u64 {
-    std::env::var("SFOR_FUZZ_SEED")
+    std::env::var("SEARCHFOR_FUZZ_SEED")
         .ok()
         .and_then(|n| n.parse().ok())
         .unwrap_or(0x5eed_f0f0_1234_5678)
@@ -676,15 +676,15 @@ fn generated_files_do_not_panic_sfor() {
         &["--expand", "-e", "needle"],
     ] {
         let out = fx
-            .sfor(args.iter().copied().chain(["fuzz"]))
+            .s4(args.iter().copied().chain(["fuzz"]))
             .output()
             .unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(
             out.status.code() != Some(101) && !err.contains("panicked"),
-            "sfor {args:?} over {files} files: {:?}\n{err}",
+            "s4 {args:?} over {files} files: {:?}\n{err}",
             out.status
         );
     }
-    eprintln!("fuzz: {files} files through sfor");
+    eprintln!("fuzz: {files} files through s4");
 }

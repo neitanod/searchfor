@@ -1,4 +1,4 @@
-//! The Grammars compiled into sfor (spec §7, ADR 0005).
+//! The Grammars compiled into s4 (spec §7, ADR 0005).
 use tree_sitter::Language;
 
 pub const COMPILED_IN: &[&str] = &[

@@ -98,7 +98,7 @@ fn fixture() -> Fixture {
 }
 
 fn ok(fx: &Fixture, args: &[&str]) -> String {
-    let o = run(&mut fx.sfor(args));
+    let o = run(&mut fx.s4(args));
     assert_eq!(code(&o), 0, "{args:?}: {}", stderr(&o));
     assert_eq!(stderr(&o), "", "{args:?}");
     stdout(&o)
@@ -183,7 +183,7 @@ fn m4_02_object_rows_with_and_without_symbols() {
 fn m4_03_walked_objects_are_searched_as_rg_searches_them() {
     let fx = fixture();
     // Walked without --binary, rg stops at the first NUL: nothing to describe.
-    let o = run(&mut fx.sfor(["--flat", "version=", "m4/bin"]));
+    let o = run(&mut fx.s4(["--flat", "version=", "m4/bin"]));
     assert_eq!(code(&o), 1, "{}", stdout(&o));
     // With --binary every object file with a Match gets its rows.
     let out = ok(
@@ -212,7 +212,7 @@ fn m4_03_walked_objects_are_searched_as_rg_searches_them() {
                 .copied()
                 .filter(|a| *a != "--flat" && *a != "--no-trail")
                 .collect();
-            let s = run(&mut fx.sfor(args));
+            let s = run(&mut fx.s4(args));
             let r = run(&mut fx.rg(&rg_args));
             assert_eq!(stdout(&s), stdout(&r), "{args:?}");
             assert_eq!(code(&s), code(&r), "{args:?}");
@@ -261,12 +261,12 @@ fn m4_05_pdf_chapters_only_with_docs_and_zips_never() {
     );
     if common::reference_rg() {
         // Without --docs the PDF is searched as rg searches it (its streams are compressed).
-        let s = run(&mut fx.sfor(["--flat", "needle", "m4/report.pdf"]));
+        let s = run(&mut fx.s4(["--flat", "needle", "m4/report.pdf"]));
         let r = run(&mut fx.rg(["needle", "m4/report.pdf"]));
         assert_eq!((stdout(&s), code(&s)), (stdout(&r), code(&r)));
     }
     // A zip is never opened (8390), --docs or not.
-    let o = run(&mut fx.sfor(["--docs", "--flat", "zipped", "m4/notes.zip"]));
+    let o = run(&mut fx.s4(["--docs", "--flat", "zipped", "m4/notes.zip"]));
     assert_eq!(code(&o), 1, "{}", stdout(&o));
 }
 
@@ -309,7 +309,7 @@ fn m4_06_document_trails() {
 #[test]
 fn m4_07_documents_that_cannot_be_read_warn_and_are_searched_as_rg() {
     let fx = fixture();
-    let o = run(&mut fx.sfor([
+    let o = run(&mut fx.s4([
         "--docs",
         "--flat",
         "--sort",
@@ -320,8 +320,8 @@ fn m4_07_documents_that_cannot_be_read_warn_and_are_searched_as_rg() {
     ]));
     assert_eq!(
         stderr(&o),
-        "sfor: m4/locked.pdf: pdf: encrypted, and the empty password does not open it\n\
-         sfor: m4/broken.docx: docx: not a zip file the reader can open (invalid Zip archive: Could not find EOCD)\n"
+        "s4: m4/locked.pdf: pdf: encrypted, and the empty password does not open it\n\
+         s4: m4/broken.docx: docx: not a zip file the reader can open (invalid Zip archive: Could not find EOCD)\n"
     );
     // broken.docx is text with a needle: printed as rg prints it, exit 0.
     assert_eq!(code(&o), 0);
@@ -330,7 +330,7 @@ fn m4_07_documents_that_cannot_be_read_warn_and_are_searched_as_rg() {
         "{}",
         stdout(&o)
     );
-    let quiet = run(&mut fx.sfor([
+    let quiet = run(&mut fx.s4([
         "--docs",
         "--no-messages",
         "--flat",
@@ -424,7 +424,7 @@ fn m4_08_pre_and_z_as_ripgrep() {
         ]);
     }
     for args in cases {
-        let s = run(&mut fx.sfor(args.iter().map(String::as_str).chain(["--no-trail"])));
+        let s = run(&mut fx.s4(args.iter().map(String::as_str).chain(["--no-trail"])));
         let r = run(&mut fx.rg(&args));
         let (so, ro) = if args.contains(&"--json".to_string()) {
             (
@@ -436,7 +436,7 @@ fn m4_08_pre_and_z_as_ripgrep() {
         };
         assert_eq!(so, ro, "{args:?}");
         assert_eq!(code(&s), code(&r), "{args:?}");
-        assert_eq!(stderr(&s).replace("sfor: ", "rg: "), stderr(&r), "{args:?}");
+        assert_eq!(stderr(&s).replace("s4: ", "rg: "), stderr(&r), "{args:?}");
     }
     // In the Trail layouts the output of --pre gets the Trails of the file's Format.
     assert_eq!(
@@ -479,7 +479,7 @@ fn m4_09_docs_in_the_ripgrep_modes_and_with_z() {
         .arg(fx.file("m4/report.docx"))
         .status();
     if gz.is_ok_and(|s| s.success()) {
-        let o = run(&mut fx.sfor([
+        let o = run(&mut fx.s4([
             "--docs",
             "-z",
             "--flat",
@@ -548,11 +548,11 @@ fn m4_11_without_docs_documents_are_ripgreps() {
         &["--sort", "path", "needle", "m4"][..],
         &["-a", "needle", "m4/report.docx"],
     ] {
-        let s = run(&mut fx.sfor(args.iter().copied().chain(["--no-trail"])));
+        let s = run(&mut fx.s4(args.iter().copied().chain(["--no-trail"])));
         let r = run(&mut fx.rg(args));
         assert_eq!(stdout(&s), stdout(&r), "{args:?}");
         assert_eq!(code(&s), code(&r), "{args:?}");
-        let f = run(&mut fx.sfor(args.iter().copied().chain(["--flat"])));
+        let f = run(&mut fx.s4(args.iter().copied().chain(["--flat"])));
         assert_eq!(stderr(&f), "", "{args:?}");
         assert!(!stdout(&f).contains(" › page "), "{args:?}");
     }
@@ -609,7 +609,7 @@ fn m4_12_docs_reads_streams_once() {
         };
         let writer = feed();
         let s = run_within(
-            &mut fx.sfor(["--docs", "--no-trail", "needle", path]),
+            &mut fx.s4(["--docs", "--no-trail", "needle", path]),
             b"a needle\n",
         );
         if let Some(w) = writer {
@@ -697,7 +697,7 @@ fn m4_14_transformed_objects_print_as_plain() {
         &["-z", "-a", "--format", "elf", "needle", "m4/bin/app.gz"],
     ] {
         for layout in ["--flat", "--tree", "--json"] {
-            let o = run(&mut fx.sfor(args.iter().copied().chain([layout])));
+            let o = run(&mut fx.s4(args.iter().copied().chain([layout])));
             assert_eq!(code(&o), 0, "{args:?} {layout}: {}", stderr(&o));
             let out = stdout(&o);
             if layout == "--json" {
@@ -722,7 +722,7 @@ fn m4_14_transformed_objects_print_as_plain() {
             }
         }
         if common::reference_rg() && !args.contains(&"--format") {
-            let s = run(&mut fx.sfor(args.iter().copied().chain(["--no-trail"])));
+            let s = run(&mut fx.s4(args.iter().copied().chain(["--no-trail"])));
             let r = run(&mut fx.rg(args));
             assert_eq!(stdout(&s), stdout(&r), "{args:?}");
         }
@@ -781,7 +781,7 @@ fn m4_15_a_long_string_is_one_row() {
 
 /// M4 plan, D30: a document whose reading passes the reader's memory gets one warning, and
 /// the search goes on with the other documents. The limit is lowered for the test
-/// (`SFOR_READER_MIB`): the workbook's text, 4 MiB, takes more than 16 MiB to read.
+/// (`SEARCHFOR_READER_MIB`): the workbook's text, 4 MiB, takes more than 16 MiB to read.
 #[test]
 fn m4_16_a_reader_past_its_memory_is_one_warning() {
     let fx = fixture();
@@ -789,7 +789,7 @@ fn m4_16_a_reader_past_its_memory_is_one_warning() {
     let rows: Vec<&[&str]> = vec![row; 200_000];
     std::fs::write(fx.path().join("m4/big.xlsx"), doc::xlsx(&[("S", &rows)])).unwrap();
     let o = run(fx
-        .sfor([
+        .s4([
             "--docs",
             "--flat",
             "-c",
@@ -797,7 +797,7 @@ fn m4_16_a_reader_past_its_memory_is_one_warning() {
             "m4/big.xlsx",
             "m4/report.docx",
         ])
-        .env("SFOR_READER_MIB", "16"));
+        .env("SEARCHFOR_READER_MIB", "16"));
     assert!(
         stderr(&o)
             .contains("m4/big.xlsx: xlsx: reading it needed more than the 16 MiB a reader may use"),
@@ -806,7 +806,7 @@ fn m4_16_a_reader_past_its_memory_is_one_warning() {
     );
     assert!(stdout(&o).contains("m4/report.docx:3"), "{}", stdout(&o));
     assert_eq!(code(&o), 0);
-    let o = run(&mut fx.sfor(["--docs", "-c", "needle", "m4/big.xlsx"]));
+    let o = run(&mut fx.s4(["--docs", "-c", "needle", "m4/big.xlsx"]));
     assert_eq!(
         (stdout(&o), stderr(&o)),
         ("200000\n".to_string(), String::new())
@@ -824,10 +824,10 @@ fn m4_17_the_readers_flag_is_no_pattern() {
         "a __extract-document here\n",
     )
     .unwrap();
-    // As the first argument, which `Fixture::sfor` (it adds `--color never` first) would not
+    // As the first argument, which `Fixture::s4` (it adds `--color never` first) would not
     // give.
     let s = run(
-        std::process::Command::new(assert_cmd::cargo::cargo_bin("sfor"))
+        std::process::Command::new(assert_cmd::cargo::cargo_bin("s4"))
             .args(["__extract-document", "m4/words.txt", "--no-trail"])
             .current_dir(fx.path())
             .env_remove("RIPGREP_CONFIG_PATH")
@@ -836,7 +836,7 @@ fn m4_17_the_readers_flag_is_no_pattern() {
     assert_eq!(stdout(&s), "a __extract-document here\n");
     assert_eq!(code(&s), 0);
     let s = run(
-        std::process::Command::new(assert_cmd::cargo::cargo_bin("sfor"))
+        std::process::Command::new(assert_cmd::cargo::cargo_bin("s4"))
             .args(["--__extract-document", "m4/words.txt"])
             .current_dir(fx.path())
             .env_remove("RIPGREP_CONFIG_PATH")
@@ -867,7 +867,7 @@ fn m4_18_any_path_reaches_the_reader() {
     ] {
         let p = std::ffi::OsStr::from_bytes(name);
         std::fs::write(fx.path().join(p), &report).unwrap();
-        let mut c = fx.sfor(["--docs", "--flat", "-c", "Scope"]);
+        let mut c = fx.s4(["--docs", "--flat", "-c", "Scope"]);
         if let Some(f) = format {
             c.args(["--format", f]);
         }
@@ -927,8 +927,8 @@ fn children_of(parent: u32) -> Vec<u32> {
         .collect()
 }
 
-/// Codex r4 #2: a SIGTERM to sfor alone kills and reaps its readers, and sfor dies by it; a
-/// SIGKILL, which sfor cannot see, ends them too (the kernel's parent-death signal). Fable r6
+/// Codex r4 #2: a SIGTERM to s4 alone kills and reaps its readers, and s4 dies by it; a
+/// SIGKILL, which s4 cannot see, ends them too (the kernel's parent-death signal). Fable r6
 /// #1: nothing is printed after the signal, neither for the documents whose readers it killed
 /// nor for those still waiting for one: eight slow PDFs for the four readers.
 #[cfg(target_os = "linux")]
@@ -944,7 +944,7 @@ fn m4_19_a_signal_to_sfor_ends_its_readers() {
     }
     for sig in [libc::SIGTERM, libc::SIGKILL] {
         let mut child = fx
-            .sfor(&args)
+            .s4(&args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -990,7 +990,7 @@ fn m4_19_a_signal_to_sfor_ends_its_readers() {
 }
 
 /// Fable r5 #1: a reader's own time limit holds for each document, never for its life: with
-/// it lowered to 1 s (`SFOR_READER_SECONDS`), one reader (`-j1`) reads 24 workbooks that take
+/// it lowered to 1 s (`SEARCHFOR_READER_SECONDS`), one reader (`-j1`) reads 24 workbooks that take
 /// less each and more together. Fable r6 #4: each takes about an eighth of the limit here,
 /// so a slower or busier machine keeps a margin, and three limits together, so a faster one
 /// still passes the limit over the reader's life.
@@ -1012,7 +1012,7 @@ fn m4_20_the_readers_time_limit_is_per_document() {
         args.push(p);
     }
     let started = std::time::Instant::now();
-    let o = run(fx.sfor(&args).env("SFOR_READER_SECONDS", "1"));
+    let o = run(fx.s4(&args).env("SEARCHFOR_READER_SECONDS", "1"));
     let took = started.elapsed();
     eprintln!(
         "{BOOKS} workbooks in {took:?}, {:?} each, against a limit of 1 s",
@@ -1036,10 +1036,10 @@ fn m4_21_a_document_past_the_readers_limit_ends_its_reader() {
     let c = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
     // SAFETY: mkfifo reads the path it is given.
     assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
-    let mut reader = std::process::Command::new(assert_cmd::cargo::cargo_bin("sfor"))
+    let mut reader = std::process::Command::new(assert_cmd::cargo::cargo_bin("s4"))
         .args(["--__extract-document", "1024"])
-        .env("SFOR_READER_OF", std::process::id().to_string())
-        .env("SFOR_READER_SECONDS", "1")
+        .env("SEARCHFOR_READER_OF", std::process::id().to_string())
+        .env("SEARCHFOR_READER_SECONDS", "1")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1076,7 +1076,7 @@ fn m4_21_a_document_past_the_readers_limit_ends_its_reader() {
 }
 
 /// M4 plan, D31: the reader's own count of its memory ends it at its limit, the same on every
-/// system. With `RLIMIT_DATA` far above the count (`SFOR_READER_RLIMIT_MIB`, 4 096 MiB), as on
+/// system. With `RLIMIT_DATA` far above the count (`SEARCHFOR_READER_RLIMIT_MIB`, 4 096 MiB), as on
 /// macOS and Windows, where no `RLIMIT_DATA` holds, the workbook of `m4_16` still gives the
 /// warning at 16 MiB, and the other document is read.
 #[test]
@@ -1086,7 +1086,7 @@ fn m4_22_the_readers_own_count_ends_it_at_its_limit() {
     let rows: Vec<&[&str]> = vec![row; 200_000];
     std::fs::write(fx.path().join("m4/big.xlsx"), doc::xlsx(&[("S", &rows)])).unwrap();
     let o = run(fx
-        .sfor([
+        .s4([
             "--docs",
             "--flat",
             "-c",
@@ -1094,8 +1094,8 @@ fn m4_22_the_readers_own_count_ends_it_at_its_limit() {
             "m4/big.xlsx",
             "m4/report.docx",
         ])
-        .env("SFOR_READER_MIB", "16")
-        .env("SFOR_READER_RLIMIT_MIB", "4096"));
+        .env("SEARCHFOR_READER_MIB", "16")
+        .env("SEARCHFOR_READER_RLIMIT_MIB", "4096"));
     assert!(
         stderr(&o)
             .contains("m4/big.xlsx: xlsx: reading it needed more than the 16 MiB a reader may use"),
@@ -1202,7 +1202,7 @@ fn m4_23_a_reader_refused_memory_it_went_on_without_warns() {
     let fx = fixture();
     std::fs::write(fx.path().join("m4/long.pdf"), pdf_of_a_long_run(16 << 12)).unwrap();
     let o = run(fx
-        .sfor([
+        .s4([
             "--docs",
             "--flat",
             "-c",
@@ -1210,8 +1210,8 @@ fn m4_23_a_reader_refused_memory_it_went_on_without_warns() {
             "m4/long.pdf",
             "m4/report.docx",
         ])
-        .env("SFOR_READER_MIB", "16")
-        .env("SFOR_READER_RLIMIT_MIB", "4096"));
+        .env("SEARCHFOR_READER_MIB", "16")
+        .env("SEARCHFOR_READER_RLIMIT_MIB", "4096"));
     assert!(
         stderr(&o)
             .contains("m4/long.pdf: pdf: reading it needed more than the 16 MiB a reader may use"),
@@ -1220,6 +1220,6 @@ fn m4_23_a_reader_refused_memory_it_went_on_without_warns() {
     );
     assert!(stdout(&o).contains("m4/report.docx:3"), "{}", stdout(&o));
     assert_eq!(code(&o), 0);
-    let o = run(&mut fx.sfor(["--docs", "-c", "AAAAAAAA", "m4/long.pdf"]));
+    let o = run(&mut fx.s4(["--docs", "-c", "AAAAAAAA", "m4/long.pdf"]));
     assert_eq!((stdout(&o), stderr(&o)), ("1\n".to_string(), String::new()));
 }

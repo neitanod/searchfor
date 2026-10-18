@@ -1,5 +1,5 @@
 //! Small object files written byte by byte, for the tests of the `object` Processor, the
-//! end-to-end tests, the fuzz and the perf ceilings (M4 plan, D19). Not used by `sfor` itself.
+//! end-to-end tests, the fuzz and the perf ceilings (M4 plan, D19). Not used by `s4` itself.
 //! Each writer lays out its sections in order after the headers, so a test knows where every
 //! byte lands: `Spec::offset` gives the file offset of a byte of a section.
 

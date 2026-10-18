@@ -1,7 +1,7 @@
 //! Processors served by a Helper Processor (spec §4.4): `HelperProcessor` over a Host (C9),
 //! and the run's temporary files.
 
-/// A Processor whose work is done by a Helper Processor (spec §4.4): built-in to sfor's
+/// A Processor whose work is done by a Helper Processor (spec §4.4): built-in to s4's
 /// pipeline, it only turns the contract into requests.
 pub struct HelperProcessor {
     host: crate::helper::host::Host,
@@ -39,7 +39,7 @@ impl HelperProcessor {
     fn failure(&self, input: &crate::model::Input, msg: String) -> anyhow::Error {
         match self.host.take_notice() {
             Some(notice) => {
-                (self.warn)(format!("sfor: {}: {msg}", input.path.display()));
+                (self.warn)(format!("s4: {}: {msg}", input.path.display()));
                 (self.warn)(notice);
                 crate::helper::Unavailable.into()
             }

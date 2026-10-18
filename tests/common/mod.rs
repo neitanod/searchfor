@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 /// A copy of `tests/fixtures/` (dotfiles included) with an empty `.git` at its root, so that
-/// `.gitignore` files apply to rg and sfor alike, an empty formats directory for
-/// `SFOR_FORMATS_DIR`, and an empty Grammar directory for `SFOR_GRAMMARS_DIR`, whose index
+/// `.gitignore` files apply to rg and s4 alike, an empty formats directory for
+/// `SEARCHFOR_FORMATS_DIR`, and an empty Grammar directory for `SEARCHFOR_GRAMMARS_DIR`, whose index
 /// does not exist, so no test reads the user's Grammars or the network (M2 plan, Task 10.4).
 pub struct Fixture {
     pub dir: tempfile::TempDir,
@@ -44,17 +44,17 @@ impl Fixture {
         )
     }
 
-    /// sfor in the fixture copy, stdin from /dev/null, `--color never` unless `args` sets it.
-    pub fn sfor<I, S>(&self, args: I) -> Command
+    /// s4 in the fixture copy, stdin from /dev/null, `--color never` unless `args` sets it.
+    pub fn s4<I, S>(&self, args: I) -> Command
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let mut c = Command::new(assert_cmd::cargo::cargo_bin("sfor"));
+        let mut c = Command::new(assert_cmd::cargo::cargo_bin("s4"));
         c.current_dir(self.path())
-            .env("SFOR_FORMATS_DIR", self.formats.path())
-            .env("SFOR_GRAMMARS_DIR", self.grammars.path())
-            .env("SFOR_GRAMMAR_INDEX", self.no_index())
+            .env("SEARCHFOR_FORMATS_DIR", self.formats.path())
+            .env("SEARCHFOR_GRAMMARS_DIR", self.grammars.path())
+            .env("SEARCHFOR_GRAMMAR_INDEX", self.no_index())
             .env_remove("RIPGREP_CONFIG_PATH")
             .stdin(Stdio::null());
         let args: Vec<_> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
@@ -153,10 +153,10 @@ pub fn workspace_bin(package: &str, bin: &str, features: &[&str]) -> PathBuf {
     exe
 }
 
-/// The reference ripgrep: `SFOR_RG` when set, else `/usr/bin/rg` when it exists (another rg,
+/// The reference ripgrep: `SEARCHFOR_RG` when set, else `/usr/bin/rg` when it exists (another rg,
 /// such as 15.x, may come first on `PATH`), else `rg` on `PATH` (M3 review r1, Codex #8).
 pub fn rg_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("SFOR_RG") {
+    if let Some(p) = std::env::var_os("SEARCHFOR_RG") {
         return p.into();
     }
     let usr = Path::new("/usr/bin/rg");
@@ -167,11 +167,11 @@ pub fn rg_path() -> PathBuf {
 }
 
 /// A comparison or measurement that cannot run: a note, or a failure when
-/// `SFOR_REQUIRE_REFERENCE=1`, which acceptance runs set so that a skipped comparison never
+/// `SEARCHFOR_REQUIRE_REFERENCE=1`, which acceptance runs set so that a skipped comparison never
 /// counts as passed (M3 review r1, Codex #8). Returns false.
 pub fn missing_reference(what: &str) -> bool {
-    if std::env::var_os("SFOR_REQUIRE_REFERENCE").is_some_and(|v| v == "1") {
-        panic!("{what} is required (SFOR_REQUIRE_REFERENCE=1) and missing");
+    if std::env::var_os("SEARCHFOR_REQUIRE_REFERENCE").is_some_and(|v| v == "1") {
+        panic!("{what} is required (SEARCHFOR_REQUIRE_REFERENCE=1) and missing");
     }
     eprintln!("skipping: {what} not found");
     false

@@ -3,9 +3,9 @@ name: searchfor
 description: Use when searching Markdown, code, YAML/JSON/TOML, HTML/XML, CSV/TSV or subtitles and you need to know which section, function, key, element, row or cue each match belongs to — before running rg and opening whole files
 ---
 
-# searchfor (`sfor`)
+# searchfor (`s4`)
 
-`sfor` searches like ripgrep (same flags, same regex engine, same exit codes) and prints, for
+`s4` searches like ripgrep (same flags, same regex engine, same exit codes) and prints, for
 every match, its **Trail**: where the match sits in the structure of its file. In Markdown,
 the frontmatter title, headings, fenced code block, parent list items and table column; in
 code, the namespace, class and function; in YAML, JSON and TOML, the key path; in HTML and
@@ -15,7 +15,7 @@ its start time (`cue 2 00:00:04,000`). With
 `--expand` it prints the whole Section that holds the match, so you read that part of the
 file and nothing else.
 
-## When to prefer `sfor` over `rg`
+## When to prefer `s4` over `rg`
 
 - You would otherwise open the whole file to learn which section, function or key a line
   belongs to.
@@ -25,7 +25,7 @@ file and nothing else.
 
 Trails cover Markdown, YAML, JSON, TOML, PHP, JavaScript, TypeScript, TSX, Bash, Go, Rust,
 Python, HTML, XML (also `.svg`, `.rss`, `.csproj`, `.xaml`… and files starting with `<?xml`),
-CSV, TSV, SubRip (`.srt`) and WebVTT (`.vtt`); `sfor --list-formats` lists them. Every other
+CSV, TSV, SubRip (`.srt`) and WebVTT (`.vtt`); `s4 --list-formats` lists them. Every other
 file (logs, C, Java) prints as `rg` prints it, with an empty Trail, so `rg` is just as good
 there.
 
@@ -34,47 +34,47 @@ there.
 One line per match with its Trail (`path:line: Trail │ text`; the default in a pipe):
 
 ```bash
-sfor --flat 'pattern' docs/ src/
+s4 --flat 'pattern' docs/ src/
 ```
 
 The whole Section of each match, printed once per Section (a code block, a list item, a
 table, a heading's section, a function, a key's value):
 
 ```bash
-sfor --expand --flat 'pattern' docs/
+s4 --expand --flat 'pattern' docs/
 ```
 
 Only the Trails, from `--json` (ripgrep's JSON Lines plus `format`, `trail`, `fragment`):
 
 ```bash
-sfor --json 'pattern' src/ | jq -r 'select(.type == "match") | .data.path.text + ": " + (.data.trail | map(.name) | join(" › "))'
+s4 --json 'pattern' src/ | jq -r 'select(.type == "match") | .data.path.text + ": " + (.data.trail | map(.name) | join(" › "))'
 ```
 
 Only the matches under a heading, with their sections:
 
 ```bash
-sfor --within 'install › linux' --expand --flat 'pattern' docs/
+s4 --within 'install › linux' --expand --flat 'pattern' docs/
 ```
 
 Code: the method a match is in, read whole. The one-line output names it `Class › method`
 (`Server.Start` for a Go method):
 
 ```bash
-sfor --within 'Cart › addItem' --expand --flat 'pattern' src/
+s4 --within 'Cart › addItem' --expand --flat 'pattern' src/
 ```
 
 Configuration: the matches under a key path. Array elements are named by their key and
 index, so `ports[2]` is the third element of `ports`:
 
 ```bash
-sfor --within 'server › ports' --flat 'pattern' config/
+s4 --within 'server › ports' --flat 'pattern' config/
 ```
 
 HTML and XML: the matches inside an element. Elements are named `tag#id.class`, with `[n]`
 among siblings of the same tag; `html` and `body` never appear:
 
 ```bash
-sfor --within 'pricing › table' needle site/
+s4 --within 'pricing › table' needle site/
 ```
 
 ```
@@ -85,7 +85,7 @@ Subtitles: the cues that start at a time. `--in-headings` searches the cue names
 `'01:02'` finds the cues starting at 1:02:
 
 ```bash
-sfor --in-headings '01:02' subs/
+s4 --in-headings '01:02' subs/
 ```
 
 ```
@@ -96,7 +96,7 @@ Where something is defined, not used: `--in-headings` matches only Segment names
 keys, function and class names, elements, CSV header cells, cues):
 
 ```bash
-sfor --in-headings --flat '^addItem$' src/
+s4 --in-headings --flat '^addItem$' src/
 ```
 
 `--within` keeps matches whose Trail contains those Segment names in that order; names are
@@ -117,7 +117,7 @@ or `--within addItem` is enough when the name is unique.
 - Long lines (minified JSON, one-line HTML) print as Fragments around the matches,
   `…[+N] text […+M]`, instead of the whole line.
 - `--no-trail` prints exactly what `rg` prints.
-- A ripgrep flag that sfor does not implement yet fails with `sfor: --<flag> is not supported
+- A ripgrep flag that s4 does not implement yet fails with `s4: --<flag> is not supported
   yet` and exit code 2; drop the flag or use `rg` for that search.
 - In `--json`, when two matches on one line have different Trails (two table cells), each
   object in `.data.submatches` carries its own `trail`. The `stats` of `end` and `summary`

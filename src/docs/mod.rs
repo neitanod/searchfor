@@ -82,7 +82,7 @@ impl Kind {
     }
 }
 
-/// Why a document gave no text. Each is one warning, `sfor: <path>: <format>: <reason>`, and
+/// Why a document gave no text. Each is one warning, `s4: <path>: <format>: <reason>`, and
 /// the file is then searched as ripgrep searches it (M4 plan, D10).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DocError {
@@ -100,7 +100,7 @@ impl DocError {
     }
 }
 
-/// What an Extractor returns: the text sfor searches, its Outline, and a warning when the text
+/// What an Extractor returns: the text s4 searches, its Outline, and a warning when the text
 /// was cut at `MAX_TEXT`.
 #[derive(Debug, Clone, Default)]
 pub struct Extracted {

@@ -1,4 +1,4 @@
-//! End-to-end tests of the `sfor` binary (plan, Task 9.2). Every case runs in a copy of
+//! End-to-end tests of the `s4` binary (plan, Task 9.2). Every case runs in a copy of
 //! `tests/fixtures/` with stdin from /dev/null unless it feeds stdin on purpose.
 mod common;
 
@@ -7,13 +7,13 @@ use std::io::Write;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-fn sfor(args: &[&str]) -> std::process::Output {
-    run(&mut Fixture::new().sfor(args))
+fn s4(args: &[&str]) -> std::process::Output {
+    run(&mut Fixture::new().s4(args))
 }
 
 #[test]
 fn t01_tree_shows_the_trail_of_a_match() {
-    let o = sfor(&["needle-pkg", "md", "--tree"]);
+    let o = s4(&["needle-pkg", "md", "--tree"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let out = stdout(&o);
     for want in [
@@ -31,7 +31,7 @@ fn t01_tree_shows_the_trail_of_a_match() {
 
 #[test]
 fn t02_flat_prints_every_match_with_its_trail() {
-    let o = sfor(&["needle", "md", "--flat"]);
+    let o = s4(&["needle", "md", "--flat"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let out = stdout(&o);
     assert_eq!(
@@ -46,7 +46,7 @@ fn t02_flat_prints_every_match_with_its_trail() {
 
 #[test]
 fn t03_json_lines_parse() {
-    let o = sfor(&["needle", "md", "--json"]);
+    let o = s4(&["needle", "md", "--json"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     for line in stdout(&o).lines() {
         let v: serde_json::Value = serde_json::from_str(line).unwrap();
@@ -68,7 +68,7 @@ fn t03_json_matches_validate_against_the_schema() {
     )
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
-    let o = sfor(&["needle", "md", "--json"]);
+    let o = s4(&["needle", "md", "--json"]);
     for line in stdout(&o).lines() {
         let v: serde_json::Value = serde_json::from_str(line).unwrap();
         if v["type"] == "match" {
@@ -79,7 +79,7 @@ fn t03_json_matches_validate_against_the_schema() {
 
 #[test]
 fn t04_within_keeps_only_the_linux_matches() {
-    let o = sfor(&["needle", "md", "--within", "install › linux", "--flat"]);
+    let o = s4(&["needle", "md", "--within", "install › linux", "--flat"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let out = stdout(&o);
     assert_eq!(out.lines().count(), 2, "{out}");
@@ -89,7 +89,7 @@ fn t04_within_keeps_only_the_linux_matches() {
 
 #[test]
 fn t05_expand_prints_the_table_once_under_plans() {
-    let o = sfor(&["needle-10", "md", "--expand", "--tree"]);
+    let o = s4(&["needle-10", "md", "--expand", "--tree"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let out = stdout(&o);
     assert!(out.contains("## Plans"), "{out}");
@@ -107,7 +107,7 @@ fn t05_expand_prints_the_table_once_under_plans() {
 
 #[test]
 fn t06_expand_prints_a_shared_section_once() {
-    let o = sfor(&["needle", "md", "--expand", "--flat"]);
+    let o = s4(&["needle", "md", "--expand", "--flat"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let out = stdout(&o);
     assert_eq!(
@@ -122,18 +122,18 @@ fn t06_expand_prints_a_shared_section_once() {
 
 #[test]
 fn t07_in_headings_matches_names_only() {
-    let o = sfor(&["--in-headings", "^Linux$", "md", "--flat"]);
+    let o = s4(&["--in-headings", "^Linux$", "md", "--flat"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let out = stdout(&o);
     assert_eq!(out.lines().count(), 1, "{out}");
     assert!(out.starts_with("md/guide.md:9:"), "{out}");
-    let o = sfor(&["--in-headings", "needle", "md"]);
+    let o = s4(&["--in-headings", "needle", "md"]);
     assert_eq!((code(&o), stdout(&o).as_str()), (1, ""));
 }
 
 #[test]
 fn t08_long_line_becomes_fragments_with_counts() {
-    let o = sfor(&[
+    let o = s4(&[
         "needle",
         "misc/min.json",
         "--flat",
@@ -171,7 +171,7 @@ fn t09_list_formats_shows_an_override() {
         "name='markdown'\nextensions=['md']\nprocessor='markdown'\n",
     )
     .unwrap();
-    let o = run(&mut fx.sfor(["--list-formats"]));
+    let o = run(&mut fx.s4(["--list-formats"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(stdout(&o).contains("overridden ("), "{}", stdout(&o));
 }
@@ -179,7 +179,7 @@ fn t09_list_formats_shows_an_override() {
 #[test]
 fn t10_export_refuses_the_user_formats_directory() {
     let fx = Fixture::new();
-    let o = run(&mut fx.sfor([
+    let o = run(&mut fx.s4([
         std::ffi::OsStr::new("--export-formats"),
         fx.formats.path().as_os_str(),
     ]));
@@ -192,7 +192,7 @@ fn t10_export_writes_the_templates() {
     let fx = Fixture::new();
     let out = tempfile::tempdir().unwrap();
     let target = out.path().join("t");
-    let o = run(&mut fx.sfor([std::ffi::OsStr::new("--export-formats"), target.as_os_str()]));
+    let o = run(&mut fx.s4([std::ffi::OsStr::new("--export-formats"), target.as_os_str()]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(stdout(&o).contains("markdown.toml"), "{}", stdout(&o));
     assert!(target.join("markdown.toml").is_file());
@@ -201,7 +201,7 @@ fn t10_export_writes_the_templates() {
 #[test]
 fn t11_not_yet_flags_fail_loudly() {
     for argv in [&["--pcre2", "x"][..], &["-nP", "x"]] {
-        let o = sfor(argv);
+        let o = s4(argv);
         assert_eq!(code(&o), 2, "{argv:?}");
         assert!(
             stderr(&o).contains("not supported yet"),
@@ -213,37 +213,37 @@ fn t11_not_yet_flags_fail_loudly() {
 
 #[test]
 fn t12_the_word_formats_is_searched() {
-    let o = sfor(&["formats", "md"]);
+    let o = s4(&["formats", "md"]);
     assert_eq!((code(&o), stdout(&o).as_str()), (1, ""));
 }
 
 #[test]
 fn t13_quiet() {
-    let o = sfor(&["-q", "needle", "md"]);
+    let o = s4(&["-q", "needle", "md"]);
     assert_eq!((code(&o), stdout(&o).as_str()), (0, ""));
-    let o = sfor(&["-q", "absent", "md"]);
+    let o = s4(&["-q", "absent", "md"]);
     assert_eq!((code(&o), stdout(&o).as_str()), (1, ""));
 }
 
 #[test]
 fn t14_nothing_left_after_filters_exits_1() {
-    let o = sfor(&["--within", "nowhere", "needle", "md"]);
+    let o = s4(&["--within", "nowhere", "needle", "md"]);
     assert_eq!((code(&o), stdout(&o).as_str()), (1, ""));
 }
 
 #[test]
 fn t15_summary_flags_count_after_filters() {
-    let o = sfor(&["-c", "--within", "linux", "needle", "md"]);
+    let o = s4(&["-c", "--within", "linux", "needle", "md"]);
     assert_eq!((code(&o), stdout(&o).as_str()), (0, "md/guide.md:2\n"));
-    let o = sfor(&["-l", "--within", "linux", "needle", "md"]);
+    let o = s4(&["-l", "--within", "linux", "needle", "md"]);
     assert_eq!((code(&o), stdout(&o).as_str()), (0, "md/guide.md\n"));
-    let o = sfor(&["--count-matches", "--within", "linux", "needle", "md"]);
+    let o = s4(&["--count-matches", "--within", "linux", "needle", "md"]);
     assert_eq!((code(&o), stdout(&o).as_str()), (0, "md/guide.md:2\n"));
 }
 
 #[test]
 fn t16_binary_file_prints_ripgreps_message() {
-    let o = sfor(&["binary", "misc/bin.dat", "--flat"]);
+    let o = s4(&["binary", "misc/bin.dat", "--flat"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(
         stdout(&o),
@@ -254,7 +254,7 @@ fn t16_binary_file_prints_ripgreps_message() {
 #[test]
 fn t17_in_headings_with_twice() {
     let fx = Fixture::new();
-    let o = run(&mut fx.sfor(["--in-headings", "-i", "plan", "md/twice.md", "--json"]));
+    let o = run(&mut fx.s4(["--in-headings", "-i", "plan", "md/twice.md", "--json"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let msgs: Vec<serde_json::Value> = stdout(&o)
         .lines()
@@ -268,7 +268,7 @@ fn t17_in_headings_with_twice() {
         2
     );
 
-    let o = run(&mut fx.sfor([
+    let o = run(&mut fx.s4([
         "--in-headings",
         "-m1",
         "-i",
@@ -280,10 +280,10 @@ fn t17_in_headings_with_twice() {
     assert_eq!(stdout(&o).lines().count(), 1, "{}", stdout(&o));
     assert!(stdout(&o).starts_with("1:"), "{}", stdout(&o));
 
-    let o = run(&mut fx.sfor(["--in-headings", "-m0", "-i", "plan", "md/twice.md"]));
+    let o = run(&mut fx.s4(["--in-headings", "-m0", "-i", "plan", "md/twice.md"]));
     assert_eq!((code(&o), stdout(&o).as_str()), (1, ""));
 
-    let o = run(&mut fx.sfor(["--in-headings", "-C1", "^Linux$", "md/guide.md", "--flat"]));
+    let o = run(&mut fx.s4(["--in-headings", "-C1", "^Linux$", "md/guide.md", "--flat"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let out = stdout(&o);
     let nums: Vec<&str> = out
@@ -292,7 +292,7 @@ fn t17_in_headings_with_twice() {
         .collect();
     assert_eq!(nums, ["8-", "9:", "10-"], "{out}");
 
-    let o = run(&mut fx.sfor(["--in-headings", "^", "md/twice.md", "--json"]));
+    let o = run(&mut fx.s4(["--in-headings", "^", "md/twice.md", "--json"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let subs: Vec<serde_json::Value> = stdout(&o)
         .lines()
@@ -307,7 +307,7 @@ fn t17_in_headings_with_twice() {
         assert_eq!(s[0]["match"]["text"], "");
     }
 
-    let o = run(&mut fx.sfor(["--in-headings", "-v", "x", "md"]));
+    let o = run(&mut fx.s4(["--in-headings", "-v", "x", "md"]));
     assert_eq!(code(&o), 2);
     assert!(stderr(&o).contains("--in-headings"), "{}", stderr(&o));
 }
@@ -315,15 +315,15 @@ fn t17_in_headings_with_twice() {
 #[test]
 fn t18_read_errors() {
     let fx = Fixture::new();
-    let o = run(&mut fx.sfor(["-j1", "--sort", "path", "needle", "missing.md", "md"]));
+    let o = run(&mut fx.s4(["-j1", "--sort", "path", "needle", "missing.md", "md"]));
     assert_eq!(code(&o), 2);
     assert!(stderr(&o).contains("missing.md"), "{}", stderr(&o));
     assert!(!stdout(&o).is_empty());
 
-    let o = run(&mut fx.sfor(["-j1", "--sort", "path", "-q", "needle", "missing.md", "md"]));
+    let o = run(&mut fx.s4(["-j1", "--sort", "path", "-q", "needle", "missing.md", "md"]));
     assert_eq!((code(&o), stdout(&o).as_str()), (0, ""));
 
-    let o = run(&mut fx.sfor(["-j1", "--sort", "path", "-q", "absent", "missing.md", "md"]));
+    let o = run(&mut fx.s4(["-j1", "--sort", "path", "-q", "absent", "missing.md", "md"]));
     assert_eq!((code(&o), stdout(&o).as_str()), (2, ""));
 
     for (pat, quiet, want) in [
@@ -336,7 +336,7 @@ fn t18_read_errors() {
             args.push("-q");
         }
         args.extend([pat, "missing.md", "md"]);
-        let o = run(&mut fx.sfor(&args));
+        let o = run(&mut fx.s4(&args));
         assert_eq!(code(&o), want, "{args:?}");
         assert_eq!(stderr(&o), "", "{args:?}");
     }
@@ -344,7 +344,7 @@ fn t18_read_errors() {
 
 #[test]
 fn t19_files_without_match_after_filters() {
-    let o = sfor(&[
+    let o = s4(&[
         "--sort",
         "path",
         "--files-without-match",
@@ -367,12 +367,12 @@ fn t19_files_without_match_after_filters() {
 fn t20_stdin_selection() {
     let fx = Fixture::new();
     // /dev/null: the current directory is searched, as `rg needle < /dev/null`.
-    let o = run(&mut fx.sfor(["--sort", "path", "needle", "--flat"]));
+    let o = run(&mut fx.s4(["--sort", "path", "needle", "--flat"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(stdout(&o).contains("md/guide.md:"), "{}", stdout(&o));
 
     // An empty pipe is readable stdin: it is searched, and has nothing.
-    let mut c = fx.sfor(["needle"]);
+    let mut c = fx.s4(["needle"]);
     c.stdin(Stdio::piped()).stdout(Stdio::piped());
     let mut child = c.spawn().unwrap();
     drop(child.stdin.take());
@@ -380,7 +380,7 @@ fn t20_stdin_selection() {
     assert_eq!((code(&o), stdout(&o).as_str()), (1, ""));
 
     // A regular file as stdin.
-    let mut c = fx.sfor(["needle-pkg", "--flat"]);
+    let mut c = fx.s4(["needle-pkg", "--flat"]);
     c.stdin(Stdio::from(
         std::fs::File::open(fx.file("md/guide.md")).unwrap(),
     ));
@@ -393,14 +393,14 @@ fn t20_stdin_selection() {
     );
 
     // A pipe with a match, closed.
-    let mut c = fx.sfor(["-q", "needle"]);
+    let mut c = fx.s4(["-q", "needle"]);
     c.stdin(Stdio::piped());
     let mut child = c.spawn().unwrap();
     child.stdin.take().unwrap().write_all(b"needle\n").unwrap();
     assert_eq!(child.wait().unwrap().code(), Some(0));
 
     // An open pipe: -q answers at the first Match, before EOF.
-    let mut c = fx.sfor(["-q", "needle"]);
+    let mut c = fx.s4(["-q", "needle"]);
     c.stdin(Stdio::piped());
     let mut child = c.spawn().unwrap();
     let mut writer = child.stdin.take().unwrap();
@@ -437,14 +437,14 @@ fn t21_tree_match_on_a_heading_is_not_repeated_as_its_segment() {
         "# needle notes\n\none needle\n\n## Sub\n\ntwo needle\n",
     )
     .unwrap();
-    let o = run(&mut fx.sfor(["needle", "h1.md", "--tree"]));
+    let o = run(&mut fx.s4(["needle", "h1.md", "--tree"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(
         stdout(&o),
         "h1.md\n  1:# needle notes\n    3:one needle\n    ## Sub\n      7:two needle\n"
     );
     // With context, the lines between the heading and the next Match do not bring it back.
-    let o = run(&mut fx.sfor(["-C1", "needle", "h1.md", "--tree"]));
+    let o = run(&mut fx.s4(["-C1", "needle", "h1.md", "--tree"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let out = stdout(&o);
     assert_eq!(out.matches("# needle notes").count(), 1, "{out}");
@@ -459,7 +459,7 @@ fn t22_invalid_utf8_keeps_the_trails_of_the_file() {
         b"# Before\n\nneedle-one\n\n## Bad \xff here\n\nneedle-two\n",
     )
     .unwrap();
-    let o = run(&mut fx.sfor(["needle", "bad.md", "--flat"]));
+    let o = run(&mut fx.s4(["needle", "bad.md", "--flat"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(
         stdout(&o),
@@ -482,7 +482,7 @@ fn t23_max_count_on_stdin_stops_before_eof() {
         &["-v", "-m1", "--no-trail", "needle", "-"],
         &["-v", "-m1", "--json", "needle", "-"],
     ] {
-        let mut c = fx.sfor(args);
+        let mut c = fx.s4(args);
         c.stdin(Stdio::piped()).stdout(Stdio::piped());
         let mut child = c.spawn().unwrap();
         let mut writer = child.stdin.take().unwrap();
@@ -534,7 +534,7 @@ fn t23_binary_stdin_with_max_count_stops_before_eof() {
             "binary file matches",
         ),
     ] {
-        let mut c = fx.sfor(args);
+        let mut c = fx.s4(args);
         c.stdin(Stdio::piped()).stdout(Stdio::piped());
         let mut child = c.spawn().unwrap();
         let mut writer = child.stdin.take().unwrap();
@@ -590,7 +590,7 @@ fn t24_max_count_zero_and_no_patterns_search_nothing() {
         &["-m0", "needle", "missing.md"],
         &["-f", empty, "--json", "md"],
     ] {
-        let o = run(&mut fx.sfor(args));
+        let o = run(&mut fx.s4(args));
         assert_eq!((code(&o), stdout(&o).as_str()), (1, ""), "{args:?}");
     }
     for args in [
@@ -599,7 +599,7 @@ fn t24_max_count_zero_and_no_patterns_search_nothing() {
         &["-f", empty, "-g", "[", "md"],
         &["-m0", "--format", "nope", "needle", "md"],
     ] {
-        let o = run(&mut fx.sfor(args));
+        let o = run(&mut fx.s4(args));
         assert_eq!(code(&o), 2, "{args:?}");
         assert!(!stderr(&o).is_empty(), "{args:?}");
     }
@@ -613,7 +613,7 @@ fn t25_expanded_lines_follow_max_columns_and_fragments() {
     let long = format!("{}needle{}", "a".repeat(80), "b".repeat(80));
     std::fs::write(fx.file("long.md"), format!("# H\n\n{long}\n")).unwrap();
     for layout in ["--flat", "--tree"] {
-        let o = run(&mut fx.sfor(["--expand", layout, "-M10", "needle", "long.md"]));
+        let o = run(&mut fx.s4(["--expand", layout, "-M10", "needle", "long.md"]));
         assert_eq!(code(&o), 0, "{}", stderr(&o));
         let out = stdout(&o);
         assert!(!out.contains(&long), "{layout}: {out}");
@@ -622,7 +622,7 @@ fn t25_expanded_lines_follow_max_columns_and_fragments() {
             "{layout}: {out}"
         );
 
-        let o = run(&mut fx.sfor([
+        let o = run(&mut fx.s4([
             "--expand",
             layout,
             "--fragment-width",
@@ -650,17 +650,17 @@ fn t26_frontmatter_title_is_read_as_yaml() {
         "---\ntitle: |\n  Hello\n  World\n---\n\n# A\n\nneedle\n",
     )
     .unwrap();
-    let o = run(&mut fx.sfor(["--in-headings", "World", "fm.md", "--flat"]));
+    let o = run(&mut fx.s4(["--in-headings", "World", "fm.md", "--flat"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(stdout(&o), "4:   World\n");
-    let o = run(&mut fx.sfor(["needle", "fm.md", "--flat"]));
+    let o = run(&mut fx.s4(["needle", "fm.md", "--flat"]));
     assert_eq!(stdout(&o), "9: Hello World › A │ needle\n");
     std::fs::write(
         fx.file("c.md"),
         "---\ntitle: Hello # comment\n---\nneedle\n",
     )
     .unwrap();
-    let o = run(&mut fx.sfor(["needle", "c.md", "--flat"]));
+    let o = run(&mut fx.s4(["needle", "c.md", "--flat"]));
     assert_eq!(stdout(&o), "4: Hello │ needle\n");
 }
 
@@ -668,7 +668,7 @@ fn t26_frontmatter_title_is_read_as_yaml() {
 #[test]
 fn t27_in_headings_matches_the_space_of_a_setext_heading() {
     let fx = Fixture::new();
-    let mut c = fx.sfor(["--in-headings", "--format", "markdown", "--flat", " ", "-"]);
+    let mut c = fx.s4(["--in-headings", "--format", "markdown", "--flat", " ", "-"]);
     c.stdin(Stdio::piped()).stdout(Stdio::piped());
     let mut child = c.spawn().unwrap();
     child
@@ -693,7 +693,7 @@ fn t28_in_headings_with_a_huge_context() {
         "-B18446744073709551615",
         "-C18446744073709551615",
     ] {
-        let o = run(&mut fx.sfor(["--in-headings", flag, "--flat", "-N", "^", "md/twice.md"]));
+        let o = run(&mut fx.s4(["--in-headings", flag, "--flat", "-N", "^", "md/twice.md"]));
         assert_eq!(code(&o), 0, "{flag}: {}", stderr(&o));
         let out = stdout(&o);
         assert_eq!(out.lines().count(), all.lines().count(), "{flag}: {out}");
@@ -705,7 +705,7 @@ fn t28_in_headings_with_a_huge_context() {
 fn t29_max_count_counts_the_lines_within_keeps() {
     let fx = Fixture::new();
     let numbers = |args: &[&str]| -> Vec<String> {
-        let o = run(&mut fx.sfor(args));
+        let o = run(&mut fx.s4(args));
         assert_eq!(code(&o), 0, "{args:?}: {}", stderr(&o));
         let mut v: Vec<String> = stdout(&o)
             .lines()
@@ -765,11 +765,11 @@ fn t29_max_count_counts_the_lines_within_keeps() {
 fn t30_in_headings_trails_and_sections() {
     let fx = Fixture::new();
     std::fs::write(fx.file("li.md"), "# A\n\n- # Head in item\n  needle\n").unwrap();
-    let plain = run(&mut fx.sfor(["--flat", "Head", "li.md"]));
-    let named = run(&mut fx.sfor(["--in-headings", "--flat", "Head", "li.md"]));
+    let plain = run(&mut fx.s4(["--flat", "Head", "li.md"]));
+    let named = run(&mut fx.s4(["--in-headings", "--flat", "Head", "li.md"]));
     assert_eq!(stdout(&plain), "3: A │ - # Head in item\n");
     assert_eq!(stdout(&named), stdout(&plain));
-    let o = run(&mut fx.sfor([
+    let o = run(&mut fx.s4([
         "--in-headings",
         "--expand",
         "--flat",
@@ -782,7 +782,7 @@ fn t30_in_headings_trails_and_sections() {
         out.starts_with("9-18: Deploy guide › Install\n## Linux\n"),
         "{out}"
     );
-    let o = run(&mut fx.sfor([
+    let o = run(&mut fx.s4([
         "--in-headings",
         "--expand",
         "--json",
@@ -801,7 +801,7 @@ fn t30_in_headings_trails_and_sections() {
 /// Code review r1, Fable #5: with --in-headings, a Plain file has no names, so no Match.
 #[test]
 fn t31_in_headings_plain_files_have_no_match() {
-    let o = sfor(&[
+    let o = s4(&[
         "--sort",
         "path",
         "--in-headings",
@@ -812,7 +812,7 @@ fn t31_in_headings_plain_files_have_no_match() {
     ]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(stdout(&o), "misc/crlf.txt\nmd/twice.md\n");
-    let o = sfor(&["--in-headings", "-c", "needle", "misc/crlf.txt"]);
+    let o = s4(&["--in-headings", "-c", "needle", "misc/crlf.txt"]);
     assert_eq!((code(&o), stdout(&o).as_str()), (1, ""));
 }
 
@@ -821,7 +821,7 @@ fn t31_in_headings_plain_files_have_no_match() {
 #[test]
 fn t32_tree_does_not_repeat_a_label_shown_as_a_row() {
     let fx = Fixture::new();
-    let o = run(&mut fx.sfor([
+    let o = run(&mut fx.s4([
         "--tree",
         "-C1",
         "-e",
@@ -835,7 +835,7 @@ fn t32_tree_does_not_repeat_a_label_shown_as_a_row() {
     assert_eq!(out.matches("```bash").count(), 1, "{out}");
     assert!(out.contains("11-```bash\n"), "{out}");
     std::fs::write(fx.file("li.md"), "# A\n\n- ## B needle\n  more needle\n").unwrap();
-    let o = run(&mut fx.sfor(["--tree", "needle", "li.md"]));
+    let o = run(&mut fx.s4(["--tree", "needle", "li.md"]));
     let out = stdout(&o);
     assert_eq!(out.matches("## B needle").count(), 1, "{out}");
 }
@@ -844,7 +844,7 @@ fn t32_tree_does_not_repeat_a_label_shown_as_a_row() {
 /// the document's label: Matches on it have no Trail.
 #[test]
 fn t33_the_closing_frontmatter_line_is_the_document_label() {
-    let o = sfor(&["--flat", "$", "md/guide.md"]);
+    let o = s4(&["--flat", "$", "md/guide.md"]);
     let head: Vec<String> = stdout(&o).lines().take(4).map(str::to_string).collect();
     assert_eq!(
         head,
@@ -855,14 +855,14 @@ fn t33_the_closing_frontmatter_line_is_the_document_label() {
             "4: Deploy guide │ "
         ]
     );
-    let o = sfor(&["--flat", "x*", "md/guide.md"]);
+    let o = s4(&["--flat", "x*", "md/guide.md"]);
     let threes = stdout(&o).lines().filter(|l| l.starts_with("3:")).count();
     assert_eq!(threes, 1, "{}", stdout(&o));
 }
 
-/// sfor with `input` written to a pipe on its stdin, closed after it.
+/// s4 with `input` written to a pipe on its stdin, closed after it.
 fn piped(fx: &Fixture, args: &[&str], input: &[u8]) -> std::process::Output {
-    let mut c = fx.sfor(args);
+    let mut c = fx.s4(args);
     c.stdin(Stdio::piped()).stdout(Stdio::piped());
     let mut child = c.spawn().unwrap();
     child.stdin.take().unwrap().write_all(input).unwrap();
@@ -928,7 +928,7 @@ fn t35_max_count_on_an_open_fifo_stops_at_the_limit() {
         });
         let mut args = args.to_vec();
         args.push(&name);
-        let mut c = fx.sfor(&args);
+        let mut c = fx.s4(&args);
         c.stdout(Stdio::piped());
         let started = Instant::now();
         let mut child = c.spawn().unwrap();
@@ -992,7 +992,7 @@ fn t37_output_printed_while_searching_stops_quietly_on_a_closed_pipe() {
     let fx = Fixture::new();
     std::fs::write(fx.file("big.txt"), "line of text here\n".repeat(200_000)).unwrap();
     for layout in ["--json", "--flat"] {
-        let mut c = fx.sfor([layout, "-v", "zzz", "big.txt"]);
+        let mut c = fx.s4([layout, "-v", "zzz", "big.txt"]);
         c.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = c.spawn().unwrap();
         let mut first = String::new();
@@ -1007,10 +1007,10 @@ fn t37_output_printed_while_searching_stops_quietly_on_a_closed_pipe() {
     }
 }
 
-/// sfor with `input` written to a pipe on its stdin from another thread, which ignores a
+/// s4 with `input` written to a pipe on its stdin from another thread, which ignores a
 /// closed pipe: a search that stops reading does not block the test.
 fn fed(fx: &Fixture, args: &[&str], input: Vec<u8>) -> std::process::Output {
-    let mut c = fx.sfor(args);
+    let mut c = fx.s4(args);
     c.stdin(Stdio::piped()).stdout(Stdio::piped());
     let mut child = c.spawn().unwrap();
     let mut w = child.stdin.take().unwrap();
@@ -1044,7 +1044,7 @@ fn t36_sections_of_stdin_with_max_count_span_the_whole_input() {
         let mut path = vec!["--format", "markdown"];
         path.extend_from_slice(flags);
         path.extend(["needle", "bigsec.md"]);
-        let want = run(&mut fx.sfor(&path));
+        let want = run(&mut fx.s4(&path));
         assert_eq!(stdout(&want).lines().count(), 10_005, "{path:?}");
         let mut dash = path.clone();
         *dash.last_mut().unwrap() = "-";
@@ -1063,7 +1063,7 @@ fn t36_sections_of_stdin_with_max_count_span_the_whole_input() {
         "needle",
         "bigsec.md",
     ];
-    let want = run(&mut fx.sfor(path));
+    let want = run(&mut fx.s4(path));
     assert!(
         stdout(&want).contains("\"end_line\":10003"),
         "{}",
@@ -1087,7 +1087,7 @@ fn t38_a_heading_match_across_decoded_pieces_is_one_match() {
     // one submatch over bytes 2..8 and counts once.
     let fx = Fixture::new();
     std::fs::write(fx.file("ent.md"), "# a&lt;b\n\ntext\n").unwrap();
-    let out = stdout(&run(&mut fx.sfor([
+    let out = stdout(&run(&mut fx.s4([
         "--json",
         "--in-headings",
         "a.b",

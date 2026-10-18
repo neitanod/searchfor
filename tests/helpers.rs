@@ -60,7 +60,7 @@ fn generate(fx: &Fixture, n: usize) {
     }
 }
 
-/// What `sfor needle ini --flat --sort path` prints with the example helper working.
+/// What `s4 needle ini --flat --sort path` prints with the example helper working.
 const INI_TRAILS: &str = "\
 ini/app.ini:3: server › host │ host = needle.example
 ini/app.ini:8: client › name │ name = needle client
@@ -70,7 +70,7 @@ ini/db.ini:2: primary › url │ url = postgres://needle
 ini/web.ini:2: http › listen │ listen = needle:80
 ";
 
-/// The Trails of `app.ini` as `sfor --flat` prints them for a single input.
+/// The Trails of `app.ini` as `s4 --flat` prints them for a single input.
 const APP_TRAILS: &str = "\
 3: server › host │ host = needle.example
 8: client › name │ name = needle client
@@ -79,7 +79,7 @@ const APP_TRAILS: &str = "\
 fn flat_ini(fx: &Fixture, extra: &[&str], env: &[(&str, &str)]) -> Output {
     let mut args = vec!["needle", "ini", "--flat", "--sort", "path"];
     args.extend_from_slice(extra);
-    let mut c = fx.sfor(&args);
+    let mut c = fx.s4(&args);
     for (k, v) in env {
         c.env(k, v);
     }
@@ -99,7 +99,7 @@ fn h01_every_mode_gives_the_same_trails() {
     }
 }
 
-/// One request in the trace of the example helper (`SFOR_EXAMPLE_TRACE`).
+/// One request in the trace of the example helper (`SEARCHFOR_EXAMPLE_TRACE`).
 #[derive(Debug, Clone)]
 struct Event {
     begin: bool,
@@ -153,9 +153,9 @@ fn sorted_lines(o: &Output) -> Vec<String> {
 #[test]
 fn h02_a_pool_runs_at_most_the_thread_count() {
     // Without `--sort` the search runs on `-j 3` threads (review m2-code-r1, Codex #4). The
-    // helper's barrier (`SFOR_EXAMPLE_BARRIER`) holds every request until 3 are in flight, or
+    // helper's barrier (`SEARCHFOR_EXAMPLE_BARRIER`) holds every request until 3 are in flight, or
     // all that are left, so the trace shows exactly 3 at once whatever the scheduler does (M3
-    // code review r2, Codex #5): a 4th that sfor sent would arrive while 3 are held. A pool
+    // code review r2, Codex #5): a 4th that s4 sent would arrive while 3 are held. A pool
     // then needs 3 processes, one request each; timeouts are tested elsewhere (h06), and 30 s is
     // more than a loaded machine takes (Fable #1).
     for (mode, processes, per_process) in [("pool", 3, 1), ("concurrent", 1, 3), ("oneshot", 12, 1)]
@@ -166,10 +166,10 @@ fn h02_a_pool_runs_at_most_the_thread_count() {
         let log = fx.file("helper.log");
         let tr = fx.file("trace.log");
         let o = run(fx
-            .sfor(["needle", "gen", "--flat", "-j", "3"])
-            .env("SFOR_EXAMPLE_BARRIER", "3 12")
-            .env("SFOR_EXAMPLE_LOG", &log)
-            .env("SFOR_EXAMPLE_TRACE", &tr));
+            .s4(["needle", "gen", "--flat", "-j", "3"])
+            .env("SEARCHFOR_EXAMPLE_BARRIER", "3 12")
+            .env("SEARCHFOR_EXAMPLE_LOG", &log)
+            .env("SEARCHFOR_EXAMPLE_TRACE", &tr));
         assert_eq!(code(&o), 0, "{mode}: {}", stderr(&o));
         assert_eq!(starts(&log), processes, "{mode}: processes");
         let events = trace(&tr);
@@ -187,7 +187,7 @@ fn h02_a_pool_runs_at_most_the_thread_count() {
 #[test]
 fn h03_out_of_order_answers_reach_their_files() {
     // One `concurrent` process, `-j 4`, no `--sort`: the first `s*` request is held until a
-    // request sent after it is answered (`SFOR_EXAMPLE_OVERTAKE`), so an answer overtakes
+    // request sent after it is answered (`SEARCHFOR_EXAMPLE_OVERTAKE`), so an answer overtakes
     // another whatever order the walker gives the files (M3 code review r2, Fable #1), and each
     // answer still reaches its own file (review m2-code-r1, Codex #4). The other seven `s*`
     // files come after it and are not held.
@@ -204,10 +204,10 @@ fn h03_out_of_order_answers_reach_their_files() {
     let log = fx.file("helper.log");
     let tr = fx.file("trace.log");
     let o = run(fx
-        .sfor(["needle", "gen", "--flat", "-j", "4"])
-        .env("SFOR_EXAMPLE_OVERTAKE", "/gen/s")
-        .env("SFOR_EXAMPLE_LOG", &log)
-        .env("SFOR_EXAMPLE_TRACE", &tr));
+        .s4(["needle", "gen", "--flat", "-j", "4"])
+        .env("SEARCHFOR_EXAMPLE_OVERTAKE", "/gen/s")
+        .env("SEARCHFOR_EXAMPLE_LOG", &log)
+        .env("SEARCHFOR_EXAMPLE_TRACE", &tr));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(starts(&log), 1);
     let events = trace(&tr);
@@ -260,10 +260,10 @@ fn h03b_copies_that_ignore_eof_close_together() {
     let log = fx.file("helper.log");
     let started = Instant::now();
     let o = run(fx
-        .sfor(["needle", "gen", "--flat", "-j", "4"])
-        .env("SFOR_EXAMPLE_SLOW", "/gen/")
-        .env("SFOR_EXAMPLE_NOEXIT", "1")
-        .env("SFOR_EXAMPLE_LOG", &log));
+        .s4(["needle", "gen", "--flat", "-j", "4"])
+        .env("SEARCHFOR_EXAMPLE_SLOW", "/gen/")
+        .env("SEARCHFOR_EXAMPLE_NOEXIT", "1")
+        .env("SEARCHFOR_EXAMPLE_LOG", &log));
     let took = started.elapsed();
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(stdout(&o).lines().count(), 16);
@@ -276,7 +276,7 @@ fn h03b_copies_that_ignore_eof_close_together() {
         "{took:?} for {copies} copies"
     );
     for pid in pids(&log) {
-        assert!(!alive(pid), "copy {pid} outlived sfor");
+        assert!(!alive(pid), "copy {pid} outlived s4");
     }
 }
 
@@ -291,8 +291,8 @@ fn h04_a_crash_is_plain_with_a_warning_and_a_restart() {
         &fx,
         &["-j", "1"],
         &[
-            ("SFOR_EXAMPLE_CRASH", "db.ini"),
-            ("SFOR_EXAMPLE_LOG", log_s),
+            ("SEARCHFOR_EXAMPLE_CRASH", "db.ini"),
+            ("SEARCHFOR_EXAMPLE_LOG", log_s),
         ],
     );
     assert_eq!(code(&o), 0, "{}", stderr(&o));
@@ -317,8 +317,8 @@ fn h05_three_failures_disable_the_definition() {
     generate(&fx, 6);
     ini(&fx, "pool", 2000);
     let o = run(fx
-        .sfor(["needle", "gen", "--flat", "--sort", "path", "-j", "1"])
-        .env("SFOR_EXAMPLE_CRASH", "/gen/"));
+        .s4(["needle", "gen", "--flat", "--sort", "path", "-j", "1"])
+        .env("SEARCHFOR_EXAMPLE_CRASH", "/gen/"));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let err = stderr(&o);
     let lines: Vec<_> = err.lines().collect();
@@ -353,7 +353,7 @@ fn h06_a_timeout_kills_and_goes_on() {
     let fx = Fixture::new();
     ini(&fx, "pool", 300);
     let started = Instant::now();
-    let o = flat_ini(&fx, &[], &[("SFOR_EXAMPLE_HANG", "web.ini")]);
+    let o = flat_ini(&fx, &[], &[("SEARCHFOR_EXAMPLE_HANG", "web.ini")]);
     let took = started.elapsed();
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(
@@ -373,7 +373,7 @@ fn h06_a_timeout_kills_and_goes_on() {
 fn h07_a_broken_line_is_a_failure() {
     let fx = Fixture::new();
     ini(&fx, "pool", 2000);
-    let o = flat_ini(&fx, &[], &[("SFOR_EXAMPLE_GARBAGE", "web.ini")]);
+    let o = flat_ini(&fx, &[], &[("SEARCHFOR_EXAMPLE_GARBAGE", "web.ini")]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     // The plan's test said `not protocol JSON`; the host the plan specifies (Task 4.2) writes
     // `wrote a line that is not JSON (…)`.
@@ -446,12 +446,12 @@ fn sfor_dirs(dir: &Path) -> Vec<String> {
 fn h09_stdin_goes_through_a_temporary_file() {
     let fx = Fixture::new();
     ini(&fx, "pool", 2000);
-    // sfor's temporary directory is the system's (`TMPDIR`); a private one keeps other tests'
+    // s4's temporary directory is the system's (`TMPDIR`); a private one keeps other tests'
     // runs out of the listing.
     let tmp = tempfile::tempdir().unwrap();
     let before = sfor_dirs(tmp.path());
     let o = run(fx
-        .sfor(["--format", "ini", "needle", "-", "--flat"])
+        .s4(["--format", "ini", "needle", "-", "--flat"])
         .env("TMPDIR", tmp.path())
         .stdin(std::fs::File::open(fx.file("ini/app.ini")).unwrap()));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
@@ -464,15 +464,15 @@ fn h09_stdin_goes_through_a_temporary_file() {
 fn h10_a_bom_file_keeps_its_offsets() {
     let fx = Fixture::new();
     ini(&fx, "pool", 2000);
-    let app = run(&mut fx.sfor(["needle", "ini/app.ini", "--flat"]));
-    let bom = run(&mut fx.sfor(["needle", "ini/bom.ini", "--flat"]));
+    let app = run(&mut fx.s4(["needle", "ini/app.ini", "--flat"]));
+    let bom = run(&mut fx.s4(["needle", "ini/bom.ini", "--flat"]));
     assert_eq!(stdout(&app), APP_TRAILS, "{}", stderr(&app));
     assert_eq!(stdout(&bom), APP_TRAILS, "{}", stderr(&bom));
     // A Match at the start of a line: an offset counted without the BOM, read by the helper in
     // the file with it, would land 3 bytes early, on the key of the line before (`client › retries`).
     for pattern in ["needle", "^name"] {
-        let app = run(&mut fx.sfor([pattern, "ini/app.ini", "--tree"]));
-        let bom = run(&mut fx.sfor([pattern, "ini/bom.ini", "--tree"]));
+        let app = run(&mut fx.s4([pattern, "ini/app.ini", "--tree"]));
+        let bom = run(&mut fx.s4([pattern, "ini/bom.ini", "--tree"]));
         assert_eq!(
             stdout(&bom).replace("ini/bom.ini", "ini/app.ini"),
             stdout(&app),
@@ -480,7 +480,7 @@ fn h10_a_bom_file_keeps_its_offsets() {
         );
     }
     // A Match on a key's name is not inside the key (D18).
-    let bom = run(&mut fx.sfor(["^name", "ini/bom.ini", "--flat"]));
+    let bom = run(&mut fx.s4(["^name", "ini/bom.ini", "--flat"]));
     assert_eq!(stdout(&bom), "8: client │ name = needle client\n");
 }
 
@@ -488,7 +488,7 @@ fn h10_a_bom_file_keeps_its_offsets() {
 fn h11_in_headings_asks_for_names() {
     let fx = Fixture::new();
     ini(&fx, "pool", 2000);
-    let o = run(&mut fx.sfor(["--in-headings", "^host$", "ini", "--flat", "--sort", "path"]));
+    let o = run(&mut fx.s4(["--in-headings", "^host$", "ini", "--flat", "--sort", "path"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let out = stdout(&o);
     let lines: Vec<_> = out.lines().collect();
@@ -502,11 +502,11 @@ fn h11_in_headings_asks_for_names() {
 fn h12_helper_stderr_is_relayed() {
     let fx = Fixture::new();
     ini(&fx, "pool", 2000);
-    let knob = [("SFOR_EXAMPLE_STDERR", "hello from the helper")];
+    let knob = [("SEARCHFOR_EXAMPLE_STDERR", "hello from the helper")];
     let o = flat_ini(&fx, &["-j", "1"], &knob);
     assert_eq!(code(&o), 0);
     assert!(
-        stderr(&o).contains("sfor: ini: hello from the helper"),
+        stderr(&o).contains("s4: ini: hello from the helper"),
         "{}",
         stderr(&o)
     );
@@ -532,7 +532,7 @@ fn h13_helpers_exit_with_the_run() {
         let o = flat_ini(
             &fx,
             &["-j", "4"],
-            &[("SFOR_EXAMPLE_LOG", log.to_str().unwrap())],
+            &[("SEARCHFOR_EXAMPLE_LOG", log.to_str().unwrap())],
         );
         assert_eq!(stdout(&o), INI_TRAILS, "{mode}: {}", stderr(&o));
         let pids = pids(&log);
@@ -599,10 +599,10 @@ fn h14_install_a_grammar_and_use_it() {
     let fx = Fixture::new();
     let tmp = tempfile::tempdir().unwrap();
     let index = lua_index(tmp.path(), None);
-    let sfor = |args: &[&str]| run(fx.sfor(args).env("SFOR_GRAMMAR_INDEX", &index));
-    let o = sfor(&["--install-grammar", "lua"]);
+    let s4 = |args: &[&str]| run(fx.s4(args).env("SEARCHFOR_GRAMMAR_INDEX", &index));
+    let o = s4(&["--install-grammar", "lua"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    let o = sfor(&["--list-grammars"]);
+    let o = s4(&["--list-grammars"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let list = stdout(&o);
     assert!(
@@ -610,7 +610,7 @@ fn h14_install_a_grammar_and_use_it() {
             .any(|l| l.starts_with("lua ") && l.contains("installed") && l.contains("0.2.0")),
         "{list}"
     );
-    let o = sfor(&["--list-formats"]);
+    let o = s4(&["--list-formats"]);
     let formats = stdout(&o);
     assert!(
         formats
@@ -626,7 +626,7 @@ fn h14_install_a_grammar_and_use_it() {
         fx.file("player.lua"),
     )
     .unwrap();
-    let o = sfor(&["needle", "player.lua", "--flat"]);
+    let o = s4(&["needle", "player.lua", "--flat"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(stderr(&o), "");
     let out = stdout(&o);
@@ -644,8 +644,8 @@ fn h15b_a_grammar_helper_keeps_max_bytes() {
     let fx = Fixture::new();
     let tmp = tempfile::tempdir().unwrap();
     let index = lua_index_with(tmp.path(), None, "max_bytes = 10\n");
-    let sfor = |args: &[&str]| run(fx.sfor(args).env("SFOR_GRAMMAR_INDEX", &index));
-    let o = sfor(&["--install-grammar", "lua"]);
+    let s4 = |args: &[&str]| run(fx.s4(args).env("SEARCHFOR_GRAMMAR_INDEX", &index));
+    let o = s4(&["--install-grammar", "lua"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let player = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -655,7 +655,7 @@ fn h15b_a_grammar_helper_keeps_max_bytes() {
     for f in ["a.lua", "b.lua"] {
         std::fs::copy(player, fx.file("lua").join(f)).unwrap();
     }
-    let o = sfor(&["needle", "lua", "--flat", "--sort", "path"]);
+    let o = s4(&["needle", "lua", "--flat", "--sort", "path"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(
         stdout(&o),
@@ -666,9 +666,9 @@ fn h15b_a_grammar_helper_keeps_max_bytes() {
     );
     assert_eq!(
         stderr(&o),
-        "sfor: lua/a.lua: larger than `max_bytes` (10); files this large are not parsed (this warning is shown once)\n"
+        "s4: lua/a.lua: larger than `max_bytes` (10); files this large are not parsed (this warning is shown once)\n"
     );
-    let o = sfor(&["--in-headings", "update", "lua", "--flat", "--sort", "path"]);
+    let o = s4(&["--in-headings", "update", "lua", "--flat", "--sort", "path"]);
     assert_eq!(code(&o), 1, "{}", stdout(&o));
     assert_eq!(stderr(&o).matches("max_bytes").count(), 1, "{}", stderr(&o));
 }
@@ -679,8 +679,8 @@ fn h15_a_wrong_checksum_installs_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let index = lua_index(tmp.path(), Some(&"0".repeat(64)));
     let o = run(fx
-        .sfor(["--install-grammar", "lua"])
-        .env("SFOR_GRAMMAR_INDEX", &index));
+        .s4(["--install-grammar", "lua"])
+        .env("SEARCHFOR_GRAMMAR_INDEX", &index));
     assert_eq!(code(&o), 2, "{}", stderr(&o));
     assert!(stderr(&o).contains("SHA-256"), "{}", stderr(&o));
     assert!(!fx.grammars.path().join("lua").exists());
@@ -711,7 +711,7 @@ fn exit_within(child: &mut std::process::Child, limit: Duration) -> std::process
     status.unwrap_or_else(|| {
         let _ = child.kill();
         let _ = child.wait();
-        panic!("sfor did not exit within {limit:?}")
+        panic!("s4 did not exit within {limit:?}")
     })
 }
 
@@ -737,9 +737,9 @@ fn h16_ctrl_c_ends_every_helper() {
         // The request for web.ini hangs; the timeout is far beyond the test's limits.
         ini_command(&fx, &["sh", "-c", &script], "pool", 60_000);
         let log = fx.file("helper.log");
-        let mut c = fx.sfor(["needle", "ini/web.ini", "--flat"]);
-        c.env("SFOR_EXAMPLE_HANG", "web.ini")
-            .env("SFOR_EXAMPLE_LOG", &log)
+        let mut c = fx.s4(["needle", "ini/web.ini", "--flat"]);
+        c.env("SEARCHFOR_EXAMPLE_HANG", "web.ini")
+            .env("SEARCHFOR_EXAMPLE_LOG", &log)
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         if group {
@@ -751,7 +751,7 @@ fn h16_ctrl_c_ends_every_helper() {
             "no helper started"
         );
         let pid = child.id();
-        // (a) the terminal's Ctrl-C reaches the whole group, whose id is sfor's pid; (b) sfor
+        // (a) the terminal's Ctrl-C reaches the whole group, whose id is s4's pid; (b) s4
         // alone.
         sigint(&if group {
             format!("-{pid}")
@@ -766,7 +766,7 @@ fn h16_ctrl_c_ends_every_helper() {
             "group {group}: still under /proc: {left:?}"
         );
     }
-    // (c) No helper: nothing is installed, and SIGINT kills sfor as it kills rg.
+    // (c) No helper: nothing is installed, and SIGINT kills s4 as it kills rg.
     let fx = Fixture::new();
     let fifo = fx.file("never.md");
     assert!(
@@ -783,7 +783,7 @@ fn h16_ctrl_c_ends_every_helper() {
         .open(&fifo)
         .unwrap();
     let mut child = fx
-        .sfor(["--format", "markdown", "needle", "never.md"])
+        .s4(["--format", "markdown", "needle", "never.md"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -795,7 +795,7 @@ fn h16_ctrl_c_ends_every_helper() {
                 .any(|t| t == fifo)
         })
     });
-    assert!(opened, "sfor did not open the FIFO");
+    assert!(opened, "s4 did not open the FIFO");
     sigint(&child.id().to_string());
     let status = exit_within(&mut child, Duration::from_secs(2));
     assert_eq!(status.signal(), Some(SIGINT), "{status:?}");
@@ -807,7 +807,7 @@ fn h17_a_helpers_child_cannot_hold_sfor() {
     let fx = Fixture::new();
     ini(&fx, "pool", 2000);
     let started = Instant::now();
-    let o = flat_ini(&fx, &["-j", "1"], &[("SFOR_EXAMPLE_FORK", "1")]);
+    let o = flat_ini(&fx, &["-j", "1"], &[("SEARCHFOR_EXAMPLE_FORK", "1")]);
     let took = started.elapsed();
     assert!(took < Duration::from_secs(4), "took {took:?}");
     assert_eq!(code(&o), 0, "{}", stderr(&o));
@@ -859,7 +859,7 @@ fn assert_app_trails(what: &str, o: &Output, took: Duration) {
 fn h18_streams_named_on_the_command_line_go_through_a_temporary_file() {
     let fx = Fixture::new();
     ini(&fx, "pool", 2000);
-    let named = |path: &str| fx.sfor(["--format", "ini", "needle", path, "--flat"]);
+    let named = |path: &str| fx.s4(["--format", "ini", "needle", path, "--flat"]);
     for pipe in [true, false] {
         let (o, t) = with_app_on_stdin(&fx, named("/dev/stdin"), pipe);
         assert_app_trails(&format!("/dev/stdin, pipe {pipe}"), &o, t);
@@ -879,7 +879,7 @@ fn h18_streams_named_on_the_command_line_go_through_a_temporary_file() {
     let to = fifo.clone();
     let writer = std::thread::spawn(move || {
         use std::io::Write;
-        // Opening for writing waits for sfor to open it for reading.
+        // Opening for writing waits for s4 to open it for reading.
         let mut f = std::fs::OpenOptions::new().write(true).open(to).unwrap();
         let _ = f.write_all(&app);
     });
@@ -887,7 +887,7 @@ fn h18_streams_named_on_the_command_line_go_through_a_temporary_file() {
     let o = run(&mut named(fifo.to_str().unwrap()));
     assert_app_trails("FIFO", &o, started.elapsed());
     writer.join().unwrap();
-    // `stdin` in /dev names sfor's own stdin.
+    // `stdin` in /dev names s4's own stdin.
     for pipe in [true, false] {
         let mut c = named("stdin");
         c.current_dir("/dev");
@@ -897,7 +897,7 @@ fn h18_streams_named_on_the_command_line_go_through_a_temporary_file() {
     // A symlink to /dev/stdin, with the Format of its own name.
     std::os::unix::fs::symlink("/dev/stdin", fx.file("ini/link.ini")).unwrap();
     for pipe in [true, false] {
-        let c = fx.sfor(["needle", "ini/link.ini", "--flat"]);
+        let c = fx.s4(["needle", "ini/link.ini", "--flat"]);
         let (o, t) = with_app_on_stdin(&fx, c, pipe);
         assert_app_trails(&format!("ini/link.ini, pipe {pipe}"), &o, t);
     }
@@ -913,14 +913,14 @@ fn h19_a_failing_helper_is_plain_like_rg() {
     let body = format!("[s]\n{line}");
     std::fs::write(fx.file("long.ini"), &body).unwrap();
     std::fs::write(fx.file("long.txt"), &body).unwrap();
-    let knob = ("SFOR_EXAMPLE_CRASH", "long.ini");
+    let knob = ("SEARCHFOR_EXAMPLE_CRASH", "long.ini");
     for layout in [&["--flat"][..], &["--tree"], &[]] {
         let mut ini_args = vec!["needle", "long.ini"];
         ini_args.extend_from_slice(layout);
         let mut txt_args = vec!["needle", "long.txt"];
         txt_args.extend_from_slice(layout);
-        let got = run(fx.sfor(&ini_args).env(knob.0, knob.1));
-        let want = run(&mut fx.sfor(&txt_args));
+        let got = run(fx.s4(&ini_args).env(knob.0, knob.1));
+        let want = run(&mut fx.s4(&txt_args));
         assert_eq!(code(&got), 0, "{layout:?}: {}", stderr(&got));
         assert!(stderr(&got).contains("long.ini"), "{}", stderr(&got));
         // The tree names its file.
@@ -930,9 +930,7 @@ fn h19_a_failing_helper_is_plain_like_rg() {
             "{layout:?}"
         );
     }
-    let o = run(fx
-        .sfor(["needle", "long.ini", "--json"])
-        .env(knob.0, knob.1));
+    let o = run(fx.s4(["needle", "long.ini", "--json"]).env(knob.0, knob.1));
     let m: Vec<serde_json::Value> = stdout(&o)
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())

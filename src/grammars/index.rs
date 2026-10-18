@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 pub const INDEX_VERSION: u32 = 1;
-/// Replaced by `SFOR_GRAMMAR_INDEX` (spec §7).
+/// Replaced by `SEARCHFOR_GRAMMAR_INDEX` (spec §7).
 pub const DEFAULT_INDEX: &str =
     "https://raw.githubusercontent.com/neitanod/searchfor/main/grammars/index.json";
 
@@ -48,7 +48,7 @@ impl Index {
         let i: Index = serde_json::from_slice(bytes)?;
         if i.version != INDEX_VERSION {
             anyhow::bail!(
-                "the Grammar index is version {}; this sfor reads version {INDEX_VERSION}",
+                "the Grammar index is version {}; this s4 reads version {INDEX_VERSION}",
                 i.version
             );
         }

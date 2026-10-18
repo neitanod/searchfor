@@ -166,8 +166,8 @@ exit 0, as `rg --json` reports the Match (code review r3, Fable #4; code review 
 
 ```sh
 printf 'one\nneedle\n\0\n' > nul.txt
-sfor --flat -B1 needle nul.txt
-printf 'needle first\nmore\0binary needle\nneedle again\n' | sfor --flat -v -C1 needle
+s4 --flat -B1 needle nul.txt
+printf 'needle first\nmore\0binary needle\nneedle again\n' | s4 --flat -v -C1 needle
 ```
 
 ### The `--json` statistics with `--within` and `-m`
@@ -192,12 +192,12 @@ gives the same numbers:
 
 ```sh
 printf '# needle\nneedle again\nmore text here\n' > h.md
-sfor --in-headings --json -m1 needle h.md    # bytes_searched 37; rg --json -m1: 9
+s4 --in-headings --json -m1 needle h.md    # bytes_searched 37; rg --json -m1: 9
 ```
 
 ### Stdin or a FIFO read to the end with `-m`
 
-rg 14.1.1 stops reading stdin or a FIFO at the `-m`th Match. sfor does too in `--flat`,
+rg 14.1.1 stops reading stdin or a FIFO at the `-m`th Match. s4 does too in `--flat`,
 `--tree` and `--no-trail`, but reads the input to its end in these cases, which on an input
 that never ends (`yes`) never answer:
 
@@ -211,7 +211,7 @@ A plain-text Format gets no Outline, so `--expand` and `--json` stop as rg does 
 r4, Fable #5):
 
 ```sh
-yes | sfor --format markdown --json -m1 y    # does not end; rg -m1 y does
+yes | s4 --format markdown --json -m1 y    # does not end; rg -m1 y does
 ```
 
 ### Plain files in the Trail layouts
@@ -224,8 +224,8 @@ layout is Sebastián's decision (the Hilo, 17/10/2026, after code review m3-code
 
 ```sh
 printf 'needle\n' > notes.txt
-sfor needle notes.txt            # 1: needle
-sfor --no-trail needle notes.txt # needle, as rg
+s4 needle notes.txt            # 1: needle
+s4 --no-trail needle notes.txt # needle, as rg
 ```
 
 ### `--in-headings` on UTF-16 with a NUL character and a context
@@ -240,7 +240,7 @@ that buffer can be missing (fix after code review r9).
 
 rg 14.1.1 prints `binary file matches (found "\0" byte around offset N)` for an ELF, PE or
 Mach-O file that it searches with a Match (a file named on the command line, or any with
-`--binary`), and stops at its first Match. sfor prints one row per printable string that holds
+`--binary`), and stops at its first Match. s4 prints one row per printable string that holds
 Matches instead, at the hex offset of its first Match and with its Trail (spec §5.7), and so
 searches the whole file: in `--json`, `bytes_searched` is the file's size, `matched_lines` the
 rows and `matches` the Matches, and `binary_offset` is null. `-c`, `-l`, `-q` and `--no-trail`
@@ -248,8 +248,8 @@ print what rg prints. With `-v` the file is printed as rg prints it. A walked ob
 without `--binary` stops at its first NUL, as in rg, and prints nothing (M4 plan, D4):
 
 ```sh
-sfor --flat version /usr/bin/ls      # rows; rg: binary file matches
-sfor --flat --binary version /usr/bin    # the same for every object file with a Match
+s4 --flat version /usr/bin/ls      # rows; rg: binary file matches
+s4 --flat --binary version /usr/bin    # the same for every object file with a Match
 ```
 
 ### Documents with `--docs`

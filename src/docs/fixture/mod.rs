@@ -1,6 +1,6 @@
 //! Small documents written by code, for the tests of the Extractors, the end-to-end tests, the
 //! fuzz and the perf ceilings (M4 plan, D19). Each is the least a reader of its format needs,
-//! written here so no fixture comes from a third party. Not used by `sfor` itself.
+//! written here so no fixture comes from a third party. Not used by `s4` itself.
 use std::io::{Cursor, Write};
 
 mod epub;

@@ -49,7 +49,7 @@ pub fn run(argv: Vec<OsString>) -> i32 {
     match main(&args) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("sfor: {e:#}");
+            eprintln!("s4: {e:#}");
             2
         }
     }
@@ -66,7 +66,7 @@ impl Messages {
     fn error(&self, msg: impl std::fmt::Display) {
         self.errored.store(true, Relaxed);
         if !self.silent {
-            eprintln!("sfor: {msg}");
+            eprintln!("s4: {msg}");
         }
     }
 
@@ -109,9 +109,7 @@ fn list_grammars(msgs: &Messages) -> i32 {
         .and_then(|b| Index::parse(&b))
         .map_err(|e| format!("{e:#}"));
     if let Err(e) = &index {
-        msgs.warn(format_args!(
-            "sfor: the Grammar index is not available: {e}"
-        ));
+        msgs.warn(format_args!("s4: the Grammar index is not available: {e}"));
     }
     let installed = grammars::grammars_dir()
         .map(|d| grammars::installed(&d))
@@ -132,7 +130,7 @@ fn install_grammar(lang: &str) -> i32 {
     use crate::grammars::{self, index::Index, install};
     let done = (|| {
         let dir = grammars::grammars_dir().ok_or_else(|| {
-            anyhow::anyhow!("there is no Grammar directory (no data directory, and SFOR_GRAMMARS_DIR is not set)")
+            anyhow::anyhow!("there is no Grammar directory (no data directory, and SEARCHFOR_GRAMMARS_DIR is not set)")
         })?;
         let index = Index::parse(&grammars::index::fetch(&grammars::index_url())?)?;
         install::install(&index, lang, &dir)
@@ -143,7 +141,7 @@ fn install_grammar(lang: &str) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("sfor: {e:#}");
+            eprintln!("s4: {e:#}");
             2
         }
     }
@@ -179,7 +177,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
                 0
             }
             Err(e) => {
-                eprintln!("sfor: {e:#}");
+                eprintln!("s4: {e:#}");
                 2
             }
         });
@@ -193,7 +191,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
 
     // Patterns and paths (step 4).
     if args.pattern.is_none() && args.regexp.is_empty() && args.pattern_files.is_empty() {
-        eprintln!("sfor: a pattern is required: give one, or use -e or -f");
+        eprintln!("s4: a pattern is required: give one, or use -e or -f");
         return Ok(2);
     }
     let pats = args.patterns()?;
@@ -649,7 +647,7 @@ impl Ctx<'_> {
 
     /// Extracts a document's text (`Through::Docs`). A file whose bytes are not of its
     /// document Format is searched as it is, silently; one the Extractor cannot read is too,
-    /// with one warning, `sfor: <path>: <format>: <reason>` (spec §5.8, M4 plan D10).
+    /// with one warning, `s4: <path>: <format>: <reason>` (spec §5.8, M4 plan D10).
     fn prepare(&self, mut t: Target) -> Target {
         let Some(Through::Docs(name, extractor)) = &t.through else {
             return t;
@@ -676,7 +674,7 @@ impl Ctx<'_> {
             Ok(e) => {
                 if e.cut {
                     self.msgs.warn(format_args!(
-                        "sfor: {}: {name}: the text is cut at {} MiB",
+                        "s4: {}: {name}: the text is cut at {} MiB",
                         t.path.display(),
                         docs::MAX_TEXT >> 20
                     ));
@@ -685,12 +683,12 @@ impl Ctx<'_> {
                 t
             }
             // A SIGINT or SIGTERM cancelled the run: its readers were killed and no new one
-            // starts, and sfor is about to die by the signal, so nothing is printed, as
+            // starts, and s4 is about to die by the signal, so nothing is printed, as
             // ripgrep prints nothing then (spec §4.4, §5.8; M4 plan r6, Fable #1).
             Err(_) if crate::helper::host::cancel::GLOBAL.cancelled() => as_is(t),
             Err(e) => {
                 self.msgs
-                    .warn(format_args!("sfor: {}: {name}: {e}", t.path.display()));
+                    .warn(format_args!("s4: {}: {name}: {e}", t.path.display()));
                 as_is(t)
             }
         }
@@ -734,7 +732,7 @@ impl Ctx<'_> {
             self.printed.store(true, Relaxed);
         }
         if let Err(e) = self.out.print(buf) {
-            // A closed pipe (`sfor x | head`) ends the run quietly, as ripgrep.
+            // A closed pipe (`s4 x | head`) ends the run quietly, as ripgrep.
             if e.kind() != std::io::ErrorKind::BrokenPipe {
                 self.msgs.error(e);
             }
@@ -1127,7 +1125,7 @@ impl Ctx<'_> {
             Some(Ok(o)) => Some(o),
             Some(Err(e)) => {
                 self.msgs
-                    .warn(format_args!("sfor: {}: {e:#}", src.path.display()));
+                    .warn(format_args!("s4: {}: {e:#}", src.path.display()));
                 None
             }
             None => return false,
@@ -1685,7 +1683,7 @@ impl Ctx<'_> {
                     // (a disabled helper) says nothing more (spec §4.4, Failures).
                     if e.downcast_ref::<crate::helper::Unavailable>().is_none() {
                         self.msgs
-                            .warn(format_args!("sfor: {}: {e:#}", src.path.display()));
+                            .warn(format_args!("s4: {}: {e:#}", src.path.display()));
                     }
                     return Err(());
                 }
@@ -1977,7 +1975,7 @@ impl Ctx<'_> {
             }
             Ok(_) => {
                 self.msgs.warn(format_args!(
-                    "sfor: {}: the Processor returned the wrong number of Trails",
+                    "s4: {}: the Processor returned the wrong number of Trails",
                     input.path.display()
                 ));
                 None
@@ -1985,7 +1983,7 @@ impl Ctx<'_> {
             Err(e) => {
                 if e.downcast_ref::<crate::helper::Unavailable>().is_none() {
                     self.msgs
-                        .warn(format_args!("sfor: {}: {e:#}", input.path.display()));
+                        .warn(format_args!("s4: {}: {e:#}", input.path.display()));
                 }
                 None
             }
@@ -2440,7 +2438,7 @@ mod tests {
     }
 
     fn searcher_for(argv: &[&str]) -> (Searcher, RegexMatcher, bool) {
-        let mut v = vec!["sfor"];
+        let mut v = vec!["s4"];
         v.extend_from_slice(argv);
         let a = cli::parse(v.iter().map(Into::into).collect()).unwrap();
         let m = search::matcher(&a, &a.patterns().unwrap().patterns).unwrap();
@@ -2453,7 +2451,7 @@ mod tests {
     #[test]
     fn stdin_alone_has_no_line_numbers_on_a_tty() {
         let a = |argv: &[&str]| {
-            let mut v = vec!["sfor", "--no-trail"];
+            let mut v = vec!["s4", "--no-trail"];
             v.extend_from_slice(argv);
             cli::parse(v.iter().map(Into::into).collect()).unwrap()
         };

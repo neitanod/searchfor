@@ -1,4 +1,4 @@
-//! The Lua Grammar Helper over its pipes (spec §4.4, §7), without sfor.
+//! The Lua Grammar Helper over its pipes (spec §4.4, §7), without s4.
 use searchfor::formats::definition::FormatDefinition;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
@@ -139,7 +139,7 @@ fn names_list_the_functions() {
 
 #[test]
 fn a_file_over_max_bytes_is_not_parsed() {
-    // Spec §5.3 (review m2-code-r1, Codex #2): sfor stops such a file before the request, and
+    // Spec §5.3 (review m2-code-r1, Codex #2): s4 stops such a file before the request, and
     // the helper refuses it too, for `trails` and `names`.
     let mut h = H::start();
     let mut params = lua_params();
@@ -337,11 +337,13 @@ fn the_schema_accepts_an_entry_and_refuses_broken_ones() {
 
 /// Task 8.2: the build script's entry, wrapped as an index, validates against the schema, and
 /// the binary it names is a working Lua Grammar Helper for this system. It rebuilds the helper
-/// in release, so it runs only with `SFOR_TEST_BUILD_SCRIPT=1`.
+/// in release, so it runs only with `SEARCHFOR_TEST_BUILD_SCRIPT=1`.
 #[test]
 fn the_build_script_prints_a_valid_index_entry() {
-    if std::env::var_os("SFOR_TEST_BUILD_SCRIPT").is_none() {
-        eprintln!("skipped: set SFOR_TEST_BUILD_SCRIPT=1 to run scripts/build-grammar-helper.sh");
+    if std::env::var_os("SEARCHFOR_TEST_BUILD_SCRIPT").is_none() {
+        eprintln!(
+            "skipped: set SEARCHFOR_TEST_BUILD_SCRIPT=1 to run scripts/build-grammar-helper.sh"
+        );
         return;
     }
     let out = std::env::temp_dir().join(format!("sfor-gh-{}", std::process::id()));

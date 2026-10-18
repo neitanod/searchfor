@@ -123,7 +123,7 @@ mod tests {
     use std::ffi::OsString;
 
     fn pre(args: &[&str]) -> Preprocess {
-        let mut v = vec![OsString::from("sfor"), OsString::from("x")];
+        let mut v = vec![OsString::from("s4"), OsString::from("x")];
         v.extend(args.iter().map(OsString::from));
         Preprocess::new(&crate::cli::parse(v).unwrap(), Path::new("/")).unwrap()
     }

@@ -1,6 +1,6 @@
 # searchfor
 
-searchfor (command: `sfor`) is a ripgrep-compatible search tool that tells you *where* each
+searchfor (command: `s4`) is a ripgrep-compatible search tool that tells you *where* each
 match lives inside the structure of its file: the headings above it in Markdown, the class
 and function around it in code, the key path in YAML/JSON/TOML, the section and symbol in a
 binary.
@@ -36,7 +36,7 @@ _Avoid_: sniffer, classifier
 
 **Grammar**:
 A tree-sitter parser for one programming language. The Grammars of the v1 code Formats are
-compiled into sfor; any other one comes as a **Grammar Helper**.
+compiled into s4; any other one comes as a **Grammar Helper**.
 _Avoid_: parser, language pack
 
 ### Describing where a match is
@@ -47,7 +47,7 @@ The component that reads a file of a given **Format** and produces the **Trail**
 _Avoid_: parser, handler, plugin
 
 **Helper Processor**:
-A **Processor** that runs as a separate program and talks to sfor over protocol v1, JSON lines
+A **Processor** that runs as a separate program and talks to s4 over protocol v1, JSON lines
 on its stdin and stdout. It is started once per search, when the first file of its **Format**
 needs a **Trail**, and runs in one of three modes its **Format Definition** names: `pool`
 (several copies, one file each at a time), `concurrent` (one process, several files at once,
@@ -60,7 +60,7 @@ Definition** with `processor = "external"`.
 _Avoid_: plugin, extension
 
 **Grammar Helper**:
-A **Helper Processor** built by searchfor that carries one **Grammar** not compiled into sfor,
+A **Helper Processor** built by searchfor that carries one **Grammar** not compiled into s4,
 installed with `--install-grammar` together with its **Format Definition**.
 _Avoid_: grammar plugin, grammar module
 

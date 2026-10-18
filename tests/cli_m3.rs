@@ -14,7 +14,7 @@ const FORMATS: &[(&str, &str)] = &[
 ];
 
 fn flat(fx: &Fixture, args: &[&str]) -> String {
-    let o = run(&mut fx.sfor(args.iter().copied().chain(["--flat"])));
+    let o = run(&mut fx.s4(args.iter().copied().chain(["--flat"])));
     assert_eq!(code(&o), 0, "{args:?}: {}", stderr(&o));
     assert_eq!(stderr(&o), "", "{args:?}");
     stdout(&o)
@@ -26,7 +26,7 @@ fn m3_01_every_format_in_three_layouts() {
     let fx = Fixture::new();
     for (name, file) in FORMATS {
         for (layout, flag) in [("tree", "--tree"), ("flat", "--flat"), ("json", "--json")] {
-            let o = run(&mut fx.sfor(["needle", file, flag]));
+            let o = run(&mut fx.s4(["needle", file, flag]));
             assert_eq!(code(&o), 0, "{name} {layout}: {}", stderr(&o));
             assert!(stderr(&o).is_empty(), "{name} {layout}: {}", stderr(&o));
             let mut out = stdout(&o);
@@ -112,7 +112,7 @@ fn m3_05_subtitle_cues() {
          10: cue 2 00:02.500 │ <v Ana>The needle is here.\n\
          13: cue 3 01:00:00.000 │ needle at one hour\n"
     );
-    let o = stdout(&run(&mut fx.sfor(["needle", "subs/movie.srt", "--tree"])));
+    let o = stdout(&run(&mut fx.s4(["needle", "subs/movie.srt", "--tree"])));
     assert!(
         o.contains("  cue 2 00:00:04,000 --> 00:00:06,000\n    8:- A needle"),
         "{o}"
@@ -130,7 +130,7 @@ fn m3_06_within_and_expand() {
         "23: main#content › section#pricing.card.wide › table › tr[3] › td[2] │         <tr><td>Pro<td>needle 9\n"
     );
     // A CSV column's Section is its row (D10): --expand prints the record, both lines.
-    let o = stdout(&run(&mut fx.sfor([
+    let o = stdout(&run(&mut fx.s4([
         "lines with",
         "table/plans.csv",
         "--expand",
@@ -174,10 +174,10 @@ fn m3_08_a_name_with_a_decoded_line_break_stays_on_its_row() {
             format!("1: a\\nb │ {body}"),
             "{file}"
         );
-        let tree = stdout(&run(&mut fx.sfor(["needle", file, "--tree"])));
+        let tree = stdout(&run(&mut fx.s4(["needle", file, "--tree"])));
         assert_eq!(tree.lines().count(), 3, "{file}: {tree}");
     }
-    let json = stdout(&run(&mut fx.sfor(["needle", "k.json", "--json"])));
+    let json = stdout(&run(&mut fx.s4(["needle", "k.json", "--json"])));
     assert!(
         json.contains(r#""trail":[{"kind":"key","name":"a\nb""#),
         "{json}"
@@ -217,7 +217,7 @@ fn m3_10_no_trail_is_ripgrep() {
             l.sort();
             l
         };
-        let ours = sorted(run(&mut fx.sfor(["--no-trail", "-n", "needle", dir])));
+        let ours = sorted(run(&mut fx.s4(["--no-trail", "-n", "needle", dir])));
         let theirs = sorted(run(&mut fx.rg(["-n", "needle", dir])));
         assert!(!ours.is_empty(), "{dir}");
         assert_eq!(ours, theirs, "{dir}");
@@ -227,7 +227,7 @@ fn m3_10_no_trail_is_ripgrep() {
 #[test]
 fn m3_11_list_formats_has_the_six() {
     let fx = Fixture::new();
-    let o = stdout(&run(&mut fx.sfor(["--list-formats"])));
+    let o = stdout(&run(&mut fx.s4(["--list-formats"])));
     for (name, _) in FORMATS {
         assert!(
             o.lines()
@@ -256,10 +256,10 @@ fn m3_12_utf16_subtitles_keep_their_cues() {
 fn m3_13_latin1_headers_are_decoded_lossily() {
     let fx = Fixture::new();
     std::fs::write(fx.file("l.csv"), b"A\xf1o,Valor\n1999,needle\n").unwrap();
-    let o = run(&mut fx.sfor(["needle", "l.csv", "--flat"]));
+    let o = run(&mut fx.s4(["needle", "l.csv", "--flat"]));
     assert_eq!(stdout(&o), "2: row 1 › Valor │ 1999,needle\n");
     std::fs::write(fx.file("m.csv"), b"A\xf1o,Valor\nneedle,1\n").unwrap();
-    let o = run(&mut fx.sfor(["needle", "m.csv", "--flat"]));
+    let o = run(&mut fx.s4(["needle", "m.csv", "--flat"]));
     assert_eq!(stdout(&o), "2: row 1 › A\u{FFFD}o │ needle,1\n");
 }
 
@@ -283,7 +283,7 @@ fn m3_14_a_cut_name_stays_searchable_up_to_its_cut() {
         ("long.vtt", "AAAA"),
         ("longn.csv", "ññññ"),
     ] {
-        let o = run(&mut fx.sfor(["--flat", "--in-headings", pattern, file]));
+        let o = run(&mut fx.s4(["--flat", "--in-headings", pattern, file]));
         assert_eq!(code(&o), 0, "{file}: {}", stderr(&o));
         assert_eq!(stdout(&o).lines().count(), 1, "{file}");
     }
@@ -291,7 +291,7 @@ fn m3_14_a_cut_name_stays_searchable_up_to_its_cut() {
     // Codex #2).
     let l1 = |file: &str, body: Vec<u8>| {
         std::fs::write(fx.file(file), body).unwrap();
-        let o = run(&mut fx.sfor(["--flat", "--in-headings", "AAAA", file]));
+        let o = run(&mut fx.s4(["--flat", "--in-headings", "AAAA", file]));
         assert_eq!(code(&o), 0, "{file}: {}", stderr(&o));
     };
     l1(
@@ -312,7 +312,7 @@ fn m3_14_a_cut_name_stays_searchable_up_to_its_cut() {
         .concat(),
     );
     // The cut's `…` maps to nothing.
-    let o = run(&mut fx.sfor(["--in-headings", "…", "long.csv"]));
+    let o = run(&mut fx.s4(["--in-headings", "…", "long.csv"]));
     assert_eq!(code(&o), 1);
 }
 
@@ -321,7 +321,7 @@ fn m3_15_a_name_match_across_a_replaced_byte_is_one_match() {
     // M3 review r3, Codex #1: `A\xe9B` is three pieces (D31); `A.*B` is one Match over 0..3.
     let fx = Fixture::new();
     std::fs::write(fx.file("l.csv"), b"A\xe9B\nvalue\n").unwrap();
-    let out = stdout(&run(&mut fx.sfor([
+    let out = stdout(&run(&mut fx.s4([
         "--json",
         "--in-headings",
         "A.*B",
@@ -348,7 +348,7 @@ fn m3_16_a_quoted_header_cell_with_commas_keeps_its_semicolons() {
         flat(&fx, &["--format", "csv", "needle", "people.csv"]),
         "2: row 1 › Plan │ 1;\"Doe, John, Paul, Jr\";needle\n"
     );
-    let o = run(&mut fx.sfor(["--flat", "--within", "Suffix", "needle", "people.csv"]));
+    let o = run(&mut fx.s4(["--flat", "--within", "Suffix", "needle", "people.csv"]));
     assert_eq!(code(&o), 1, "{}", stdout(&o));
 }
 
@@ -365,7 +365,7 @@ fn m3_17_an_invalid_xml_declaration_ends_the_structure() {
         ),
     ] {
         std::fs::write(fx.file(file), body).unwrap();
-        let o = run(&mut fx.sfor(["--format", "xml", "--flat", "--within", "a", "needle", file]));
+        let o = run(&mut fx.s4(["--format", "xml", "--flat", "--within", "a", "needle", file]));
         assert_eq!(code(&o), 1, "{file}: {}", stdout(&o));
     }
 }
@@ -389,17 +389,17 @@ fn m3_18_a_doctype_without_a_name_ends_the_structure() {
         ("inside.xml", "<r><!DOCTYPE r><a>needle</a></r>\n"),
     ] {
         std::fs::write(fx.file(file), body).unwrap();
-        let o = run(&mut fx.sfor(["--format", "xml", "--flat", "--within", "a", "needle", file]));
+        let o = run(&mut fx.s4(["--format", "xml", "--flat", "--within", "a", "needle", file]));
         assert_eq!(code(&o), 1, "{file}: {}", stdout(&o));
         let input = std::fs::File::open(fx.file(file)).unwrap();
         let o = run(fx
-            .sfor(["--format", "xml", "--flat", "--within", "a", "needle"])
+            .s4(["--format", "xml", "--flat", "--within", "a", "needle"])
             .stdin(input));
         assert_eq!(code(&o), 1, "{file} on stdin: {}", stdout(&o));
     }
     // A doctype with its name keeps the structure.
     std::fs::write(fx.file("named.xml"), "<!DOCTYPE r><r><a>needle</a></r>\n").unwrap();
-    let o = run(&mut fx.sfor(["--flat", "--within", "a", "needle", "named.xml"]));
+    let o = run(&mut fx.s4(["--flat", "--within", "a", "needle", "named.xml"]));
     assert_eq!(code(&o), 0);
     assert_eq!(stdout(&o), "1: r › a │ <!DOCTYPE r><r><a>needle</a></r>\n");
 }
@@ -422,7 +422,7 @@ fn m3_19_the_csv_delimiter_comes_from_the_first_record() {
         ),
     ] {
         std::fs::write(fx.file(file), body).unwrap();
-        let o = run(&mut fx.sfor(["--flat", "needle", file]));
+        let o = run(&mut fx.s4(["--flat", "needle", file]));
         assert_eq!(code(&o), 0, "{file}");
         assert_eq!(stdout(&o), row, "{file}");
     }

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # M2 acceptance (spec §11 #13, plan D22), on code corpora:
-#   - a pattern no file matches, and --no-trail: sfor ≤ 1.1 × rg;
-#   - a pattern matching under 5 % of the files: sfor − rg ≤ matching bytes ÷ (2.5 MB/s × threads);
+#   - a pattern no file matches, and --no-trail: s4 ≤ 1.1 × rg;
+#   - a pattern matching under 5 % of the files: s4 − rg ≤ matching bytes ÷ (2.5 MB/s × threads);
 #   - a dense pattern: reported only.
 # Usage: scripts/bench-code.sh [DIR_A [SPARSE_A [DIR_B [SPARSE_B]]]]
-# Needs hyperfine, jq and GNU stat. SFOR_BIN replaces the sfor under test (to check that a
-# broken one fails the script: SFOR_BIN=scripts/fake-sfor-exit-2.sh must make it exit 1).
+# Needs hyperfine, jq and GNU stat. SEARCHFOR_BIN replaces the s4 under test (to check that a
+# broken one fails the script: SEARCHFOR_BIN=scripts/fake-sfor-exit-2.sh must make it exit 1).
 set -euo pipefail
 # Decimal points in awk's output, whatever the user's locale.
 export LC_ALL=C
@@ -16,13 +16,13 @@ dir_b="${3:-$HOME/robotin/apps}"; sparse_b="${4:-TODO}"
 # two, the corpus ~/robotin/apps never matches it.
 none='zzqq-sfor-bench-''absent'
 cargo build --release --quiet
-sfor="${SFOR_BIN:-./target/release/sfor}"
-export SFOR_BIN_PATH="$sfor"
+s4="${SEARCHFOR_BIN:-./target/release/s4}"
+export SEARCHFOR_BIN_PATH="$s4"
 # Isolation (review r1, Codex #12): no user Definitions or Grammars, no network, no rg config.
 iso=$(mktemp -d)
 trap 'rm -rf "$iso"' EXIT
 mkdir -p "$iso/formats" "$iso/grammars"
-export SFOR_FORMATS_DIR="$iso/formats" SFOR_GRAMMARS_DIR="$iso/grammars" SFOR_GRAMMAR_INDEX="file://$iso/none.json"
+export SEARCHFOR_FORMATS_DIR="$iso/formats" SEARCHFOR_GRAMMARS_DIR="$iso/grammars" SEARCHFOR_GRAMMAR_INDEX="file://$iso/none.json"
 unset RIPGREP_CONFIG_PATH
 # The code Formats of M2, for the parsing budget (Fable #7): rg's types for them.
 code_types=(-t php -t js -t ts -t sh -t go -t rust -t py -t json -t yaml -t toml)
@@ -30,16 +30,16 @@ code_types=(-t php -t js -t ts -t sh -t go -t rust -t py -t json -t yaml -t toml
 threads=$(nproc); [ "$threads" -gt 12 ] && threads=12
 fail=0
 
-# median NAME CMD_RG CMD_SFOR → prints sfor/rg and sets RG_S, SFOR_S (seconds).
+# median NAME CMD_RG CMD_S4 → prints s4/rg and sets RG_S, SEARCHFOR_S (seconds).
 median() {
   hyperfine --ignore-failure --warmup 3 --runs 20 --export-json "/tmp/sfor-bench-code-$1.json" "$2" "$3" >/dev/null
   RG_S=$(jq '.results[0].median' "/tmp/sfor-bench-code-$1.json")
-  SFOR_S=$(jq '.results[1].median' "/tmp/sfor-bench-code-$1.json")
-  awk -v a="$SFOR_S" -v b="$RG_S" -v n="$1" 'BEGIN { printf "%-22s rg %.3f s  sfor %.3f s  ratio %.2f\n", n, b, a, a / b }'
+  SEARCHFOR_S=$(jq '.results[1].median' "/tmp/sfor-bench-code-$1.json")
+  awk -v a="$SEARCHFOR_S" -v b="$RG_S" -v n="$1" 'BEGIN { printf "%-22s rg %.3f s  s4 %.3f s  ratio %.2f\n", n, b, a, a / b }'
 }
 
-# check NAME EXPECTED SFOR_FLAG RG_ARGS…: one run of each program, outputs in $iso (review r4,
-# Codex #4, Fable #4). sfor must exit as rg does and write to stderr only what rg writes (an
+# check NAME EXPECTED SEARCHFOR_FLAG RG_ARGS…: one run of each program, outputs in $iso (review r4,
+# Codex #4, Fable #4). s4 must exit as rg does and write to stderr only what rg writes (an
 # unreadable file warns in both, and both may exit 2 — Codex r3 #4); it prints at least as
 # many lines as rg (`--flat` prints a line once per Trail; `--no-trail` exactly rg's). The
 # pattern must behave as the benchmark assumes, on rg's own output: EXPECTED=found means rg
@@ -48,19 +48,19 @@ median() {
 check() {
   local name="$1" expected="$2" flag="$3"; shift 3
   local code=0 rgcode=0
-  "$sfor" --color never "$flag" "$@" >"$iso/sfor.out" 2>"$iso/sfor.err" || code=$?
+  "$s4" --color never "$flag" "$@" >"$iso/s4.out" 2>"$iso/s4.err" || code=$?
   rg --color never "$@" >"$iso/rg.out" 2>"$iso/rg.err" || rgcode=$?
   local err rgerr
-  err=$(sed 's/^sfor: //' "$iso/sfor.err" | sort)
+  err=$(sed 's/^s4: //' "$iso/s4.err" | sort)
   rgerr=$(sed 's/^rg: //' "$iso/rg.err" | sort)
   if [ "$code" != "$rgcode" ] || [ "$err" != "$rgerr" ]; then
-    echo "  FAIL $name: sfor exited $code, rg $rgcode; or stderr differs from rg's: ${err:0:300}"; fail=1; return
+    echo "  FAIL $name: s4 exited $code, rg $rgcode; or stderr differs from rg's: ${err:0:300}"; fail=1; return
   fi
   if { [ "$expected" = found ] && [ ! -s "$iso/rg.out" ]; } || { [ "$expected" = none ] && [ -s "$iso/rg.out" ]; }; then
     echo "  FAIL $name: rg's output says the pattern does not behave as assumed ($expected)"; fail=1; return
   fi
   local ours rgs
-  ours=$(wc -l <"$iso/sfor.out")
+  ours=$(wc -l <"$iso/s4.out")
   rgs=$(wc -l <"$iso/rg.out")
   if [ "$ours" -lt "$rgs" ] || { [ "$flag" = --no-trail ] && [ "$ours" != "$rgs" ]; }; then
     echo "  FAIL $name: $ours lines, rg printed $rgs"; fail=1
@@ -69,7 +69,7 @@ check() {
 
 corpus() {
   local name="$1" dir="$2" sparse="$3"
-  export SFOR_BENCH_DIR="$dir" SFOR_BENCH_PATTERN="$sparse" SFOR_BENCH_NONE="$none"
+  export SEARCHFOR_BENCH_DIR="$dir" SEARCHFOR_BENCH_PATTERN="$sparse" SEARCHFOR_BENCH_NONE="$none"
   local total hits bytes
   total=$(rg --files -- "$dir" | wc -l)
   hits=$( (rg -l -e "$sparse" -- "$dir" || true) | wc -l)
@@ -86,22 +86,22 @@ corpus() {
   check no-trail found --no-trail -e "$sparse" -- "$dir"
   [ "$fail" = 0 ] || return 0
   fail="$prior"
-  median "$name-none" 'rg --color never -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR"' \
-    '"$SFOR_BIN_PATH" --color never --flat -e "$SFOR_BENCH_NONE" -- "$SFOR_BENCH_DIR"'
-  awk -v a="$SFOR_S" -v b="$RG_S" 'BEGIN { exit !(a <= 1.1 * b) }' || { echo "  FAIL: over 1.1 × rg"; fail=1; }
-  median "$name-no-trail" 'rg --color never -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"' \
-    '"$SFOR_BIN_PATH" --color never --no-trail -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'
-  awk -v a="$SFOR_S" -v b="$RG_S" 'BEGIN { exit !(a <= 1.1 * b) }' || { echo "  FAIL: over 1.1 × rg"; fail=1; }
-  median "$name-sparse" 'rg --color never -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"' \
-    '"$SFOR_BIN_PATH" --color never --flat -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'
-  awk -v a="$SFOR_S" -v b="$RG_S" -v by="$bytes" -v t="$threads" \
+  median "$name-none" 'rg --color never -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR"' \
+    '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR"'
+  awk -v a="$SEARCHFOR_S" -v b="$RG_S" 'BEGIN { exit !(a <= 1.1 * b) }' || { echo "  FAIL: over 1.1 × rg"; fail=1; }
+  median "$name-no-trail" 'rg --color never -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"' \
+    '"$SEARCHFOR_BIN_PATH" --color never --no-trail -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"'
+  awk -v a="$SEARCHFOR_S" -v b="$RG_S" 'BEGIN { exit !(a <= 1.1 * b) }' || { echo "  FAIL: over 1.1 × rg"; fail=1; }
+  median "$name-sparse" 'rg --color never -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"' \
+    '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"'
+  awk -v a="$SEARCHFOR_S" -v b="$RG_S" -v by="$bytes" -v t="$threads" \
     'BEGIN { budget = by / (2.5e6 * t); printf "  extra %.3f s, budget %.3f s\n", a - b, budget; exit !(a - b <= budget) }' \
     || { echo "  FAIL: over the parsing budget"; fail=1; }
 }
 
 corpus registry "$dir_a" "$sparse_a"
 corpus apps "$dir_b" "$sparse_b"
-export SFOR_BENCH_DIR="$dir_a" SFOR_BENCH_PATTERN='fn new\('
-median registry-dense 'rg --color never -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"' \
-  '"$SFOR_BIN_PATH" --color never --flat -e "$SFOR_BENCH_PATTERN" -- "$SFOR_BENCH_DIR"'
+export SEARCHFOR_BENCH_DIR="$dir_a" SEARCHFOR_BENCH_PATTERN='fn new\('
+median registry-dense 'rg --color never -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"' \
+  '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"'
 exit "$fail"

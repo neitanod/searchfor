@@ -17,7 +17,7 @@ fn grammar() -> (&'static str, tree_sitter::Language) {
 struct Grammar(Compiled, u64);
 
 impl Grammar {
-    /// The file's bytes; an error over `max_bytes`, before reading it. sfor checks the size
+    /// The file's bytes; an error over `max_bytes`, before reading it. s4 checks the size
     /// before it asks (review m2-code-r1, Codex #2); this covers any other client.
     fn read(&self, path: &Path) -> anyhow::Result<Vec<u8>> {
         let err = |e: std::io::Error| anyhow::anyhow!("{}: {e}", path.display());

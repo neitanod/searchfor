@@ -1,5 +1,7 @@
 # searchfor M4 (v0.4: object files, documents with --docs, --pre and -z) Implementation Plan
 
+> **Note (18/10/2026):** since 18/10 the command is `s4` and the environment variables are `SEARCHFOR_*`; chunks 12–14 use those names.
+
 > **For agentic workers:** each chunk below is implemented by one subagent in its own git
 > worktree, following `test-driven-development`: every task writes its tests first, runs them
 > and sees them fail (RED), implements, and runs them green (GREEN). Steps use checkbox

@@ -4,17 +4,17 @@ pub mod install;
 
 use std::path::{Path, PathBuf};
 
-/// `SFOR_GRAMMARS_DIR` if set (tests), else `<data dir>/searchfor/grammars`.
+/// `SEARCHFOR_GRAMMARS_DIR` if set (tests), else `<data dir>/searchfor/grammars`.
 pub fn grammars_dir() -> Option<PathBuf> {
-    if let Some(d) = std::env::var_os("SFOR_GRAMMARS_DIR") {
+    if let Some(d) = std::env::var_os("SEARCHFOR_GRAMMARS_DIR") {
         return Some(PathBuf::from(d));
     }
     dirs::data_dir().map(|d| d.join("searchfor").join("grammars"))
 }
 
-/// `SFOR_GRAMMAR_INDEX` if set, else the index in the repository.
+/// `SEARCHFOR_GRAMMAR_INDEX` if set, else the index in the repository.
 pub fn index_url() -> String {
-    std::env::var("SFOR_GRAMMAR_INDEX").unwrap_or_else(|_| index::DEFAULT_INDEX.to_string())
+    std::env::var("SEARCHFOR_GRAMMAR_INDEX").unwrap_or_else(|_| index::DEFAULT_INDEX.to_string())
 }
 
 pub fn binary_name(lang: &str) -> String {

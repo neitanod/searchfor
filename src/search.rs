@@ -683,12 +683,9 @@ mod tests {
         let rg_default = std::thread::available_parallelism()
             .map_or(1, |n| n.get())
             .min(12);
-        assert_eq!(walker_threads(&args(&["sfor", "needle"])), rg_default);
-        assert_eq!(
-            walker_threads(&args(&["sfor", "-j0", "needle"])),
-            rg_default
-        );
-        assert_eq!(walker_threads(&args(&["sfor", "-j3", "needle"])), 3);
+        assert_eq!(walker_threads(&args(&["s4", "needle"])), rg_default);
+        assert_eq!(walker_threads(&args(&["s4", "-j0", "needle"])), rg_default);
+        assert_eq!(walker_threads(&args(&["s4", "-j3", "needle"])), 3);
     }
 
     /// Code review r5, Fable #2: ripgrep 14.1.1 searches with one thread under `--sort`, with
@@ -696,17 +693,17 @@ mod tests {
     /// then its printer writes the separator between files.
     #[test]
     fn one_thread_as_ripgrep() {
-        let many = walker_threads(&args(&["sfor", "needle"])) > 1;
+        let many = walker_threads(&args(&["s4", "needle"])) > 1;
         assert!(one_thread(
-            &args(&["sfor", "--sort", "path", "needle"]),
+            &args(&["s4", "--sort", "path", "needle"]),
             false
         ));
-        assert!(one_thread(&args(&["sfor", "-j1", "needle"]), false));
-        assert!(one_thread(&args(&["sfor", "-j4", "needle"]), true));
-        assert!(!one_thread(&args(&["sfor", "-j4", "needle"]), false));
-        assert_eq!(one_thread(&args(&["sfor", "needle"]), false), !many);
+        assert!(one_thread(&args(&["s4", "-j1", "needle"]), false));
+        assert!(one_thread(&args(&["s4", "-j4", "needle"]), true));
+        assert!(!one_thread(&args(&["s4", "-j4", "needle"]), false));
+        assert_eq!(one_thread(&args(&["s4", "needle"]), false), !many);
         assert_eq!(
-            one_thread(&args(&["sfor", "--sort=none", "needle"]), false),
+            one_thread(&args(&["s4", "--sort=none", "needle"]), false),
             !many
         );
     }
@@ -777,7 +774,7 @@ mod tests {
             b"a\r\nneedle\r\nb\r\nneedle\r\n",
         ];
         for flags in [&["-C1"][..], &["-v"], &["-m1", "-A1"], &[]] {
-            let mut v = vec!["sfor"];
+            let mut v = vec!["s4"];
             v.extend_from_slice(flags);
             v.push("x");
             let a = args(&v);
@@ -801,7 +798,7 @@ mod tests {
     #[test]
     fn match_and_context_with_offsets() {
         let src = Source::from_bytes("a.md".into(), b"one\ntwo needle\nthree\n".to_vec(), false);
-        let fm = run(&args(&["sfor", "-C1", "x"]), &["needle"], &src).unwrap();
+        let fm = run(&args(&["s4", "-C1", "x"]), &["needle"], &src).unwrap();
         assert_eq!(fm.items.len(), 3);
         let Item::Match(lm) = &fm.items[1] else {
             panic!()
@@ -812,13 +809,13 @@ mod tests {
         );
         assert_eq!(lm.anchors(), vec![8]);
         assert_eq!((fm.stats.matched_lines, fm.stats.bytes_searched), (1, 21));
-        assert!(run(&args(&["sfor", "x"]), &["absent"], &src).is_none());
+        assert!(run(&args(&["s4", "x"]), &["absent"], &src).is_none());
     }
 
     #[test]
     fn stats_count_submatches_and_lines() {
         let src = Source::from_bytes("a".into(), b"needle needle\nx\nneedle\n".to_vec(), false);
-        let fm = run(&args(&["sfor", "x"]), &["needle"], &src).unwrap();
+        let fm = run(&args(&["s4", "x"]), &["needle"], &src).unwrap();
         assert_eq!((fm.stats.matched_lines, fm.stats.matches), (2, 3));
         assert_eq!(fm.stats.binary_offset, None);
         assert_eq!(fm.stats.binary_cut, None);
@@ -829,7 +826,7 @@ mod tests {
     fn offsets_are_after_the_bom_and_utf16_is_decoded() {
         for f in ["misc/bom.md", "misc/utf16.md"] {
             let src = Source::open(&fixture(f), true).unwrap();
-            let fm = run(&args(&["sfor", "x"]), &["needle"], &src).unwrap();
+            let fm = run(&args(&["s4", "x"]), &["needle"], &src).unwrap();
             let Item::Match(lm) = &fm.items[0] else {
                 panic!()
             };
@@ -840,9 +837,9 @@ mod tests {
     #[test]
     fn binary_policy_explicit_vs_walked() {
         let walked = Source::open(&fixture("misc/bin.dat"), false).unwrap();
-        assert!(run(&args(&["sfor", "x"]), &["binary"], &walked).is_none());
+        assert!(run(&args(&["s4", "x"]), &["binary"], &walked).is_none());
         let explicit = Source::open(&fixture("misc/bin.dat"), true).unwrap();
-        let fm = run(&args(&["sfor", "x"]), &["binary"], &explicit).unwrap();
+        let fm = run(&args(&["s4", "x"]), &["binary"], &explicit).unwrap();
         assert!(fm.stats.binary_offset.is_some());
     }
 
@@ -850,20 +847,20 @@ mod tests {
     fn binary_cut_counts_the_items_before_the_nul() {
         // Walked (quit): the early Match is recorded, then the search stops at the NUL.
         let src = Source::open(&fixture("misc/late-nul.txt"), false).unwrap();
-        let fm = run(&args(&["sfor", "x"]), &["needle"], &src).unwrap();
+        let fm = run(&args(&["s4", "x"]), &["needle"], &src).unwrap();
         assert_eq!(fm.matches().count(), 1);
         assert_eq!(fm.stats.binary_cut, Some(1));
         // rg 14.1.1 --json walking misc: `"binary_offset":70013` in late-nul.txt's end message.
         assert_eq!(fm.stats.binary_offset, Some(70013));
         // -a: no binary detection at all.
-        let fm = run(&args(&["sfor", "-a", "x"]), &["needle"], &src).unwrap();
+        let fm = run(&args(&["s4", "-a", "x"]), &["needle"], &src).unwrap();
         assert_eq!(fm.matches().count(), 2);
         assert_eq!((fm.stats.binary_cut, fm.stats.binary_offset), (None, None));
     }
 
     #[test]
     fn submatches_as_ripgrep_records_them() {
-        let a = args(&["sfor", "x"]);
+        let a = args(&["s4", "x"]);
         let crlf = Source::from_bytes("a".into(), b"a\r\n".to_vec(), false);
         let Item::Match(m) = &run(&a, &["\\r"], &crlf).unwrap().items[0] else {
             panic!()
@@ -885,7 +882,7 @@ mod tests {
         // rg 14.1.1: `printf 'x\na' | rg --json '$'` (and the same as a file) reports 1..1 on
         // line 1 and no submatch on line 2.
         let src = Source::from_bytes("a".into(), b"x\na".to_vec(), false);
-        let a = args(&["sfor", "x"]);
+        let a = args(&["s4", "x"]);
         let want = vec![(1, 0, vec![(1, 1)]), (2, 2, vec![])];
         assert_eq!(summary(&run(&a, &["$"], &src).unwrap()), want);
         assert_eq!(summary(&run_in_memory(&a, &["$"], &src).unwrap()), want);
@@ -894,13 +891,13 @@ mod tests {
     #[test]
     fn submatches_see_the_buffer_like_ripgrep() {
         let src = Source::from_bytes("a".into(), b"bar\nfoo needle\n".to_vec(), false);
-        let fm = run(&args(&["sfor", "x"]), &["\\Afoo|needle"], &src).unwrap();
+        let fm = run(&args(&["s4", "x"]), &["\\Afoo|needle"], &src).unwrap();
         let Item::Match(m) = &fm.items[0] else {
             panic!()
         };
         assert_eq!(m.submatches, vec![Submatch { start: 4, end: 10 }]);
         let anchored = Source::from_bytes("a".into(), b"x\nneedle\n".to_vec(), false);
-        let fm = run(&args(&["sfor", "x"]), &["^needle"], &anchored).unwrap();
+        let fm = run(&args(&["s4", "x"]), &["^needle"], &anchored).unwrap();
         let Item::Match(m) = &fm.items[0] else {
             panic!()
         };
@@ -911,7 +908,7 @@ mod tests {
     fn anchor_fixture_matches_ripgrep_json() {
         // rg 14.1.1 --json on misc/anchor.txt, measured.
         let src = Source::open(&fixture("misc/anchor.txt"), true).unwrap();
-        let a = args(&["sfor", "x"]);
+        let a = args(&["s4", "x"]);
         for in_memory in [false, true] {
             let fm = search_source(
                 &mut searcher(&a, true, true),
@@ -942,7 +939,7 @@ mod tests {
             b"needle first\nmore\0binary needle\n".to_vec(),
             true,
         );
-        let a = args(&["sfor", "x"]);
+        let a = args(&["s4", "x"]);
         let fm = search_source(
             &mut searcher(&a, true, true),
             &matcher(&a, &["needle".into()]).unwrap(),
@@ -988,7 +985,7 @@ mod tests {
             b"needle first\nmore\0binary needle\n".to_vec(),
             true,
         );
-        let fm = run(&args(&["sfor", "x"]), &["needle"], &src).unwrap();
+        let fm = run(&args(&["s4", "x"]), &["needle"], &src).unwrap();
         let lines: Vec<(u64, u64)> = fm
             .matches()
             .map(|m| (m.line_number, m.absolute_offset))
@@ -1000,7 +997,7 @@ mod tests {
     #[test]
     fn quiet_stops_at_the_first_match() {
         let src = Source::from_bytes("a".into(), b"needle\nneedle\n".to_vec(), false);
-        let a = args(&["sfor", "x"]);
+        let a = args(&["s4", "x"]);
         let fm = search_source(
             &mut searcher(&a, false, true),
             &matcher(&a, &["needle".into()]).unwrap(),
@@ -1015,7 +1012,7 @@ mod tests {
     }
 
     fn stream_path(mmap: bool, explicit: bool, path: &Path) -> FileMatches {
-        let a = args(&["sfor", "x"]);
+        let a = args(&["s4", "x"]);
         let m = matcher(&a, &["needle".into()]).unwrap();
         let mut sink = CollectSink::new(&m, false, false);
         streaming_searcher(&a, explicit, mmap)
@@ -1032,7 +1029,7 @@ mod tests {
     #[test]
     fn printing_searcher_counts_lines_only_when_asked() {
         // grep-printer prints line numbers exactly when the searcher counts them.
-        let a = args(&["sfor", "x"]);
+        let a = args(&["s4", "x"]);
         assert!(!printing_searcher(&a, true, false, false).line_number());
         assert!(printing_searcher(&a, true, false, true).line_number());
         assert!(streaming_searcher(&a, true, false).line_number());
@@ -1040,10 +1037,10 @@ mod tests {
 
     #[test]
     fn binary_detection_per_file() {
-        let a = args(&["sfor", "x"]);
+        let a = args(&["s4", "x"]);
         assert_eq!(binary_detection(&a, false).quit_byte(), Some(b'\0'));
         assert_eq!(binary_detection(&a, true).convert_byte(), Some(b'\0'));
-        let text = args(&["sfor", "-a", "x"]);
+        let text = args(&["s4", "-a", "x"]);
         assert_eq!(binary_detection(&text, true).convert_byte(), None);
         assert_eq!(binary_detection(&text, false).quit_byte(), None);
     }
@@ -1099,7 +1096,7 @@ mod tests {
 
     #[test]
     fn quiet_stream_returns_before_eof() {
-        let a = args(&["sfor", "x"]);
+        let a = args(&["s4", "x"]);
         let m = matcher(&a, &["needle".into()]).unwrap();
         let mut sink = CollectSink::new(&m, false, true);
         streaming_searcher(&a, true, false)
@@ -1118,7 +1115,7 @@ mod tests {
     #[test]
     fn inverted_context_lines_carry_submatches() {
         let src = Source::from_bytes("a".into(), b"keep\nneedle\n".to_vec(), false);
-        let fm = run(&args(&["sfor", "-v", "-C1", "x"]), &["needle"], &src).unwrap();
+        let fm = run(&args(&["s4", "-v", "-C1", "x"]), &["needle"], &src).unwrap();
         let Item::Context(c) = &fm.items[1] else {
             panic!("{:?}", fm.items)
         };
@@ -1136,17 +1133,17 @@ mod tests {
         let n = |argv: &[&str], p: &str| {
             run(&args(argv), &[p], &src).map_or(0, |fm| fm.matches().count())
         };
-        assert_eq!(n(&["sfor", "x"], "needle"), 1);
-        assert_eq!(n(&["sfor", "-i", "x"], "needle"), 2);
-        assert_eq!(n(&["sfor", "-S", "x"], "needle"), 2);
-        assert_eq!(n(&["sfor", "-S", "x"], "Needle"), 1);
-        assert_eq!(n(&["sfor", "-w", "-i", "x"], "needle"), 1);
-        assert_eq!(n(&["sfor", "-x", "x"], "needles"), 1);
-        assert_eq!(n(&["sfor", "-x", "x"], "needle"), 0);
-        assert_eq!(n(&["sfor", "-F", "x"], "a.b"), 1);
-        assert_eq!(n(&["sfor", "-F", "x"], "a.."), 0);
-        assert_eq!(n(&["sfor", "x"], "a.."), 1);
-        assert_eq!(n(&["sfor", "-m1", "x"], "eedle"), 1);
+        assert_eq!(n(&["s4", "x"], "needle"), 1);
+        assert_eq!(n(&["s4", "-i", "x"], "needle"), 2);
+        assert_eq!(n(&["s4", "-S", "x"], "needle"), 2);
+        assert_eq!(n(&["s4", "-S", "x"], "Needle"), 1);
+        assert_eq!(n(&["s4", "-w", "-i", "x"], "needle"), 1);
+        assert_eq!(n(&["s4", "-x", "x"], "needles"), 1);
+        assert_eq!(n(&["s4", "-x", "x"], "needle"), 0);
+        assert_eq!(n(&["s4", "-F", "x"], "a.b"), 1);
+        assert_eq!(n(&["s4", "-F", "x"], "a.."), 0);
+        assert_eq!(n(&["s4", "x"], "a.."), 1);
+        assert_eq!(n(&["s4", "-m1", "x"], "eedle"), 1);
     }
 
     #[test]
@@ -1197,12 +1194,12 @@ mod tests {
             std::fs::write(d.path().join(n), "x").unwrap();
         }
         assert_eq!(
-            walk_names(&args(&["sfor", "x"]), &[d.path().into()], d.path()),
+            walk_names(&args(&["s4", "x"]), &[d.path().into()], d.path()),
             ["keep.md"]
         );
         assert_eq!(
             walk_names(
-                &args(&["sfor", "--no-ignore", "x"]),
+                &args(&["s4", "--no-ignore", "x"]),
                 &[d.path().into()],
                 d.path()
             ),
@@ -1218,27 +1215,27 @@ mod tests {
         }
         let root = [d.path().to_path_buf()];
         assert_eq!(
-            walk_names(&args(&["sfor", "x"]), &root, d.path()),
+            walk_names(&args(&["s4", "x"]), &root, d.path()),
             ["a.md", "b.rs"]
         );
         assert_eq!(
-            walk_names(&args(&["sfor", "--hidden", "x"]), &root, d.path()),
+            walk_names(&args(&["s4", "--hidden", "x"]), &root, d.path()),
             [".h.md", "a.md", "b.rs"]
         );
         // A selected type whitelists hidden files too: `rg --files -t markdown` lists `.h.md`
         // (rg 14.1.1, measured).
         assert_eq!(
-            walk_names(&args(&["sfor", "-t", "markdown", "x"]), &root, d.path()),
+            walk_names(&args(&["s4", "-t", "markdown", "x"]), &root, d.path()),
             [".h.md", "a.md"]
         );
         assert_eq!(
-            walk_names(&args(&["sfor", "-T", "markdown", "x"]), &root, d.path()),
+            walk_names(&args(&["s4", "-T", "markdown", "x"]), &root, d.path()),
             ["b.rs"]
         );
         // The last selection of a type wins, as in rg 14.1.1 (code review r1, Codex #3).
         assert_eq!(
             walk_names(
-                &args(&["sfor", "-T", "markdown", "-t", "markdown", "x"]),
+                &args(&["s4", "-T", "markdown", "-t", "markdown", "x"]),
                 &root,
                 d.path()
             ),
@@ -1247,7 +1244,7 @@ mod tests {
         // A selection whitelists, even when it is negated later: nothing is left.
         assert!(
             walk_names(
-                &args(&["sfor", "-t", "markdown", "-T", "markdown", "x"]),
+                &args(&["s4", "-t", "markdown", "-T", "markdown", "x"]),
                 &root,
                 d.path()
             )
@@ -1265,7 +1262,7 @@ mod tests {
         }
         assert_eq!(
             walk_names(
-                &args(&["sfor", "-g", "*.md", "x"]),
+                &args(&["s4", "-g", "*.md", "x"]),
                 &[d.path().into()],
                 d.path()
             ),
@@ -1282,8 +1279,8 @@ mod tests {
             std::fs::write(d.path().join(n), "x").unwrap();
         }
         for argv in [
-            &["sfor", "--iglob", "*.MD", "-g", "!skip.md", "x"][..],
-            &["sfor", "-g", "!skip.md", "--iglob", "*.MD", "x"],
+            &["s4", "--iglob", "*.MD", "-g", "!skip.md", "x"][..],
+            &["s4", "-g", "!skip.md", "--iglob", "*.MD", "x"],
         ] {
             assert_eq!(
                 walk_names(&args(argv), &[d.path().into()], d.path()),
@@ -1298,7 +1295,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir(d.path().join("sub")).unwrap();
         std::fs::write(d.path().join("sub/x.md"), "x").unwrap();
-        let a = args(&["sfor", "-g", "sub/*.md", "x"]);
+        let a = args(&["s4", "-g", "sub/*.md", "x"]);
         assert_eq!(
             walk_names(&a, &[d.path().join("sub")], d.path()),
             ["sub/x.md"]
@@ -1327,23 +1324,23 @@ mod tests {
         v.extend_from_slice(edge);
         v.extend_from_slice(b"x\0x\n");
         for argv in [
-            &["sfor", "^needle"][..],
-            &["sfor", "-A1", "^needle"],
-            &["sfor", "y"],
+            &["s4", "^needle"][..],
+            &["s4", "-A1", "^needle"],
+            &["s4", "y"],
         ] {
             assert_eq!(probe(argv, &v), (65_536, Some(65_537)), "{argv:?}");
         }
         // A UTF-8 BOM, stripped: the same bytes searched.
         let bom = [&b"\xEF\xBB\xBF"[..], &v].concat();
         assert_eq!(
-            probe(&["sfor", "-A1", "^needle"], &bom),
+            probe(&["s4", "-A1", "^needle"], &bom),
             (65_536, Some(65_537))
         );
         // The decoder reads the first three bytes for a BOM: grep-searcher searches `a\n` and
         // detects the NUL in its next read, or in the first.
-        assert_eq!(probe(&["sfor", "^needle"], b"a\nb\0\n"), (2, Some(3)));
-        assert_eq!(probe(&["sfor", "^needle"], b"a\n\0\n"), (0, Some(2)));
-        assert_eq!(probe(&["sfor", "^needle"], b"# a\nb\0\n"), (0, Some(5)));
+        assert_eq!(probe(&["s4", "^needle"], b"a\nb\0\n"), (2, Some(3)));
+        assert_eq!(probe(&["s4", "^needle"], b"a\n\0\n"), (0, Some(2)));
+        assert_eq!(probe(&["s4", "^needle"], b"# a\nb\0\n"), (0, Some(5)));
     }
 
     /// UTF-16, whose reads the decoder transcodes: the cut is the last line reported, or at a
@@ -1354,7 +1351,7 @@ mod tests {
         for c in "a\nb\n\0\n".encode_utf16() {
             raw.extend_from_slice(&c.to_le_bytes());
         }
-        let (cut, offset) = probe(&["sfor", "^needle"], &raw);
+        let (cut, offset) = probe(&["s4", "^needle"], &raw);
         assert_eq!(offset, Some(4));
         assert!(cut <= 4, "{cut}");
     }

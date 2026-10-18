@@ -1,4 +1,4 @@
-//! The example helper over its pipes (spec §4.4), without sfor.
+//! The example helper over its pipes (spec §4.4), without s4.
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -93,7 +93,7 @@ fn hello_then_trails_of_sections_and_keys() {
 
 #[test]
 fn concurrent_requests_are_answered_as_they_finish() {
-    let mut h = H::start(&[("SFOR_EXAMPLE_SLOW", "slow")]);
+    let mut h = H::start(&[("SEARCHFOR_EXAMPLE_SLOW", "slow")]);
     h.hello(4);
     let slow = std::env::temp_dir().join(format!("slow-{}.ini", std::process::id()));
     std::fs::copy(fixture(), &slow).unwrap();
@@ -124,7 +124,7 @@ fn eof_ends_the_helper() {
 
 #[test]
 fn errors_answer_and_the_helper_goes_on() {
-    let mut h = H::start(&[("SFOR_EXAMPLE_ERROR", "app")]);
+    let mut h = H::start(&[("SEARCHFOR_EXAMPLE_ERROR", "app")]);
     h.hello(1);
     h.trails(1, &fixture(), &[0]);
     assert!(h.recv()["error"].is_string());

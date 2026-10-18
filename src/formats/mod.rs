@@ -11,9 +11,9 @@ pub struct Registry {
     defs: Vec<FormatDefinition>,
 }
 
-/// `SFOR_FORMATS_DIR` if set (tests use it), else `<config dir>/searchfor/formats`.
+/// `SEARCHFOR_FORMATS_DIR` if set (tests use it), else `<config dir>/searchfor/formats`.
 pub fn user_formats_dir() -> Option<PathBuf> {
-    if let Some(d) = std::env::var_os("SFOR_FORMATS_DIR") {
+    if let Some(d) = std::env::var_os("SEARCHFOR_FORMATS_DIR") {
         return Some(PathBuf::from(d));
     }
     dirs::config_dir().map(|d| d.join("searchfor").join("formats"))
@@ -131,7 +131,7 @@ fn read_definition(
     std::fs::read_to_string(file)
         .map_err(|e| e.to_string())
         .and_then(|s| FormatDefinition::parse(&s, known_processor))
-        .map_err(|e| format!("sfor: ignoring {}: {e}", file.display()))
+        .map_err(|e| format!("s4: ignoring {}: {e}", file.display()))
 }
 
 /// `--export-formats DIR`: writes the embedded Definitions as templates (grill #6 comment).

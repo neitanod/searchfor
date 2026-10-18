@@ -12,7 +12,7 @@ and [../../CONTEXT.md](../../CONTEXT.md) for the vocabulary.
 
 ## 1. Goal
 
-`sfor` searches like ripgrep and, for every **Match**, shows its **Trail**: where the Match
+`s4` searches like ripgrep and, for every **Match**, shows its **Trail**: where the Match
 sits inside the structure of its file. A person reads the Trail to decide whether a Match is
 the one they want without opening the file; an AI agent reads it to avoid loading a whole
 file just to learn which section a line belongs to.
@@ -35,7 +35,7 @@ contract. That combination is the product.
 | Detection | extension, exact name, shebang, magic bytes, `--format` override | #5 |
 | Format Definitions | embedded TOML + user directory + export command ([ADR 0002](../adr/0002-format-definitions-as-embedded-toml.md)) | #6 |
 | External Processors | any language, as Helper Processors over protocol v1 (§4.4) | #7, 8451–8459 |
-| Grammars | compiled into sfor for the v1 Formats; any other language as a Grammar Helper installed with `--install-grammar` (§7, [ADR 0005](../adr/0005-grammars-compiled-in-extras-as-helper-processors.md)) | #8, 8361, 8451–8454 |
+| Grammars | compiled into s4 for the v1 Formats; any other language as a Grammar Helper installed with `--install-grammar` (§7, [ADR 0005](../adr/0005-grammars-compiled-in-extras-as-helper-processors.md)) | #8, 8361, 8451–8454 |
 | Trail details | §5 | #9–#12 |
 | Output | tree on a TTY, one line per Match in a pipe, `--json` = ripgrep's messages plus `trail`; Fragments for long lines | #13–#15, 8365 |
 | Agents | Claude Code skill, README section for agents, MCP server | #19 |
@@ -162,10 +162,10 @@ kinds = { namespace_definition = "namespace", class_declaration = "class", inter
 - User Definitions live in `$XDG_CONFIG_HOME/searchfor/formats/*.toml`, loaded last. A user file
   with the same `name` as a built-in or installed Definition replaces it; a new name adds a
   Format.
-- `sfor --export-formats <DIR>` writes every embedded Definition to `<DIR>` (#6 comment). It
+- `s4 --export-formats <DIR>` writes every embedded Definition to `<DIR>` (#6 comment). It
   refuses to write into the user formats directory, so an export never silently overrides
   the built-ins.
-- `sfor --list-formats` prints every Format with its origin (built-in, user, overridden).
+- `s4 --list-formats` prints every Format with its origin (built-in, user, overridden).
 - An invalid user Definition is a warning naming the file and the field; the rest still load.
 
 ### 4.3 Processors
@@ -173,7 +173,7 @@ kinds = { namespace_definition = "namespace", class_declaration = "class", inter
 A Processor gets the bytes of one file (or of what `--pre` or `-z` gave for it, §5.9), its
 Format Definition parameters and the list of Matches (line numbers and byte offsets). It returns, for
 each Match, its Trail, and for each Segment its Section (start and end line). That contract is
-the same for built-in Processors and Helper Processors: for a Helper Processor, sfor implements
+the same for built-in Processors and Helper Processors: for a Helper Processor, s4 implements
 it by speaking protocol v1 (§4.4).
 
 | Processor | Formats | Built on |
@@ -209,7 +209,7 @@ Format Definition, over a Grammar that is compiled in or installed as a Grammar 
 
 ### 4.4 Helper Processors (#7, 8451–8459)
 
-A **Helper Processor** is a Processor that runs as a separate program and talks to sfor over
+A **Helper Processor** is a Processor that runs as a separate program and talks to s4 over
 protocol v1: JSON lines on its stdin and stdout. It is the one mechanism behind both External
 Processors, written by anyone in any language, and the Grammar Helpers of §7 (8453).
 
@@ -223,42 +223,42 @@ mode       = "pool"                         # "pool" (default), "concurrent" or 
 timeout_ms = 5000                           # per request; 5000 when absent
 ```
 
-**Lifetime: once per search (8455).** sfor starts a Helper Processor when the first file of its
+**Lifetime: once per search (8455).** s4 starts a Helper Processor when the first file of its
 Format needs Trails — after the search found a Match in that file (§3) — sends it every other
 file of that Format in the same run, and closes its stdin when the run ends. The helper exits on
-that EOF; sfor waits up to one second and then kills it. The next run starts it again. Every
-process sfor starts is also reaped: a copy that crashed, timed out or was killed is collected at
-once, never left as a zombie until sfor exits (M2 plan, D32). Helpers run in sfor's process
-group, so a terminal's Ctrl-C reaches them too. On Unix, before it starts its first helper, sfor
+that EOF; s4 waits up to one second and then kills it. The next run starts it again. Every
+process s4 starts is also reaped: a copy that crashed, timed out or was killed is collected at
+once, never left as a zombie until s4 exits (M2 plan, D32). Helpers run in s4's process
+group, so a terminal's Ctrl-C reaches them too. On Unix, before it starts its first helper, s4
 also watches SIGINT and SIGTERM: on one, it stops starting helpers, kills and reaps every helper
 — including one that ignores the signal, one being started at that moment, and also when the
-signal was sent to sfor alone — and then dies by that signal, as ripgrep would (M2 plan, D42). A sfor killed with SIGKILL leaves its helpers an EOF
-on stdin. A helper that starts processes of its own must stop them when it exits; sfor waits
+signal was sent to s4 alone — and then dies by that signal, as ripgrep would (M2 plan, D42). An s4 killed with SIGKILL leaves its helpers an EOF
+on stdin. A helper that starts processes of its own must stop them when it exits; s4 waits
 at most one more second for pipes such a child keeps open, and then exits anyway.
 
 **Modes (8458, 8459)**, chosen by `mode` in the Definition:
 
-- **`pool`** (default, M2 plan): each copy of the helper has one request at a time. sfor starts a
+- **`pool`** (default, M2 plan): each copy of the helper has one request at a time. s4 starts a
   new copy only when every running copy is busy, up to the search's thread count (`-j`, or
   ripgrep's default), and gives the files to whichever copy is free. A helper that reads a line,
   answers it and reads the next one is correct in this mode; that is why it is the default.
 - **`concurrent`**: one process, which receives up to the search's thread count of requests
   without waiting for answers and may answer them in any order: each answer carries the `id` of
   its request.
-- **`oneshot`** (8455): one process per request. sfor writes `hello` and the request, closes
+- **`oneshot`** (8455): one process per request. s4 writes `hello` and the request, closes
   stdin, and then reads the two answers, to `hello` and to the request, so a script may read its
   whole stdin before writing anything. Meant for helpers written as small scripts; each file
   pays the start of a process (1.5–3 ms, measured in 8452).
 
 **Wire format.** UTF-8 JSON, one object per line, ended by `\n`, in both directions. Both sides
 ignore fields they do not know, so later versions can add fields. Every line the helper writes to
-stderr is relayed as a warning, `sfor: <format>: <line>`, silenced by `--no-messages`; once a
+stderr is relayed as a warning, `s4: <format>: <line>`, silenced by `--no-messages`; once a
 SIGINT or SIGTERM has cancelled the run (Lifetime, above), nothing more is relayed, as ripgrep
 prints nothing then.
 
 1. **`hello`**, the first line of every process:
    `{"id":0,"op":"hello","protocol":1,"format":"proto","params":{…},"threads":8}`. `params` is
-   the Definition's `[params]` table and `threads` the most requests sfor will have in flight to
+   the Definition's `[params]` table and `threads` the most requests s4 will have in flight to
    this process (1 in `pool` and `oneshot`). The helper answers `{"id":0,"protocol":1}` and may
    add `"name"` and `"version"`. Another protocol number, an `error` answer, no answer within
    `timeout_ms`, or a process that exits before it answers disables the Definition for the
@@ -280,13 +280,13 @@ prints nothing then.
    text). `trail` is the Trail of the named Segment, the Segment itself last.
 4. **Errors**: `{"id":7,"error":"message"}` fails that request only.
 
-**Paths.** sfor sends the path and the Match positions, never the content (8452); the helper reads
-the file. `path` is relative to sfor's working directory, which the helper inherits, or absolute.
-sfor sends a file's own path only when it is a regular file whose bytes sfor searched unchanged,
+**Paths.** s4 sends the path and the Match positions, never the content (8452); the helper reads
+the file. `path` is relative to s4's working directory, which the helper inherits, or absolute.
+s4 sends a file's own path only when it is a regular file whose bytes s4 searched unchanged,
 outside `/dev` and `/proc`, and then it sends the resolved (canonical) path, never the one typed. For anything else — stdin, `/dev/stdin`, `/dev/fd/N` or a FIFO named
 on the command line (a helper must never reopen a stream; `/dev/stdin` redirected from a file is
-a regular file, and in the helper it is the protocol pipe), a file whose BOM sfor removed or whose UTF-16 it transcoded, a path that is not
-UTF-8, the output of `--pre` or of a decompressor with `-z` (M4) — sfor writes the bytes it searched to a
+a regular file, and in the helper it is the protocol pipe), a file whose BOM s4 removed or whose UTF-16 it transcoded, a path that is not
+UTF-8, the output of `--pre` or of a decompressor with `-z` (M4) — s4 writes the bytes it searched to a
 temporary file of the run, removed after the answer, and sends that path, so `byte` always
 counts the bytes at `path`.
 
@@ -301,14 +301,14 @@ The thresholds below are M2 plan decisions.
 
 - A file whose request fails prints as Plain — `format` `null` in `--json`, empty Trails, the
   layout of §6.2 — with one warning naming the file and the Definition,
-  `sfor: <path>: <format>: <reason>`. For `names`, `--in-headings` skips that file, with one
+  `s4: <path>: <format>: <reason>`. For `names`, `--in-headings` skips that file, with one
   warning.
 - An `error` answer, a wrong number of Trails, or a JSON line with the request's `id` whose
   fields do not fit the protocol fails that request only; the process goes on.
 - A line that is not JSON, or that has no `id`, cannot be attributed to a request: the process
   is killed and every request it had in flight fails.
-- No answer within `timeout_ms` (counted from when sfor queues the request, so a helper that
-  stops reading cannot stall sfor): the request fails, and the process is killed, which fails
+- No answer within `timeout_ms` (counted from when s4 queues the request, so a helper that
+  stops reading cannot stall s4): the request fails, and the process is killed, which fails
   the other requests it had in flight.
 - A process that exits, or closes its stdout, with requests in flight fails them as above; the
   next request starts a new process (8455). A process that exits between requests is reaped at
@@ -376,7 +376,7 @@ headings, and an optional `signature` that tree output may show.
   (`{"b": {"c": "needle"}}` gives `b › c`); a Match in a comment between keys has the Trail of
   the container it sits in, empty at the top level. Past 256 nested containers no more
   Segments open; deeper Matches get the Trail of the deepest one, and nesting of any depth
-  never crashes sfor (M2 plan).
+  never crashes s4 (M2 plan).
 - TOML: a table's Section runs from its header to the next header that is not inside it. When a
   header's parent has no table of its own whose Section holds that header (`a` of `[a.b]`, or
   `[p]` whose Section ended before a later `[p.r]`), the parent is repeated over that header's
@@ -388,13 +388,13 @@ headings, and an optional `signature` that tree output may show.
 - On a syntax error the Trails of the Matches before it are kept, and the Matches after it print
   with an empty Trail, without a warning: Helm templates are often not valid YAML, and a warning
   per file would bury the output (M2 plan). For TOML, toml_edit can report an error many lines
-  after the unclosed string or array that caused it, so «before it» is the longest prefix sfor
+  after the unclosed string or array that caused it, so «before it» is the longest prefix s4
   finds that parses and ends at a statement start candidate (a line whose first non-blank
   character is `[`, or a key character on a line that contains `=`) at or before the reported
   error's line. The candidate filter is a heuristic: a line inside a string or an array that
   looks like a statement is a candidate too, and only costs a try, so when the budget runs out
   the best prefix found may end well before the damage, and the keys between them lose their
-  Trails. sfor looks for it by stepping back 1, 2, 4… lines from the error's line (the last line
+  Trails. s4 looks for it by stepping back 1, 2, 4… lines from the error's line (the last line
   when the error is at the end of the file), each cut moved up to a statement start, then
   bisecting, then trying the statement starts it skipped, from the one nearest the error towards
   the start of the file, never parsing a cut twice, and stops when it has parsed 64 times the
@@ -504,7 +504,7 @@ The `markup` Processor reads both; the Definition's `syntax` (`html` or `xml`) c
   doctype, its internal subset included, or in a processing instruction has the Trail of where
   it sits: empty before the root element.
 - Past 256 open elements no more Segments open; deeper Matches get the Trail of the deepest one,
-  and nesting of any depth never crashes sfor (as JSON, §5.2).
+  and nesting of any depth never crashes s4 (as JSON, §5.2).
 - `--in-headings` searches element names. The tag, the `id` and each class word come from the
   file; `#`, `.`, a cut's `…` and an index `[n]` are text of the name only, so a pattern that
   matches only them finds nothing. A cut name stays searchable up to its cut: an `id` of 50
@@ -560,7 +560,7 @@ The `csv` Processor reads both, with four Definition parameters (M3 plan): `deli
   into text, whose quotes are literal (`"needle"junk"` is the closed field `needlejunk"`). When
   the file ends inside a quoted field, the structure ends at that record: Matches in it and
   after it print with an empty Trail, without a warning.
-- sfor reads the records only up to the one that holds the file's last Match, so a Match on row
+- s4 reads the records only up to the one that holds the file's last Match, so a Match on row
   3 of a 1 GB file reads three rows.
 - **Encodings.** A UTF-8 BOM and UTF-16 as ripgrep (§5.4); a header whose bytes are not UTF-8
   (Latin-1 exports) shows each invalid sequence as U+FFFD. CRLF and LF line ends both end a
@@ -603,7 +603,7 @@ no parameters (M3 plan).
 - **WebVTT blocks.** In a file that starts with `WEBVTT`, its header block and every block whose
   first line is `NOTE`, `STYLE` or `REGION` (alone or followed by white space) run to the next
   blank line and hold no cue, even when a line in them looks like a timing line; they are not
-  counted among the cues either. Here sfor departs on purpose from WebVTT's parsing algorithm,
+  counted among the cues either. Here s4 departs on purpose from WebVTT's parsing algorithm,
   where a line with `-->` ends the open block and starts a cue (named `NOTE` when the block had
   one line): such a file is malformed either way, and a timing line inside a `NOTE` or `STYLE`
   block is almost always a comment about that time or a quoted example, not a cue someone wants
@@ -654,7 +654,7 @@ binaries are often named without a telling extension (`libc.so.6`, `ls`; §4.1, 
   prints exactly what ripgrep prints. A file whose bytes start like an object Format but that
   goblin does not read prints as ripgrep prints it, without a warning (D9).
 - **Rows (D6).** Where ripgrep prints `binary file matches (found "\0" byte around offset N)`,
-  sfor searches the whole file (ripgrep's search stopped at its first Match; this one reads on,
+  s4 searches the whole file (ripgrep's search stopped at its first Match; this one reads on,
   and only for a file with a Match, 8385) and prints one row per printable string that holds
   Matches, as `strings` reads it: printable ASCII, tabs and valid UTF-8 characters that are not
   controls, at most 4096 bytes on each side of its Matches. A control byte inside a Match prints
@@ -833,8 +833,8 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
   silences, and the exit code does not change:
 
   ```
-  sfor: locked.pdf: pdf: encrypted, and the empty password does not open it
-  sfor: broken.docx: docx: not a zip file the reader can open (invalid Zip archive: Could not find EOCD)
+  s4: locked.pdf: pdf: encrypted, and the empty password does not open it
+  s4: broken.docx: docx: not a zip file the reader can open (invalid Zip archive: Could not find EOCD)
   ```
 
   An encrypted PDF that opens with the empty password (most of them: the password only guards
@@ -850,33 +850,33 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
   these the document is not read:
 
   ```
-  sfor: bomb.docx: docx: word/document.xml is over the 256 MiB limit
-  sfor: bomb.xlsx: xlsx: the whole document, decompressed, is over the 1024 MiB limit
-  sfor: bomb.pdf: pdf: a font's ToUnicode map is over the 64 MiB limit
-  sfor: ops.pdf: pdf: its content streams run more than 8020000 operations
-  sfor: objstm.pdf: pdf: its object streams hold more than 2000000 tokens
+  s4: bomb.docx: docx: word/document.xml is over the 256 MiB limit
+  s4: bomb.xlsx: xlsx: the whole document, decompressed, is over the 1024 MiB limit
+  s4: bomb.pdf: pdf: a font's ToUnicode map is over the 64 MiB limit
+  s4: ops.pdf: pdf: its content streams run more than 8020000 operations
+  s4: objstm.pdf: pdf: its object streams hold more than 2000000 tokens
   ```
 
-  Whatever path a reader takes, each document is read in a worker process: `sfor` itself, run
+  Whatever path a reader takes, each document is read in a worker process: `s4` itself, run
   again for that, never an external program (M4 plan, D30). A worker may allocate 1 024 MiB, a
   count it keeps itself, the same on Linux, macOS and Windows (on Unix, `RLIMIT_DATA` 64 MiB
   above it is a second barrier: M4 plan, D31), and spend 60 s on one document; past either it is ended, and the document gets one warning and
   is searched as ripgrep searches it. A worker refused memory that its reader went on without
   (a stream inflated only up to the refusal) gives the same warning, and what it read is
-  dropped (M4 plan r8). A SIGINT or SIGTERM to sfor ends its workers with it, and
-  sfor prints nothing more, for the documents they were reading or the ones still waiting for
-  a worker, as ripgrep prints nothing then; a worker ends when sfor does:
+  dropped (M4 plan r8). A SIGINT or SIGTERM to s4 ends its workers with it, and
+  s4 prints nothing more, for the documents they were reading or the ones still waiting for
+  a worker, as ripgrep prints nothing then; a worker ends when s4 does:
 
   ```
-  sfor: big.pdf: pdf: reading it needed more than the 1024 MiB a reader may use
-  sfor: slow.pdf: pdf: reading it took more than 60 s
+  s4: big.pdf: pdf: reading it needed more than the 1024 MiB a reader may use
+  s4: slow.pdf: pdf: reading it took more than 60 s
   ```
 
   At most 256 MiB of text are extracted from one document, and past that the text is cut, with
-  the warning `sfor: <path>: <format>: the text is cut at 256 MiB`; a PDF string writes at most
+  the warning `s4: <path>: <format>: the text is cut at 256 MiB`; a PDF string writes at most
   8 bytes of text for each of its bytes, whatever its ToUnicode map says. A malformed part ends the
   text of that part where the reader stops, and a PDF stream that does not decompress draws
-  nothing; nothing in a document makes sfor panic (the fuzz of §11 #27).
+  nothing; nothing in a document makes s4 panic (the fuzz of §11 #27).
 - **With the other flags.** `--docs` is independent of `-z`, which keeps ripgrep's meaning
   (single-stream compressed files), and of `-a` and `--binary`, which apply to the files that
   are not documents: an extracted text has no binary data. A file that `--pre` (when its globs
@@ -894,7 +894,7 @@ ripgrep's input transforms work as in ripgrep 14.1.1 (M4 plan, D2, D21):
   also on the command's standard input; an empty COMMAND or `--no-pre` turns it off.
   `--pre-glob GLOB` (repeatable, gitignore syntax, `!` excludes) limits it to the files the globs
   take. A command that cannot start, or that exits with an error, is ripgrep's error, exit code 2
-  when nothing matched: `sfor: a.txt: preprocessor command could not start: '"./pre" "a.txt"':
+  when nothing matched: `s4: a.txt: preprocessor command could not start: '"./pre" "a.txt"':
   No such file or directory (os error 2)`, or `… preprocessor command failed: '…':` followed by
   the command's stderr between two rules.
 - `-z/--search-zip` searches files with a compressed extension (gzip, bzip2, xz, LZ4, LZMA,
@@ -911,7 +911,7 @@ ripgrep's input transforms work as in ripgrep 14.1.1 (M4 plan, D2, D21):
 
 ### 6.1 Tree (default on a TTY)
 
-Real output of `sfor needle-pkg md --tree` over `tests/fixtures/`:
+Real output of `s4 needle-pkg md --tree` over `tests/fixtures/`:
 
 ````
 md/guide.md
@@ -965,7 +965,7 @@ expect it.
 one per line, so it streams — and adds three fields inside each `match.data`
 ([ADR 0004](../adr/0004-json-extends-ripgrep.md)):
 
-The `match` message for line 12 of `sfor --json needle md` over `tests/fixtures/` (real output,
+The `match` message for line 12 of `s4 --json needle md` over `tests/fixtures/` (real output,
 one line, wrapped here):
 
 ```json
@@ -1024,20 +1024,20 @@ ones easy to add, and a flag that installs them. 8454 replaced the WebAssembly G
 [ADR 0005](../adr/0005-grammars-compiled-in-extras-as-helper-processors.md):
 
 - **Compiled in.** The Grammars of the code Formats of §2 — php, javascript, typescript, tsx,
-  bash, go, rust, python — are linked into sfor from their crates.io crates. YAML, JSON and TOML
+  bash, go, rust, python — are linked into s4 from their crates.io crates. YAML, JSON and TOML
   use native parsers (§4.3) and Markdown uses pulldown-cmark, so they need no Grammar. HTML,
   XML, CSV and subtitles use scanners of their own (§4.3, M3 plan), so they need none either.
 - **Grammar Helpers.** Any other language is a **Grammar Helper**: a separate binary, built by
   searchfor from the same `treesitter` code with one Grammar compiled in, that speaks the Helper
   Processor protocol (§4.4) in `concurrent` mode. It lives in
   `$XDG_DATA_HOME/searchfor/grammars/<lang>/` (on Linux `~/.local/share/searchfor/grammars/`)
-  together with its Format Definition, `<lang>.toml`, which sfor loads after the built-ins and
+  together with its Format Definition, `<lang>.toml`, which s4 loads after the built-ins and
   before the user formats directory. Its Definition says `processor = "treesitter"` and
   `grammar = "<lang>"`, as a compiled-in one does.
-- **`sfor --install-grammar <lang>`** reads the Grammar index: a JSON file in the GitHub
+- **`s4 --install-grammar <lang>`** reads the Grammar index: a JSON file in the GitHub
   repository, `grammars/index.json`, listing for each Grammar its name, version, source
   repository, license and Format Definition, and for each system (`linux-x86_64`,
-  `macos-aarch64`, `windows-x86_64`, …) the URL and SHA-256 of its binary. sfor downloads the
+  `macos-aarch64`, `windows-x86_64`, …) the URL and SHA-256 of its binary. s4 downloads the
   binary for the running system, verifies the checksum, and only then writes the binary, the
   Definition and `installed.json` (version and checksum) to the Grammar directory. A checksum
   mismatch, or no binary for the system, is an error (exit 2) that leaves the directory as it
@@ -1045,14 +1045,14 @@ ones easy to add, and a flag that installs them. 8454 replaced the WebAssembly G
   `processor = "treesitter"`), or nothing is installed. Installing a Grammar again replaces it,
   under a lock per Grammar, and a failed replacement keeps the previous install. Only `https://`
   and `file://` URLs are accepted, and HTTPS is required on every redirect too; downloads have a
-  10 s connect timeout and a 300 s ceiling. `SFOR_GRAMMAR_INDEX` replaces the index URL (tests
+  10 s connect timeout and a 300 s ceiling. `SEARCHFOR_GRAMMAR_INDEX` replaces the index URL (tests
   and mirrors).
-- **`sfor --list-grammars`** lists the compiled-in Grammars, the installed ones with their
+- **`s4 --list-grammars`** lists the compiled-in Grammars, the installed ones with their
   version and directory, and the ones the index offers for this system; when the index cannot
   be read it lists the first two and warns.
 - A Format Definition whose Grammar is neither compiled in nor installed is listed by
   `--list-formats` as unavailable, and its files are treated as Plain with one warning per run,
-  ``sfor: <format>: grammar `<lang>` is neither compiled in nor installed (see --list-grammars)``,
+  ``s4: <format>: grammar `<lang>` is neither compiled in nor installed (see --list-grammars)``,
   printed only when a file of that Format has a Match (§4.4, Failures).
 - A Grammar Helper binary per Grammar and system is built and published by the release pipeline
   (§10, M5). M2 ships the client side, the Grammar Helper template and a script that builds one
@@ -1060,7 +1060,7 @@ ones easy to add, and a flag that installs them. 8454 replaced the WebAssembly G
 
 Measured in the M2 research (2026-10-16 and 2026-10-17, on this machine): native parsing is
 1.5–1.6× faster than WebAssembly; a stripped release binary with only the seven code Grammars
-and the keypath parsers weighs 8.5 MB (sfor 0.1 weighs 5.5 MB); and tree-sitter parses and
+and the keypath parsers weighs 8.5 MB (s4 0.1 weighs 5.5 MB); and tree-sitter parses and
 queries real Rust code at about 3 MB/s per thread. Only files with Matches are parsed (§3).
 The v0.2 release binary (Linux x86-64, thin LTO), with the eight Grammars, keypath, the
 Helper Processor host and the index client, weighs 16.4 MB, 15.2 MB stripped (2026-10-17). The
@@ -1074,7 +1074,7 @@ v0.3 release binary, which adds `markup`, `csv` (with `csv-core`) and `subtitles
   30 `--no-` negations and 12 negations with other names (counted from its source in M1, C2).
   v1 accepts all of them by name; they are implemented in order of use. v0.1 implements 51
   and accepts the other 95 as «not supported yet». A flag that is accepted but not yet
-  implemented fails with `sfor: --<flag> is not supported yet` and exit code 2, never silently
+  implemented fails with `s4: --<flag> is not supported yet` and exit code 2, never silently
   ignored. The compatibility table lives in `docs/rg-compat.md` and is checked by a test that
   parses `rg --help`.
 - **searchfor's own flags** use names ripgrep does not use:
@@ -1093,14 +1093,14 @@ v0.3 release binary, which adds `markup`, `csv` (with `csv-core`) and `subtitles
 | `--docs` | search PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite through the built-in Extractors (§5.8, 8395) |
 | `--mcp` | run as an MCP server over stdio |
 
-Management actions are flags, not subcommands, because `sfor formats` must keep meaning
+Management actions are flags, not subcommands, because `s4 formats` must keep meaning
 "search for the word formats", as `rg formats` does.
 
 ## 9. Agents (#19)
 
-- **MCP server** (`sfor --mcp`): one tool, `search`, with `pattern`, `paths`, `within`,
+- **MCP server** (`s4 --mcp`): one tool, `search`, with `pattern`, `paths`, `within`,
   `expand`, `glob`, `case_insensitive`, `max_results`; returns the `--json` matches.
-- **Claude Code skill** in `skills/searchfor/SKILL.md`: when to use `sfor` instead of `rg`,
+- **Claude Code skill** in `skills/searchfor/SKILL.md`: when to use `s4` instead of `rg`,
   with `--within` and `--expand` recipes.
 - **README section "For AI agents"** with copy-ready commands.
 
@@ -1115,7 +1115,7 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
 
 ## 11. Acceptance criteria
 
-1. `sfor PATTERN` over a tree with no structured files prints byte-for-byte what `rg PATTERN`
+1. `s4 PATTERN` over a tree with no structured files prints byte-for-byte what `rg PATTERN`
    prints when given `--no-trail`, for the flags marked implemented in `docs/rg-compat.md`.
 2. Every Format of §2 has a fixture and a snapshot test of its tree, one-line and JSON output.
    The fixture is under `tests/fixtures/`, or, for M4's documents and object files, written by
@@ -1145,28 +1145,28 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
 12. Every `match` message of `--json` carries `trail`, `format` and `fragment` valid against
     `docs/json-schema.json`; `--json --no-trail` equals `rg --json`, timings aside, for the
     implemented flags.
-13. Performance: on `~/robotin/knowledge` (619 Markdown files on 2026-10-16), `sfor` takes at
+13. Performance: on `~/robotin/knowledge` (619 Markdown files on 2026-10-16), `s4` takes at
     most 1.5× the wall time of `rg` for a pattern matching under 5 % of the files, measured as
     the median of 10 runs with `hyperfine`. On code (M2, `scripts/bench-code.sh`): with a
     pattern no file matches, and with `--no-trail`, at most 1.1× `rg`; with a pattern matching
-    under 5 % of the files, sfor's time over `rg`'s is at most the size of the matching files
+    under 5 % of the files, s4's time over `rg`'s is at most the size of the matching files
     divided by 2.5 MB/s per search thread, the cost of parsing them. On HTML, XML, CSV, TSV and
     subtitles (M3, `scripts/bench-m3.sh`): with a pattern no file matches, and with `--no-trail`,
-    at most 1.1× `rg`; with a pattern matching under 5 % of the files, sfor's time over `rg`'s is
+    at most 1.1× `rg`; with a pattern matching under 5 % of the files, s4's time over `rg`'s is
     at most the largest matching file divided by 50 MB/s, plus the size of all the matching files
     divided by 50 MB/s per search thread, plus 0.05 s. A 50 MB file of each of these Formats with
     three Matches gets its Trails within `rg`'s time plus 1 s (`tests/perf.rs`). A pattern that
     matches every line is measured and reported, not bounded (§3, item 5; pending for M5). The
     reference is `/usr/bin/rg`, which must be ripgrep 14.1.1 (another `rg` may come first on
     `PATH`), and a comparison that cannot run makes an acceptance run fail instead of passing
-    silently (`SFOR_REQUIRE_REFERENCE=1`, M3 plan, D33).
-14. `sfor --mcp` answers a `search` call from Claude Code.
+    silently (`SEARCHFOR_REQUIRE_REFERENCE=1`, M3 plan, D33).
+14. `s4 --mcp` answers a `search` call from Claude Code.
 15. In `pool`, `concurrent` and `oneshot` modes, an example Helper Processor gives the same
     Trails; a pool never runs more copies than search threads; a concurrent helper that answers
     out of order still gets each answer to its own file.
 16. A Grammar Helper and the example helper keep their memory flat over 5 000 requests: their
     resident memory after 5 000 requests is at most 2 MiB over its value after 500.
-17. `sfor --install-grammar` installs a Grammar Helper from an index, refuses a binary whose
+17. `s4 --install-grammar` installs a Grammar Helper from an index, refuses a binary whose
     SHA-256 does not match, and the installed Grammar gives Trails.
 18. A Match in the third `<li>` of the `<ul>` of `<nav class="top menu">` gets
     `nav.top.menu › ul › li[3]`; in XML, a Match in the title of the second `book` gets
@@ -1177,7 +1177,7 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
     `cue 2 00:00:04,000 --> 00:00:06,000` in the tree, the same with a BOM and CRLF line ends.
 21. A key `"a\nb"` in JSON, TOML, YAML or JavaScript prints `a\nb` on one row in tree and one-line
     output, and as the decoded name in `--json`.
-22. The release binary (`target/release/sfor`, Linux x86-64, the profile of `Cargo.toml`) weighs
+22. The release binary (`target/release/s4`, Linux x86-64, the profile of `Cargo.toml`) weighs
     at most 23 MB (8612; 20 MB until then, M3 plan).
 23. With `--docs`, a Match in each document Format gets the Trail of §5.8: `1 Intro › 1.1 Scope`
     and `2 Costs › table 1 › row 2 › Price` in Word and OpenDocument text, `Budget › A3` in Excel
@@ -1191,15 +1191,15 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
     wins.
 26. Performance of M4 (`scripts/bench-m4.sh`, M4 plan D23): over a corpus of documents, object
     files and text files, without `--docs` and `--binary`, with a pattern no file matches, a
-    sparse one and `--no-trail`, sfor takes at most 1.1 × rg; `--docs` over files that are not
-    documents (text files, and object files, which have no extension), at most 1.05 × sfor
-    without `--docs` (over those small files sfor's ratio to rg is its own, the same with or
-    without `--docs`: M4 plan r6), so that its bound against rg is sfor's own without `--docs`
-    times 1.05; without `--docs`, M4's sfor over the whole corpus, with the sparse pattern, at
+    sparse one and `--no-trail`, s4 takes at most 1.1 × rg; `--docs` over files that are not
+    documents (text files, and object files, which have no extension), at most 1.05 × s4
+    without `--docs` (over those small files s4's ratio to rg is its own, the same with or
+    without `--docs`: M4 plan r6), so that its bound against rg is s4's own without `--docs`
+    times 1.05; without `--docs`, M4's s4 over the whole corpus, with the sparse pattern, at
     most 1.03 × M3's (`191dbaf`), the median of three alternated series, which bounds what M4
-    adds to a search without `--docs`, the readers' memory counter included (M4 plan r7, r8); `--binary` over object files with a sparse pattern, sfor's time
+    adds to a search without `--docs`, the readers' memory counter included (M4 plan r7, r8); `--binary` over object files with a sparse pattern, s4's time
     over rg's is at most the largest matching object ÷ 100 MB/s plus all matching objects ÷
-    (100 MB/s × threads) plus 0.05 s; `--docs` over the documents, sfor's time over rg's on their
+    (100 MB/s × threads) plus 0.05 s; `--docs` over the documents, s4's time over rg's on their
     extracted texts is at most the texts' size ÷ (2 MB/s × threads) plus 0.1 s. In
     `tests/perf.rs`: a 50 MB ELF with three Matches, also with 200 000 symbols, within `rg -a`'s
     time plus 1 s and its RSS plus 64 MiB; a large document of each zip-based Format and PDF within

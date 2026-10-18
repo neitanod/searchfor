@@ -41,7 +41,7 @@ pub enum BinaryChoice {
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "sfor",
+    name = "s4",
     version,
     about = "ripgrep-compatible search that shows where each match lives",
     disable_help_subcommand = true,
@@ -241,9 +241,9 @@ pub struct Args {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
-    #[error("sfor: --{0} is not supported yet (see docs/rg-compat.md)")]
+    #[error("s4: --{0} is not supported yet (see docs/rg-compat.md)")]
     NotYet(String),
-    #[error("sfor: {0}")]
+    #[error("s4: {0}")]
     Usage(String),
     #[error(transparent)]
     Clap(#[from] clap::Error),
@@ -555,18 +555,18 @@ mod tests {
     /// empty --pre is none (rg 14.1.1).
     #[test]
     fn z_and_pre_override_each_other() {
-        let a = p(&["sfor", "x", "-z", "--pre", "cat"]);
+        let a = p(&["s4", "x", "-z", "--pre", "cat"]);
         assert_eq!(
             (a.search_zip, a.pre.as_deref()),
             (false, Some(std::ffi::OsStr::new("cat")))
         );
-        let a = p(&["sfor", "x", "--pre", "cat", "-z"]);
+        let a = p(&["s4", "x", "--pre", "cat", "-z"]);
         assert_eq!((a.search_zip, a.pre), (true, None));
-        assert_eq!(p(&["sfor", "x", "--pre", ""]).pre, None);
-        assert_eq!(p(&["sfor", "x", "--pre", "cat", "--no-pre"]).pre, None);
-        assert!(!p(&["sfor", "x", "-z", "--no-search-zip"]).search_zip);
+        assert_eq!(p(&["s4", "x", "--pre", ""]).pre, None);
+        assert_eq!(p(&["s4", "x", "--pre", "cat", "--no-pre"]).pre, None);
+        assert!(!p(&["s4", "x", "-z", "--no-search-zip"]).search_zip);
         let a = p(&[
-            "sfor",
+            "s4",
             "x",
             "--pre-glob",
             "*.pdf",
@@ -580,18 +580,18 @@ mod tests {
 
     #[test]
     fn max_columns_zero_is_no_limit() {
-        assert_eq!(p(&["sfor", "-M0", "x"]).max_columns, None);
-        assert_eq!(p(&["sfor", "-M", "5", "x"]).max_columns, Some(5));
-        assert_eq!(p(&["sfor", "x"]).max_columns, None);
+        assert_eq!(p(&["s4", "-M0", "x"]).max_columns, None);
+        assert_eq!(p(&["s4", "-M", "5", "x"]).max_columns, Some(5));
+        assert_eq!(p(&["s4", "x"]).max_columns, None);
     }
 
     #[test]
     fn grammar_actions_need_no_pattern() {
-        let a = p(&["sfor", "--list-grammars"]);
+        let a = p(&["s4", "--list-grammars"]);
         assert!(a.list_grammars);
         assert_eq!(a.pattern, None);
         assert_eq!(a.install_grammar, None);
-        let a = p(&["sfor", "--install-grammar", "lua"]);
+        let a = p(&["s4", "--install-grammar", "lua"]);
         assert_eq!(a.install_grammar.as_deref(), Some("lua"));
         assert!(!a.list_grammars);
         assert_eq!(a.pattern, None);
@@ -627,45 +627,41 @@ mod tests {
     #[test]
     fn not_yet_flags_are_reported_by_name() {
         assert_eq!(
-            parse(os(&["sfor", "--pcre2", "x"]))
-                .unwrap_err()
-                .to_string(),
-            "sfor: --pcre2 is not supported yet (see docs/rg-compat.md)"
+            parse(os(&["s4", "--pcre2", "x"])).unwrap_err().to_string(),
+            "s4: --pcre2 is not supported yet (see docs/rg-compat.md)"
         );
-        assert!(
-            matches!(parse(os(&["sfor", "-nP", "x"])), Err(CliError::NotYet(f)) if f == "pcre2")
-        );
+        assert!(matches!(parse(os(&["s4", "-nP", "x"])), Err(CliError::NotYet(f)) if f == "pcre2"));
         assert!(matches!(
-            parse(os(&["sfor", "--sort", "modified", "x"])),
+            parse(os(&["s4", "--sort", "modified", "x"])),
             Err(CliError::NotYet(_))
         ));
         assert!(
-            matches!(parse(os(&["sfor", "--no-pcre2", "x"])), Err(CliError::NotYet(f)) if f == "no-pcre2")
+            matches!(parse(os(&["s4", "--no-pcre2", "x"])), Err(CliError::NotYet(f)) if f == "no-pcre2")
         );
         assert!(
-            matches!(parse(os(&["sfor", "--unicode", "x"])), Err(CliError::NotYet(f)) if f == "unicode")
+            matches!(parse(os(&["s4", "--unicode", "x"])), Err(CliError::NotYet(f)) if f == "unicode")
         );
     }
 
     #[test]
     fn not_yet_flags_consume_their_value() {
         assert!(
-            matches!(parse(os(&["sfor", "--max-filesize", "10", "x"])), Err(CliError::NotYet(f)) if f == "max-filesize")
+            matches!(parse(os(&["s4", "--max-filesize", "10", "x"])), Err(CliError::NotYet(f)) if f == "max-filesize")
         );
         assert!(
-            matches!(parse(os(&["sfor", "-r", "--json", "x"])), Err(CliError::NotYet(f)) if f == "replace")
+            matches!(parse(os(&["s4", "-r", "--json", "x"])), Err(CliError::NotYet(f)) if f == "replace")
         );
         assert!(
-            matches!(parse(os(&["sfor", "-E=utf-8", "x"])), Err(CliError::NotYet(f)) if f == "encoding")
+            matches!(parse(os(&["s4", "-E=utf-8", "x"])), Err(CliError::NotYet(f)) if f == "encoding")
         );
     }
 
     #[test]
     fn values_that_look_like_flags_are_values() {
         for argv in [
-            &["sfor", "-e", "--pcre2"][..],
-            &["sfor", "-e--pcre2"],
-            &["sfor", "--regexp=--pcre2"],
+            &["s4", "-e", "--pcre2"][..],
+            &["s4", "-e--pcre2"],
+            &["s4", "--regexp=--pcre2"],
         ] {
             assert_eq!(
                 p(argv).patterns().unwrap().patterns,
@@ -677,14 +673,14 @@ mod tests {
 
     #[test]
     fn repeated_patterns_and_globs_accumulate() {
-        let a = p(&["sfor", "-e", "a", "-e", "b", "-g", "*.md", "-g", "!x.md"]);
+        let a = p(&["s4", "-e", "a", "-e", "b", "-g", "*.md", "-g", "!x.md"]);
         assert_eq!(a.patterns().unwrap().patterns, ["a", "b"]);
         assert_eq!(a.globs, ["*.md", "!x.md"]);
     }
 
     #[test]
     fn positional_becomes_a_path_with_e() {
-        let pats = p(&["sfor", "-e", "foo", "src"]).patterns().unwrap();
+        let pats = p(&["s4", "-e", "foo", "src"]).patterns().unwrap();
         assert_eq!(
             (pats.patterns, pats.paths),
             (vec!["foo".to_string()], vec![PathBuf::from("src")])
@@ -693,7 +689,7 @@ mod tests {
 
     #[test]
     fn positional_is_the_pattern_without_e() {
-        let pats = p(&["sfor", "foo", "a", "b"]).patterns().unwrap();
+        let pats = p(&["s4", "foo", "a", "b"]).patterns().unwrap();
         assert_eq!(pats.patterns, ["foo"]);
         assert_eq!(pats.paths, [PathBuf::from("a"), PathBuf::from("b")]);
         assert!(!pats.stdin_used);
@@ -703,42 +699,35 @@ mod tests {
     fn pattern_file_lines_are_patterns() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         std::io::Write::write_all(&mut f, b"one\ntwo\n").unwrap();
-        let pats = p(&[
-            "sfor",
-            "-e",
-            "zero",
-            "-f",
-            f.path().to_str().unwrap(),
-            "dir",
-        ])
-        .patterns()
-        .unwrap();
+        let pats = p(&["s4", "-e", "zero", "-f", f.path().to_str().unwrap(), "dir"])
+            .patterns()
+            .unwrap();
         assert_eq!(pats.patterns, ["zero", "one", "two"]);
         assert_eq!(pats.paths, [PathBuf::from("dir")]);
     }
 
     #[test]
     fn last_case_flag_wins() {
-        assert_eq!(p(&["sfor", "x"]).case(), Case::Sensitive);
-        assert_eq!(p(&["sfor", "-s", "-i", "x"]).case(), Case::Insensitive);
-        assert_eq!(p(&["sfor", "-i", "-s", "x"]).case(), Case::Sensitive);
-        assert_eq!(p(&["sfor", "-i", "-S", "x"]).case(), Case::Smart);
-        assert_eq!(p(&["sfor", "-S", "-i", "x"]).case(), Case::Insensitive);
+        assert_eq!(p(&["s4", "x"]).case(), Case::Sensitive);
+        assert_eq!(p(&["s4", "-s", "-i", "x"]).case(), Case::Insensitive);
+        assert_eq!(p(&["s4", "-i", "-s", "x"]).case(), Case::Sensitive);
+        assert_eq!(p(&["s4", "-i", "-S", "x"]).case(), Case::Smart);
+        assert_eq!(p(&["s4", "-S", "-i", "x"]).case(), Case::Insensitive);
     }
 
     #[test]
     fn last_of_each_pair_wins() {
-        let a = p(&["sfor", "-n", "-N", "x"]);
+        let a = p(&["s4", "-n", "-N", "x"]);
         assert!(!a.line_number && a.no_line_number);
-        let b = p(&["sfor", "--hidden", "--no-hidden", "x"]);
+        let b = p(&["s4", "--hidden", "--no-hidden", "x"]);
         assert!(!b.hidden());
-        assert!(p(&["sfor", "--no-hidden", "-.", "x"]).hidden());
-        let c = p(&["sfor", "-v", "--no-invert-match", "x"]);
+        assert!(p(&["s4", "--no-hidden", "-.", "x"]).hidden());
+        let c = p(&["s4", "-v", "--no-invert-match", "x"]);
         assert!(!c.invert_match);
-        let d = p(&["sfor", "--no-messages", "--messages", "x"]);
+        let d = p(&["s4", "--no-messages", "--messages", "x"]);
         assert!(!d.no_messages);
         let e = p(&[
-            "sfor",
+            "s4",
             "-F",
             "--no-fixed-strings",
             "-L",
@@ -748,85 +737,85 @@ mod tests {
             "x",
         ]);
         assert!(!e.fixed_strings && !e.follow && !e.json);
-        assert!(p(&["sfor", "--ignore", "--no-ignore", "x"]).no_ignore());
-        assert!(!p(&["sfor", "--no-ignore", "--ignore", "x"]).no_ignore());
+        assert!(p(&["s4", "--ignore", "--no-ignore", "x"]).no_ignore());
+        assert!(!p(&["s4", "--no-ignore", "--ignore", "x"]).no_ignore());
     }
 
     #[test]
     fn word_and_line_regexp_override_each_other() {
-        let a = p(&["sfor", "-x", "-w", "x"]);
+        let a = p(&["s4", "-x", "-w", "x"]);
         assert!(a.word_regexp && !a.line_regexp);
-        let b = p(&["sfor", "-w", "-x", "x"]);
+        let b = p(&["s4", "-w", "-x", "x"]);
         assert!(b.line_regexp && !b.word_regexp);
     }
 
     #[test]
     fn last_output_mode_wins() {
-        let a = p(&["sfor", "--json", "-c", "x"]);
+        let a = p(&["s4", "--json", "-c", "x"]);
         assert!(a.count && !a.json);
-        let b = p(&["sfor", "-c", "--json", "x"]);
+        let b = p(&["s4", "-c", "--json", "x"]);
         assert!(b.json && !b.count);
-        let c = p(&["sfor", "-c", "-l", "x"]);
+        let c = p(&["s4", "-c", "-l", "x"]);
         assert!(c.files_with_matches && !c.count);
     }
 
     #[test]
     fn binary_modes() {
-        assert_eq!(p(&["sfor", "x"]).binary_mode(false), BinaryMode::Quit);
-        assert_eq!(p(&["sfor", "x"]).binary_mode(true), BinaryMode::Binary);
+        assert_eq!(p(&["s4", "x"]).binary_mode(false), BinaryMode::Quit);
+        assert_eq!(p(&["s4", "x"]).binary_mode(true), BinaryMode::Binary);
         assert_eq!(
-            p(&["sfor", "-uuu", "x"]).binary_mode(false),
+            p(&["s4", "-uuu", "x"]).binary_mode(false),
             BinaryMode::Binary
         );
-        assert_eq!(p(&["sfor", "-a", "x"]).binary_mode(false), BinaryMode::Text);
+        assert_eq!(p(&["s4", "-a", "x"]).binary_mode(false), BinaryMode::Text);
         assert_eq!(
-            p(&["sfor", "-a", "--binary", "x"]).binary_mode(false),
-            BinaryMode::Binary
-        );
-        assert_eq!(
-            p(&["sfor", "-a", "-uuu", "x"]).binary_mode(false),
+            p(&["s4", "-a", "--binary", "x"]).binary_mode(false),
             BinaryMode::Binary
         );
         assert_eq!(
-            p(&["sfor", "-uuu", "-a", "x"]).binary_mode(false),
+            p(&["s4", "-a", "-uuu", "x"]).binary_mode(false),
+            BinaryMode::Binary
+        );
+        assert_eq!(
+            p(&["s4", "-uuu", "-a", "x"]).binary_mode(false),
             BinaryMode::Text
         );
         assert_eq!(
-            p(&["sfor", "-a", "--no-binary", "x"]).binary_mode(true),
+            p(&["s4", "-a", "--no-binary", "x"]).binary_mode(true),
             BinaryMode::Binary
         );
         assert_eq!(
-            p(&["sfor", "--no-binary", "-a", "x"]).binary_mode(true),
+            p(&["s4", "--no-binary", "-a", "x"]).binary_mode(true),
             BinaryMode::Text
         );
         assert_eq!(
-            p(&["sfor", "-auuu", "x"]).binary_mode(false),
+            p(&["s4", "-auuu", "x"]).binary_mode(false),
             BinaryMode::Binary
         );
         assert_eq!(
-            p(&["sfor", "-uuua", "x"]).binary_mode(false),
+            p(&["s4", "-uuua", "x"]).binary_mode(false),
             BinaryMode::Text
         );
         assert_eq!(
-            p(&["sfor", "-u", "-a", "-u", "-u", "x"]).binary_mode(false),
+            p(&["s4", "-u", "-a", "-u", "-u", "x"]).binary_mode(false),
             BinaryMode::Binary
         );
         assert!(matches!(
-            parse(os(&["sfor", "-uuuu", "x"])),
+            parse(os(&["s4", "-uuuu", "x"])),
             Err(CliError::Usage(_))
         ));
-        assert_eq!(p(&["sfor", "-uu", "x"]).unrestricted, 2);
+        assert_eq!(p(&["s4", "-uu", "x"]).unrestricted, 2);
     }
 
     #[test]
     fn fourth_unrestricted_is_ripgreps_error() {
         for argv in [
-            &["sfor", "-uuuu", "x"][..],
-            &["sfor", "-uuu", "--unrestricted", "x"],
+            &["s4", "-uuuu", "x"][..],
+            &["s4", "-uuu", "--unrestricted", "x"],
         ] {
             assert_eq!(
                 parse(os(argv)).unwrap_err().to_string(),
-                "sfor: error parsing flag -u: flag can only be repeated up to 3 times",
+                "s4: error parsing flag -u: flag can only be repeated up to 3 times",
                 "{argv:?}"
             );
         }
@@ -834,24 +823,24 @@ mod tests {
 
     #[test]
     fn unrestricted_effects_by_position() {
-        assert!(!p(&["sfor", "x"]).no_ignore());
-        assert!(!p(&["sfor", "x"]).hidden());
-        assert!(p(&["sfor", "-u", "x"]).no_ignore());
-        assert!(!p(&["sfor", "-u", "x"]).hidden());
-        assert!(!p(&["sfor", "-u", "--ignore", "x"]).no_ignore());
-        assert!(p(&["sfor", "--ignore", "-u", "x"]).no_ignore());
-        assert!(!p(&["sfor", "-uu", "--no-hidden", "x"]).hidden());
-        assert!(p(&["sfor", "--no-hidden", "-uu", "x"]).hidden());
-        let a = p(&["sfor", "-u", "--ignore", "-u", "x"]);
+        assert!(!p(&["s4", "x"]).no_ignore());
+        assert!(!p(&["s4", "x"]).hidden());
+        assert!(p(&["s4", "-u", "x"]).no_ignore());
+        assert!(!p(&["s4", "-u", "x"]).hidden());
+        assert!(!p(&["s4", "-u", "--ignore", "x"]).no_ignore());
+        assert!(p(&["s4", "--ignore", "-u", "x"]).no_ignore());
+        assert!(!p(&["s4", "-uu", "--no-hidden", "x"]).hidden());
+        assert!(p(&["s4", "--no-hidden", "-uu", "x"]).hidden());
+        let a = p(&["s4", "-u", "--ignore", "-u", "x"]);
         assert!(!a.no_ignore() && a.hidden());
-        let b = p(&["sfor", "--unrestricted", "--unrestricted", "x"]);
+        let b = p(&["s4", "--unrestricted", "--unrestricted", "x"]);
         assert!(b.no_ignore() && b.hidden() && b.unrestricted == 2);
     }
 
     #[test]
     fn empty_pattern_file_is_an_empty_set() {
         let f = tempfile::NamedTempFile::new().unwrap();
-        let pats = p(&["sfor", "-f", f.path().to_str().unwrap()])
+        let pats = p(&["s4", "-f", f.path().to_str().unwrap()])
             .patterns()
             .unwrap();
         assert!(pats.patterns.is_empty());
@@ -859,63 +848,57 @@ mod tests {
 
     #[test]
     fn context_defaults() {
-        let a = p(&["sfor", "-C", "2", "-A", "5", "x"]);
+        let a = p(&["s4", "-C", "2", "-A", "5", "x"]);
         assert_eq!((a.before(), a.after()), (2, 5));
         // -A and -B partially override -C regardless of order (rg 14.1.1 --help, measured).
-        let b = p(&["sfor", "-A", "1", "-C", "2", "x"]);
+        let b = p(&["s4", "-A", "1", "-C", "2", "x"]);
         assert_eq!((b.before(), b.after()), (2, 1));
-        assert_eq!(
-            (p(&["sfor", "x"]).before(), p(&["sfor", "x"]).after()),
-            (0, 0)
-        );
+        assert_eq!((p(&["s4", "x"]).before(), p(&["s4", "x"]).after()), (0, 0));
     }
 
     #[test]
     fn sort_path_and_none_are_accepted() {
         assert_eq!(
-            p(&["sfor", "--sort", "path", "x"]).sort.as_deref(),
+            p(&["s4", "--sort", "path", "x"]).sort.as_deref(),
             Some("path")
         );
+        assert_eq!(p(&["s4", "--sort=none", "x"]).sort.as_deref(), Some("none"));
         assert_eq!(
-            p(&["sfor", "--sort=none", "x"]).sort.as_deref(),
-            Some("none")
-        );
-        assert_eq!(
-            parse(os(&["sfor", "--sort", "modified", "x"]))
+            parse(os(&["s4", "--sort", "modified", "x"]))
                 .unwrap_err()
                 .to_string(),
-            "sfor: --sort=modified is not supported yet (see docs/rg-compat.md)"
+            "s4: --sort=modified is not supported yet (see docs/rg-compat.md)"
         );
     }
 
     #[test]
     fn invalid_combinations() {
         assert!(matches!(
-            parse(os(&["sfor", "--no-trail", "--expand", "x"])),
+            parse(os(&["s4", "--no-trail", "--expand", "x"])),
             Err(CliError::Usage(_))
         ));
         assert!(matches!(
-            parse(os(&["sfor", "--no-trail", "--within", "A", "x"])),
+            parse(os(&["s4", "--no-trail", "--within", "A", "x"])),
             Err(CliError::Usage(_))
         ));
         assert!(matches!(
-            parse(os(&["sfor", "--no-trail", "--in-headings", "x"])),
+            parse(os(&["s4", "--no-trail", "--in-headings", "x"])),
             Err(CliError::Usage(_))
         ));
         assert!(matches!(
-            parse(os(&["sfor", "--expand", "-c", "x"])),
+            parse(os(&["s4", "--expand", "-c", "x"])),
             Err(CliError::Usage(_))
         ));
         assert!(matches!(
-            parse(os(&["sfor", "--expand", "-q", "x"])),
+            parse(os(&["s4", "--expand", "-q", "x"])),
             Err(CliError::Usage(_))
         ));
         assert!(matches!(
-            parse(os(&["sfor", "--expand", "-l", "x"])),
+            parse(os(&["s4", "--expand", "-l", "x"])),
             Err(CliError::Usage(_))
         ));
-        assert!(p(&["sfor", "--expand", "--within", "A", "x"]).structural());
-        assert!(!p(&["sfor", "--no-trail", "-c", "x"]).structural());
+        assert!(p(&["s4", "--expand", "--within", "A", "x"]).structural());
+        assert!(!p(&["s4", "--no-trail", "-c", "x"]).structural());
     }
 
     #[test]
@@ -933,17 +916,17 @@ mod tests {
 
     #[test]
     fn in_headings_rejects_invert_match() {
-        let e = parse(os(&["sfor", "--in-headings", "-v", "x"])).unwrap_err();
+        let e = parse(os(&["s4", "--in-headings", "-v", "x"])).unwrap_err();
         assert!(matches!(e, CliError::Usage(_)));
         assert_eq!(
             e.to_string(),
-            "sfor: --in-headings selects names; -v has no meaning there"
+            "s4: --in-headings selects names; -v has no meaning there"
         );
-        assert!(p(&["sfor", "--in-headings", "-v", "--no-invert-match", "x"]).in_headings);
+        assert!(p(&["s4", "--in-headings", "-v", "--no-invert-match", "x"]).in_headings);
     }
 
     #[test]
     fn the_word_formats_is_a_pattern() {
-        assert_eq!(p(&["sfor", "formats"]).pattern.as_deref(), Some("formats"));
+        assert_eq!(p(&["s4", "formats"]).pattern.as_deref(), Some("formats"));
     }
 }

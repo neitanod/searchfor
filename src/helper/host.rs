@@ -1,4 +1,4 @@
-//! The sfor side of protocol v1 (spec §4.4, design note 5): starting helpers, feeding them from
+//! The s4 side of protocol v1 (spec §4.4, design note 5): starting helpers, feeding them from
 //! many search threads, and what happens when they fail. Every process has a writer thread
 //! (D31), so no caller ever blocks on a pipe, and one idempotent close that kills when needed,
 //! always reaps, and waits for its pipe threads at most `PIPE_WAIT` (D32).
@@ -24,7 +24,7 @@ enum Fail {
 
 type Waiter = mpsc::Sender<Result<Reply, Fail>>;
 
-/// Runs `argv` with its three pipes, in sfor's working directory and process group (D32).
+/// Runs `argv` with its three pipes, in s4's working directory and process group (D32).
 pub struct CommandLauncher {
     pub argv: Vec<String>,
 }
@@ -186,7 +186,7 @@ impl Conn {
             thread(Box::new(move || {
                 for l in BufReader::new(err).lines().map_while(Result::ok) {
                     if !quiet.load(SeqCst) {
-                        warn(format!("sfor: {format}: {l}"));
+                        warn(format!("s4: {format}: {l}"));
                     }
                 }
             }));
@@ -570,7 +570,7 @@ impl Host {
     /// to print after the warning of the failing file (`take_notice`).
     fn disable_with(&self, why: String, later: bool) {
         let msg = format!(
-            "sfor: {}: {why}; its files print without Trails for the rest of this run",
+            "s4: {}: {why}; its files print without Trails for the rest of this run",
             self.cfg.format
         );
         let now = {
@@ -620,13 +620,13 @@ impl Host {
     }
 }
 
-/// D42: one lifecycle for every helper process of this sfor process. Every launch runs under
+/// D42: one lifecycle for every helper process of this s4 process. Every launch runs under
 /// the Supervisor's lock: it is refused once the run is cancelled, and the new process is
 /// registered before the lock is released, so a cancellation either comes first (nothing
 /// starts) or sees the process (it is killed and reaped). The process-wide Supervisor installs
 /// its SIGINT/SIGTERM watcher before the first spawn; on a signal it cancels, kills and reaps
-/// every helper — one that ignores SIGINT, or a signal sent to sfor's pid alone, included — and
-/// then sfor dies by that signal with its default disposition, as ripgrep would. A run that
+/// every helper — one that ignores SIGINT, or a signal sent to s4's pid alone, included — and
+/// then s4 dies by that signal with its default disposition, as ripgrep would. A run that
 /// launches no helper installs nothing.
 pub(crate) mod cancel {
     use super::Conn;
@@ -706,7 +706,7 @@ pub(crate) mod cancel {
             Ok(started)
         }
 
-        /// The run was cancelled: hosts stop warning, since sfor is about to die by the signal
+        /// The run was cancelled: hosts stop warning, since s4 is about to die by the signal
         /// and ripgrep prints nothing on Ctrl-C (review r4, Fable #3).
         pub(crate) fn cancelled(&self) -> bool {
             self.state.lock().unwrap().cancelled
@@ -757,7 +757,7 @@ pub(crate) mod cancel {
                 if let Some(sig) = signals.forever().next() {
                     GLOBAL.cancel();
                     let _ = signal_hook::low_level::emulate_default_handler(sig);
-                    std::process::exit(128 + sig); // not reached: the default action ends sfor
+                    std::process::exit(128 + sig); // not reached: the default action ends s4
                 }
             });
         });
@@ -771,7 +771,7 @@ pub(crate) mod cancel {
 fn refusal(r: &Reply) -> String {
     match &r.error {
         Some(e) => format!("refused hello: {e}"),
-        None => format!("speaks protocol {:?}; sfor speaks {PROTOCOL}", r.protocol),
+        None => format!("speaks protocol {:?}; s4 speaks {PROTOCOL}", r.protocol),
     }
 }
 
@@ -1596,7 +1596,7 @@ mod tests {
 
     #[test]
     fn the_timeout_counts_from_the_queue_not_from_the_start_of_the_copy() {
-        // Review m2-code-r1, Fable #4: spec §4.4 counts `timeout_ms` from when sfor queues the
+        // Review m2-code-r1, Fable #4: spec §4.4 counts `timeout_ms` from when s4 queues the
         // request. A copy that takes 350 ms to answer `hello` and 300 ms per request answers
         // within a 500 ms timeout; counted from before the start it would take 650 ms.
         let body: Body = Arc::new(|lines, out, _| {
@@ -1698,7 +1698,7 @@ mod tests {
             Err(crate::helper::HelperError::Disabled)
         );
         assert_eq!(r.launches.load(SeqCst), before);
-        // Nothing is printed while sfor is about to die by the signal (Fable r4 #3).
+        // Nothing is printed while s4 is about to die by the signal (Fable r4 #3).
         assert!(
             r.warnings.lock().unwrap().is_empty(),
             "{:?}",
@@ -1871,6 +1871,6 @@ mod tests {
         assert!(trails(&host, "a.ini").is_ok());
         // The shutdown waits for the pipe threads, the stderr relay included.
         host.shutdown();
-        assert_eq!(*warnings.lock().unwrap(), ["sfor: ini: oops"]);
+        assert_eq!(*warnings.lock().unwrap(), ["s4: ini: oops"]);
     }
 }

@@ -1,6 +1,6 @@
-//! ripgrep compatibility (plan, Task 9.3): `sfor --no-trail` against rg 14.1.1 byte for byte,
+//! ripgrep compatibility (plan, Task 9.3): `s4 --no-trail` against rg 14.1.1 byte for byte,
 //! JSON with the elapsed times masked, and trail-mode JSON and `-M` against rg after removing
-//! what sfor adds. Skipped with a note when rg 14.1.1 is not installed.
+//! what s4 adds. Skipped with a note when rg 14.1.1 is not installed.
 mod common;
 
 use common::{Fixture, code, reference_rg, run, stdout};
@@ -25,8 +25,8 @@ fn rg(fx: &Fixture, args: &[&str], input: In) -> Output {
     with_stdin(fx, fx.rg(args), input)
 }
 
-fn sfor(fx: &Fixture, args: &[&str], input: In) -> Output {
-    with_stdin(fx, fx.sfor(args), input)
+fn s4(fx: &Fixture, args: &[&str], input: In) -> Output {
+    with_stdin(fx, fx.s4(args), input)
 }
 
 /// Runs every case and reports all the differences at once.
@@ -36,7 +36,7 @@ impl Report {
     fn check(&mut self, case: String, want: (i32, String), got: (i32, String)) {
         if want != got {
             self.0.push(format!(
-                "== {case}\n-- rg (exit {}):\n{}\n-- sfor (exit {}):\n{}",
+                "== {case}\n-- rg (exit {}):\n{}\n-- s4 (exit {}):\n{}",
                 want.0, want.1, got.0, got.1
             ));
         }
@@ -58,7 +58,7 @@ fn passthrough(fx: &Fixture, r: &mut Report, args: &[&str], input: In) {
     let want = rg(fx, &a, input);
     let mut s = vec!["--no-trail"];
     s.extend_from_slice(&a);
-    let got = sfor(fx, &s, input);
+    let got = s4(fx, &s, input);
     r.check(
         format!("{args:?}"),
         (code(&want), stdout(&want)),
@@ -163,7 +163,7 @@ fn passthrough_equals_ripgrep() {
 }
 
 /// Replaces every `elapsed`/`elapsed_total` object by a placeholder; with `trail_mode`, also
-/// removes the keys sfor adds and masks `bytes_printed`.
+/// removes the keys s4 adds and masks `bytes_printed`.
 fn normalize(v: &mut Value, trail_mode: bool) {
     match v {
         Value::Object(m) => {
@@ -254,13 +254,13 @@ fn json_equals_ripgrep() {
         let want = (code(&want), json_lines(&want, false));
         let mut nt = vec!["--no-trail"];
         nt.extend_from_slice(&a);
-        let got = sfor(&fx, &nt, *input);
+        let got = s4(&fx, &nt, *input);
         r.check(
             format!("--no-trail {a:?}"),
             want.clone(),
             (code(&got), json_lines(&got, false)),
         );
-        let got = sfor(&fx, &a, *input);
+        let got = s4(&fx, &a, *input);
         let masked = (want.0, {
             let w = rg(&fx, &a, *input);
             json_lines(&w, true)
@@ -287,7 +287,7 @@ fn json_equals_ripgrep() {
         );
         let mut nt = vec!["--no-trail"];
         nt.extend_from_slice(&a);
-        let got = sfor(&fx, &nt, n);
+        let got = s4(&fx, &nt, n);
         let got = (
             code(&got),
             if is_json {
@@ -301,7 +301,7 @@ fn json_equals_ripgrep() {
     r.assert_empty();
 }
 
-/// The binary message lines of rg and of sfor's flat layout agree.
+/// The binary message lines of rg and of s4's flat layout agree.
 #[test]
 fn binary_messages_in_the_flat_layout() {
     if !reference_rg() {
@@ -319,7 +319,7 @@ fn binary_messages_in_the_flat_layout() {
         let want = rg(&fx, &a, In::Null);
         let mut f = vec!["--flat"];
         f.extend_from_slice(&a);
-        let got = sfor(&fx, &f, In::Null);
+        let got = s4(&fx, &f, In::Null);
         let msgs = |o: &Output| -> String {
             stdout(o)
                 .lines()
@@ -348,7 +348,7 @@ fn strip_ansi(s: &str) -> String {
 }
 
 /// (line number, `:` or `-`, message) of each line, `--` separators left out.
-fn by_line(out: &str, sfor: bool) -> Vec<(u64, char, String)> {
+fn by_line(out: &str, s4: bool) -> Vec<(u64, char, String)> {
     let re = regex_lite::Regex::new(r"^(\d+)([:-])(.*)$").unwrap();
     let mut v: Vec<(u64, char, String)> = Vec::new();
     for l in out.lines().map(strip_ansi) {
@@ -360,7 +360,7 @@ fn by_line(out: &str, sfor: bool) -> Vec<(u64, char, String)> {
             .unwrap_or_else(|| panic!("unexpected line: {l:?}"));
         let sep = c[2].chars().next().unwrap();
         let mut msg = c[3].to_string();
-        if sfor && sep == ':' {
+        if s4 && sep == ':' {
             msg = msg.strip_prefix(' ').unwrap_or(&msg).to_string();
             if let Some((_, text)) = msg.split_once(" │ ") {
                 msg = text.to_string();
@@ -395,7 +395,7 @@ fn max_columns_in_the_flat_layout() {
             ],
             In::Null,
         );
-        let got = sfor(
+        let got = s4(
             &fx,
             &[
                 "--color",
@@ -445,7 +445,7 @@ fn type_list_equals_ripgrep() {
     }
     let fx = Fixture::new();
     let want = reference(&["--type-list"]);
-    let got = run(&mut fx.sfor(["--type-list"]));
+    let got = run(&mut fx.s4(["--type-list"]));
     assert_eq!((code(&got), stdout(&got)), (code(&want), stdout(&want)));
 }
 
@@ -486,7 +486,7 @@ fn type_selection_equals_ripgrep() {
         a.extend_from_slice(&args);
         let want = rg(&fx, &a, In::Null);
         a.push("--flat");
-        let got = sfor(&fx, &a, In::Null);
+        let got = s4(&fx, &a, In::Null);
         let files = |o: &Output| {
             let mut v: Vec<String> = stdout(o)
                 .lines()
@@ -522,12 +522,12 @@ fn word_and_line_regexp_override_each_other() {
         let want = rg(&fx, args, In::Null);
         let mut a = vec!["--flat", "-N"];
         a.extend_from_slice(args);
-        let got = sfor(&fx, &a, In::Null);
-        let text = |o: &Output, sfor: bool| -> String {
+        let got = s4(&fx, &a, In::Null);
+        let text = |o: &Output, s4: bool| -> String {
             stdout(o)
                 .lines()
                 .map(|l| {
-                    if sfor {
+                    if s4 {
                         l.strip_prefix(' ').unwrap_or(l)
                     } else {
                         l
@@ -570,7 +570,7 @@ fn within_keeps_the_search_stats_in_json() {
     };
     let want = rg(&fx, &["--json", "needle", "md/guide.md"], In::Null);
     for within in ["linux", "nowhere"] {
-        let got = sfor(
+        let got = s4(
             &fx,
             &["--json", "--within", within, "needle", "md/guide.md"],
             In::Null,
@@ -644,7 +644,7 @@ fn max_count_with_after_context_equals_ripgrep() {
             let want = rg(&fx, &a, input);
             let mut nt = vec!["--no-trail"];
             nt.extend_from_slice(&a);
-            let got = sfor(&fx, &nt, input);
+            let got = s4(&fx, &nt, input);
             r.check(
                 format!("text --no-trail {case}"),
                 (code(&want), stdout(&want)),
@@ -655,7 +655,7 @@ fn max_count_with_after_context_equals_ripgrep() {
                 let mut fl = vec!["--flat"];
                 fl.extend_from_slice(within);
                 fl.extend_from_slice(&a);
-                let got = sfor(&fx, &fl, input);
+                let got = s4(&fx, &fl, input);
                 let g = format!("{:?}", by_line(&stdout(&got), true));
                 r.check(
                     format!("text {within:?} {case}"),
@@ -668,13 +668,13 @@ fn max_count_with_after_context_equals_ripgrep() {
             let want = rg(&fx, &ja, input);
             let mut nt = vec!["--no-trail"];
             nt.extend_from_slice(&ja);
-            let got = sfor(&fx, &nt, input);
+            let got = s4(&fx, &nt, input);
             r.check(
                 format!("json --no-trail {case}"),
                 (code(&want), json_lines(&want, false)),
                 (code(&got), json_lines(&got, false)),
             );
-            let got = sfor(&fx, &ja, input);
+            let got = s4(&fx, &ja, input);
             r.check(
                 format!("json {case}"),
                 (code(&want), json_lines(&want, true)),
@@ -684,7 +684,7 @@ fn max_count_with_after_context_equals_ripgrep() {
             let lines = ["begin", "match", "context"];
             let mut wa = vec!["--within", ""];
             wa.extend_from_slice(&ja);
-            let got = sfor(&fx, &wa, input);
+            let got = s4(&fx, &wa, input);
             r.check(
                 format!("json --within '' {case}"),
                 (code(&want), json_of(&want, true, &lines).join("\n")),
@@ -711,7 +711,7 @@ fn max_columns_zero_disables_the_limit() {
         let want = rg(&fx, args, In::Null);
         let mut nt = vec!["--no-trail"];
         nt.extend_from_slice(args);
-        let got = sfor(&fx, &nt, In::Null);
+        let got = s4(&fx, &nt, In::Null);
         r.check(
             format!("--no-trail {args:?}"),
             (code(&want), stdout(&want)),
@@ -721,7 +721,7 @@ fn max_columns_zero_disables_the_limit() {
         for layout in [&["--flat"][..], &["--flat", "--within", ""]] {
             let mut a = layout.to_vec();
             a.extend_from_slice(args);
-            let got = sfor(&fx, &a, In::Null);
+            let got = s4(&fx, &a, In::Null);
             r.check(
                 format!("{a:?}"),
                 (code(&want), w.clone()),
@@ -730,7 +730,7 @@ fn max_columns_zero_disables_the_limit() {
         }
         let mut a = vec!["--tree"];
         a.extend_from_slice(args);
-        let got = sfor(&fx, &a, In::Null);
+        let got = s4(&fx, &a, In::Null);
         r.check(
             format!("{a:?}"),
             (code(&want), String::new()),
@@ -784,7 +784,7 @@ fn bytes_searched_when_the_after_context_crosses_a_buffer() {
         ] {
             let mut s = mode.to_vec();
             s.extend_from_slice(&a);
-            let got = sfor(&fx, &s, input);
+            let got = s4(&fx, &s, input);
             r.check(
                 format!("{s:?}"),
                 (code(&want), json_lines(&want, true)),
@@ -815,7 +815,7 @@ fn bytes_searched_when_the_after_context_crosses_a_buffer() {
     ] {
         let mut s = mode.to_vec();
         s.extend_from_slice(&args);
-        let got = chunked(fx.sfor(&s));
+        let got = chunked(fx.s4(&s));
         r.check(
             format!("chunked {s:?}"),
             (0, "[7, 7]".into()),
@@ -864,7 +864,7 @@ fn bytes_searched_with_a_longer_after_context_equals_ripgrep() {
         for mode in [&["--no-trail"][..], &[], &["--format", "markdown"]] {
             let mut s = mode.to_vec();
             s.extend_from_slice(&a);
-            let got = sfor(&fx, &s, In::Null);
+            let got = s4(&fx, &s, In::Null);
             r.check(
                 format!("{s:?}"),
                 (code(&want), format!("{:?}", bytes_searched(&want))),
@@ -906,7 +906,7 @@ fn json_quiet_equals_ripgrep() {
         for mode in [&["--no-trail"][..], &[]] {
             let mut s = mode.to_vec();
             s.extend_from_slice(&a);
-            let got = sfor(&fx, &s, *input);
+            let got = s4(&fx, &s, *input);
             r.check(
                 format!("{s:?}"),
                 want.clone(),
@@ -918,7 +918,7 @@ fn json_quiet_equals_ripgrep() {
     let want = rg(&fx, &["--json", "-q", "needle", "md/guide.md"], n);
     for (within, exit) in [("linux", 0), ("nowhere", 1)] {
         let a = ["--json", "-q", "--within", within, "needle", "md/guide.md"];
-        let got = sfor(&fx, &a, n);
+        let got = s4(&fx, &a, n);
         r.check(
             format!("{a:?}"),
             (exit, json_lines(&want, false)),
@@ -961,7 +961,7 @@ fn filtered_counts_stop_at_max_count() {
                 let want = rg(&fx, &a, In::Null);
                 let mut s = filter.to_vec();
                 s.extend_from_slice(&a);
-                let got = sfor(&fx, &s, In::Null);
+                let got = s4(&fx, &s, In::Null);
                 r.check(
                     format!("{s:?}"),
                     (code(&want), stdout(&want)),
@@ -1018,7 +1018,7 @@ fn bytes_searched_when_the_context_crosses_several_buffers() {
         for mode in [&["--no-trail"][..], &[], &["--format", "markdown"]] {
             let mut s = mode.to_vec();
             s.extend_from_slice(&a);
-            let got = sfor(&fx, &s, *input);
+            let got = s4(&fx, &s, *input);
             r.check(
                 format!("{s:?}"),
                 (code(&want), format!("{:?}", bytes_searched(&want))),
@@ -1062,7 +1062,7 @@ fn inverted_max_count_in_memory_stops_at_the_binary_data() {
             for mode in [&["--no-trail"][..], &[]] {
                 let mut s = mode.to_vec();
                 s.extend_from_slice(&a);
-                let got = sfor(&fx, &s, In::Null);
+                let got = s4(&fx, &s, In::Null);
                 r.check(
                     format!("{s:?}"),
                     (code(&want), format!("{:?}", bytes_searched(&want))),
@@ -1075,7 +1075,7 @@ fn inverted_max_count_in_memory_stops_at_the_binary_data() {
 }
 
 /// Code review r3, Fable #3: a reader that closes the pipe after the first line. rg 14.1.1
-/// prints while it searches, stops at the closed pipe and exits 1; so does sfor through
+/// prints while it searches, stops at the closed pipe and exits 1; so does s4 through
 /// grep-printer's printers (`--no-trail`), which print one file's output as it grows.
 #[test]
 fn a_closed_pipe_exits_as_ripgrep() {
@@ -1111,7 +1111,7 @@ fn a_closed_pipe_exits_as_ripgrep() {
         for mode in [&["--no-trail"][..], &["--flat"], &["--tree"]] {
             let mut s = mode.to_vec();
             s.extend_from_slice(args);
-            let got = first_line(fx.sfor(&s));
+            let got = first_line(fx.s4(&s));
             r.check(
                 format!("{s:?}"),
                 (want.0, format!("{:?}", want.1)),
@@ -1177,7 +1177,7 @@ fn bytes_searched_with_a_bom_equals_ripgrep() {
                 for mode in [&["--no-trail"][..], &[], &["--expand"]] {
                     let mut s = mode.to_vec();
                     s.extend_from_slice(&a);
-                    let got = sfor(&fx, &s, src);
+                    let got = s4(&fx, &s, src);
                     r.check(
                         format!("{s:?} < {}", if stdin { input } else { "null" }),
                         (code(&want), format!("{:?}", bytes_searched(&want))),
@@ -1247,7 +1247,7 @@ fn unicode_classes_equal_ripgrep() {
         for (mode, trail) in [(&["--no-trail"][..], false), (&[], true)] {
             let mut s = mode.to_vec();
             s.extend_from_slice(&a);
-            let got = sfor(&fx, &s, In::Null);
+            let got = s4(&fx, &s, In::Null);
             r.check(
                 format!("{s:?}"),
                 (code(&want), json_lines(&want, trail)),
@@ -1259,18 +1259,18 @@ fn unicode_classes_equal_ripgrep() {
 }
 
 /// Runs `cmd` in `sh` on a pseudo-terminal from util-linux `script`, in the fixture copy, with
-/// `rg` and `sfor` naming the reference and our binary. None, with a note, without `script`.
+/// `rg` and `s4` naming the reference and our binary. None, with a note, without `script`.
 fn on_a_tty(fx: &Fixture, cmd: &str) -> Option<String> {
     if Command::new("script").arg("--version").output().is_err() {
         eprintln!("skipping: util-linux script not found, so this pty test tests nothing");
         return None;
     }
-    let sfor = assert_cmd::cargo::cargo_bin("sfor");
-    let cmd = cmd.replace("sfor ", &format!("{} --no-trail ", sfor.display()));
+    let s4 = assert_cmd::cargo::cargo_bin("s4");
+    let cmd = cmd.replace("s4 ", &format!("{} --no-trail ", s4.display()));
     let o = Command::new("script")
         .args(["-qec", &cmd, "/dev/null"])
         .current_dir(fx.path())
-        .env("SFOR_FORMATS_DIR", fx.formats.path())
+        .env("SEARCHFOR_FORMATS_DIR", fx.formats.path())
         .env_remove("RIPGREP_CONFIG_PATH")
         .stdin(Stdio::null())
         .output()
@@ -1302,7 +1302,7 @@ fn stdin_alone_on_a_tty_equals_ripgrep() {
         let Some(want) = on_a_tty(&fx, &args.replace("{}", "rg")) else {
             return;
         };
-        let got = on_a_tty(&fx, &args.replace("{}", "sfor")).unwrap();
+        let got = on_a_tty(&fx, &args.replace("{}", "s4")).unwrap();
         r.check(args.to_string(), (0, want), (0, got));
     }
     r.assert_empty();
@@ -1341,7 +1341,7 @@ fn the_separator_with_one_thread_waits_for_a_line() {
             let want = rg(&fx, &a, In::Null);
             let mut s = vec!["--no-trail"];
             s.extend_from_slice(&a);
-            let got = sfor(&fx, &s, In::Null);
+            let got = s4(&fx, &s, In::Null);
             r.check(
                 format!("{s:?}"),
                 (code(&want), stdout(&want)),
@@ -1352,7 +1352,7 @@ fn the_separator_with_one_thread_waits_for_a_line() {
             let want = rg(&fx, &n, In::Null);
             let mut f = vec!["--flat"];
             f.extend_from_slice(&a);
-            let got = sfor(&fx, &f, In::Null);
+            let got = s4(&fx, &f, In::Null);
             r.check(
                 format!("{f:?}"),
                 (code(&want), stdout(&want)),
@@ -1367,20 +1367,17 @@ fn the_separator_with_one_thread_waits_for_a_line() {
     // `script` this case is skipped and tests nothing (code review r6, Fable #2).
     let cmd = "{} --color never --sort path -C1 needle seq/plain.txt seq/nul8.txt seq/odd.txt";
     if let Some(want) = on_a_tty(&fx, &cmd.replace("{}", "rg")) {
-        let got = on_a_tty(&fx, &cmd.replace("{}", "sfor")).unwrap();
+        let got = on_a_tty(&fx, &cmd.replace("{}", "s4")).unwrap();
         r.check(cmd.to_string(), (0, want), (0, got));
     }
     for mode in [&["--no-trail"][..], &[], &["--json"]] {
         let want = rg(&fx, &["needle", "zzz"], In::Null);
         let mut s = mode.to_vec();
         s.extend_from_slice(&["needle", "zzz"]);
-        let got = sfor(&fx, &s, In::Null);
+        let got = s4(&fx, &s, In::Null);
         r.check(
             format!("{s:?} (stderr)"),
-            (
-                code(&want),
-                common::stderr(&want).replacen("rg:", "sfor:", 1),
-            ),
+            (code(&want), common::stderr(&want).replacen("rg:", "s4:", 1)),
             (code(&got), common::stderr(&got)),
         );
     }
@@ -1420,7 +1417,7 @@ fn a_binary_file_with_a_context_deviates_as_documented() {
         for mode in ["--no-trail", "--flat", "--tree"] {
             let mut s = vec![mode];
             s.extend_from_slice(args);
-            let o = sfor(&fx, &s, input);
+            let o = s4(&fx, &s, input);
             let got = (
                 code(&o),
                 stdout(&o)
@@ -1473,7 +1470,7 @@ fn inverted_count_matches_counts_lines_as_ripgrep() {
                     let want = rg(&fx, &a, input);
                     let mut s = variant.to_vec();
                     s.extend_from_slice(&a);
-                    let got = sfor(&fx, &s, input);
+                    let got = s4(&fx, &s, input);
                     r.check(
                         format!("{s:?}"),
                         (code(&want), stdout(&want)),
@@ -1522,7 +1519,7 @@ fn stdin_read_for_patterns_cannot_be_read_again() {
             let want = rg(&fx, args, pats);
             let mut s = vec![variant];
             s.extend_from_slice(args);
-            let got = sfor(&fx, &s, pats);
+            let got = s4(&fx, &s, pats);
             let err =
                 |o: &Output, name: &str| common::stderr(o).replace(&format!("{name}: "), "PROG: ");
             let out = |o: &Output| {
@@ -1535,7 +1532,7 @@ fn stdin_read_for_patterns_cannot_be_read_again() {
             r.check(
                 format!("{s:?}"),
                 (code(&want), format!("{}{}", out(&want), err(&want, "rg"))),
-                (code(&got), format!("{}{}", out(&got), err(&got, "sfor"))),
+                (code(&got), format!("{}{}", out(&got), err(&got, "s4"))),
             );
         }
     }
@@ -1584,13 +1581,13 @@ fn in_headings_stats_deviate_as_documented() {
         );
         let mut s = vec!["--in-headings"];
         s.extend_from_slice(&a);
-        let got = counts(&sfor(&fx, &s, In::Null));
+        let got = counts(&s4(&fx, &s, In::Null));
         assert!(
             !got.is_empty() && got.iter().all(|c| *c == (size, 1, 1)),
-            "sfor {s:?}: {got:?}"
+            "s4 {s:?}: {got:?}"
         );
     }
-    let o = sfor(
+    let o = s4(
         &fx,
         &["--in-headings", "--flat", "^needle", "h.md"],
         In::Null,
@@ -1649,7 +1646,7 @@ fn in_headings_follows_the_binary_policy_of_ripgrep() {
         let mut s = vec!["--in-headings"];
         s.extend_from_slice(extra);
         s.extend_from_slice(&j);
-        let got = sfor(&fx, &s, input);
+        let got = s4(&fx, &s, input);
         r.check(
             format!("{s:?}"),
             (
@@ -1685,7 +1682,7 @@ fn in_headings_follows_the_binary_policy_of_ripgrep() {
         let mut f = vec!["--in-headings", "--flat"];
         f.extend_from_slice(extra);
         f.extend_from_slice(args);
-        let got = sfor(&fx, &f, input);
+        let got = s4(&fx, &f, input);
         r.check(
             format!("{f:?}"),
             (code(&want), format!("{:?}", messages(&want))),
@@ -1737,7 +1734,7 @@ fn summaries_of_walked_binary_files_equal_ripgrep() {
             let want = rg(&fx, &a, In::Null);
             let mut s = mode.to_vec();
             s.extend_from_slice(&a);
-            let got = sfor(&fx, &s, In::Null);
+            let got = s4(&fx, &s, In::Null);
             r.check(
                 format!("{s:?}"),
                 (code(&want), stdout(&want)),
@@ -1748,8 +1745,8 @@ fn summaries_of_walked_binary_files_equal_ripgrep() {
     r.assert_empty();
 }
 
-/// What a binary-policy case prints, comparable between rg and sfor: for each line of rg's
-/// standard printer with `-n` (or of sfor's flat layout), its path and line number, or rg's
+/// What a binary-policy case prints, comparable between rg and s4: for each line of rg's
+/// standard printer with `-n` (or of s4's flat layout), its path and line number, or rg's
 /// binary message; for each `begin`, `match`, `context` and `end` of `--json`, its type, path
 /// and line number, and the `binary_offset` of `end`.
 fn binary_rows(o: &Output) -> Vec<String> {
@@ -1839,7 +1836,7 @@ fn in_headings_detects_binary_data_where_ripgrep_does() {
             s.push("--flat");
         }
         s.extend_from_slice(args);
-        let got = sfor(&fx, &s, input);
+        let got = s4(&fx, &s, input);
         r.check(
             format!("{s:?}"),
             (code(&want), binary_rows(&want).join("\n")),
@@ -1885,7 +1882,7 @@ fn within_detects_binary_data_where_ripgrep_does() {
             s.push("--flat");
         }
         s.extend_from_slice(args);
-        let got = sfor(&fx, &s, input);
+        let got = s4(&fx, &s, input);
         r.check(
             format!("{s:?}"),
             (code(&want), binary_rows(&want).join("\n")),
@@ -1995,7 +1992,7 @@ fn binary_data_in_a_later_read_of_a_pipe_as_ripgrep() {
                 s.push("--flat");
             }
             s.extend_from_slice(&a[usize::from(!json)..]);
-            let got = through_a_slow_pipe(fx.sfor(&s), "# needle\\n", "\\000\\n");
+            let got = through_a_slow_pipe(fx.s4(&s), "# needle\\n", "\\000\\n");
             r.check(
                 format!("{s:?}"),
                 (code(&want), binary_rows(&want).join("\n")),
@@ -2080,7 +2077,7 @@ fn binary_data_with_a_context_is_detected_where_ripgrep_does() {
                 s.push("--flat");
             }
             s.extend_from_slice(&a);
-            let got = sfor(&fx, &s, input);
+            let got = s4(&fx, &s, input);
             let rows = |o: &Output| {
                 if !json {
                     return numbered_rows(o).join("\n");
@@ -2153,7 +2150,7 @@ const NAME_FLAGS: [&[&str]; 10] = [
     &["-m1", "-A1"],
 ];
 
-/// The arguments of rg and of sfor for one case: `--in-headings` with the flat layout, and the
+/// The arguments of rg and of s4 for one case: `--in-headings` with the flat layout, and the
 /// line numbers of both unless `--json`.
 fn name_case_args<'a>(
     flags: &[&'a str],
@@ -2233,7 +2230,7 @@ fn names_are_searched_up_to_where_ripgrep_detects_binary_data() {
                 for (path, input) in [(dir, In::Null), (&explicit[..], In::Null), ("-", stdin)] {
                     let (a, s) = name_case_args(flags, sfor_pattern, rg_pattern, path);
                     let want = rg(&fx, &a, input);
-                    let got = sfor(&fx, &s, input);
+                    let got = s4(&fx, &s, input);
                     r.check(
                         format!("{s:?}"),
                         (code(&want), name_rows(&want)),
@@ -2244,7 +2241,7 @@ fn names_are_searched_up_to_where_ripgrep_detects_binary_data() {
         }
     }
     // The case of Codex: a walk whose file starts with `# needle 0`, NUL past the first buffer.
-    let got = sfor(
+    let got = s4(
         &fx,
         &["--in-headings", "--flat", "-m1", "^needle", "ih-plain-late"],
         In::Null,
@@ -2300,7 +2297,7 @@ fn names_on_a_pipe_are_searched_up_to_where_ripgrep_detects_binary_data() {
                 sc.spawn(move || {
                     let (a, s) = name_case_args(fl, sp, rp, "-");
                     let want = through_a_slow_pipe(fx.rg(&a), first, then);
-                    let got = through_a_slow_pipe(fx.sfor(&s), first, then);
+                    let got = through_a_slow_pipe(fx.s4(&s), first, then);
                     (format!("{first}|{then} {s:?}"), want, got)
                 })
             })
@@ -2384,7 +2381,7 @@ fn names_at_the_end_of_the_last_buffer_before_binary_data_are_searched() {
             "^needle",
             path,
         ];
-        let got = sfor(&fx, &s, input);
+        let got = s4(&fx, &s, input);
         let file = if path == "-" { "" } else { "edge/big.md" };
         let rows = kinds_of_rows(&got, file);
         let matches: Vec<String> = rows.iter().filter(|r| !r.ends_with('-')).cloned().collect();
@@ -2428,7 +2425,7 @@ fn quiet_json_drops_walked_binary_matches_as_ripgrep() {
                 let want = rg(&fx, &a, In::Null);
                 let mut s = mode.to_vec();
                 s.extend_from_slice(&a);
-                let got = sfor(&fx, &s, In::Null);
+                let got = s4(&fx, &s, In::Null);
                 r.check(
                     format!("{s:?}"),
                     (code(&want), String::new()),
@@ -2500,7 +2497,7 @@ fn in_headings_searches_plain_files_with_the_binary_policy_of_ripgrep() {
         let want = rg(&fx, args, In::Null);
         let mut s = vec!["--in-headings"];
         s.extend_from_slice(args);
-        let got = sfor(&fx, &s, In::Null);
+        let got = s4(&fx, &s, In::Null);
         r.check(
             format!("{s:?}"),
             (code(&want), out(&want)),
@@ -2562,7 +2559,7 @@ fn e_and_f_patterns_join_in_command_line_order() {
         let want = rg(&fx, args, In::Null);
         let mut s = vec!["--no-trail"];
         s.extend_from_slice(args);
-        let got = sfor(&fx, &s, In::Null);
+        let got = s4(&fx, &s, In::Null);
         r.check(
             format!("{s:?}"),
             (code(&want), json_lines(&want, false)),

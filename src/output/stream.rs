@@ -472,7 +472,7 @@ mod tests {
         content: &[u8],
         markdown: bool,
     ) -> (String, String) {
-        let mut v = vec!["sfor"];
+        let mut v = vec!["s4"];
         v.extend_from_slice(argv);
         let a = parse(v.iter().map(Into::into).collect()).unwrap();
         let explicit = !argv.contains(&"walked");

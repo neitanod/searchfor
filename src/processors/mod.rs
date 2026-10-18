@@ -239,7 +239,7 @@ impl Processors {
                 self.disable(
                     def,
                     format!(
-                        "sfor: {}: grammar `{grammar}` is neither compiled in nor installed (see --list-grammars)",
+                        "s4: {}: grammar `{grammar}` is neither compiled in nor installed (see --list-grammars)",
                         def.name
                     ),
                 );
@@ -262,7 +262,7 @@ impl Processors {
         match cfg() {
             Err(e) => {
                 drop(map);
-                self.disable(def, format!("sfor: {}: {e}", def.name));
+                self.disable(def, format!("s4: {}: {e}", def.name));
                 None
             }
             Ok(cfg) => {

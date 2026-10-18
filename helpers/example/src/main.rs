@@ -2,28 +2,28 @@
 //! over protocol v1 (spec §4.4): a `[name]` line opens a `section` up to the next section line,
 //! and a `key = value` or `key: value` line is a `key`. Lines starting with `;` or `#` are
 //! comments. Environment variables, read once at start, make it misbehave on purpose for
-//! sfor's tests; each holds a substring of the request's path:
+//! s4's tests; each holds a substring of the request's path:
 //!
-//! - `SFOR_EXAMPLE_SLOW`: sleep 300 ms before answering.
-//! - `SFOR_EXAMPLE_CRASH`: exit with code 3.
-//! - `SFOR_EXAMPLE_HANG`: sleep until killed.
-//! - `SFOR_EXAMPLE_GARBAGE`: write `not json` instead of an answer.
-//! - `SFOR_EXAMPLE_ERROR`: answer an `error`.
+//! - `SEARCHFOR_EXAMPLE_SLOW`: sleep 300 ms before answering.
+//! - `SEARCHFOR_EXAMPLE_CRASH`: exit with code 3.
+//! - `SEARCHFOR_EXAMPLE_HANG`: sleep until killed.
+//! - `SEARCHFOR_EXAMPLE_GARBAGE`: write `not json` instead of an answer.
+//! - `SEARCHFOR_EXAMPLE_ERROR`: answer an `error`.
 //!
-//! And at start: `SFOR_EXAMPLE_LOG` (a file to append `start <pid>` to), `SFOR_EXAMPLE_TRACE`
+//! And at start: `SEARCHFOR_EXAMPLE_LOG` (a file to append `start <pid>` to), `SEARCHFOR_EXAMPLE_TRACE`
 //! (a file to append `begin <pid> <path>` and `end <pid> <path>` to around each request, the
-//! `end` before the answer), `SFOR_EXAMPLE_NOEXIT` (when set, keep running after the EOF of
-//! stdin, until killed), `SFOR_EXAMPLE_STDERR`
-//! (a line to write to stderr), `SFOR_EXAMPLE_FORK` (when set, start `sleep 30` with this
+//! `end` before the answer), `SEARCHFOR_EXAMPLE_NOEXIT` (when set, keep running after the EOF of
+//! stdin, until killed), `SEARCHFOR_EXAMPLE_STDERR`
+//! (a line to write to stderr), `SEARCHFOR_EXAMPLE_FORK` (when set, start `sleep 30` with this
 //! process's stdout and stderr, as a careless helper's child would).
 //!
 //! Two knobs coordinate requests through the trace, so a test of concurrency depends on what
-//! sfor sends and not on the scheduler (M3 code review r2, Codex #5 and Fable #1); each needs
-//! `SFOR_EXAMPLE_TRACE`, and waits at most `BARRIER_LIMIT`:
+//! s4 sends and not on the scheduler (M3 code review r2, Codex #5 and Fable #1); each needs
+//! `SEARCHFOR_EXAMPLE_TRACE`, and waits at most `BARRIER_LIMIT`:
 //!
-//! - `SFOR_EXAMPLE_BARRIER` (`<n> <total>`): after its `begin`, every request waits until `n`
+//! - `SEARCHFOR_EXAMPLE_BARRIER` (`<n> <total>`): after its `begin`, every request waits until `n`
 //!   requests are in flight, or all of the `total` that have not ended.
-//! - `SFOR_EXAMPLE_OVERTAKE` (a substring of paths): the first request whose path holds it
+//! - `SEARCHFOR_EXAMPLE_OVERTAKE` (a substring of paths): the first request whose path holds it
 //!   waits until a request that began after it has ended.
 use anyhow::Context;
 use searchfor::helper::protocol::{MatchPos, WireName};
@@ -48,11 +48,11 @@ impl Knobs {
     fn from_env() -> Self {
         let var = |k: &str| std::env::var(k).ok();
         Self {
-            slow: var("SFOR_EXAMPLE_SLOW"),
-            crash: var("SFOR_EXAMPLE_CRASH"),
-            hang: var("SFOR_EXAMPLE_HANG"),
-            garbage: var("SFOR_EXAMPLE_GARBAGE"),
-            error: var("SFOR_EXAMPLE_ERROR"),
+            slow: var("SEARCHFOR_EXAMPLE_SLOW"),
+            crash: var("SEARCHFOR_EXAMPLE_CRASH"),
+            hang: var("SEARCHFOR_EXAMPLE_HANG"),
+            garbage: var("SEARCHFOR_EXAMPLE_GARBAGE"),
+            error: var("SEARCHFOR_EXAMPLE_ERROR"),
         }
     }
 
@@ -76,14 +76,14 @@ impl Knobs {
             let _ = out.write_all(b"not json\n");
             let _ = out.flush();
             drop(out);
-            // No answer follows for this request: sfor kills a helper that writes a line it
+            // No answer follows for this request: s4 kills a helper that writes a line it
             // cannot attribute (D41), so this thread waits for that.
             loop {
                 std::thread::sleep(Duration::from_secs(3600));
             }
         }
         if hit(&self.error) {
-            anyhow::bail!("SFOR_EXAMPLE_ERROR matched {p}");
+            anyhow::bail!("SEARCHFOR_EXAMPLE_ERROR matched {p}");
         }
         Ok(())
     }
@@ -161,11 +161,11 @@ fn trim_end(b: &[u8]) -> &[u8] {
 
 struct Ini {
     knobs: Knobs,
-    /// `SFOR_EXAMPLE_TRACE`.
+    /// `SEARCHFOR_EXAMPLE_TRACE`.
     trace: Option<std::path::PathBuf>,
-    /// `SFOR_EXAMPLE_BARRIER`: (n, total).
+    /// `SEARCHFOR_EXAMPLE_BARRIER`: (n, total).
     barrier: Option<(usize, usize)>,
-    /// `SFOR_EXAMPLE_OVERTAKE`.
+    /// `SEARCHFOR_EXAMPLE_OVERTAKE`.
     overtake: Option<String>,
 }
 
@@ -209,8 +209,8 @@ impl Ini {
         }
     }
 
-    /// Waits, after this request's `begin`, as `SFOR_EXAMPLE_BARRIER` and
-    /// `SFOR_EXAMPLE_OVERTAKE` say, polling the trace; at most `BARRIER_LIMIT`.
+    /// Waits, after this request's `begin`, as `SEARCHFOR_EXAMPLE_BARRIER` and
+    /// `SEARCHFOR_EXAMPLE_OVERTAKE` say, polling the trace; at most `BARRIER_LIMIT`.
     fn wait(&self, path: &Path) {
         let Some(t) = &self.trace else { return };
         if self.barrier.is_none() && self.overtake.is_none() {
@@ -278,7 +278,7 @@ impl Handler for Ini {
 }
 
 fn start_up() {
-    if let Ok(log) = std::env::var("SFOR_EXAMPLE_LOG") {
+    if let Ok(log) = std::env::var("SEARCHFOR_EXAMPLE_LOG") {
         let f = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -289,10 +289,10 @@ fn start_up() {
             let _ = f.write_all(format!("start {}\n", std::process::id()).as_bytes());
         }
     }
-    if let Ok(line) = std::env::var("SFOR_EXAMPLE_STDERR") {
+    if let Ok(line) = std::env::var("SEARCHFOR_EXAMPLE_STDERR") {
         eprintln!("{line}");
     }
-    if std::env::var_os("SFOR_EXAMPLE_FORK").is_some() {
+    if std::env::var_os("SEARCHFOR_EXAMPLE_FORK").is_some() {
         // Left running on purpose: it holds stdout and stderr open after this process exits.
         let _ = std::process::Command::new("sleep")
             .arg("30")
@@ -304,12 +304,14 @@ fn start_up() {
 fn main() {
     start_up();
     let knobs = Knobs::from_env();
-    let trace = std::env::var_os("SFOR_EXAMPLE_TRACE").map(Into::into);
-    let barrier = std::env::var("SFOR_EXAMPLE_BARRIER").ok().and_then(|v| {
-        let (n, total) = v.split_once(' ')?;
-        Some((n.parse().ok()?, total.parse().ok()?))
-    });
-    let overtake = std::env::var("SFOR_EXAMPLE_OVERTAKE").ok();
+    let trace = std::env::var_os("SEARCHFOR_EXAMPLE_TRACE").map(Into::into);
+    let barrier = std::env::var("SEARCHFOR_EXAMPLE_BARRIER")
+        .ok()
+        .and_then(|v| {
+            let (n, total) = v.split_once(' ')?;
+            Some((n.parse().ok()?, total.parse().ok()?))
+        });
+    let overtake = std::env::var("SEARCHFOR_EXAMPLE_OVERTAKE").ok();
     let info = Info {
         name: "sfor-example-helper",
         version: env!("CARGO_PKG_VERSION"),
@@ -325,7 +327,7 @@ fn main() {
         eprintln!("sfor-example-helper: {e:#}");
         std::process::exit(1);
     }
-    if std::env::var_os("SFOR_EXAMPLE_NOEXIT").is_some() {
+    if std::env::var_os("SEARCHFOR_EXAMPLE_NOEXIT").is_some() {
         loop {
             std::thread::sleep(Duration::from_secs(3600));
         }

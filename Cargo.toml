@@ -11,7 +11,7 @@ keywords = ["grep", "search", "markdown", "ripgrep", "cli"]
 categories = ["command-line-utilities", "text-processing"]
 
 [[bin]]
-name = "sfor"
+name = "s4"
 path = "src/main.rs"
 
 [dependencies]

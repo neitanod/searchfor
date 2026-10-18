@@ -1,7 +1,7 @@
 //! Memory and time ceilings of the Trail pipeline (code review r1, Fable #1). Ignored by
 //! default because they write a 50 MB file and run the binary several times; run them with
-//! `cargo test --release --test perf -- --ignored --nocapture`. `SFOR_BIN` runs them against
-//! another build of sfor (to see them fail before a fix). They measure wall time, so they run
+//! `cargo test --release --test perf -- --ignored --nocapture`. `SEARCHFOR_BIN` runs them against
+//! another build of s4 (to see them fail before a fix). They measure wall time, so they run
 //! one at a time (`alone`): cargo's default of one thread per test made them load each other
 //! (code review r6, Fable #1).
 mod common;
@@ -61,12 +61,12 @@ fn big_file(dir: &Path, name: &str) -> std::path::PathBuf {
 }
 
 fn sfor_bin() -> std::path::PathBuf {
-    std::env::var_os("SFOR_BIN")
+    std::env::var_os("SEARCHFOR_BIN")
         .map(Into::into)
-        .unwrap_or_else(|| assert_cmd::cargo::cargo_bin("sfor"))
+        .unwrap_or_else(|| assert_cmd::cargo::cargo_bin("s4"))
 }
 
-/// Wall time and peak RSS in bytes of `bin args` (sfor or rg), stdout discarded, measured by
+/// Wall time and peak RSS in bytes of `bin args` (s4 or rg), stdout discarded, measured by
 /// `/usr/bin/time -v`; the run must exit with `code` (M3 code review r2, Codex #6: a binary
 /// that fails before searching would otherwise pass every ceiling). None when /usr/bin/time is
 /// missing.
@@ -119,9 +119,9 @@ fn measure_to(
         .arg(bin)
         .args(args)
         .current_dir(fx.path())
-        .env("SFOR_FORMATS_DIR", fx.formats.path())
-        .env("SFOR_GRAMMARS_DIR", fx.grammars.path())
-        .env("SFOR_GRAMMAR_INDEX", fx.no_index())
+        .env("SEARCHFOR_FORMATS_DIR", fx.formats.path())
+        .env("SEARCHFOR_GRAMMARS_DIR", fx.grammars.path())
+        .env("SEARCHFOR_GRAMMAR_INDEX", fx.no_index())
         .env_remove("RIPGREP_CONFIG_PATH")
         .stdin(match stdin {
             None => Stdio::null(),
@@ -491,7 +491,7 @@ fn a_walked_plain_file_is_not_read_whole_with_in_headings() {
 }
 
 /// The reference rg 14.1.1 (`common::rg_path`), or None (with a note, or a failure under
-/// `SFOR_REQUIRE_REFERENCE=1`) when it is missing.
+/// `SEARCHFOR_REQUIRE_REFERENCE=1`) when it is missing.
 fn rg_bin() -> Option<std::path::PathBuf> {
     common::reference_rg().then(common::rg_path)
 }
@@ -512,21 +512,21 @@ fn best_of_three_drained(
     best
 }
 
-/// sfor's and rg's best wall time over three runs of `args` (rg's without `--flat`), with
+/// s4's and rg's best wall time over three runs of `args` (rg's without `--flat`), with
 /// their output read, and their largest RSS; None when rg 14.1.1 or /usr/bin/time is missing.
 /// Every caller searches for a pattern that is there: both must exit 0.
 fn against_rg(fx: &Fixture, args: &[&str]) -> Option<((Duration, u64), (Duration, u64))> {
     let rg = rg_bin()?;
-    let Some(sfor) = best_of_three_drained(&sfor_bin(), fx, args, 0) else {
+    let Some(s4) = best_of_three_drained(&sfor_bin(), fx, args, 0) else {
         eprintln!("skipping: /usr/bin/time not found");
         return None;
     };
     let rg_args: Vec<&str> = args.iter().copied().filter(|a| *a != "--flat").collect();
     let rg = best_of_three_drained(&rg, fx, &rg_args, 0)?;
-    Some((sfor, rg))
+    Some((s4, rg))
 }
 
-/// `sfor --color never args` (`SFOR_BIN` if set) in the fixture copy: stdout and stderr.
+/// `s4 --color never args` (`SEARCHFOR_BIN` if set) in the fixture copy: stdout and stderr.
 fn sfor_output(fx: &Fixture, args: &[&str]) -> (String, String) {
     let o = common::run(
         Command::new(sfor_bin())
@@ -534,9 +534,9 @@ fn sfor_output(fx: &Fixture, args: &[&str]) -> (String, String) {
             .arg("never")
             .args(args)
             .current_dir(fx.path())
-            .env("SFOR_FORMATS_DIR", fx.formats.path())
-            .env("SFOR_GRAMMARS_DIR", fx.grammars.path())
-            .env("SFOR_GRAMMAR_INDEX", fx.no_index())
+            .env("SEARCHFOR_FORMATS_DIR", fx.formats.path())
+            .env("SEARCHFOR_GRAMMARS_DIR", fx.grammars.path())
+            .env("SEARCHFOR_GRAMMAR_INDEX", fx.no_index())
             .env_remove("RIPGREP_CONFIG_PATH")
             .stdin(Stdio::null()),
     );
@@ -592,7 +592,7 @@ fn keypath_json_scans_at_fifty_megabytes_a_second() {
         return;
     };
     eprintln!(
-        "50 MB JSON: sfor {t:?}, RSS {} MiB; rg {base:?}, RSS {} MiB",
+        "50 MB JSON: s4 {t:?}, RSS {} MiB; rg {base:?}, RSS {} MiB",
         rss / 1_048_576,
         base_rss / 1_048_576
     );
@@ -636,7 +636,7 @@ fn treesitter_skips_files_over_max_bytes() {
     let Some(((t, _), (base, _))) = against_rg(&fx, &["--flat", "needle", "big.js"]) else {
         return;
     };
-    eprintln!("20 MB JavaScript over max_bytes: sfor {t:?}, rg {base:?}");
+    eprintln!("20 MB JavaScript over max_bytes: s4 {t:?}, rg {base:?}");
     assert!(t <= base * 2, "{t:?} is more than 2 × rg's {base:?}");
 }
 
@@ -683,7 +683,7 @@ fn broken_toml_recovers_in_bounded_time() {
     let Some(((t, _), (base, _))) = against_rg(&fx, &args) else {
         return;
     };
-    eprintln!("1 MB broken Cargo.lock: sfor {t:?}, rg {base:?}; {out}");
+    eprintln!("1 MB broken Cargo.lock: s4 {t:?}, rg {base:?}; {out}");
     assert!(
         t <= base + Duration::from_secs(2),
         "{t:?} is more than rg's {base:?} + 2 s"
@@ -711,7 +711,7 @@ fn yaml_beyond_the_tree_sitter_limit() {
     let Some(((t, _), (base, _))) = against_rg(&fx, &args) else {
         return;
     };
-    eprintln!("40 000-line YAML: sfor {t:?}, rg {base:?}");
+    eprintln!("40 000-line YAML: s4 {t:?}, rg {base:?}");
     assert!(
         t <= base + Duration::from_secs(1),
         "{t:?} is more than rg's {base:?} + 1 s"
@@ -739,7 +739,7 @@ fn many_arrays_of_tables_stay_linear() {
     let Some(((t, _), (base, _))) = against_rg(&fx, &args) else {
         return;
     };
-    eprintln!("40 000 [[a]] tables: sfor {t:?}, rg {base:?}");
+    eprintln!("40 000 [[a]] tables: s4 {t:?}, rg {base:?}");
     assert!(
         t <= base + Duration::from_secs(1),
         "{t:?} is more than rg's {base:?} + 1 s"
@@ -800,7 +800,7 @@ fn markup_keeps_no_index_of_the_lines() {
     );
 }
 
-/// One of M3 review r2's linear walks (Codex #1): `body` in `name`, one Match, sfor within rg's
+/// One of M3 review r2's linear walks (Codex #1): `body` in `name`, one Match, s4 within rg's
 /// time + 1 s, and the Match's Trail with `segments` Segments (256 at most, D25).
 fn markup_linear(name: &str, body: String, segments: usize) {
     let fx = Fixture::new();
@@ -814,7 +814,7 @@ fn markup_linear(name: &str, body: String, segments: usize) {
     let Some(((t, _), (base, _))) = against_rg(&fx, &["--flat", "needle", name]) else {
         return;
     };
-    eprintln!("{name}: sfor {t:?}, rg {base:?}");
+    eprintln!("{name}: s4 {t:?}, rg {base:?}");
     assert!(
         t <= base + Duration::from_secs(1),
         "{name}: {t:?} against rg's {base:?}"
@@ -861,7 +861,7 @@ fn markup_implied_ends_at_one_byte_stay_linear() {
 }
 
 /// One M3 Format at 50 MB (M3 plan, Task 7.1): `unit(i, needle)` writes the i-th repetition,
-/// with `needle` at i = 0, in the middle and at the end. sfor must print three rows whose
+/// with `needle` at i = 0, in the middle and at the end. s4 must print three rows whose
 /// Trails start with `first` and `last`, within rg's time + 1 s (50 MB/s at least) and rg's
 /// RSS + 32 MiB: the walk keeps three short stacks, not the file's structure.
 fn m3_ceiling(
@@ -918,7 +918,7 @@ fn m3_ceiling(
         return;
     };
     eprintln!(
-        "50 MB {file}: sfor {t:?}, RSS {} MiB; rg {base:?}, RSS {} MiB",
+        "50 MB {file}: s4 {t:?}, RSS {} MiB; rg {base:?}, RSS {} MiB",
         rss / 1_048_576,
         base_rss / 1_048_576
     );

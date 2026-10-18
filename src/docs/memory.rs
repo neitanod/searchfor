@@ -1,4 +1,4 @@
-//! The readers' memory counter (M4 plan, D31): the allocator of every sfor process is the
+//! The readers' memory counter (M4 plan, D31): the allocator of every s4 process is the
 //! system's, with a count of the bytes a document reader holds. `isolated::child` arms it
 //! with the reader's limit; past it an allocation is refused, the same on Linux, macOS and
 //! Windows, and the reader gives the memory warning, as one past `RLIMIT_DATA` gives it:
@@ -12,7 +12,7 @@
 //!   `read_to_end` failed, and returns what it read) finds it in `take_refused` after the
 //!   document, and gives the warning for whatever it answered (M4 plan r8, Codex #1).
 //!
-//! Not armed, in sfor's own process and in every test binary, each allocation and free costs
+//! Not armed, in s4's own process and in every test binary, each allocation and free costs
 //! one relaxed load of `limit`, a value no one writes there, and a branch: the count itself
 //! is never touched.
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -49,7 +49,7 @@ pub fn take_refused() -> bool {
     COUNTER.take_refused()
 }
 
-/// `mib` MiB in bytes, at most `isize::MAX` (`SFOR_READER_MIB` may say anything).
+/// `mib` MiB in bytes, at most `isize::MAX` (`SEARCHFOR_READER_MIB` may say anything).
 pub fn bytes_of_mib(mib: u64) -> usize {
     mib.saturating_mul(1 << 20).min(isize::MAX as u64) as usize
 }
@@ -73,7 +73,7 @@ impl Counter {
             .store(bytes.clamp(1, isize::MAX as usize), Relaxed);
     }
 
-    /// Whether the counter counts: false until `arm`, and so in sfor's own process.
+    /// Whether the counter counts: false until `arm`, and so in s4's own process.
     #[inline(always)]
     fn armed(&self) -> bool {
         self.limit.load(Relaxed) != 0
@@ -249,7 +249,7 @@ mod tests {
         assert_eq!(c.live.load(Relaxed), 0);
     }
 
-    /// D31: a counter that was never armed, as in sfor's own process, counts nothing and
+    /// D31: a counter that was never armed, as in s4's own process, counts nothing and
     /// refuses nothing; a block allocated before `arm` and freed after it leaves the count
     /// below 0, never wrapped around to a refusal of everything.
     #[test]

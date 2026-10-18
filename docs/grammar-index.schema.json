@@ -2,12 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/neitanod/searchfor/blob/main/docs/grammar-index.schema.json",
   "title": "searchfor Grammar index",
-  "description": "grammars/index.json: the Grammar Helpers that `sfor --install-grammar` can install (spec §7). Readers ignore fields they do not know, so later versions may add fields.",
+  "description": "grammars/index.json: the Grammar Helpers that `s4 --install-grammar` can install (spec §7). Readers ignore fields they do not know, so later versions may add fields.",
   "type": "object",
   "required": ["version", "grammars"],
   "properties": {
     "version": {
-      "description": "Version of this format; sfor reads version 1.",
+      "description": "Version of this format; s4 reads version 1.",
       "const": 1
     },
     "grammars": {

@@ -659,7 +659,7 @@ pub(crate) mod fixture {
     }
 
     /// An object file's rows (spec §5.7): two printable strings of a binary on its first line,
-    /// with context on, as `sfor -C1` gives them.
+    /// with context on, as `s4 -C1` gives them.
     pub fn object_rows() -> (Vec<u8>, Described) {
         let src = b"\x7fELF\0\0version=needle\0\x01another needle\0".to_vec();
         let row = |at: usize, text: &[u8], start: usize| {
