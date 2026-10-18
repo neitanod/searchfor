@@ -1,0 +1,8 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"m4/bin/app.exe"}}}
+{"type":"match","data":{"path":{"text":"m4/bin/app.exe"},"lines":{"text":"version=1.2.3-needle"},"line_number":1,"absolute_offset":1026,"submatches":[{"match":{"text":"needle"},"start":14,"end":20}],"format":"pe","trail":[{"kind":"object","name":"PE x86-64","line":1,"end_line":1},{"kind":"section","name":".rdata","line":1,"end_line":1},{"kind":"symbol","name":"version_string+0xe","line":1,"end_line":1}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"m4/bin/app.exe"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":1573,"bytes_printed":484,"matched_lines":1,"matches":1}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":484,"bytes_searched":1573,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":1,"matches":1,"searches":1,"searches_with_match":1}},"type":"summary"}

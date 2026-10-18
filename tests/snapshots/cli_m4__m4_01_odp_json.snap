@@ -1,0 +1,10 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"m4/deck.odp"}}}
+{"type":"match","data":{"path":{"text":"m4/deck.odp"},"lines":{"text":"a needle margin\n"},"line_number":2,"absolute_offset":8,"submatches":[{"match":{"text":"needle"},"start":2,"end":8}],"format":"odp","trail":[{"kind":"slide","name":"slide 1","line":1,"end_line":3}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"m4/deck.odp"},"lines":{"text":"tell the needle joke\n"},"line_number":3,"absolute_offset":24,"submatches":[{"match":{"text":"needle"},"start":9,"end":15}],"format":"odp","trail":[{"kind":"slide","name":"slide 1","line":1,"end_line":3},{"kind":"notes","name":"notes","line":3,"end_line":3}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"m4/deck.odp"},"lines":{"text":"find the needle\n"},"line_number":5,"absolute_offset":50,"submatches":[{"match":{"text":"needle"},"start":9,"end":15}],"format":"odp","trail":[{"kind":"slide","name":"slide 2","line":4,"end_line":5}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"m4/deck.odp"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":66,"bytes_printed":980,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":980,"bytes_searched":66,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

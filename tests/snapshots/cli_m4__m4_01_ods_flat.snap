@@ -1,0 +1,5 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+3: Budget › A3 │ needle pins	2

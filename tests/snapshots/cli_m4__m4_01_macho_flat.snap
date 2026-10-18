@@ -1,0 +1,6 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+0x1141: Mach-O x86-64 › __TEXT,__cstring › _version+0xe │ version=1.2.3-needle
+0x2141: Mach-O arm64 › __TEXT,__cstring › _version+0xe │ version=1.2.3-needle

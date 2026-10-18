@@ -1,0 +1,6 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+3: 1 Intro › page 2 │ intro needle
+5: 2 Costs › page 3 │ costs needle

@@ -1,0 +1,10 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+m4/bin/app
+  ELF x86-64
+    .rodata
+      main.version+0xe
+        0x68:version=1.2.3-needle
+      0x77:another needle here

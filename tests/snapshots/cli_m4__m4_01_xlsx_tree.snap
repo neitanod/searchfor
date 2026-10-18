@@ -1,0 +1,8 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+m4/budget.xlsx
+  Budget
+    A3
+      3:needle pins	2

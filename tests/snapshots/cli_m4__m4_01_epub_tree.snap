@@ -1,0 +1,10 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+m4/book.epub
+  1. Arrival
+    # The Harbour
+      2:A needle in the water.
+  2. The Storm
+    3:The storm needle.

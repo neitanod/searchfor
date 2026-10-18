@@ -1,0 +1,11 @@
+---
+source: tests/cli_m4.rs
+expression: out
+---
+m4/report.pdf
+  1 Intro
+    page 2
+      3:intro needle
+  2 Costs
+    page 3
+      5:costs needle
