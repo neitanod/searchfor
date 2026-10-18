@@ -519,7 +519,9 @@ The `csv` Processor reads both, with four Definition parameters (M3 plan): `deli
 
 - **Dialects.** CSV: `delimiter = "auto"`, which picks the most frequent of `,`, `;`, tab and `|`
   in the first non-blank record, outside quoted fields (`,` on a tie or when none appears; a
-  record ends at `\n` or `\r` outside quotes, as csv-core reads it), so the `;` files that a
+  record ends at `\n` or `\r` outside quotes, as csv-core reads it; only the file's first MiB is
+  read, so a first record that never ends, as an unclosed quote at its first byte, costs at most
+  that MiB), so the `;` files that a
   spreadsheet exports in many locales read as they are; `quote = "\""`. TSV: `delimiter = "\t"`
   and `quote = ""`, so quotes are text, as in IANA's TSV, and a stray `"` cannot swallow the
   rest of the file.

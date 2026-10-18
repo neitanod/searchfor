@@ -57,6 +57,9 @@ fn params(t: &toml::Table) -> anyhow::Result<Params> {
     })
 }
 
+/// How much of a CSV file `sniff` reads at most: 1 MiB (M3 code review r4, Fable #1).
+const SNIFF_LIMIT: usize = 1 << 20;
+
 /// The delimiter of a CSV file (D4): of `,`, `;`, tab and `|`, the one that appears most often
 /// in its first record outside quotes; `,` on a tie or when none appears. The first record is
 /// the first line that is not blank, as csv-core skips blank lines, and it goes on across line
@@ -67,7 +70,8 @@ fn params(t: &toml::Table) -> anyhow::Result<Params> {
 /// a closing quote included, is text. What a quoted field holds counts for no candidate (M3 code
 /// review r1 and r2, Codex #2: `ID;"Family, Given";Plan` is `;`, and `Size";Plan;Note` too). A
 /// candidate that is the quote is never picked (Fable #7): then the first other one is the
-/// default.
+/// default. Only the file's first `SNIFF_LIMIT` bytes are read, so a first record that never
+/// ends, as one whose first byte opens a quote that nothing closes, is not read to the file's end.
 pub fn sniff(src: &[u8], quote: Option<u8>) -> u8 {
     const CANDIDATES: [u8; 4] = [b',', b';', b'\t', b'|'];
     #[derive(Clone, Copy)]
@@ -80,7 +84,7 @@ pub fn sniff(src: &[u8], quote: Option<u8>) -> u8 {
     let mut counts = [0usize; 4];
     let mut state = State::Start;
     let mut started = false;
-    for &b in src {
+    for &b in &src[..src.len().min(SNIFF_LIMIT)] {
         if (b == b'\n' || b == b'\r') && !matches!(state, State::Quoted) {
             if started {
                 break;
@@ -593,6 +597,23 @@ mod tests {
         // Without quoting a quote is text, and the record ends at the line's end.
         assert_eq!(sniff(b"\"a\nb;c;d\n", None), b',');
         assert_eq!(sniff(b"\n\n", Some(b'"')), b',');
+    }
+
+    #[test]
+    fn sniffs_only_the_first_mib() {
+        // M3 code review r4, Fable #1: a first record that never ends, as an unclosed quote at
+        // the first byte, is not read to the end of the file: the sniff stops at 1 MiB.
+        assert_eq!(SNIFF_LIMIT, 1 << 20);
+        let record = |pad: usize| {
+            let mut v = b"a;b;c".to_vec();
+            v.resize(5 + pad, b'x');
+            v.extend_from_slice(b",,,\n");
+            v
+        };
+        // The three `,` end at the limit's last byte, so they count.
+        assert_eq!(sniff(&record(SNIFF_LIMIT - 8), Some(b'"')), b',');
+        // Two of them are past it.
+        assert_eq!(sniff(&record(SNIFF_LIMIT - 6), Some(b'"')), b';');
     }
 
     #[test]
