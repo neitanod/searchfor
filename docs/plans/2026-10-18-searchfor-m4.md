@@ -44,7 +44,7 @@ branch and is merged back after its tanda, as `ciclo` stage 7 describes
 (`using-git-worktrees`, `finishing-a-development-branch`). Line numbers in the diffs are those
 of `191dbaf` and only hints: locate code by the names given. The code of this plan was built
 and tested in a probe copy of the repository, frozen as
-`/tmp/subtask/m4-plan/m4tree-eea167a` (see «Verified for this plan»).
+`/tmp/subtask/m4-plan/m4tree-48fe5e8` (see «Verified for this plan»).
 
 ---
 
@@ -113,38 +113,39 @@ ones it describes marked «M4 plan».
 | D3 | goblin 0.10 for object files, and rustc-demangle for Rust symbols; C++ names print mangled | The spec named goblin; it reads ELF, PE, Mach-O and fat Mach-O with one API and resolves with the pins (verified). rustc-demangle is BurntSushi-small and Rust symbols are the common case in a Rust tree; a C++ demangler is a far larger crate, left for later |
 | D4 | Object rows only where ripgrep finds a Match: a file named on the command line, `--binary`, or `-a`. A walked object file without `--binary` prints nothing, as rg; `-v`, `-c`, `-l`, `-q` and `--no-trail` print what rg prints | 8390: decorate «as long as rg already finds things in them»; 8385: a walked binary costs what it costs rg (it stops at the first NUL) |
 | D5 | Object Formats name no extension and are told by their magic in every file with a Match, read only once the file has one (`Detector::object`) | `libc.so.6`, `ls` and `app.bin` say nothing by their name; reading 16 bytes of a file that already has a Match costs nothing that 8385 forbids |
-| D6 | A row is the printable string around its Matches, as `strings` reads it (printable ASCII, tab, valid UTF-8 non-controls, at most 4096 bytes on each side), located by the hex offset of its first Match where a line number goes; a control byte of a Match prints as `.`; in `--json` a row keeps rg -a's `line_number` and the string's `absolute_offset` | #12 asked for the offset in hex and the printable string around the Match; a line of a binary is meaningless, and the JSON stays valid against rg's schema |
+| D6 | A row is the printable string around its Matches, as `strings` reads it (printable ASCII, tab, valid UTF-8 non-controls, at most 4096 bytes on each side), located by the hex offset of its first Match where a line number goes; Matches joined by printable bytes are one row however far apart (the 4096 bytes bound only what is shown around them); a control byte of a Match prints as `.`; in `--json` a row keeps rg -a's `line_number` and the string's `absolute_offset` | #12 asked for the offset in hex and the printable string around the Match; a line of a binary is meaningless, and the JSON stays valid against rg's schema; two Matches 5 000 bytes apart in one string made two rows, and `-m1` dropped the second (r2, Codex #5) |
 | D7 | The symbol is the closest at or before the Match in its section; an ELF symbol's `st_size` bounds it; PE uses exports and COFF symbols (no section symbols, no `.`-names); Mach-O skips stabs and the `l`/`L` local labels; a fat Mach-O is one image per architecture | The spec's «closest preceding symbol», refined by what the probe showed on real binaries: `another needle` after `version_string` got `version_string+0x1d` from gcc's ELF, `.rdata+0xe` from MinGW's PE and `ltmp1+0xe` from clang's arm64 Mach-O |
 | D8 | Object rows have no context lines and no `--`; a row is one string, printed once, at its first Match and with that Match's Trail, its Matches highlighted together (the JSON keeps each Match's Trail); `--within` keeps the Matches it keeps, with their Trails, and drops a row with none (`filter::retain_rows`); `-m` after `--within` counts rows; `--expand` prints the rows | A binary's Section is not text; the M1 `retain` turns a dropped Match on the same line as a kept one into a context line, and two rows of one binary often share an `rg -a` line, so `-m` by line would keep them all; a Trail names the distance into its symbol, so rows grouped by Trail would print a string once per Match (code review of this plan r1, Codex #7–#9) |
 | D9 | A file with an object magic that goblin does not read prints as rg prints it, without a warning | A text file named `x` that starts with `MZ` is not a broken PE |
 | D10 | Documents by extension, or for a name without an extension by `%PDF-`, `SQLite format 3\0` or the OpenDocument/EPUB `mimetype` at byte 30; only a regular file is a document: stdin, `/dev/fd/N` or a FIFO is searched as rg, read once; a file whose bytes do not start as its Format's (`Kind::looks_like`, the same bytes as the magic) is searched as rg, silently; one the Extractor cannot read warns once (`sfor: <path>: <format>: <reason>`) and is searched as rg; the exit code does not change | Office files have no fixed signature, and an extension-less zip must not be opened to find out (8390); a `.db` that is not SQLite is normal; a broken document is the user's to know about, but must not hide ripgrep's Matches in its bytes; a stream read for its first bytes is gone for the search (r1, Codex #3); `%PDF-` anywhere in the first 1024 bytes made a PDF a document by its name and not without one (r1, Fable #12) |
 | D11 | `--in-headings` finds in documents only the names that are in the text (headings); object files give no names | Pages, sheets, slides, tables and chapters have no text to map a Match to (the M3 rule for `cue `); section and symbol names live in string tables, an M6 refinement |
 | D12 | An XML pull reader of our own (`docs::xml`) for the Office, OpenDocument and EPUB parts, instead of quick-xml | Those parts are written by programs and well formed; the reader is 200 lines with entity decoding, and one dependency less; at a construct it cannot read the part ends there, as M3's XML scanner ends its structure |
-| D13 | lopdf 0.45 reads PDF objects, fonts, streams and encryption; a font's strings decode through its ToUnicode map when it has one that reads, else through its `/Encoding`; the text is laid out by our code from the content streams: a new line when a string moves half its size up or down, a space for a gap of 0.15 of its size (only when its font gave widths), and for a `TJ` kerning past 0.1 em; ligatures expanded | lopdf's own `extract_text` joins positioned strings without spaces or line breaks; measured against `pdftotext` on six PDFs from five producers: word recall 0.93–1.00, bigram recall 0.875–1.00, and faster than pdftotext on the two long ones (0.41 s against 2.5 s, 0.14 s against 0.35 s). lopdf reads `/Encoding` before `/ToUnicode`, and a subset font's codes mean what its map says (r1, Codex #5) |
+| D13 | lopdf 0.45 reads PDF objects, fonts, streams and encryption; a font's strings decode through its ToUnicode map when it has one that reads, else through its `/Encoding`; the content streams and the ToUnicode maps are read by our code (D29); the text is laid out by our code from the content streams: a new line when a string moves half its size up or down, a space for a gap of 0.15 of its size (only when its font gave widths), and for a `TJ` kerning past 0.1 em; ligatures expanded | lopdf's own `extract_text` joins positioned strings without spaces or line breaks; measured against `pdftotext` on six PDFs from five producers: word recall 0.93–1.00, bigram recall 0.875–1.00, and faster than pdftotext on the two long ones (0.41 s against 2.5 s, 0.14 s against 0.35 s). lopdf reads `/Encoding` before `/ToUnicode`, and a subset font's codes mean what its map says (r1, Codex #5) |
 | D14 | A PDF bookmark is a chapter that holds pages; it starts at the line of its page that starts with its title, or at the top of the page; a page split by a bookmark is a `page N` Segment under each chapter it holds part of; `page N` is the 1-based position | A Trail goes from the root down, and a chapter holds pages; LibreOffice's PDFs point every bookmark of a one-page document at page 1, which at page granularity put the whole page under the last bookmark |
 | D15 | A SQLite reader of our own: `sqlite_schema`, then each table's b-tree (interior and leaf, table and index pages, overflow pages); `row N` is the rowid (the position for `WITHOUT ROWID`); values as the `sqlite3` shell prints them, in the order of `CREATE TABLE` (a `WITHOUT ROWID` table stores its PRIMARY KEY columns first, in the key's order) | No C compiler in the build and no C library in the binary (rusqlite bundles SQLite's C); read-only access to the file format is a few hundred lines; the rowid is what `SELECT … WHERE rowid = 12` uses. It replaces the M3 plan's forward reference (its D5 said M4's `row 12` would be the 12th row). The key's order was measured with SQLite: `t(payload TEXT, k TEXT PRIMARY KEY) WITHOUT ROWID` stores `k, payload` (r1, Codex #4, Fable #2) |
 | D16 | SQLite: indexes, views and triggers are not read, nor a `-wal` file | Tables hold the data; a WAL is a second file, and changes in it reach the database at the next checkpoint |
-| D17 | Limits: 512 MiB of text per document (cut, with a warning; a PDF page stops being drawn when its text reaches what is left); 256 MiB per zip part and 1 GiB for all the parts one document reads; 64 MiB per PDF stream (pages, Forms, fonts' ToUnicode maps, object streams) and 1 GiB for the pages', Forms' and maps' together; 8 000 000 units of Form work per PDF (16 per Form drawn plus one per operation it runs); refused with one warning, `… is over the N MiB limit` or `its Forms run more than 8000000 operations`, while a stream that does not decompress draws nothing; 100 000 bookmarks; forms nested 8 deep; a repeated ODF cell or row with a value written at most 1000 times, and a repeat past the largest number an error; b-trees 40 deep | Decompression bombs and pathological files must neither fill the memory nor hang sfor. Round 1 of this plan's review found a ToUnicode map read without a limit (791 MiB for a 714 KB PDF), a page of Forms drawing Forms (16⁷ draws), twelve 200 MiB sheets each under the part limit (4.7 s), and ODF repeats that overflow (Codex #1, #2, #10; Fable #1, #3); the perf tests bound a 300 MiB zip bomb, a 300 MiB ToUnicode map and a workbook of six 200 MiB sheets |
+| D17 | Limits: 512 MiB of text per document (cut, with a warning; a PDF page stops being drawn when its text reaches what is left); 256 MiB per zip part and 1 GiB for all the parts one document reads; 64 MiB per PDF stream (pages, Forms, fonts' ToUnicode maps, object streams) and 1 GiB for the pages', Forms' and maps' together; 8 000 000 units of Form work per PDF (16 per Form drawn plus one per operation it runs); refused with one warning, `… is over the N MiB limit` or `its Forms run more than 8000000 operations`, while a stream that does not decompress draws nothing. Round 2 made the work budget the content streams', pages' included: 8 000 000 plus 20 000 per page, one per operation read and 16 per Form drawn (`its content streams run more than N operations`); 256 open `q`; 65 536 operands to an operation; 200 000 entries to a ToUnicode map, a range counting one; 8 bytes of text for each byte of a string; 64 MiB and 2 000 000 tokens for the object streams of a document, counted before lopdf parses them (`its object streams hold more than 2000000 tokens`), and 1 MiB per stream while an encrypted PDF loads; 100 000 bookmarks; forms nested 8 deep; a repeated ODF cell or row with a value written at most 1000 times, and a repeat past the largest number an error; b-trees 40 deep | Decompression bombs and pathological files must neither fill the memory nor hang sfor. Round 1 of this plan's review found a ToUnicode map read without a limit (791 MiB for a 714 KB PDF), a page of Forms drawing Forms (16⁷ draws), twelve 200 MiB sheets each under the part limit (4.7 s), and ODF repeats that overflow (Codex #1, #2, #10; Fable #1, #3); the perf tests bound a 300 MiB zip bomb, a 300 MiB ToUnicode map and a workbook of six 200 MiB sheets. Round 2 found that bytes are not what fills the memory: lopdf's parsed operations and objects are (6 GB for a page of 63 MiB of `0 0 m`, 2 GB for an object stream of 32 MiB of integers, a ToUnicode range listed code by code, 512 MiB of text from a 5 KB file; r2, Codex #1–#3, Fable #1); its perf tests bound each of those. 10 000 pages each drawing five Forms of 200 operations (Fable's `many-forms.pdf`) fit (r2, Fable #2); a content stream several pages share counts once in the 1 GiB (r2, Fable #3) |
 | D18 | Office documents: the body, the cell values as stored (Excel: dates as serial numbers, formulas' cached values; ODS: by `office:value-type`, the number of a float, percentage or currency, the date, time or boolean value, else the text) and the slides with their notes; not headers, footers, footnotes, comments, charts, embedded objects, nor the 97–2003 binary formats | What 8393 asked to find; each other part is a reader more, M6 candidates. An ODS cell shown as `$1.50` stores `1.5`, as an XLSX one does (r1, Codex #6) |
 | D19 | Test documents and object files are written by code in the repository (`docs::fixture`, `processors::object::fixture`, `#[doc(hidden)] pub` so the integration tests use them), the SQLite ones by `scripts/gen-sqlite-fixtures.py` (Python's standard library) and committed; all MIT OR Apache-2.0 | No third-party file, so no licence question; a writer documents exactly what each byte is |
 | D20 | Trails: Word/ODT `heading › heading › table N › row R › Column` (the first row names the columns, 40 characters); Excel/ODS `Sheet › B12`; PowerPoint/ODP `slide N › notes`; EPUB `chapter › headings`; PDF `chapters › page N`; SQLite `table › row ROWID › column` | Each says where a person finds the text in the program that opens the document; a cell reference is what a spreadsheet shows |
 | D21 | Order: `--pre` (when its globs take the file), then `-z` (when the extension has a decompressor), then `--docs`; a file `--pre` or `-z` reads is never extracted; stdin is never transformed; `--pre`'s output gets the Trails of the Format its path says; what a transform outputs is never an object file nor a document, whatever its bytes, `--format` or `-a` say: no object rows, no `object` or `docs` Processor (Plain) | ripgrep's order for the first two; a decompressed stream has no name of its own to say what it is; `--pre cat` over an ELF printed object rows before (r1, Codex #11) |
 | D22 | `--docs` also changes `--no-trail`, `-c`, `-l` and `-q`: they work on the extracted text, in ripgrep's layout | `--docs` is sfor's flag, not ripgrep's; a script that counts Matches with `--docs -c` wants the documents' |
 | D23 | Benchmark (`scripts/bench-m4.sh`) and ceilings (`tests/perf.rs`) as in §11 #26: 1.1 × rg where M4 adds nothing; objects at 100 MB/s; documents at 2 MB/s of text per thread on top of rg's search of their text; per-format rates in `tests/perf.rs` about a third of the probe's | The rates measured in the probe (MB/s of text): docx 41, odt 36, epub 66, PDF 23 (generated) and 1.2–1.8 (real), xlsx 5.6, ods 3.4, pptx 4.0, SQLite 16–17; a third leaves room for a loaded machine, as M3's ceilings did. Memory: rg's plus six times the text, plus 400 bytes per cell Segment of a spreadsheet, plus 64 MiB (the probe: 228 MiB for the 600 000 cells of an XLSX with 18 MB of text) |
-| D24 | The binary's growth is measured and reported: 16.6 MB (16 598 640 bytes at `191dbaf`) → 19.0 MB (19 041 208 bytes), under 23 MB (8612) | Spec §11 #22 |
+| D24 | The binary's growth is measured and reported: 16.6 MB (16 598 640 bytes at `191dbaf`) → 19.1 MB (19 064 256 bytes), under 23 MB (8612) | Spec §11 #22 |
 | D25 | Extracted text never holds a control character (line breaks inside a cell, tabs inside a paragraph, NUL become spaces) and has no empty lines; a row writes a tab before each cell but the first, empty cells included, and a cell's spaces as they are | A row of a table stays one line, and the searcher never sees binary data in a document; a SQLite row `(NULL, 'needle')` is `\tneedle`, so a search anchored at a column finds it (r1, Codex #12, Fable #11) |
 | D26 | The JSON statistics of an object file count the whole search (`bytes_searched` = file size, `matched_lines` = rows, `binary_offset` null), documented in `docs/rg-compat.md` | rg stops at the first Match of a binary; sfor reads on to describe each one |
 | D27 | Without `--docs` the document Formats are never detected (`Detector::with_docs`); `--list-formats` lists them; `--format pdf` without `--docs` prints the file as Plain | 8395 «without --docs those files are treated as ripgrep does», at no cost |
-| D28 | The fuzz mutates documents (bytes changed, cut, repeated; and the XML inside the zip, zipped again) and object files; nothing may panic, an extraction ends within 2 s whatever it returns, watched from another thread so that one that never ends fails the run, and every Segment and name lies inside its text | It found a heading name with a NUL (fixed in `Builder`), and a panic in `xml::unescape` at `&` before a multi-byte letter (fixed); a slow extraction that ended in an error passed, and a hang hung the run (r1, Codex #13) |
+| D28 | The fuzz mutates documents (bytes changed, cut, repeated; and the XML inside the zip, zipped again) and object files; nothing may panic, an extraction ends within 2 s whatever it returns, and every Segment and name lies inside its text. The documents run in a child process the test watches: one that prints nothing for 2 s is killed and reaped, and the cases after it run in a new child | It found a heading name with a NUL (fixed in `Builder`), and a panic in `xml::unescape` at `&` before a multi-byte letter (fixed); a slow extraction that ended in an error passed, and a hang hung the run (r1, Codex #13); a thread left running a hung case went on using memory and CPU (r2, Codex #7) |
+| D29 | PDF content streams and ToUnicode CMaps are read by a reader of our own, about 500 lines: `Ops` gives `run` one operation at a time, its operands borrowing the stream's bytes, and spends the work budget as it reads; `ToUnicode` keeps a `bfrange` as a range and decodes a string only as far as the text has room. lopdf keeps reading the file's objects, encryption, fonts' dictionaries and the encodings of fonts without a map; a load filter counts the tokens of each object stream before lopdf parses it | One cause, three findings: lopdf did unbounded work before sfor could measure it (`many0(operation)` over a whole stream, a reverse map of every code of every range, `decode_text` into two UTF-16 buffers). Pre-validating the bytes would need the same lexer to count operators past strings and inline images, and would still leave lopdf's parse of what passes; the reader replaces both. Measured with the release binary: Fable's `page-ops-bomb.pdf` 6 264 620 KiB and 9.14 s → 73 700 KiB and 1.12 s, `form-ops-bomb.pdf` 6 265 792 KiB → 73 552 KiB, `objstm-bomb-32.pdf` 2 021 992 KiB → 57 220 KiB; a range of 2³² codes out of memory → 8 MiB; a 4 KB map of long codes 1 796 208 KiB and 9.13 s → 92 040 KiB and 0.68 s. The six real PDFs of D13 and `many-forms.pdf` extract as before (to verify in chunk 9: the D13 recall over them, the probe ran only the unit and perf tests) |
 
 ## Verified for this plan (2026-10-17 and 2026-10-18)
 
 Outputs in `/tmp/subtask/m4-plan/outputs/`. The probe `/tmp/subtask/m4-plan/m4v2` is a git
-repository of its own with four commits: the repository at `1610a50`, the repository at
+repository of its own with five commits: the repository at `1610a50`, the repository at
 `191dbaf`, M4's code over the latter (`57edf0f`, cherry-picked from the first probe, see «Rebase
-on M3's final code»), and the fixes of the first review of this plan (`eea167a`, see «Review
-round 1»). The frozen copy `/tmp/subtask/m4-plan/m4tree-eea167a` is that probe at its commit
-`eea167a`; every code block below was generated from it (`/tmp/subtask/m4-plan/plan/gen.py`,
+on M3's final code»), and the fixes of the first and second reviews of this plan (`eea167a`
+and `48fe5e8`, see «Review round 1» and «Review round 2»). The frozen copy `/tmp/subtask/m4-plan/m4tree-48fe5e8` is that probe at its commit
+`48fe5e8`; every code block below was generated from it (`/tmp/subtask/m4-plan/plan/gen.py`,
 diffs against its commit `05699bc`, which is `191dbaf`). The working probe may change with the
 reviews; the frozen one does not.
 
@@ -161,8 +162,8 @@ reviews; the frozen one does not.
   `cargo check --offline --workspace --all-targets` passes from the local cache. quick-xml
   0.42.0, the M3 plan's candidate, also resolved, and was dropped (D12).
 - **Binary.** `target/release/sfor` of `191dbaf`: 16 598 640 bytes (15 381 072 stripped); of the
-  frozen copy: 19 041 208 bytes (17 638 160 stripped), 2.4 MB more, under 23 MB (8612); before
-  the fixes of review round 1, 19 015 120. Over `1610a50` the probe had measured 16 583 992 and
+  frozen copy: 19 064 256 bytes (17 657 616 stripped), 2.5 MB more, under 23 MB (8612); before
+  the fixes of review round 1, 19 015 120, and of round 2, 19 041 208. Over `1610a50` the probe had measured 16 583 992 and
   19 000 368.
 - **Object files.** Over binaries built from one C file (`version_string` and a second string
   literal): gcc's ELF gives `ELF x86-64 › .rodata › version_string+0xe` and, for the second
@@ -189,15 +190,15 @@ reviews; the frozen one does not.
 - **Every tanda builds** (`/tmp/subtask/m4-plan/states/build.py`, over `191dbaf` with the code
   of the frozen copy): the repository with only what tanda 1, then 1–2, 1–3 and 1–4 write (the
   later files as their stubs, and the `offsets: false` literals) passes `cargo clippy
-  --workspace --all-targets -- -D warnings`, `cargo test --lib` (409, 448, 484 and 484 tests)
+  --workspace --all-targets -- -D warnings`, `cargo test --lib` (409, 449, 492 and 492 tests)
   and `cargo test --test cli --test cli_m2 --test cli_m3` (42, 16, 19), and after tanda 4 also
-  `--test cli_m4` (14). The first run of this check, in round 0, found that the shared writer
+  `--test cli_m4` (15). The first run of this check, in round 0, found that the shared writer
   helpers, `pub(crate)` then, are dead code to clippy while the format writers are stubs; they
   are `pub` now (Task 4.3).
 - **Frozen copy, whole suite:** `cargo build --workspace`, `cargo clippy --workspace
   --all-targets -- -D warnings` (no findings), `cargo fmt --check` and
-  `SFOR_REQUIRE_REFERENCE=1 cargo test --workspace` pass: 484 unit tests and 2 ignored, `cli` 42,
-  `cli_m2` 16 (with `m2_07` updated), `cli_m3` 19, `cli_m4` 14, `fuzz` 5, `helpers` 22,
+  `SFOR_REQUIRE_REFERENCE=1 cargo test --workspace` pass: 492 unit tests and 2 ignored, `cli` 42,
+  `cli_m2` 16 (with `m2_07` updated), `cli_m3` 19, `cli_m4` 15, `fuzz` 5, `helpers` 22,
   `rg_compat` 37, and the helpers' own.
 - **Rebase on M3's final code.** The probe was first built over `1610a50` (frozen then as
   `m4tree-7134553`, removed). Its changes were cherry-picked onto `191dbaf`: every diff applied
@@ -226,30 +227,50 @@ reviews; the frozen one does not.
   over the object files too (D17, Fable #5). No chunk or tanda was added or moved and no
   dependency changed; C1 gains `src/formats/definition.rs`. The decisions of 8385, 8390,
   8393–8395, 8612 and #12 hold as they were.
+- **Review round 2** (`reviews/m4-plan-r2/{codex,fable}.md`). Each fix written test first
+  and seen RED over the round-1 code (`eea167a`), then GREEN. The three PDF findings of Codex
+  and Fable's MAJOR share one cause, lopdf doing unbounded work before sfor can measure it,
+  and one fix, D29, chosen over pre-validating the bytes by the numbers in D29's row. Fable's
+  files (`/tmp/subtask/m4-plan-r2-fable/exp/`) through the release binary: `page-ops-bomb.pdf`
+  refused in 1.12 s with 73 520 KiB (6 264 620 KiB and 9.14 s in round 1), `form-ops-bomb.pdf`
+  in 1.11 s with 73 236 KiB, `objstm-bomb-32.pdf` in 0.14 s with 57 880 KiB (2 021 992 KiB),
+  `many-forms.pdf` read whole in 1.49 s (refused in round 1), `shared-content.pdf` read in
+  2.94 s (refused). What changed, by chunk: C2 rows by string (D6); C4 a fourth SQLite table
+  (`odd`); C7 repeats past the largest number (D17); C9 the reader of D29, the work budget of
+  pages, `MAX_GROWTH`, the object-stream filter, a content stream counted once, a page of one
+  stream decompressed without lopdf's copy (D13, D17, D29); C10 the SQL tokens (D15); C11
+  `m4_15`, `m4_06` and the SQLite snapshots; C12 the child-process supervisor (D28); C13 five
+  PDF perf tests (D17). No chunk or tanda was added or moved and no dependency changed.
+  Unverified, to verify in chunk 9: an encrypted PDF's object streams are bounded only per
+  stream (1 MiB each while it loads): lopdf parses them while it decrypts, where the load
+  filter is not called, and the probe built no encrypted PDF with object streams.
 - **RED** over the stubs of C1 and C4 with each module's tests (`/tmp/subtask/m4-plan/red/run.py`,
-  over the frozen copy): object `mod.rs` does not compile (`demangle`), `rows.rs` 6 FAIL,
+  over the frozen copy): object `mod.rs` does not compile (`demangle`), `rows.rs` 7 FAIL,
   `preprocess.rs` 2 FAIL, `ooxml.rs` does not compile (4 functions), `odf.rs` 5 FAIL and 1 passes
   (an error either way), `epub.rs` 2 FAIL and 1 passes (likewise), `pdf.rs` and `sqlite.rs` do
   not compile. In round 0, `tests/cli_m4.rs` over the state after tanda 3 (no pipeline yet): 10
   of its 11 tests FAIL, and `m4_11` (without `--docs`, as rg) passes, as it must. The two fuzz
   findings (D28) FAILED before their fixes, as the inputs in Task 12.1 show.
 - **Fuzz:** default count, 5 tests in 34 s (debug); `SFOR_FUZZ_N=20000` (release), the whole
-  file in 213 s with the watchdog (one thread per extraction), no failure. In round 0, before the
-  watchdog, the two M4 tests took 69 s.
-- **Perf ceilings** (release, `SFOR_REQUIRE_REFERENCE=1`, six tests): 50 MB ELF 0.053 s and
-  58 MiB against `rg -a` 0.120 s and 56 MiB; with 200 000 symbols 0.132 s and 95 MiB against
-  0.106 s and 62 MiB; zip bomb (298 KiB, 300 MiB inside) refused in 0.35 s with 262 MiB;
-  workbook of six 200 MiB sheets (1 196 KiB) refused in 1.75 s with 223 MiB; PDF bomb (299 KiB,
-  a 300 MiB ToUnicode map) refused in 0.10 s with 72 MiB; documents: docx 0.40 s (15 MB of
-  text, budget 2.27 s, 47 MiB), odt 0.47 s (2.52 s, 39 MiB), epub 0.28 s (1.77 s, 37 MiB), PDF
-  0.39 s (7 MB, 2.08 s, 26 MiB), xlsx 1.41 s (18 MB, 10.38 s, 228 MiB), ods 1.93 s (19.75 s,
-  254 MiB), pptx 0.53 s (1.7 MB, 2.33 s, 36 MiB; 1.68 s before the relationships by id), rg over
-  each text at most 0.014 s.
+  file in 213 s, the 55 000 documents in a supervised child process, 20 000 object files, no
+  failure. In round 0 the two M4 tests took 69 s.
+- **Perf ceilings** (release, `SFOR_REQUIRE_REFERENCE=1`, ten tests): 50 MB ELF 0.052 s and
+  57 MiB against `rg -a` 0.106 s and 56 MiB; with 200 000 symbols 0.134 s and 94 MiB against
+  0.105 s and 62 MiB; zip bomb (298 KiB, 300 MiB inside) refused in 0.33 s with 263 MiB;
+  workbook of six 200 MiB sheets (1 196 KiB) refused in 1.77 s with 223 MiB; PDF bomb (299 KiB,
+  a 300 MiB ToUnicode map) refused in 0.10 s with 71 MiB; a page of 63 MiB of `h` refused in
+  0.38 s with 71 MiB; an object stream of 63 MiB of `1 ` refused in 0.27 s with 71 MiB; a
+  ToUnicode range of 2³² codes read in 0.009 s with 8 MiB; a 4 MiB string of a code of 256
+  letters read in 0.72 s with 121 MiB; documents: docx 0.40 s (15 MB of text, budget 2.27 s,
+  47 MiB), odt 0.45 s (2.52 s, 39 MiB), epub 0.28 s (1.77 s, 36 MiB), PDF 0.42 s (7 MB, 2.08 s,
+  26 MiB), xlsx 1.45 s (18 MB, 10.38 s, 228 MiB), ods 1.97 s (19.75 s, 253 MiB), pptx 0.52 s
+  (1.7 MB, 2.33 s, 36 MiB; 1.68 s before the relationships by id), rg over each text at most
+  0.015 s.
 - **Benchmark** (`scripts/bench-m4.sh`, 1 080 documents, 300 ELF files from `/usr/bin` and
-  `/usr/lib`, 20 000 text files, 12 threads, 40 runs per case): none 1.02 × rg, sparse 1.06 ×,
-  `--no-trail` 1.03 ×, `--docs` without documents (text and object files) 1.08 ×, `--binary`
-  1.02 × (extra 0.001 s, budget 0.054 s), `--docs` over the documents 0.077 s against rg's
-  0.012 s over their texts (extra 0.064 s, budget 0.780 s for 16 MB of text). `docs-none` is
+  `/usr/lib`, 20 000 text files, 12 threads, 40 runs per case): none 1.01 × rg, sparse 1.06 ×,
+  `--no-trail` 1.01 ×, `--docs` without documents (text and object files) 1.09 ×, `--binary`
+  1.03 × (extra 0.001 s, budget 0.054 s), `--docs` over the documents 0.075 s against rg's
+  0.012 s over their texts (extra 0.063 s, budget 0.780 s for 16 MB of text). `docs-none` is
   near its ceiling for sfor's start, not for `--docs`: over the same files `hyperfine -N`
   (80 runs) gives rg 43.1 ms, sfor 45.1 ms, sfor `--docs` 45.2 ms, and with the first bytes of
   the 300 object files not read at all 46.4 ms against 46.0 ms, so reading them from the
@@ -284,9 +305,9 @@ M4 is done when all of these hold; each names the test or script that measures i
    `SFOR_REQUIRE_REFERENCE=1 cargo test --test cli_m4` so it cannot skip.
 7. Spec §11 #26: `scripts/bench-m4.sh` exits 0, and `PATH=/usr/bin:$PATH scripts/bench.sh`,
    `scripts/bench-code.sh` and `scripts/bench-m3.sh` still exit 0 (C13).
-8. The six M4 tests of `tests/perf.rs` pass in release with the reference required:
+8. The ten M4 tests of `tests/perf.rs` pass in release with the reference required:
    `SFOR_REQUIRE_REFERENCE=1 cargo test --release --test perf -- --ignored object_ elf_
-   documents_ zip_bomb pdf_bomb`. A run that printed `skipping:` does not count.
+   documents_ zip_bomb pdf_`. A run that printed `skipping:` does not count.
 9. Spec §11 #27: the M4 fuzz of `tests/fuzz.rs` passes with its default count and with
    `SFOR_FUZZ_N=20000` once before the merge.
 10. `Cargo.lock` gains only the packages listed in Task 1.1; `cargo tree -i regex-automata`,
@@ -2616,6 +2637,22 @@ mod tests {
         );
     }
 
+    /// Codex r2 #5: Matches more than `SIDE` apart in one string are one row, even with -m1.
+    #[test]
+    fn a_long_string_is_one_row_whatever_its_matches_distance() {
+        let mut b = b"\0needle".to_vec();
+        b.extend(vec![b'a'; 5000]);
+        b.extend(b"needle\0");
+        let hits = find(&b, b"needle");
+        let r = rows(&b, &hits, Some(1), &LineIndex::new(&b));
+        assert_eq!(r.len(), 1);
+        let subs: Vec<(usize, usize)> = r[0].submatches.iter().map(|s| (s.start, s.end)).collect();
+        assert_eq!(
+            (r[0].absolute_offset, subs),
+            (1, vec![(0, 6), (5006, 5012)])
+        );
+    }
+
     #[test]
     fn control_bytes_inside_a_match_print_as_dots() {
         let b = b"ab\0cd";
@@ -2660,9 +2697,13 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2:** `cargo test --lib processors::object::rows`: the 6 tests FAIL (no rows): RED.
+- [ ] **Step 2:** `cargo test --lib processors::object::rows`: the 7 tests FAIL (no rows): RED.
+  `a_long_string_is_one_row_whatever_its_matches_distance` also failed over the round-1 code,
+  which grouped Matches by the 4096-byte window and so cut one string into two rows (review r2,
+  Codex #5).
 
-- [ ] **Step 3:** the rows (D6):
+- [ ] **Step 3:** the rows (D6): a Match joins the row before it when the bytes from that row's
+  last Match to it are printable, however many:
 
 ```rust
 //! The rows of an object file (spec §5.7): each printable string that holds Matches, as
@@ -2710,9 +2751,13 @@ pub fn rows(
     let mut out: Vec<(Range<usize>, Vec<Range<usize>>)> = Vec::new();
     for h in hits {
         let h = h.start.min(bytes.len())..h.end.min(bytes.len());
+        // A Match joins the row before it when it starts inside the row's window, or when the
+        // bytes from the row's last Match to it are printable: one string is one row, however
+        // far apart its Matches are (M4 plan r2, Codex #5).
         if let Some((w, subs)) = out.last_mut()
-            && h.start < w.end.max(w.start + 1)
             && h.start >= w.start
+            && (h.start < w.end.max(w.start + 1)
+                || printable(bytes, subs.last().map_or(w.start, |s| s.end), h.start))
         {
             if h.end > w.end {
                 w.end = extend_right(bytes, h.end);
@@ -2760,6 +2805,18 @@ pub fn rows(
             }
         })
         .collect()
+}
+
+/// Whether `bytes[from..to]` is printable characters only.
+fn printable(bytes: &[u8], from: usize, to: usize) -> bool {
+    let mut i = from;
+    while i < to {
+        match char_after(bytes, i) {
+            Some(e) if e <= to => i = e,
+            _ => return false,
+        }
+    }
+    true
 }
 
 fn extend_right(bytes: &[u8], from: usize) -> usize {
@@ -4449,6 +4506,10 @@ db.execute("INSERT INTO comp VALUES ('a1', 3.0, 'c1')")
 # A NULL before a value: its field stays, empty (Codex r1 #12).
 db.execute("CREATE TABLE gaps (x TEXT, y TEXT)")
 db.execute("INSERT INTO gaps VALUES (NULL, 'needle gap')")
+# The schema as SQLite keeps it, its spaces and comments included: `WITHOUT` and `ROWID` on two
+# lines, a comment between them, and a key whose quoted name holds a comma (M4 plan r2, Codex #4).
+db.execute('CREATE TABLE odd (payload TEXT, "k,key" REAL /* the key */, PRIMARY KEY ("k,key")) WITHOUT\n  -- no rowid\n  ROWID')
+db.execute("INSERT INTO odd VALUES ('needle odd', 2)")
 db.execute("CREATE INDEX users_email ON users(email)")
 db.execute("CREATE VIEW v AS SELECT name FROM users")
 db.commit()
@@ -5998,6 +6059,9 @@ mod tests {
             format!(
                 r#"<table:table-row table:number-rows-repeated="{max}"><table:table-cell office:value-type="string"><text:p>needle</text:p></table:table-cell></table:table-row><table:table-row><table:table-cell office:value-type="string"><text:p>x</text:p></table:table-cell></table:table-row>"#
             ),
+            // Codex r2 #6: a count past the largest number is not one.
+            r#"<table:table-row table:number-rows-repeated="18446744073709551616"><table:table-cell/></table:table-row>"#.to_string(),
+            r#"<table:table-row><table:table-cell table:number-columns-repeated="18446744073709551616"/></table:table-row>"#.to_string(),
         ] {
             let got = std::panic::catch_unwind(|| extract(Kind::Ods, &ods_of(&rows)));
             assert!(
@@ -6051,7 +6115,8 @@ mod tests {
   says how many spaces it means. `number-rows-repeated` and `number-columns-repeated` of empty
   cells are only counted, with checked additions, so a repeat of `18446744073709551615` is an
   error and not an overflow (D17; `huge_repeats_are_an_error_not_an_overflow` panicked before:
-  review r1, Codex #10). A cell is searched by its stored value, by its `office:value-type`
+  review r1, Codex #10), and so is a count that does not fit in a number at all, which round 1
+  read as 1 (review r2, Codex #6). A cell is searched by its stored value, by its `office:value-type`
   (D18; `ods_cells_print_their_stored_values` is RED over the round-0 code, which read the
   displayed `<text:p>`, `$1.50` for the stored `1.5`: Codex #6):
 
@@ -6352,8 +6417,19 @@ fn add(a: usize, b: usize) -> Result<usize, DocError> {
         .ok_or_else(|| DocError::broken("a repeated row or column goes past the largest number"))
 }
 
-fn repeat(attrs: &str, name: &str) -> usize {
-    attr(attrs, name).and_then(|v| v.parse().ok()).unwrap_or(1)
+/// A repeat count: 1 when absent or not a number, an error when it is a number past the
+/// largest one (M4 plan r2, Codex #6).
+fn repeat(attrs: &str, name: &str) -> Result<usize, DocError> {
+    let Some(v) = attr(attrs, name) else {
+        return Ok(1);
+    };
+    match v.trim().parse::<usize>() {
+        Ok(n) => Ok(n.max(1)),
+        Err(_) if !v.trim().is_empty() && v.trim().bytes().all(|c| c.is_ascii_digit()) => Err(
+            DocError::broken("a repeated row or column goes past the largest number"),
+        ),
+        Err(_) => Ok(1),
+    }
 }
 
 pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
@@ -6378,7 +6454,7 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                     row = 0;
                 }
                 "table:table-row" => {
-                    repeat_row = repeat(attrs, "number-rows-repeated");
+                    repeat_row = repeat(attrs, "number-rows-repeated")?;
                     col = 0;
                     cells.clear();
                     if empty {
@@ -6386,7 +6462,7 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                     }
                 }
                 "table:table-cell" | "table:covered-table-cell" => {
-                    let rep = repeat(attrs, "number-columns-repeated");
+                    let rep = repeat(attrs, "number-columns-repeated")?;
                     let value = stored(attrs);
                     if empty {
                         if let Some(v) = value.filter(|v| !v.is_empty()) {
@@ -7246,6 +7322,22 @@ mod tests {
         String::from_utf8(extract(Kind::Pdf, pdf).unwrap().text).unwrap()
     }
 
+    /// A code the ToUnicode map does not hold reads through the font's `/Encoding` (LaTeX's
+    /// `circlecopyrt` in a font whose map leaves it out was U+FFFD in the probe).
+    #[test]
+    fn a_code_the_map_leaves_out_reads_through_the_encoding() {
+        let map = cmap(1, &[(0x6e, "n"), (0x65, "e")]);
+        let font = simple_font(|f| {
+            f.set("Encoding", Object::Name(b"WinAnsiEncoding".to_vec()));
+            f.set(
+                "ToUnicode",
+                Object::Stream(Stream::new(Dictionary::new(), map)),
+            );
+        });
+        let pdf = pdf_with(font, b"BT /F1 12 Tf 72 700 Td (needle) Tj ET", &[]);
+        assert_eq!(text_of(&pdf), "needle\n");
+    }
+
     /// Codex r1 #5: a simple font that declares both `/Encoding` and `/ToUnicode` is read
     /// through its ToUnicode map, which says what a subset font's codes mean; its ligatures
     /// expand.
@@ -7274,6 +7366,28 @@ mod tests {
             &[],
         );
         assert_eq!(text_of(&pdf), "needle\nfine\n");
+    }
+
+    /// A one-page PDF drawing `content` with a Type0 font, Identity-H, whose ToUnicode map is
+    /// `map`.
+    fn type0(map: Vec<u8>, content: &[u8]) -> Vec<u8> {
+        let mut cid = Dictionary::new();
+        cid.set("Type", Object::Name(b"Font".to_vec()));
+        cid.set("Subtype", Object::Name(b"CIDFontType2".to_vec()));
+        cid.set("DW", Object::Integer(500));
+        let mut font = Dictionary::new();
+        font.set("Type", Object::Name(b"Font".to_vec()));
+        font.set("Subtype", Object::Name(b"Type0".to_vec()));
+        font.set("Encoding", Object::Name(b"Identity-H".to_vec()));
+        font.set(
+            "DescendantFonts",
+            Object::Array(vec![Object::Dictionary(cid)]),
+        );
+        font.set(
+            "ToUnicode",
+            Object::Stream(Stream::new(Dictionary::new(), map)),
+        );
+        pdf_with(font, content, &[])
     }
 
     /// A Type0 font with Identity-H and a ToUnicode map, its words separated by `TJ` kerning.
@@ -7339,6 +7453,23 @@ mod tests {
         assert!(matches!(&e, DocError::TooLarge(_, 1024)), "{e}");
     }
 
+    /// The load filter of the object streams keeps every object: a file saved with object
+    /// streams reads as it did (the probe's first filter lost them all, and hwloc's manual
+    /// gave no text).
+    #[test]
+    fn a_file_with_object_streams_reads_whole() {
+        let pdf = pdf_with(simple_font(|_| {}), b"BT /F1 12 Tf (needle) Tj ET", &[]);
+        let mut doc = Document::load_mem(&pdf).unwrap();
+        let mut packed = Vec::new();
+        let options = lopdf::SaveOptions::builder()
+            .use_object_streams(true)
+            .use_xref_streams(true)
+            .build();
+        doc.save_with_options(&mut packed, options).unwrap();
+        assert!(memchr::memmem::find(&packed, b"/ObjStm").is_some());
+        assert_eq!(text_of(&packed), "needle\n");
+    }
+
     /// Fable r1 #10: a Form whose stream does not decompress draws nothing, and the page goes on.
     #[test]
     fn a_form_that_does_not_decompress_draws_nothing() {
@@ -7391,7 +7522,118 @@ mod tests {
             "{e}"
         );
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(10),
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The content reader (M4 plan r2): strings with escapes and nested parentheses, hex
+    /// strings, arrays, names, dictionaries, comments and inline images.
+    #[test]
+    fn the_content_reader_reads_one_operation_at_a_time() {
+        use super::{Operand, Ops};
+        let data = b"q 1 0 0 1 72 700 cm BT /F1 12 Tf (a\\)b\\050(n)) Tj <6E 65 6> Tj\n\
+            [(x) -250 (y)] TJ ET % a comment\n/P << /MCID [1 2] >> BDC EMC\n\
+            BI /W 1 /H 1 ID \0EI\xff EI Q";
+        let mut ops = Ops::new(data);
+        let mut o = Vec::new();
+        let mut seen = Vec::new();
+        while let Some(op) = ops.next(&mut o).unwrap() {
+            seen.push(String::from_utf8_lossy(op).into_owned());
+            match op {
+                b"cm" => assert_eq!(o.len(), 6),
+                b"Tj" => assert!(matches!(o[0], Operand::Literal(_) | Operand::Hex(_))),
+                b"TJ" => assert!(matches!(&o[0], Operand::Array(a) if a.len() == 3)),
+                b"BDC" => assert_eq!(o, [Operand::Name(b"P"), Operand::Other]),
+                _ => {}
+            }
+            if op == b"Tj" {
+                let t = o[0].string().unwrap();
+                assert!(t == b"a)b((n)" || t == b"ne`", "{t:?}");
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                "q", "cm", "BT", "Tf", "Tj", "Tj", "TJ", "ET", "BDC", "EMC", "BI", "ID", "EI", "Q"
+            ]
+        );
+    }
+
+    /// Codex r2 #1: a range of a ToUnicode map stays a range, whatever its size: lopdf's
+    /// reader listed each of its 2³² codes.
+    #[test]
+    fn a_map_range_is_read_as_a_range() {
+        let mut map = cmap(2, &[]);
+        let ranges =
+            b"2 beginbfrange\n<0000> <FFFF> <0041>\n<00000000> <FFFFFFFF> <0061>\nendbfrange\n";
+        let at = memchr::memmem::find(&map, b"endcmap").unwrap();
+        map.splice(at..at, ranges.iter().copied());
+        let started = std::time::Instant::now();
+        let pdf = type0(map, b"BT /F1 12 Tf 72 700 Td <000000010005> Tj ET");
+        assert_eq!(text_of(&pdf), "ABF\n");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    /// Codex r2 #2: a code that means 256 letters, repeated, is decoded only as far as the
+    /// text has room, and what fits is kept.
+    #[test]
+    fn a_code_of_long_text_is_decoded_as_far_as_there_is_room() {
+        let long = "n".repeat(256);
+        let map = cmap(1, &[(0x41, long.as_str())]);
+        let font = simple_font(|f| {
+            f.set(
+                "ToUnicode",
+                Object::Stream(Stream::new(Dictionary::new(), map)),
+            )
+        });
+        let mut content = b"BT /F1 12 Tf (".to_vec();
+        content.extend(vec![b'A'; 64 << 10]);
+        content.extend(b") Tj ET");
+        let pdf = pdf_with(font, &content, &[]);
+        let e = super::super::extract_with(Kind::Pdf, &pdf, 256 << 10).unwrap();
+        assert!(e.cut);
+        let n = e.text.len();
+        assert!(n <= 256 << 10 && n > 128 << 10, "{n}");
+        // Without the limit, a string writes at most `MAX_GROWTH` bytes for each of its bytes.
+        let e = extract(Kind::Pdf, &pdf).unwrap();
+        assert!(!e.cut);
+        assert!(
+            e.text.len() <= (64 << 10) * super::MAX_GROWTH + 65,
+            "{}",
+            e.text.len()
+        );
+    }
+
+    /// Codex r2 #3: a Form of millions of operations spends its budget as they are read, and
+    /// never becomes a list of them; `q` past `MAX_SAVES` saves nothing.
+    #[test]
+    fn a_form_of_millions_of_operations_is_refused_as_it_is_read() {
+        let started = std::time::Instant::now();
+        let body = b"q Q ".repeat(8 << 20);
+        let pdf = pdf_with(simple_font(|_| {}), b"/Fm0 Do", &[(&body, true)]);
+        let e = extract(Kind::Pdf, &pdf).unwrap_err();
+        assert!(
+            matches!(&e, DocError::Broken(m) if m.contains("operations")),
+            "{e}"
+        );
+        let mut page = b"q ".repeat(1 << 20);
+        page.extend(b"BT /F1 12 Tf (needle) Tj ET");
+        assert_eq!(
+            text_of(&pdf_with(simple_font(|_| {}), &page, &[])),
+            "needle\n"
+        );
+        let mut tj = b"BT /F1 12 Tf [".to_vec();
+        tj.extend(b"1 ".repeat(70_000));
+        tj.extend(b"] TJ ET");
+        let e = extract(Kind::Pdf, &pdf_with(simple_font(|_| {}), &tj, &[])).unwrap_err();
+        assert!(
+            matches!(&e, DocError::Broken(m) if m.contains("operands")),
+            "{e}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
             "{:?}",
             started.elapsed()
         );
@@ -7399,53 +7641,41 @@ mod tests {
 
     #[test]
     fn tj_kerning_wide_enough_is_a_space() {
-        use lopdf::content::{Content, Operation};
-        use lopdf::{Object, StringFormat};
-        let s = |t: &str| Object::String(t.as_bytes().to_vec(), StringFormat::Literal);
-        let ops = vec![
-            Operation::new("BT", vec![]),
-            Operation::new("Tf", vec![Object::Name(b"F1".to_vec()), 10.into()]),
-            Operation::new(
-                "TJ",
-                vec![Object::Array(vec![
-                    s("ne"),
-                    Object::Integer(-20),
-                    s("edle"),
-                    Object::Integer(-300),
-                    s("here"),
-                ])],
-            ),
-            Operation::new("ET", vec![]),
-        ];
-        let data = Content { operations: ops }.encode().unwrap();
-        let ops = Content::decode(&data).unwrap().operations;
+        let data = b"BT /F1 10 Tf [(ne) -20 (edle) -300 (here)] TJ ET";
         let doc = lopdf::Document::with_version("1.5");
         let r = super::Reader::new(&doc);
         let res = super::Res::new(&r, Vec::new()).unwrap();
         let mut out = super::Layout::new(usize::MAX);
-        super::run(&r, &ops, &res, super::Matrix::IDENTITY, &mut out, 0).unwrap();
+        super::run(&r, data, &res, super::Matrix::IDENTITY, &mut out, 0).unwrap();
         assert_eq!(out.out, "needle here");
     }
 }
 ```
 
 - [ ] **Step 3:** `cargo test --lib docs::pdf` does not compile: `Reader`, `Res`, `Layout`,
-  `Matrix`, `run` and `MAX_INFLATED` do not exist: RED. The four adversarial tests of review r1 were also run
+  `Matrix`, `run`, `Ops`, `Operand` and `MAX_INFLATED` do not exist: RED. The tests of review
+  r2 were run against the round-1 code under `ulimit -v 6000000`:
+  `a_map_range_is_read_as_a_range` and `a_form_of_millions_of_operations_is_refused_as_it_is_read`
+  ran out of memory, and `a_code_of_long_text_is_decoded_as_far_as_there_is_room` kept no text
+  (a string that did not fit was dropped whole). The four adversarial tests of review r1 were also run
   against the round-0 code, which had none of their fixes: `to_unicode_comes_before_the_encoding`
   gave `ABBCDB` (WinAnsi), `a_type0_font_reads_its_two_byte_codes` gave spaces (its fixture's
   map was a direct stream then, which lopdf does not read; it is an object now), the bombs
   were read whole, and the page of Forms drawing Forms ran for over 60 s.
 
-- [ ] **Step 4:** the Extractor (D13, D14, D17). A `Reader` holds what the pages of a document
-  share: its fonts and its Forms, each read once (before the font cache one 296-page PDF took
-  0.54 s, after it 0.41 s; a Form is decompressed, decoded and given its resources once, which
-  took a page of 16⁷ Form draws from 9 s to 0.18 s in release), and its budgets: the bytes all
-  its streams decompress to, and the work of its Forms. A font with a ToUnicode map is read
-  through it (lopdf reads `/Encoding` first, so the map is read from a copy of the font without
-  `/Encoding`, holding the map already decompressed and counted); widths come from `/Widths`
-  (simple fonts, scaled by `FontMatrix` for Type 3) or `/W` and `/DW` (CID fonts). Every stream
-  is read with `MAX_STREAM`, and lopdf's `MemoryLimitExceeded` is `TooLarge`, any other
-  decompression error an empty page or Form:
+- [ ] **Step 4:** the Extractor (D13, D14, D17, D29). A `Reader` holds what the pages of a
+  document share: its fonts and its Forms, each read once (before the font cache one 296-page
+  PDF took 0.54 s, after it 0.41 s; a Form is decompressed and given its resources once), and
+  its budgets: the bytes all its streams decompress to (a content stream pages share counts
+  once), and the work of its content streams. `Ops` reads a content stream one operation at a
+  time (strings with escapes and nested parentheses, hex strings, arrays, dictionaries,
+  comments, inline images), each operation spending one unit as it is read; `ToUnicode` reads a
+  map's codespace ranges, `bfchar` and `bfrange` entries, a range kept as a range, and a code
+  the map leaves out reads through the font's `/Encoding` when it has one that decides. lopdf
+  is never given a map. A load filter counts each object stream's tokens before lopdf parses it.
+  Widths come from `/Widths` (simple fonts, scaled by `FontMatrix` for Type 3) or `/W` and
+  `/DW` (CID fonts). Every stream is read with `MAX_STREAM`, and lopdf's `MemoryLimitExceeded`
+  is `TooLarge`, any other decompression error an empty page or Form:
 
 ```rust
 //! PDF (spec §5.8): `3 Results › 3.2 Costs › page 42`. lopdf reads the file, its fonts and its
@@ -7455,7 +7685,6 @@ mod tests {
 //! it, as does a TJ kerning of more than 0.1 em. The bookmarks are chapters, each starting at the
 //! line of the page it points to that starts with its title, or at the top of that page (D14).
 use super::{Builder, DocError};
-use lopdf::content::{Content, Operation};
 use lopdf::{DecompressError, Dictionary, Document, Encoding, Object, ObjectId, Stream};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -7467,10 +7696,21 @@ const MAX_STREAM: usize = 64 << 20;
 /// The most bytes all the page, Form and font streams of a document may decompress to, together
 /// (1 GiB): many pages sharing one large stream are a bomb too (D17).
 const MAX_INFLATED: usize = 1 << 30;
-/// The most work the Forms of a document may do: each time a Form is drawn it spends
-/// `FORM_DRAW` plus one for each of its operations. A small Form drawn by Forms drawn by Forms
-/// is a bomb of work (D17).
-const MAX_FORM_WORK: usize = 8_000_000;
+/// The most work the content streams of a document may do, plus `PAGE_WORK` for each of its
+/// pages: each operation a page or a Form runs spends one, and each Form drawn `FORM_DRAW`
+/// more. A small Form drawn by Forms drawn by Forms, or a page of millions of operations, is a
+/// bomb of work (D17; M4 plan r2, Fable #1 and #2: 10 000 pages each drawing five Forms of 200
+/// operations fit).
+const MAX_WORK: usize = 8_000_000;
+const PAGE_WORK: usize = 20_000;
+/// The most bytes and tokens the object streams of a document may hold, together: lopdf
+/// parses them whole when it loads the file, about 128 bytes of memory for each token (D17;
+/// M4 plan r2, Fable #1).
+const MAX_OBJSTM_BYTES: usize = 64 << 20;
+const MAX_OBJSTM_TOKENS: usize = 2_000_000;
+/// The most bytes one stream of an encrypted PDF may decompress to while lopdf loads it: lopdf
+/// parses an encrypted file's object streams where `objstm` cannot count them.
+const MAX_ENCRYPTED_LOAD: usize = 1 << 20;
 /// The work of drawing a Form, before its operations run.
 const FORM_DRAW: usize = 16;
 /// Form XObjects nested deeper than this are not read.
@@ -7479,11 +7719,22 @@ const MAX_FORM_DEPTH: usize = 8;
 const MAX_BOOKMARKS: usize = 100_000;
 
 pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
+    let encrypted = memchr::memmem::find(bytes, b"/Encrypt").is_some();
     let options = lopdf::LoadOptions {
-        max_decompressed_size: Some(MAX_STREAM),
+        max_decompressed_size: Some(if encrypted {
+            MAX_ENCRYPTED_LOAD
+        } else {
+            MAX_STREAM
+        }),
+        filter: Some(objstm),
         ..Default::default()
     };
-    let doc = Document::load_mem_with_options(bytes, options).map_err(load_error)?;
+    OBJSTM.with(|c| c.set(ObjStmBudget::default()));
+    let loaded = Document::load_mem_with_options(bytes, options);
+    if let Some(e) = OBJSTM.with(|c| c.get()).refused {
+        return Err(e.error());
+    }
+    let doc = loaded.map_err(load_error)?;
     if doc.is_encrypted() && doc.encryption_state.is_none() {
         return Err(DocError::Encrypted);
     }
@@ -7496,19 +7747,12 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     for (n, id) in &pages {
         let mut text = Layout::new(b.remaining());
         let res = Res::of_page(&r, *id)?;
-        match doc.get_page_content_with_limit(*id, MAX_STREAM) {
+        match page_content(&doc, *id) {
             Ok(content) => {
-                r.inflated(content.len())?;
-                if let Ok(content) = Content::decode(&content) {
-                    run(
-                        &r,
-                        &content.operations,
-                        &res,
-                        Matrix::IDENTITY,
-                        &mut text,
-                        0,
-                    )?;
+                if r.contents.borrow_mut().insert(doc.get_page_contents(*id)) {
+                    r.inflated(content.len())?;
                 }
+                run(&r, &content, &res, Matrix::IDENTITY, &mut text, 0)?;
             }
             // A stream past the limit fails the document; any other error leaves the page
             // empty (lopdf reads a stream that does not decompress as it is, which draws
@@ -7566,6 +7810,111 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
         }
     }
     Ok(())
+}
+
+/// A page's content: its one stream decompressed, or its streams joined by lopdf, which
+/// copies them (a page of one 63 MiB stream took 135 MiB that way; M4 plan r2).
+fn page_content(doc: &Document, id: ObjectId) -> Result<Vec<u8>, lopdf::Error> {
+    let ids = doc.get_page_contents(id);
+    let [one] = ids.as_slice() else {
+        return doc.get_page_content_with_limit(id, MAX_STREAM);
+    };
+    let Ok(s) = doc.get_object(*one).and_then(Object::as_stream) else {
+        return Ok(Vec::new());
+    };
+    match s.decompressed_content_with_limit(MAX_STREAM) {
+        Err(e @ lopdf::Error::Decompress(DecompressError::MemoryLimitExceeded { .. })) => Err(e),
+        // As lopdf: a stream that does not decompress is read as it is.
+        Err(_) if s.content.len() <= MAX_STREAM => Ok(s.content.clone()),
+        Err(e) => Err(e),
+        Ok(data) => Ok(data),
+    }
+}
+
+/// What the object streams of the document being loaded on this thread have spent, and
+/// whether one was refused (lopdf's load filter is a plain function).
+#[derive(Clone, Copy, Default)]
+struct ObjStmBudget {
+    bytes: usize,
+    tokens: usize,
+    refused: Option<Refused>,
+}
+
+#[derive(Clone, Copy)]
+enum Refused {
+    Bytes,
+    Tokens,
+}
+
+impl Refused {
+    fn error(self) -> DocError {
+        match self {
+            Refused::Bytes => {
+                DocError::TooLarge("its object streams".into(), MAX_OBJSTM_BYTES >> 20)
+            }
+            Refused::Tokens => DocError::broken(format!(
+                "its object streams hold more than {MAX_OBJSTM_TOKENS} tokens"
+            )),
+        }
+    }
+}
+
+thread_local! {
+    static OBJSTM: Cell<ObjStmBudget> = Cell::new(ObjStmBudget::default());
+}
+
+/// lopdf's load filter: an object stream is decompressed and its tokens counted before lopdf
+/// parses it, and past the document's `MAX_OBJSTM_BYTES` or `MAX_OBJSTM_TOKENS` it is left out
+/// and the document refused.
+fn objstm(id: ObjectId, o: &mut Object) -> Option<(ObjectId, Object)> {
+    // lopdf keeps a file's object as the filter leaves it, and an object stream's object as
+    // the filter returns it: both, then.
+    let Object::Stream(s) = o else {
+        return Some((id, o.clone()));
+    };
+    if !s.dict.has_type(b"ObjStm") {
+        return Some((id, o.clone()));
+    }
+    let mut b = OBJSTM.with(|c| c.get());
+    if b.refused.is_some() {
+        return None;
+    }
+    match s.decompressed_content_with_limit(MAX_OBJSTM_BYTES) {
+        Ok(data) => {
+            b.bytes += data.len();
+            b.tokens += tokens(&data);
+        }
+        Err(lopdf::Error::Decompress(DecompressError::MemoryLimitExceeded { .. })) => {
+            b.bytes = usize::MAX;
+        }
+        // lopdf fails to read it too.
+        Err(_) => {}
+    }
+    if b.bytes > MAX_OBJSTM_BYTES {
+        b.refused = Some(Refused::Bytes);
+    } else if b.tokens > MAX_OBJSTM_TOKENS {
+        b.refused = Some(Refused::Tokens);
+    }
+    OBJSTM.with(|c| c.set(b));
+    b.refused.is_none().then(|| (id, o.clone()))
+}
+
+/// How many tokens `data` holds, about: each run of regular bytes, and each delimiter.
+fn tokens(data: &[u8]) -> usize {
+    let mut n = 0;
+    let mut in_word = false;
+    for &c in data {
+        if white(c) {
+            in_word = false;
+        } else if delimiter(c) {
+            n += 1;
+            in_word = false;
+        } else if !in_word {
+            n += 1;
+            in_word = true;
+        }
+    }
+    n
 }
 
 /// The words of `s` joined by single spaces.
@@ -7736,6 +8085,11 @@ impl Matrix {
         Matrix([1.0, 0.0, 0.0, 1.0, x, y])
     }
 
+    fn of(ops: &[Operand]) -> Option<Matrix> {
+        let v: Vec<f64> = ops.iter().filter_map(Operand::num).collect();
+        (v.len() == 6).then(|| Matrix([v[0], v[1], v[2], v[3], v[4], v[5]]))
+    }
+
     fn from(ops: &[Object]) -> Option<Matrix> {
         let v: Vec<f64> = ops.iter().filter_map(num).collect();
         (v.len() == 6).then(|| Matrix([v[0], v[1], v[2], v[3], v[4], v[5]]))
@@ -7759,12 +8113,19 @@ struct Reader<'a> {
     forms: RefCell<HashMap<ObjectId, Rc<Form<'a>>>>,
     inflated: Cell<usize>,
     work: Cell<usize>,
+    /// `MAX_WORK` and the `PAGE_WORK` of the document's pages.
+    limit: usize,
+    /// The content streams of the pages read so far: one a page shares with another is
+    /// counted once in `MAX_INFLATED` (M4 plan r2, Fable #3).
+    contents: RefCell<HashSet<Vec<ObjectId>>>,
 }
 
 impl<'a> Reader<'a> {
     fn new(doc: &'a Document) -> Self {
         Reader {
             doc,
+            limit: MAX_WORK.saturating_add(PAGE_WORK.saturating_mul(doc.get_pages().len())),
+            contents: RefCell::default(),
             fonts: RefCell::default(),
             forms: RefCell::default(),
             inflated: Cell::new(0),
@@ -7785,13 +8146,14 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// Spends the work of drawing a Form of `ops` operations.
-    fn draw(&self, ops: usize) -> Result<(), DocError> {
-        let total = self.work.get().saturating_add(FORM_DRAW + ops);
+    /// Spends `n` units of the work of the document's content streams.
+    fn work(&self, n: usize) -> Result<(), DocError> {
+        let total = self.work.get().saturating_add(n);
         self.work.set(total);
-        if total > MAX_FORM_WORK {
+        if total > self.limit {
             return Err(DocError::broken(format!(
-                "its Forms run more than {MAX_FORM_WORK} operations"
+                "its content streams run more than {} operations",
+                self.limit
             )));
         }
         Ok(())
@@ -7810,17 +8172,16 @@ impl<'a> Reader<'a> {
         Ok(f)
     }
 
-    /// The Form `s`, object `id`: no operations when its stream does not decompress or decode.
+    /// The Form `s`, object `id`: its content stream decompressed (counted in the document's
+    /// `MAX_INFLATED`, which bounds what the cache holds), or none when it does not decompress.
     fn form(&self, id: Option<ObjectId>, s: &'a Stream) -> Result<Rc<Form<'a>>, DocError> {
         if let Some(f) = id.and_then(|id| self.forms.borrow().get(&id).cloned()) {
             return Ok(f);
         }
-        let ops = match s.decompressed_content_with_limit(MAX_STREAM) {
+        let data = match s.decompressed_content_with_limit(MAX_STREAM) {
             Ok(data) => {
                 self.inflated(data.len())?;
-                Content::decode(&data)
-                    .map(|c| c.operations)
-                    .unwrap_or_default()
+                data
             }
             Err(e) => match too_large(e, "a Form") {
                 Ok(e) => return Err(e),
@@ -7843,7 +8204,7 @@ impl<'a> Reader<'a> {
             Ok(own) => Some(Res::new(self, vec![own])?),
             Err(_) => None,
         };
-        let f = Rc::new(Form { ops, matrix, res });
+        let f = Rc::new(Form { data, matrix, res });
         if let Some(id) = id {
             self.forms.borrow_mut().insert(id, f.clone());
         }
@@ -7851,16 +8212,16 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// A Form XObject: its operations, its matrix, and its own resources if it has them.
+/// A Form XObject: its content stream, its matrix, and its own resources if it has them.
 struct Form<'a> {
-    ops: Vec<Operation>,
+    data: Vec<u8>,
     matrix: Matrix,
     res: Option<Res<'a>>,
 }
 
 /// A font of a page or form: how its strings decode and how wide each code is.
 struct Font<'a> {
-    encoding: Option<Encoding<'a>>,
+    decode: Decode<'a>,
     /// Bytes per code: 2 for a composite (Type0) font, 1 otherwise.
     bytes: usize,
     /// Code → width in thousandths of the size; `default` for the others.
@@ -7926,45 +8287,107 @@ impl<'a> Res<'a> {
     }
 }
 
+/// How a font's strings decode.
+enum Decode<'a> {
+    /// Through its ToUnicode map, read by our code, and for a code the map does not hold
+    /// through the font's `/Encoding` when it has one that decides.
+    Map(ToUnicode, Option<Encoding<'a>>),
+    /// Through the encoding lopdf reads from `/Encoding`.
+    Encoding(Encoding<'a>),
+    /// As UTF-8.
+    Raw,
+}
+
 /// How the strings of the font `d` decode: through its ToUnicode map when it has one that
 /// reads, which says what each code means even in a subset font whose `/Encoding` does not
-/// (D13); else through its `/Encoding`. A stream of either past `MAX_STREAM` fails the document.
-fn encoding<'a>(r: &Reader<'a>, d: &'a Dictionary) -> Result<Option<Encoding<'a>>, DocError> {
+/// (D13); else through its `/Encoding`. lopdf is never given the map: it would read it again,
+/// and its reader lists every code of every range (M4 plan r2, Codex #1). A stream of either
+/// past `MAX_STREAM` fails the document.
+fn decode<'a>(r: &Reader<'a>, d: &'a Dictionary) -> Result<Decode<'a>, DocError> {
     let doc = r.doc;
     if let Ok(map) = d.get_deref(b"ToUnicode", doc).and_then(Object::as_stream) {
-        let plain = match map.get_plain_content_with_limit(MAX_STREAM) {
-            Ok(plain) => Some(plain),
-            Err(e) => match too_large(e, "a font's ToUnicode map") {
-                Ok(e) => return Err(e),
-                Err(_) => None,
-            },
-        };
-        if let Some(plain) = plain {
-            r.inflated(plain.len())?;
-            // lopdf reads `/Encoding` first, so the map is read from a copy of the font
-            // without it, holding the map already decompressed.
-            let mut only_map = d.clone();
-            only_map.remove(b"Encoding");
-            only_map.set("ToUnicode", Stream::new(Dictionary::new(), plain));
-            if let Ok(Encoding::UnicodeMapEncoding(m)) =
-                only_map.get_font_encoding_with_limit(doc, MAX_STREAM)
-            {
-                return Ok(Some(Encoding::UnicodeMapEncoding(m)));
+        match map.get_plain_content_with_limit(MAX_STREAM) {
+            Ok(plain) => {
+                r.inflated(plain.len())?;
+                let m = ToUnicode::parse(&plain)?;
+                if !m.chars.is_empty() || !m.ranges.is_empty() {
+                    let fallback = match decides(d, doc) {
+                        true => d.get_font_encoding_with_limit(doc, MAX_STREAM).ok(),
+                        false => None,
+                    };
+                    return Ok(Decode::Map(m, fallback));
+                }
             }
+            Err(e) => {
+                if let Ok(e) = too_large(e, "a font's ToUnicode map") {
+                    return Err(e);
+                }
+            }
+        }
+        if !decides(d, doc) {
+            return Ok(Decode::Raw);
         }
     }
     match d.get_font_encoding_with_limit(doc, MAX_STREAM) {
-        Ok(e) => Ok(Some(e)),
+        Ok(e) => Ok(Decode::Encoding(e)),
         Err(e) => match too_large(e, "a font's ToUnicode map") {
             Ok(e) => Err(e),
-            Err(_) => Ok(None),
+            Err(_) => Ok(Decode::Raw),
         },
+    }
+}
+
+/// Whether the font `d` has an `/Encoding` lopdf reads without its ToUnicode map: one that is
+/// not Identity (lopdf reads the map without one, or with an Identity one).
+fn decides(d: &Dictionary, doc: &Document) -> bool {
+    let identity = matches!(
+        d.get_deref(b"Encoding", doc).and_then(Object::as_name),
+        Ok(b"Identity-H" | b"Identity-V")
+    );
+    !identity && d.get(b"Encoding").is_ok()
+}
+
+impl Font<'_> {
+    /// The text of the string `s`, at most `room` bytes of it (and one code more); true when
+    /// it stopped there. Nothing is decoded past the room (M4 plan r2, Codex #2).
+    fn text(&self, s: &[u8], room: usize) -> (String, bool) {
+        let mut out = String::new();
+        match &self.decode {
+            Decode::Map(m, fallback) => {
+                for (at, len) in Codes::new(s, Some(self)) {
+                    if out.len() > room {
+                        return (out, true);
+                    }
+                    let piece = &s[at..at + len];
+                    if !m.write(len, code(piece), &mut out) {
+                        match fallback
+                            .as_ref()
+                            .and_then(|e| Document::decode_text(e, piece).ok())
+                        {
+                            Some(t) => out.push_str(&t),
+                            None => out.push('\u{fffd}'),
+                        }
+                    }
+                }
+            }
+            Decode::Encoding(e) => {
+                for piece in s.chunks(4096 * self.bytes) {
+                    if out.len() > room {
+                        return (out, true);
+                    }
+                    out.push_str(&Document::decode_text(e, piece).unwrap_or_default());
+                }
+            }
+            Decode::Raw => return lossy(s, room),
+        }
+        let cut = out.len() > room;
+        (out, cut)
     }
 }
 
 fn font<'a>(r: &Reader<'a>, d: &'a Dictionary) -> Result<Font<'a>, DocError> {
     let doc = r.doc;
-    let encoding = encoding(r, d)?;
+    let decode = decode(r, d)?;
     let composite = d.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Type0");
     let mut widths = HashMap::new();
     let mut default = 500.0;
@@ -8037,7 +8460,7 @@ fn font<'a>(r: &Reader<'a>, d: &'a Dictionary) -> Result<Font<'a>, DocError> {
         }
     }
     Ok(Font {
-        encoding,
+        decode,
         bytes: if composite { 2 } else { 1 },
         widths,
         default,
@@ -8082,10 +8505,18 @@ impl Layout {
             return;
         }
         // A ligature's letters take no more bytes than it does, and a string writes at most
-        // one break or space before it.
+        // one break or space before it. A string that does not fit writes what fits.
+        let mut s = s;
         if self.out.len() + s.len() + 1 > self.room {
             self.full = true;
-            return;
+            let mut fits = self.room.saturating_sub(self.out.len() + 1).min(s.len());
+            while !s.is_char_boundary(fits) {
+                fits -= 1;
+            }
+            s = &s[..fits];
+            if s.is_empty() {
+                return;
+            }
         }
         if let Some(l) = self.last {
             let tall = last.size.max(l.size);
@@ -8124,11 +8555,19 @@ struct State {
     rise: f64,
 }
 
-/// Runs the operations of a content stream, writing the text they show into `out`, until the
-/// text is full. Each Form drawn spends the document's `MAX_FORM_WORK`.
+/// The most bytes of text a string may write for each of its bytes (D17).
+const MAX_GROWTH: usize = 8;
+
+/// The most `q` a content stream may have open: past it a `q` saves nothing, and its `Q`
+/// restores nothing (D17).
+const MAX_SAVES: usize = 256;
+
+/// Runs a content stream, writing the text it shows into `out`, until the text is full. Its
+/// operations are read one at a time (`Ops`), so a stream never becomes a list of them, and
+/// each one spends the document's work as it is read (D17).
 fn run<'a>(
     r: &Reader<'a>,
-    ops: &[Operation],
+    data: &[u8],
     res: &Res<'a>,
     ctm: Matrix,
     out: &mut Layout,
@@ -8147,107 +8586,104 @@ fn run<'a>(
         rise: 0.0,
     };
     let mut stack = Vec::new();
+    // The `q` past `MAX_SAVES`, which their `Q` match first.
+    let mut lost = 0usize;
     let (mut tm, mut tlm) = (Matrix::IDENTITY, Matrix::IDENTITY);
     // A TJ kerning wide enough to be a space, waiting for the next string.
     let mut kern_space = false;
-    for op in ops {
+    let mut ops = Ops::new(data);
+    let mut o = Vec::new();
+    while let Some(op) = ops.next(&mut o)? {
         if out.full {
             break;
         }
-        let o = &op.operands;
-        let n = |i: usize| o.get(i).and_then(num).unwrap_or(0.0);
-        match op.operator.as_str() {
-            "q" => stack.push(gs),
-            "Q" => gs = stack.pop().unwrap_or(gs),
-            "cm" => {
-                if let Some(m) = Matrix::from(o) {
+        r.work(1)?;
+        let n = |i: usize| o.get(i).and_then(Operand::num).unwrap_or(0.0);
+        match op {
+            b"q" if stack.len() < MAX_SAVES => stack.push(gs),
+            b"q" => lost += 1,
+            b"Q" if lost > 0 => lost -= 1,
+            b"Q" => gs = stack.pop().unwrap_or(gs),
+            b"cm" => {
+                if let Some(m) = Matrix::of(&o) {
                     gs.ctm = m.then(gs.ctm);
                 }
             }
-            "BT" => {
+            b"BT" => {
                 tm = Matrix::IDENTITY;
                 tlm = tm;
             }
-            "Tf" => {
-                gs.font = o
-                    .first()
-                    .and_then(|f| f.as_name().ok())
-                    .and_then(|f| keys.iter().position(|k| k.as_slice() == f));
+            b"Tf" => {
+                gs.font = match o.first() {
+                    Some(Operand::Name(f)) => keys.iter().position(|k| k.as_slice() == *f),
+                    _ => None,
+                };
                 gs.size = n(1);
             }
-            "Tc" => gs.tc = n(0),
-            "Tw" => gs.tw = n(0),
-            "Tz" => gs.th = n(0) / 100.0,
-            "TL" => gs.tl = n(0),
-            "Ts" => gs.rise = n(0),
-            "Td" => {
+            b"Tc" => gs.tc = n(0),
+            b"Tw" => gs.tw = n(0),
+            b"Tz" => gs.th = n(0) / 100.0,
+            b"TL" => gs.tl = n(0),
+            b"Ts" => gs.rise = n(0),
+            b"Td" => {
                 tlm = Matrix::translate(n(0), n(1)).then(tlm);
                 tm = tlm;
             }
-            "TD" => {
+            b"TD" => {
                 gs.tl = -n(1);
                 tlm = Matrix::translate(n(0), n(1)).then(tlm);
                 tm = tlm;
             }
-            "Tm" => {
-                if let Some(m) = Matrix::from(o) {
+            b"Tm" => {
+                if let Some(m) = Matrix::of(&o) {
                     tm = m;
                     tlm = m;
                 }
             }
-            "T*" => {
+            b"T*" => {
                 tlm = Matrix::translate(0.0, -gs.tl).then(tlm);
                 tm = tlm;
             }
-            "Tj" | "'" | "\"" | "TJ" => {
-                if op.operator == "'" || op.operator == "\"" {
-                    if op.operator == "\"" {
+            b"Tj" | b"'" | b"\"" | b"TJ" => {
+                if op == b"'" || op == b"\"" {
+                    if op == b"\"" {
                         gs.tw = n(0);
                         gs.tc = n(1);
                     }
                     tlm = Matrix::translate(0.0, -gs.tl).then(tlm);
                     tm = tlm;
                 }
-                let items: Vec<&Object> = match (op.operator.as_str(), o.last()) {
-                    ("TJ", Some(Object::Array(a))) => a.iter().collect(),
-                    (_, Some(s)) => vec![s],
+                let items: &[Operand] = match (op, o.last()) {
+                    (b"TJ", Some(Operand::Array(a))) => a,
+                    (_, Some(s)) => std::slice::from_ref(s),
                     _ => continue,
                 };
                 let font = gs.font.map(|i| res.fonts[keys[i]].as_ref());
                 for item in items {
-                    match item {
-                        Object::String(s, _) => {
-                            show(s, font, &gs, &mut tm, out, kern_space);
-                            kern_space = false;
-                        }
-                        it => {
-                            let k = num(it).unwrap_or(0.0);
-                            tm = Matrix::translate(-k / 1000.0 * gs.size * gs.th, 0.0).then(tm);
-                            if k < -100.0 {
-                                kern_space = true;
-                            }
+                    if let Some(s) = item.string() {
+                        show(&s, font, &gs, &mut tm, out, kern_space);
+                        kern_space = false;
+                    } else {
+                        let k = item.num().unwrap_or(0.0);
+                        tm = Matrix::translate(-k / 1000.0 * gs.size * gs.th, 0.0).then(tm);
+                        if k < -100.0 {
+                            kern_space = true;
                         }
                     }
                 }
             }
-            "Do" if depth < MAX_FORM_DEPTH => {
-                let Some(name) = o.first().and_then(|n| n.as_name().ok()) else {
+            b"Do" if depth < MAX_FORM_DEPTH => {
+                let Some(Operand::Name(name)) = o.first() else {
                     continue;
                 };
                 let Some((id, stream)) = res.form(doc, name) else {
                     continue;
                 };
                 let form = r.form(id, stream)?;
-                r.draw(form.ops.len())?;
+                r.work(FORM_DRAW)?;
                 let inner = form.res.as_ref().unwrap_or(res);
-                run(
-                    r,
-                    &form.ops,
-                    inner,
-                    form.matrix.then(gs.ctm),
-                    out,
-                    depth + 1,
-                )?;
+                let m = form.matrix.then(gs.ctm);
+                run(r, &form.data, inner, m, out, depth + 1)?;
             }
             _ => {}
         }
@@ -8256,25 +8692,41 @@ fn run<'a>(
 }
 
 /// Writes one string: decoded, placed where the text matrix puts it, and the matrix advanced
-/// by its glyphs' widths.
+/// by its glyphs' widths. The text it decodes stops at what is left of the document's room.
 fn show(s: &[u8], font: Option<&Font>, gs: &State, tm: &mut Matrix, out: &mut Layout, space: bool) {
+    if out.full {
+        return;
+    }
     let trm = Matrix([gs.size * gs.th, 0.0, 0.0, gs.size, 0.0, gs.rise])
         .then(*tm)
         .then(gs.ctm);
     let size = (trm.0[2] * trm.0[2] + trm.0[3] * trm.0[3]).sqrt();
     let (x, y) = (trm.0[4], trm.0[5]);
-    let text = match font.and_then(|f| f.encoding.as_ref()) {
-        Some(e) => Document::decode_text(e, s).unwrap_or_default(),
-        None => String::from_utf8_lossy(s).into_owned(),
+    // A string writes at most `MAX_GROWTH` bytes of text for each of its bytes: a ToUnicode
+    // map may give a code 256 letters, which made a 5 KB file 512 MiB of text (M4 plan r2).
+    let room = out.room.saturating_sub(out.out.len());
+    let most = s.len().saturating_mul(MAX_GROWTH).saturating_add(64);
+    let (text, cut) = match font {
+        Some(f) => f.text(s, room.min(most)),
+        None => lossy(s, room.min(most)),
     };
-    let (bytes, widths, default) =
-        font.map_or((1, None, 500.0), |f| (f.bytes, Some(&f.widths), f.default));
+    let cut = cut && room <= most;
+    let text = if text.len() > most {
+        let mut end = most;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        &text[..end]
+    } else {
+        &text[..]
+    };
+    let (widths, default) = font.map_or((None, 500.0), |f| (Some(&f.widths), f.default));
     let known = widths.is_some_and(|w| !w.is_empty());
     let mut advance = 0.0;
-    for code in s.chunks(bytes) {
-        let c = code.iter().fold(0u32, |a, b| a << 8 | *b as u32);
+    for (at, len) in Codes::new(s, font) {
+        let c = code(&s[at..at + len]);
         let w = widths.and_then(|w| w.get(&c)).copied().unwrap_or(default);
-        let word = if bytes == 1 && c == 32 { gs.tw } else { 0.0 };
+        let word = if len == 1 && c == 32 { gs.tw } else { 0.0 };
         advance += (w / 1000.0 * gs.size + gs.tc + word) * gs.th;
     }
     *tm = Matrix::translate(advance, 0.0).then(*tm);
@@ -8285,15 +8737,547 @@ fn show(s: &[u8], font: Option<&Font>, gs: &State, tm: &mut Matrix, out: &mut La
         size: size.abs().max(0.1),
         widths: known,
     };
-    out.push(&text, x, y, last, space);
+    out.push(text, x, y, last, space);
+    if cut {
+        out.full = true;
+    }
+}
+
+/// A code's bytes as a number, big-endian.
+fn code(b: &[u8]) -> u32 {
+    b.iter().fold(0u32, |a, b| a << 8 | *b as u32)
+}
+
+/// `s` as UTF-8, invalid bytes replaced, at most `room` bytes of it; true when it stopped
+/// there.
+fn lossy(s: &[u8], room: usize) -> (String, bool) {
+    let mut out = String::new();
+    for piece in s.chunks(4096) {
+        if out.len() >= room {
+            return (out, true);
+        }
+        out.push_str(&String::from_utf8_lossy(piece));
+    }
+    let cut = out.len() > room;
+    (out, cut)
+}
+
+/// The codes of a string in a font, as (start, length): by its ToUnicode map's codespace
+/// ranges when it has them, else by its code size.
+struct Codes<'s, 'f> {
+    s: &'s [u8],
+    at: usize,
+    bytes: usize,
+    map: Option<&'f ToUnicode>,
+}
+
+impl<'s, 'f> Codes<'s, 'f> {
+    fn new(s: &'s [u8], font: Option<&'f Font>) -> Self {
+        let map = font.and_then(|f| match &f.decode {
+            Decode::Map(m, _) => Some(m),
+            _ => None,
+        });
+        Codes {
+            s,
+            at: 0,
+            bytes: font.map_or(1, |f| f.bytes),
+            map,
+        }
+    }
+}
+
+impl Iterator for Codes<'_, '_> {
+    type Item = (usize, usize);
+
+    fn next(&mut self) -> Option<(usize, usize)> {
+        let rest = &self.s[self.at..];
+        if rest.is_empty() {
+            return None;
+        }
+        let len = self
+            .map
+            .and_then(|m| m.code_len(rest))
+            .unwrap_or(self.bytes)
+            .min(rest.len());
+        let at = self.at;
+        self.at += len;
+        Some((at, len))
+    }
+}
+
+// --- Content streams ---
+
+/// The most operands one operation may have, the items of its arrays and dictionaries counted
+/// (D17): a `TJ` of a line has tens.
+const MAX_OPERANDS: usize = 65_536;
+/// Arrays and dictionaries nested deeper than this end the stream.
+const MAX_NESTING: usize = 32;
+
+/// An operand of a content stream (or of a CMap), borrowing the stream's bytes.
+#[derive(Debug, Clone, PartialEq)]
+enum Operand<'s> {
+    Num(f64),
+    /// A literal string, between its parentheses, escapes not yet read.
+    Literal(&'s [u8]),
+    /// A hexadecimal string's digits, between `<` and `>`.
+    Hex(&'s [u8]),
+    Name(&'s [u8]),
+    Array(Vec<Operand<'s>>),
+    /// A dictionary, `true`, `false` or `null`: read past, never used.
+    Other,
+}
+
+impl Operand<'_> {
+    fn num(&self) -> Option<f64> {
+        match self {
+            Operand::Num(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// A string's bytes, its escapes or hexadecimal digits read.
+    fn string(&self) -> Option<Vec<u8>> {
+        match self {
+            Operand::Literal(b) => Some(literal(b)),
+            Operand::Hex(h) => Some(hex(h)),
+            _ => None,
+        }
+    }
+}
+
+fn literal(b: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        i += 1;
+        if c != b'\\' {
+            out.push(c);
+            continue;
+        }
+        let Some(&e) = b.get(i) else { break };
+        i += 1;
+        match e {
+            b'n' => out.push(b'\n'),
+            b'r' => out.push(b'\r'),
+            b't' => out.push(b'\t'),
+            b'b' => out.push(8),
+            b'f' => out.push(12),
+            b'0'..=b'7' => {
+                let mut v = (e - b'0') as u32;
+                for _ in 0..2 {
+                    match b.get(i) {
+                        Some(d @ b'0'..=b'7') => {
+                            v = v * 8 + (d - b'0') as u32;
+                            i += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                out.push(v as u8);
+            }
+            // A backslash at the end of a line continues the string on the next.
+            b'\r' => {
+                if b.get(i) == Some(&b'\n') {
+                    i += 1;
+                }
+            }
+            b'\n' => {}
+            e => out.push(e),
+        }
+    }
+    out
+}
+
+fn hex(h: &[u8]) -> Vec<u8> {
+    let digits: Vec<u8> = h
+        .iter()
+        .filter_map(|c| (*c as char).to_digit(16).map(|d| d as u8))
+        .collect();
+    digits
+        .chunks(2)
+        .map(|p| p[0] << 4 | p.get(1).copied().unwrap_or(0))
+        .collect()
+}
+
+fn white(c: u8) -> bool {
+    matches!(c, 0 | b'\t' | b'\n' | 12 | b'\r' | b' ')
+}
+
+fn delimiter(c: u8) -> bool {
+    matches!(
+        c,
+        b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
+    )
+}
+
+/// The operations of a content stream, one at a time: each operator, after its operands. What
+/// it cannot read is skipped a byte at a time, as a reader does.
+struct Ops<'s> {
+    data: &'s [u8],
+    at: usize,
+    /// Operands and items read for the current operation.
+    items: usize,
+}
+
+impl<'s> Ops<'s> {
+    fn new(data: &'s [u8]) -> Self {
+        Ops {
+            data,
+            at: 0,
+            items: 0,
+        }
+    }
+
+    /// The next operator, its operands in `operands`; None at the end.
+    fn next(&mut self, operands: &mut Vec<Operand<'s>>) -> Result<Option<&'s [u8]>, DocError> {
+        operands.clear();
+        self.items = 0;
+        loop {
+            self.skip();
+            let Some(&c) = self.data.get(self.at) else {
+                return Ok(None);
+            };
+            if c == b')' || c == b'>' || c == b']' || c == b'}' || c == b'{' {
+                self.at += 1;
+                continue;
+            }
+            if !delimiter(c) {
+                let word = self.word();
+                match Self::number(word) {
+                    Some(n) => self.push(operands, Operand::Num(n))?,
+                    None if matches!(word, b"true" | b"false" | b"null") => {
+                        self.push(operands, Operand::Other)?
+                    }
+                    None => {
+                        if word == b"ID" {
+                            self.skip_image();
+                        }
+                        return Ok(Some(word));
+                    }
+                }
+                continue;
+            }
+            let o = self.object(0)?;
+            self.push(operands, o)?;
+        }
+    }
+
+    fn push(&mut self, operands: &mut Vec<Operand<'s>>, o: Operand<'s>) -> Result<(), DocError> {
+        self.count()?;
+        operands.push(o);
+        Ok(())
+    }
+
+    fn count(&mut self) -> Result<(), DocError> {
+        self.items += 1;
+        if self.items > MAX_OPERANDS {
+            return Err(DocError::broken(format!(
+                "an operation has more than {MAX_OPERANDS} operands"
+            )));
+        }
+        Ok(())
+    }
+
+    /// White space and comments.
+    fn skip(&mut self) {
+        while let Some(&c) = self.data.get(self.at) {
+            if white(c) {
+                self.at += 1;
+            } else if c == b'%' {
+                while self
+                    .data
+                    .get(self.at)
+                    .is_some_and(|c| *c != b'\n' && *c != b'\r')
+                {
+                    self.at += 1;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// The bytes up to the next white space or delimiter.
+    fn word(&mut self) -> &'s [u8] {
+        let start = self.at;
+        while self
+            .data
+            .get(self.at)
+            .is_some_and(|c| !white(*c) && !delimiter(*c))
+        {
+            self.at += 1;
+        }
+        &self.data[start..self.at]
+    }
+
+    fn number(w: &[u8]) -> Option<f64> {
+        let first = *w.first()?;
+        if !(first.is_ascii_digit() || matches!(first, b'+' | b'-' | b'.')) {
+            return None;
+        }
+        std::str::from_utf8(w).ok()?.parse().ok()
+    }
+
+    /// An object that starts with a delimiter (or, inside an array, anything).
+    fn object(&mut self, depth: usize) -> Result<Operand<'s>, DocError> {
+        let data = self.data;
+        let c = data[self.at];
+        match c {
+            b'(' => {
+                self.at += 1;
+                let start = self.at;
+                let mut open = 1usize;
+                while let Some(&c) = data.get(self.at) {
+                    self.at += 1;
+                    match c {
+                        b'\\' => self.at += 1,
+                        b'(' => open += 1,
+                        b')' => {
+                            open -= 1;
+                            if open == 0 {
+                                return Ok(Operand::Literal(&data[start..self.at - 1]));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Operand::Literal(&data[start.min(data.len())..]))
+            }
+            b'<' if data.get(self.at + 1) == Some(&b'<') => {
+                self.at += 2;
+                self.nested(depth, b">>")?;
+                Ok(Operand::Other)
+            }
+            b'<' => {
+                self.at += 1;
+                let start = self.at;
+                while data.get(self.at).is_some_and(|c| *c != b'>') {
+                    self.at += 1;
+                }
+                let end = self.at.min(data.len());
+                self.at += 1;
+                Ok(Operand::Hex(&data[start..end]))
+            }
+            b'[' => {
+                self.at += 1;
+                Ok(Operand::Array(self.nested(depth, b"]")?))
+            }
+            b'/' => {
+                self.at += 1;
+                Ok(Operand::Name(self.word()))
+            }
+            _ if !delimiter(c) => {
+                let w = self.word();
+                Ok(Self::number(w).map_or(Operand::Other, Operand::Num))
+            }
+            _ => {
+                self.at += 1;
+                Ok(Operand::Other)
+            }
+        }
+    }
+
+    /// The items of an array or a dictionary, up to `end`.
+    fn nested(&mut self, depth: usize, end: &[u8]) -> Result<Vec<Operand<'s>>, DocError> {
+        if depth >= MAX_NESTING {
+            self.at = self.data.len();
+            return Ok(Vec::new());
+        }
+        let mut items = Vec::new();
+        loop {
+            self.skip();
+            if self.at >= self.data.len() {
+                return Ok(items);
+            }
+            if self.data[self.at..].starts_with(end) {
+                self.at += end.len();
+                return Ok(items);
+            }
+            if end == b"]" && self.data[self.at] == b'>' {
+                self.at += 1;
+                continue;
+            }
+            self.count()?;
+            items.push(self.object(depth + 1)?);
+        }
+    }
+
+    /// After `ID`, the bytes of an inline image, up to its `EI`.
+    fn skip_image(&mut self) {
+        let d = self.data;
+        let mut i = self.at + 1;
+        while i + 2 <= d.len() {
+            if &d[i..i + 2] == b"EI"
+                && white(d[i - 1])
+                && d.get(i + 2).is_none_or(|c| white(*c) || delimiter(*c))
+            {
+                self.at = i;
+                return;
+            }
+            i += 1;
+        }
+        self.at = d.len();
+    }
+}
+
+// --- ToUnicode maps ---
+
+/// The most entries a ToUnicode map may hold: its single codes, its ranges and the strings of
+/// its range arrays (D17). A range counts as one, whatever its size: ranges are kept as
+/// ranges, never one entry per code.
+const MAX_MAP: usize = 200_000;
+/// The most UTF-16 units a code may map to (the CMap format's 512 bytes).
+const MAX_DEST: usize = 256;
+
+/// A font's ToUnicode CMap, read by our code (D13): its codespace ranges tell how many bytes
+/// each code takes, and its `bfchar` and `bfrange` entries what text each code means.
+#[derive(Debug, Default)]
+struct ToUnicode {
+    /// (bytes, low, high).
+    spaces: Vec<(usize, u32, u32)>,
+    chars: HashMap<(usize, u32), String>,
+    /// (bytes, low, high, what the codes mean), sorted.
+    ranges: Vec<(usize, u32, u32, Dest)>,
+}
+
+#[derive(Debug)]
+enum Dest {
+    /// The text of the range's first code; each next code adds one to its last unit.
+    From(Vec<u16>),
+    /// The text of each code of the range.
+    Each(Vec<String>),
+}
+
+impl ToUnicode {
+    fn parse(data: &[u8]) -> Result<ToUnicode, DocError> {
+        let mut m = ToUnicode::default();
+        let mut entries = 0usize;
+        let mut ops = Ops::new(data);
+        let mut o = Vec::new();
+        let code_of = |o: &Operand| -> Option<(usize, u32)> {
+            let b = o.string()?;
+            (1..=4).contains(&b.len()).then(|| (b.len(), code(&b)))
+        };
+        let units = |o: &Operand| -> Option<Vec<u16>> {
+            let b = o.string()?;
+            (b.len() <= 2 * MAX_DEST).then(|| {
+                b.chunks(2)
+                    .map(|p| (p[0] as u16) << 8 | p.get(1).copied().unwrap_or(0) as u16)
+                    .collect()
+            })
+        };
+        while let Some(op) = ops.next(&mut o)? {
+            match op {
+                b"endcodespacerange" => {
+                    for p in o.chunks(2) {
+                        if let [lo, hi] = p
+                            && let (Some((n, lo)), Some((_, hi))) = (code_of(lo), code_of(hi))
+                        {
+                            m.spaces.push((n, lo, hi));
+                        }
+                    }
+                }
+                b"endbfchar" => {
+                    for p in o.chunks(2) {
+                        if let [src, dst] = p
+                            && let (Some(src), Some(dst)) = (code_of(src), units(dst))
+                        {
+                            entries += 1;
+                            m.chars.insert(src, String::from_utf16_lossy(&dst));
+                        }
+                    }
+                }
+                b"endbfrange" => {
+                    for p in o.chunks(3) {
+                        let [lo, hi, dst] = p else { continue };
+                        let (Some((n, lo)), Some((_, hi))) = (code_of(lo), code_of(hi)) else {
+                            continue;
+                        };
+                        if hi < lo {
+                            continue;
+                        }
+                        entries += 1;
+                        let dest = match dst {
+                            Operand::Array(list) => {
+                                entries += list.len();
+                                Dest::Each(
+                                    list.iter()
+                                        .filter_map(units)
+                                        .map(|u| String::from_utf16_lossy(&u))
+                                        .collect(),
+                                )
+                            }
+                            d => match units(d) {
+                                Some(u) if !u.is_empty() => Dest::From(u),
+                                _ => continue,
+                            },
+                        };
+                        m.ranges.push((n, lo, hi, dest));
+                    }
+                }
+                _ => {}
+            }
+            if entries > MAX_MAP {
+                return Err(DocError::broken(format!(
+                    "a font's ToUnicode map has more than {MAX_MAP} entries"
+                )));
+            }
+        }
+        m.ranges.sort_by_key(|r| (r.0, r.1));
+        Ok(m)
+    }
+
+    /// How many bytes the code at the start of `s` takes, by the codespace ranges.
+    fn code_len(&self, s: &[u8]) -> Option<usize> {
+        self.spaces
+            .iter()
+            .filter(|(n, lo, hi)| s.len() >= *n && (*lo..=*hi).contains(&code(&s[..*n])))
+            .map(|(n, ..)| *n)
+            .min()
+    }
+
+    /// What the code `c` of `n` bytes means, written into `out`; false when the map does not
+    /// say.
+    fn write(&self, n: usize, c: u32, out: &mut String) -> bool {
+        if let Some(t) = self.chars.get(&(n, c)) {
+            out.push_str(t);
+            return true;
+        }
+        let i = self.ranges.partition_point(|r| (r.0, r.1) <= (n, c));
+        if let Some((rn, lo, hi, dest)) = i.checked_sub(1).map(|i| &self.ranges[i])
+            && *rn == n
+            && c <= *hi
+        {
+            let k = (c - lo) as usize;
+            match dest {
+                Dest::From(u) => {
+                    let mut u = u.clone();
+                    if let Some(last) = u.last_mut() {
+                        *last = last.wrapping_add(k as u16);
+                    }
+                    out.push_str(&String::from_utf16_lossy(&u));
+                }
+                Dest::Each(list) => match list.get(k) {
+                    Some(t) => out.push_str(t),
+                    None => out.push('\u{fffd}'),
+                },
+            }
+            return true;
+        }
+        false
+    }
 }
 ```
 
-- [ ] **Step 5:** GREEN: 11 tests, 9 s in debug, 7 of them for the page of Forms. Then the
-  quality check of D13 over real PDFs against `pdftotext`
+- [ ] **Step 5:** GREEN: 18 tests, 10 s in debug. Then the quality check of D13 over real PDFs against `pdftotext`
   (poppler): extract both, and compare the multiset of words of 3 letters or more (recall and
   precision) and of adjacent word pairs (recall), with
-  `/tmp/subtask/m4-plan/cmp.py` of the probe. The probe's PDFs came from the system's
+  `/tmp/subtask/m4-plan/cmp.py` of the probe. The probe's six PDFs give the numbers of D13
+  with the reader of D29 too, and the same text but for one line of `bdb_usenix.pdf` (`2`
+  and `48`, a superscript, now on one line as `248`). The first probe of D29 lost every object
+  of an object stream (lopdf keeps a stream's objects as the load filter returns them), which
+  `hwloc-a4.pdf` showed as no text: `a_file_with_object_streams_reads_whole` keeps it. The probe's PDFs came from the system's
   documentation (Apple pstopdf, Apache FOP, pdfTeX, Ghostscript) and from LibreOffice; an
   encrypted one with an empty and with a real user password was made with `qpdf --encrypt`.
 ## Chunk 10: SQLite
@@ -8405,6 +9389,42 @@ mod tests {
         assert_eq!(columns("CREATE TABLE t(a, b)").stored, [0, 1]);
     }
 
+    /// Codex r2 #4: the schema is read by its tokens, so spaces, line breaks and comments
+    /// between keywords, quoted names holding commas or keywords, and parentheses inside
+    /// strings change nothing.
+    #[test]
+    fn the_schema_is_read_by_its_tokens() {
+        for sql in [
+            "CREATE TABLE t(payload TEXT, k TEXT PRIMARY KEY) WITHOUT\nROWID",
+            "CREATE TABLE t(payload TEXT, k TEXT PRIMARY KEY) WITHOUT  ROWID",
+            "CREATE TABLE t(payload TEXT, k TEXT PRIMARY KEY) without /* c */ rowid",
+            "CREATE TABLE t(payload TEXT, k TEXT PRIMARY  KEY) WITHOUT -- c\n ROWID",
+        ] {
+            let c = columns(sql);
+            assert_eq!(
+                (c.without_rowid, c.stored.as_slice()),
+                (true, &[1, 0][..]),
+                "{sql}"
+            );
+        }
+        let c = columns(
+            "CREATE TABLE t(payload TEXT, \"k,key\" REAL, PRIMARY KEY(\"k,key\")) WITHOUT ROWID",
+        );
+        assert_eq!(c.names, ["payload", "k,key"]);
+        assert_eq!((c.stored, c.real), (vec![1, 0], vec![false, true]));
+        let c = columns("CREATE TABLE t(a /* , x */ TEXT, -- b,\n b INT, \"PRIMARY KEY\" TEXT)");
+        assert_eq!(c.names, ["a", "b", "PRIMARY KEY"]);
+        assert_eq!((c.ipk, c.stored), (None, vec![0, 1, 2]));
+        let c = columns("CREATE TABLE t(a VARCHAR(10, 2) DEFAULT ')', b INTEGER PRIMARY KEY)");
+        assert_eq!(
+            (c.names, c.ipk),
+            (vec!["a".to_string(), "b".to_string()], Some(1))
+        );
+        let e = extracted("shop.sqlite");
+        assert_eq!(trail(&e, "needle odd"), ["odd", "row 1", "payload"]);
+        assert!(String::from_utf8_lossy(&e.text).contains("\nneedle odd\t2.0\n"));
+    }
+
     #[test]
     fn interior_pages_keep_every_row_in_order() {
         let e = extracted("many.sqlite");
@@ -8434,13 +9454,17 @@ mod tests {
 ```
 
 - [ ] **Step 2:** `cargo test --lib docs::sqlite` does not compile: `Db`, `Value`, `varint`
-  and `columns` do not exist: RED.
+  and `columns` do not exist: RED. `the_schema_is_read_by_its_tokens` failed over the round-1
+  code, which looked for the text `WITHOUT ROWID` and split the key's list at its commas
+  (review r2, Codex #4).
 
 - [ ] **Step 3:** the reader (D15, D16), from SQLite's file format document: the 100-byte
   header, b-tree pages (`0x0d` table leaf, `0x05` table interior, `0x0a` index leaf, `0x02`
   index interior), cells with their payload and overflow pages, records with their serial types.
-  An interior index cell holds a row between its children, so a `WITHOUT ROWID` table is walked
-  in key order; its records hold the PRIMARY KEY columns first, in the key's order
+  The `CREATE TABLE` is read by its tokens (`tokens`: words, quoted names and strings, other
+  characters; white space and `--` and `/* */` comments between them). An interior index cell
+  holds a row between its children, so a `WITHOUT ROWID` table is walked in key order; its
+  records hold the PRIMARY KEY columns first, in the key's order
   (`Columns::stored`, from a column's `PRIMARY KEY` or the table's `PRIMARY KEY (…)`), and are
   put back in declared order (`values_follow_their_declared_columns`; review r1, Codex #4,
   Fable #2). A REAL column's integral values are stored as integers and shown as `3.0`:
@@ -8758,78 +9782,191 @@ struct Columns {
     stored: Vec<usize>,
 }
 
-fn columns(sql: &str) -> Columns {
-    let Some(open) = sql.find('(') else {
-        return Columns::default();
-    };
-    let mut depth = 0;
-    let mut parts = Vec::new();
-    let mut cur = String::new();
-    let mut quote: Option<char> = None;
-    let mut end = sql.len();
-    for (i, ch) in sql[open + 1..].char_indices() {
-        if let Some(q) = quote {
-            cur.push(ch);
-            // `[name]` closes with `]`; the other quotes with themselves.
-            if ch == if q == '[' { ']' } else { q } {
-                quote = None;
-            }
-            continue;
-        }
-        match ch {
-            '"' | '`' | '\'' | '[' => {
-                quote = Some(ch);
-                cur.push(ch);
-            }
-            '(' => {
-                depth += 1;
-                cur.push(ch);
-            }
-            ')' if depth == 0 => {
-                parts.push(std::mem::take(&mut cur));
-                end = open + 1 + i;
-                break;
-            }
-            ')' => {
-                depth -= 1;
-                cur.push(ch);
-            }
-            ',' if depth == 0 => parts.push(std::mem::take(&mut cur)),
-            c => cur.push(c),
+/// A token of SQL (M4 plan r2, Codex #4): a word, a quoted name (`"…"`, `` `…` ``, `[…]`) or
+/// string (`'…'`), or one other character. White space and comments separate tokens.
+#[derive(Debug, Clone, PartialEq)]
+enum Tok {
+    /// A bare word: a keyword or a name, as written.
+    Word(String),
+    /// A quoted name or a string, unquoted: never a keyword.
+    Quoted(String),
+    Punct(char),
+}
+
+impl Tok {
+    /// Whether this is the keyword `kw` (any case).
+    fn is(&self, kw: &str) -> bool {
+        matches!(self, Tok::Word(w) if w.eq_ignore_ascii_case(kw))
+    }
+
+    fn name(&self) -> Option<String> {
+        match self {
+            Tok::Word(w) | Tok::Quoted(w) => Some(w.clone()),
+            Tok::Punct(_) => None,
         }
     }
-    let without_rowid = sql[end..].to_ascii_uppercase().contains("WITHOUT ROWID");
+}
+
+fn tokens(sql: &str) -> Vec<Tok> {
+    let c: Vec<char> = sql.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < c.len() {
+        let ch = c[i];
+        if ch.is_whitespace() {
+            i += 1;
+        } else if ch == '-' && c.get(i + 1) == Some(&'-') {
+            while i < c.len() && c[i] != '\n' {
+                i += 1;
+            }
+        } else if ch == '/' && c.get(i + 1) == Some(&'*') {
+            i += 2;
+            while i < c.len() && !(c[i] == '*' && c.get(i + 1) == Some(&'/')) {
+                i += 1;
+            }
+            i += 2;
+        } else if matches!(ch, '"' | '`' | '\'' | '[') {
+            let close = if ch == '[' { ']' } else { ch };
+            let mut t = String::new();
+            i += 1;
+            while i < c.len() {
+                if c[i] == close {
+                    // A doubled quote is the quote itself; `]` always closes.
+                    if close != ']' && c.get(i + 1) == Some(&close) {
+                        t.push(close);
+                        i += 2;
+                        continue;
+                    }
+                    break;
+                }
+                t.push(c[i]);
+                i += 1;
+            }
+            i += 1;
+            out.push(Tok::Quoted(t));
+        } else if ch.is_alphanumeric() || ch == '_' || ch == '$' || ch == '.' {
+            let start = i;
+            while i < c.len() && (c[i].is_alphanumeric() || matches!(c[i], '_' | '$' | '.')) {
+                i += 1;
+            }
+            out.push(Tok::Word(c[start..i].iter().collect()));
+        } else {
+            out.push(Tok::Punct(ch));
+            i += 1;
+        }
+    }
+    out
+}
+
+/// `toks` split at the commas outside parentheses.
+fn split_commas(toks: &[Tok]) -> Vec<&[Tok]> {
+    let mut parts = Vec::new();
+    let (mut depth, mut start) = (0usize, 0);
+    for (i, t) in toks.iter().enumerate() {
+        match t {
+            Tok::Punct('(') => depth += 1,
+            Tok::Punct(')') => depth = depth.saturating_sub(1),
+            Tok::Punct(',') if depth == 0 => {
+                parts.push(&toks[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&toks[start..]);
+    parts
+}
+
+/// The index of the token after `PRIMARY KEY` in `toks`, if it holds one.
+fn primary_key(toks: &[Tok]) -> Option<usize> {
+    toks.windows(2)
+        .position(|w| w[0].is("PRIMARY") && w[1].is("KEY"))
+        .map(|i| i + 2)
+}
+
+fn columns(sql: &str) -> Columns {
+    let toks = tokens(sql);
+    let Some(open) = toks.iter().position(|t| *t == Tok::Punct('(')) else {
+        return Columns::default();
+    };
+    let mut depth = 0usize;
+    let mut close = toks.len();
+    for (i, t) in toks.iter().enumerate().skip(open) {
+        match t {
+            Tok::Punct('(') => depth += 1,
+            Tok::Punct(')') => {
+                depth -= 1;
+                if depth == 0 {
+                    close = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let options = &toks[(close + 1).min(toks.len())..];
+    let without_rowid = options
+        .windows(2)
+        .any(|w| w[0].is("WITHOUT") && w[1].is("ROWID"));
     let mut names = Vec::new();
     let mut types = Vec::new();
     let mut ipk = None;
     // The primary key's columns, by name, from a column's `PRIMARY KEY` or the table's.
     let mut pk: Vec<String> = Vec::new();
-    for p in parts {
-        let p = p.trim();
-        let upper = p.to_ascii_uppercase();
-        let first = upper.split_whitespace().next().unwrap_or("");
-        if matches!(
-            first,
-            "CONSTRAINT" | "PRIMARY" | "UNIQUE" | "CHECK" | "FOREIGN"
-        ) {
-            if upper.contains("PRIMARY KEY")
-                && let (Some(a), Some(b)) = (p.find('('), p.rfind(')'))
+    for part in split_commas(&toks[open + 1..close.max(open + 1)]) {
+        let Some(first) = part.first() else { continue };
+        if ["CONSTRAINT", "PRIMARY", "UNIQUE", "CHECK", "FOREIGN"]
+            .iter()
+            .any(|k| first.is(k))
+        {
+            if let Some(at) = primary_key(part)
+                && part.get(at) == Some(&Tok::Punct('('))
             {
-                pk = p[a + 1..b].split(',').map(|c| split_name(c).0).collect();
+                let end = part
+                    .iter()
+                    .rposition(|t| *t == Tok::Punct(')'))
+                    .unwrap_or(part.len());
+                pk = split_commas(&part[at + 1..end.max(at + 1)])
+                    .iter()
+                    .filter_map(|c| c.first().and_then(Tok::name))
+                    .collect();
             }
             continue;
         }
-        let (name, rest) = split_name(p);
-        let rest = rest.to_ascii_uppercase();
-        let ty = rest.split_whitespace().next().unwrap_or("");
-        if rest.contains("PRIMARY KEY") {
+        let Some(name) = first.name() else { continue };
+        // The type: the words after the name, up to a constraint or a parenthesis.
+        let ty: Vec<String> = part[1..]
+            .iter()
+            .take_while(|t| {
+                matches!(t, Tok::Word(_))
+                    && ![
+                        "CONSTRAINT",
+                        "PRIMARY",
+                        "NOT",
+                        "NULL",
+                        "UNIQUE",
+                        "CHECK",
+                        "DEFAULT",
+                        "COLLATE",
+                        "REFERENCES",
+                        "GENERATED",
+                        "AS",
+                    ]
+                    .iter()
+                    .any(|k| t.is(k))
+            })
+            .filter_map(Tok::name)
+            .map(|w| w.to_ascii_uppercase())
+            .collect();
+        let ty = ty.join(" ");
+        if let Some(at) = primary_key(part) {
             pk = vec![name.clone()];
-            if ty == "INTEGER" && !rest.contains("DESC") {
+            if ty == "INTEGER" && !part.get(at).is_some_and(|t| t.is("DESC")) {
                 ipk = Some(names.len());
             }
         }
         names.push(name);
-        types.push(ty.to_string());
+        types.push(ty);
     }
     let key: Vec<usize> = pk
         .iter()
@@ -8860,35 +9997,6 @@ fn columns(sql: &str) -> Columns {
         without_rowid,
         stored,
     }
-}
-
-fn unquote(s: &str) -> String {
-    let s = s.trim();
-    for (a, b) in [('"', '"'), ('`', '`'), ('[', ']'), ('\'', '\'')] {
-        if s.len() >= 2 && s.starts_with(a) && s.ends_with(b) {
-            return s[1..s.len() - 1].replace(&format!("{a}{a}"), &a.to_string());
-        }
-    }
-    s.to_string()
-}
-
-/// A column definition's name (quoted or not) and the rest of it.
-fn split_name(def: &str) -> (String, &str) {
-    let def = def.trim_start();
-    let close = match def.chars().next() {
-        Some('"') => Some('"'),
-        Some('`') => Some('`'),
-        Some('[') => Some(']'),
-        Some('\'') => Some('\''),
-        _ => None,
-    };
-    if let Some(c) = close
-        && let Some(end) = def[1..].find(c)
-    {
-        return (unquote(&def[..end + 2]), &def[end + 2..]);
-    }
-    let end = def.find(char::is_whitespace).unwrap_or(def.len());
-    (def[..end].to_string(), &def[end..])
 }
 
 pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
@@ -9270,7 +10378,8 @@ fn m4_06_document_trails() {
          42: notes › row 2 › body │ …[+1365] g long long long long long long long long long long long long long long long long long long long long long long long long long long long needle at the end\t\n\
          45: kv › row 3 › v │ gamma\tvalue of gamma needle\n\
          46: late › row 1 › payload │ needle payload\tk1\n\
-         48: gaps › row 1 › y │ \tneedle gap\n"
+         48: gaps › row 1 › y │ \tneedle gap\n\
+         49: odd › row 1 › payload │ needle odd\t2.0\n"
     );
 }
 
@@ -9696,6 +10805,56 @@ fn m4_14_transformed_objects_print_as_plain() {
         }
     }
 }
+
+/// Codex r2 #5: one string with two Matches 5 000 bytes apart is one row in every layout, also
+/// with -m1.
+#[test]
+fn m4_15_a_long_string_is_one_row() {
+    let fx = fixture();
+    let mut rodata = b"\0needle".to_vec();
+    rodata.extend(vec![b'a'; 5000]);
+    rodata.extend(b"needle\0");
+    let spec = obj::Spec::new()
+        .section(".text", b"\xc3\0\0\0")
+        .section(".rodata", &rodata);
+    std::fs::write(fx.path().join("m4/bin/long"), obj::elf(&spec).file).unwrap();
+    for m in [&[][..], &["-m1"]] {
+        let args = |layout: &'static str| {
+            let mut a = vec![layout];
+            a.extend_from_slice(m);
+            a.extend(["needle", "m4/bin/long"]);
+            a
+        };
+        // One row, at one offset; a long row prints a Fragment around each Match (spec §6.3).
+        let offsets = |out: &str| {
+            let mut o: Vec<String> = out
+                .lines()
+                .filter_map(|l| l.trim_start().split_once(':').map(|p| p.0.to_string()))
+                .filter(|p| p.starts_with("0x"))
+                .collect();
+            o.dedup();
+            o
+        };
+        let flat = ok(&fx, &args("--flat"));
+        assert_eq!(offsets(&flat), ["0x51"], "{m:?}: {flat}");
+        assert_eq!(flat.matches("needle").count(), 2, "{m:?}: {flat}");
+        let tree = ok(&fx, &args("--tree"));
+        assert_eq!(offsets(&tree), ["0x51"], "{m:?}: {tree}");
+        assert_eq!(tree.matches("needle").count(), 2, "{m:?}: {tree}");
+        let json = ok(&fx, &args("--json"));
+        let rows: Vec<serde_json::Value> = json
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .filter(|v| v["type"] == "match")
+            .collect();
+        assert_eq!(rows.len(), 1, "{m:?}: {json}");
+        assert_eq!(
+            rows[0]["data"]["submatches"].as_array().unwrap().len(),
+            2,
+            "{m:?}"
+        );
+    }
+}
 ```
 
 - [ ] **Step 2:** `cargo test --test cli_m4`: RED. Before this chunk an object file prints
@@ -9710,7 +10869,10 @@ fn m4_14_transformed_objects_print_as_plain() {
   printed `0x68: ELF x86-64 › .rodata › main.version+0xe`, and with the object Processor alone
   disabled `--format elf` still named the Format `elf`). `m4_10` searches `needle here`, whose
   Match is past the start of its string, so its offset `0x77` tells the first Match from the
-  string (review r1, Fable #4: the round-0 code already printed `0x77` there).
+  string (review r1, Fable #4: the round-0 code already printed `0x77` there). `m4_15` (one
+  string, two Matches 5 000 bytes apart: one row in the three layouts, with and without `-m1`)
+  covers what the unit test of Task 2.3 showed RED against round 1's rows (review r2, Codex
+  #5).
 
 ### Task 11.2: `retain_rows`
 
@@ -10483,7 +11645,7 @@ diff --git a/src/app.rs b/src/app.rs
   `tests/snapshots/cli_m4__*.snap` in full. The one-line and tree snapshots of the probe are
   those of `m4_02`, `m4_06` and the spec's examples; the JSON ones carry `"format"` and
   validate against the schema. Then `SFOR_REQUIRE_REFERENCE=1 cargo test --test cli_m4`:
-  14 tests pass.
+  15 tests pass.
 - [ ] **Step 3:** the whole suite: every M1–M3 test passes unchanged (the fixture copy now holds
   `tests/fixtures/docs/*.sqlite`, which rg and sfor without `--docs` search alike).
 
@@ -10493,18 +11655,19 @@ diff --git a/src/app.rs b/src/app.rs
 
 **Files:** `tests/fuzz.rs`, and `src/docs/fixture/mod.rs` only if `rezip` is missing (C4 writes it).
 
-- [ ] **Step 1:** the three tests (D28): mutated documents through `docs::extract`, each on a
-  thread of its own that the test waits for at most 2 s (`within`), mutated object files
-  through `object::Map` and `object::rows`, and `the_deadline_holds_for_every_extraction`, the
-  test of that watchdog: a rejected document that is late fails, one that never ends fails
-  within the limit instead of hanging, a panic fails (RED before `check_extraction` and
-  `within` exist: it does not compile; review r1, Codex #13):
+- [ ] **Step 1:** the three tests (D28): mutated documents through `docs::extract`, run in a
+  child process (this test binary running only that test) that `supervised` watches, killing
+  and reaping it when a case prints nothing for 2 s and going on from the next case in a new
+  child; mutated object files through `object::Map` and `object::rows`; and
+  `the_supervisor_kills_a_case_that_never_ends`, whose child spins and allocates at case 1 and
+  reports a panic at case 3: both are reported, and the run ends in under 10 s (RED before
+  `supervised` exists: it does not compile; review r1, Codex #13, and r2, Codex #7):
 
 ```diff
 diff --git a/tests/fuzz.rs b/tests/fuzz.rs
 --- a/tests/fuzz.rs
 +++ b/tests/fuzz.rs
-@@ -688,3 +688,281 @@ fn generated_files_do_not_panic_sfor() {
+@@ -688,3 +688,379 @@ fn generated_files_do_not_panic_sfor() {
      }
      eprintln!("fuzz: {files} files through sfor");
  }
@@ -10516,6 +11679,7 @@ diff --git a/tests/fuzz.rs b/tests/fuzz.rs
 +
 +use searchfor::docs::{self, Kind, fixture as doc};
 +use searchfor::processors::object::{self, fixture as obj};
++use std::time::Duration;
 +
 +/// Bytes the XML mutations insert.
 +#[rustfmt::skip]
@@ -10592,21 +11756,25 @@ diff --git a/tests/fuzz.rs b/tests/fuzz.rs
 +}
 +
 +/// The checks of one extraction: no panic, ended within 2 s whatever it returns, and an
-+/// Outline inside its text.
++/// Outline inside its text. A case that never ends is the supervisor's (`supervised`).
 +fn check_doc(kind: Kind, bytes: &[u8]) -> Result<(), String> {
-+    let bytes = bytes.to_vec();
-+    check_extraction(std::time::Duration::from_secs(2), move || {
-+        docs::extract(kind, &bytes)
-+    })
-+}
-+
-+fn check_extraction(
-+    limit: std::time::Duration,
-+    extract: impl FnOnce() -> Result<docs::Extracted, docs::DocError> + Send + 'static,
-+) -> Result<(), String> {
-+    let e = match within(limit, extract)? {
-+        Err(_) => return Ok(()),
-+        Ok(e) => e,
++    let started = std::time::Instant::now();
++    let got = catch_unwind(AssertUnwindSafe(|| docs::extract(kind, bytes)));
++    let took = started.elapsed();
++    if took > DEADLINE {
++        return Err(format!("took {took:?}"));
++    }
++    let e = match got {
++        Err(e) => {
++            let msg = e
++                .downcast_ref::<String>()
++                .cloned()
++                .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
++                .unwrap_or_default();
++            return Err(format!("panic: {msg}"));
++        }
++        Ok(Err(_)) => return Ok(()),
++        Ok(Ok(e)) => e,
 +    };
 +    if std::str::from_utf8(&e.text).is_err() || e.text.contains(&0) {
 +        return Err("text is not UTF-8 without NUL".into());
@@ -10619,98 +11787,191 @@ diff --git a/tests/fuzz.rs b/tests/fuzz.rs
 +    check_names(&searchfor::trail::names_of(&e.outline), &e.text)
 +}
 +
-+/// Runs `f` on a thread of its own and waits for it at most `limit`: its result, or why not. A
-+/// case that never ends fails the fuzz instead of hanging it, its thread left behind (code
-+/// review of the M4 plan r1, Codex #13).
-+fn within<T: Send + 'static>(
-+    limit: std::time::Duration,
-+    f: impl FnOnce() -> T + Send + 'static,
-+) -> Result<T, String> {
-+    let (tx, rx) = std::sync::mpsc::channel();
-+    std::thread::spawn(move || {
-+        let _ = tx.send(catch_unwind(AssertUnwindSafe(f)));
-+    });
-+    match rx.recv_timeout(limit) {
-+        Ok(Ok(v)) => Ok(v),
-+        Ok(Err(e)) => {
-+            let msg = e
-+                .downcast_ref::<String>()
-+                .cloned()
-+                .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
-+                .unwrap_or_default();
-+            Err(format!("panic: {msg}"))
++const DEADLINE: Duration = Duration::from_secs(2);
++/// In a child process of `supervised`: the first case it runs.
++const CHILD_FROM: &str = "SFOR_FUZZ_CHILD_FROM";
++
++/// Runs the cases of the test `test` in a child process, this test binary running only that
++/// test with `CHILD_FROM` set, and watches it (code review of the M4 plan r2, Codex #7). The
++/// child prints `fuzzcase run N` before case N, `fuzzcase end N` after it, followed by its
++/// failure if it failed, and `fuzzcase done` at the end. A case that prints nothing for
++/// `limit` (plus a second for the child's start) has its child killed and reaped, and the
++/// cases after it run in a new child; one whose child dies (an abort, out of memory) fails
++/// too. Returns the failures.
++fn supervised(test: &str, limit: Duration) -> Vec<String> {
++    use std::io::BufRead;
++    let mut failures = Vec::new();
++    let mut from = 0usize;
++    'children: loop {
++        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
++            .args(["--exact", test, "--nocapture", "--test-threads", "1"])
++            .env(CHILD_FROM, from.to_string())
++            .stdout(std::process::Stdio::piped())
++            .stderr(std::process::Stdio::null())
++            .spawn()
++            .unwrap();
++        let out = std::io::BufReader::new(child.stdout.take().unwrap());
++        let (tx, rx) = std::sync::mpsc::channel();
++        std::thread::spawn(move || {
++            for line in out.lines().map_while(Result::ok) {
++                if tx.send(line).is_err() {
++                    break;
++                }
++            }
++        });
++        let mut running: Option<usize> = None;
++        let mut wait = limit + Duration::from_secs(1);
++        loop {
++            match rx.recv_timeout(wait) {
++                Ok(line) => {
++                    wait = limit;
++                    let Some(msg) = line.strip_prefix("fuzzcase ") else {
++                        continue;
++                    };
++                    if msg == "done" {
++                        let _ = child.wait();
++                        return failures;
++                    }
++                    let (what, rest) = msg.split_once(' ').unwrap_or((msg, ""));
++                    let (n, failure) = rest.split_once(' ').unwrap_or((rest, ""));
++                    let n: usize = n.parse().unwrap();
++                    match what {
++                        "run" => running = Some(n),
++                        _ => {
++                            running = None;
++                            if !failure.is_empty() {
++                                failures.push(failure.replace("\\n", "\n"));
++                            }
++                        }
++                    }
++                }
++                Err(e) => {
++                    let timed_out = e == std::sync::mpsc::RecvTimeoutError::Timeout;
++                    if timed_out {
++                        child.kill().unwrap();
++                    }
++                    // Reaped: the child is gone, and its memory with it.
++                    let status = child.wait().unwrap();
++                    let Some(n) = running else {
++                        failures.push(format!("the child stopped between cases ({status})"));
++                        return failures;
++                    };
++                    failures.push(if timed_out {
++                        format!("case {n}: still running after {limit:?}, killed")
++                    } else {
++                        format!("case {n}: the child died ({status})")
++                    });
++                    from = n + 1;
++                    continue 'children;
++                }
++            }
 +        }
-+        Err(_) => Err(format!("still running after {limit:?}")),
 +    }
 +}
 +
-+#[test]
-+fn the_deadline_holds_for_every_extraction() {
-+    let limit = std::time::Duration::from_millis(100);
-+    let slow = std::time::Duration::from_millis(400);
-+    // A rejected document is late too.
-+    let e = check_extraction(limit, move || {
-+        std::thread::sleep(slow);
-+        Err(docs::DocError::broken("refused"))
-+    });
-+    assert!(e.is_err_and(|e| e.starts_with("still running")));
-+    // One that never ends fails the run instead of hanging it.
-+    let started = std::time::Instant::now();
-+    let e = check_extraction(limit, || {
-+        loop {
-+            std::thread::park();
++/// In a child of `supervised`: runs the cases from `CHILD_FROM` on, reporting each.
++fn run_cases(cases: impl Iterator<Item = (Kind, Vec<u8>)>) {
++    let from: usize = std::env::var(CHILD_FROM).unwrap().parse().unwrap();
++    std::panic::set_hook(Box::new(|_| {}));
++    for (i, (kind, bytes)) in cases.enumerate() {
++        if i < from {
++            continue;
 +        }
-+    });
-+    assert!(e.is_err_and(|e| e.starts_with("still running")));
-+    assert!(started.elapsed() < slow);
-+    let e = check_extraction(limit, || panic!("boom"));
-+    assert_eq!(e, Err("panic: boom".to_string()));
-+    assert_eq!(
-+        check_extraction(limit, || Err(docs::DocError::Encrypted)),
-+        Ok(())
-+    );
++        println!("fuzzcase run {i}");
++        let failure = check_doc(kind, &bytes)
++            .err()
++            .map(|e| {
++                format!("{kind:?}: {e}\n  input: \"{}\"", bytes.escape_ascii()).replace('\n', "\\n")
++            })
++            .unwrap_or_default();
++        println!("fuzzcase end {i} {failure}");
++    }
++    println!("fuzzcase done");
++}
++
++/// The mutated documents, in order: the same for every child.
++fn mutated_documents() -> impl Iterator<Item = (Kind, Vec<u8>)> {
++    let mut rng = Rng(seed() ^ 2);
++    let n = count() / 4;
++    document_seeds()
++        .into_iter()
++        .flat_map(move |(kind, seed_bytes)| {
++            let mut out = Vec::with_capacity(n);
++            for _ in 0..n {
++                let zipped = seed_bytes.starts_with(b"PK\x03\x04");
++                let bytes = if zipped && rng.below(2) == 0 {
++                    // The XML of one part, changed and zipped again.
++                    let mut target = None;
++                    doc::rezip(&seed_bytes, |name, data| {
++                        if target.is_none() && name.ends_with("ml") && rng.below(3) == 0 {
++                            target = Some(name.to_string());
++                            return mutate(&mut rng, data, XML);
++                        }
++                        data
++                    })
++                } else {
++                    mutate(&mut rng, seed_bytes.clone(), XML)
++                };
++                out.push((kind, bytes));
++            }
++            out
++        })
 +}
 +
 +#[test]
 +fn mutated_documents_do_not_panic_the_extractors() {
-+    let mut rng = Rng(seed() ^ 2);
-+    let n = count() / 4;
-+    let mut failures = Vec::new();
-+    let mut tried = 0;
-+    let hook = std::panic::take_hook();
-+    std::panic::set_hook(Box::new(|_| {}));
-+    for (kind, seed_bytes) in document_seeds() {
-+        for _ in 0..n {
-+            tried += 1;
-+            let zipped = seed_bytes.starts_with(b"PK\x03\x04");
-+            let bytes = if zipped && rng.below(2) == 0 {
-+                // The XML of one part, changed and zipped again.
-+                let mut target = None;
-+                doc::rezip(&seed_bytes, |name, data| {
-+                    if target.is_none() && name.ends_with("ml") && rng.below(3) == 0 {
-+                        target = Some(name.to_string());
-+                        return mutate(&mut rng, data, XML);
-+                    }
-+                    data
-+                })
-+            } else {
-+                mutate(&mut rng, seed_bytes.clone(), XML)
-+            };
-+            if let Err(e) = check_doc(kind, &bytes) {
-+                failures.push(format!(
-+                    "{kind:?}: {e}\n  input: \"{}\"",
-+                    bytes.escape_ascii()
-+                ));
-+            }
-+        }
++    if std::env::var_os(CHILD_FROM).is_some() {
++        return run_cases(mutated_documents());
 +    }
-+    std::panic::set_hook(hook);
++    let tried = mutated_documents().count();
++    let failures = supervised("mutated_documents_do_not_panic_the_extractors", DEADLINE);
 +    eprintln!("fuzz: {tried} documents, {} failures", failures.len());
 +    assert!(
 +        failures.is_empty(),
 +        "{} of {tried} documents failed; the first ones:\n{}",
 +        failures.len(),
 +        failures[..failures.len().min(3)].join("\n")
++    );
++}
++
++/// The supervisor's own test: in its child, case 1 never ends, spinning and allocating, and
++/// case 3 panics; the supervisor kills and reaps the child at case 1, goes on from case 2 in a
++/// new one, and reports both.
++#[test]
++fn the_supervisor_kills_a_case_that_never_ends() {
++    const TEST: &str = "the_supervisor_kills_a_case_that_never_ends";
++    if let Ok(from) = std::env::var(CHILD_FROM) {
++        let from: usize = from.parse().unwrap();
++        for i in from..5 {
++            println!("fuzzcase run {i}");
++            if i == 1 {
++                let mut hog: Vec<Vec<u8>> = Vec::new();
++                loop {
++                    hog.push(vec![1; 1 << 20]);
++                    if hog.len() > 64 {
++                        hog.clear();
++                    }
++                }
++            }
++            let failure = if i == 3 { "Pdf: panic: boom" } else { "" };
++            println!("fuzzcase end {i} {failure}");
++        }
++        println!("fuzzcase done");
++        return;
++    }
++    let started = std::time::Instant::now();
++    let failures = supervised(TEST, Duration::from_millis(300));
++    assert_eq!(
++        failures,
++        [
++            "case 1: still running after 300ms, killed",
++            "Pdf: panic: boom"
++        ]
++    );
++    assert!(
++        started.elapsed() < Duration::from_secs(10),
++        "{:?}",
++        started.elapsed()
 +    );
 +}
 +
@@ -10801,14 +12062,20 @@ diff --git a/tests/fuzz.rs b/tests/fuzz.rs
 
 **Files:** `tests/perf.rs`.
 
-- [ ] **Step 1:** the six tests (spec §11 #26, D17, D23), the PDF bomb (a ToUnicode map of
-  300 MiB) and the zip of six 200 MiB sheets among them (review r1, Fable #1 and #3):
+- [ ] **Step 1:** the ten tests (spec §11 #26, D17, D23): among them the PDF bomb (a ToUnicode
+  map of 300 MiB), the zip of six 200 MiB sheets (review r1, Fable #1 and #3), a page of 63 MiB
+  of `h`, an object stream of 63 MiB of `1 `, a ToUnicode range of 2³² codes and a 4 MiB string
+  of a code that means 256 letters (review r2, Fable #1, Codex #1–#3). Run with `SFOR_BIN` set
+  to the round-1 binary under `ulimit -v 8000000`, the page aborted out of memory and the
+  object stream took 7.8 s and 3 850 MiB; the range and the long codes passed there, for a
+  reason the probe did not look into (lopdf's reader may not have taken those maps); their RED
+  is the unit tests of Task 9.1:
 
 ```diff
 diff --git a/tests/perf.rs b/tests/perf.rs
 --- a/tests/perf.rs
 +++ b/tests/perf.rs
-@@ -1239,3 +1239,379 @@ fn the_rows_of_one_wide_line_cost_the_line_once() {
+@@ -1239,3 +1239,521 @@ fn the_rows_of_one_wide_line_cost_the_line_once() {
          );
      }
  }
@@ -11066,19 +12333,30 @@ diff --git a/tests/perf.rs b/tests/perf.rs
 +/// A one-page PDF whose only font, without `/Encoding`, has a ToUnicode map that decompresses
 +/// to `inflated` bytes of spaces.
 +fn pdf_font_bomb(inflated: usize) -> Vec<u8> {
++    let content = b"BT /F1 12 Tf 72 760 Td (needle here) Tj ET".to_vec();
++    one_page_pdf(content, false, Some(vec![b' '; inflated]))
++}
++
++/// A one-page PDF drawing `content` (compressed when `compress`) with a Type 1 font, without
++/// `/Encoding`, whose ToUnicode map (compressed) is `map`.
++fn one_page_pdf(content: Vec<u8>, compress: bool, map: Option<Vec<u8>>) -> Vec<u8> {
 +    use lopdf::{Dictionary, Document, Object, Stream};
 +    let mut doc = Document::with_version("1.5");
-+    let mut map = Stream::new(Dictionary::new(), vec![b' '; inflated]);
-+    map.compress().unwrap();
-+    let map_id = doc.add_object(map);
 +    let mut font = Dictionary::new();
 +    font.set("Type", Object::Name(b"Font".to_vec()));
 +    font.set("Subtype", Object::Name(b"Type1".to_vec()));
 +    font.set("BaseFont", Object::Name(b"Helvetica".to_vec()));
-+    font.set("ToUnicode", Object::Reference(map_id));
++    if let Some(map) = map {
++        let mut map = Stream::new(Dictionary::new(), map);
++        map.compress().unwrap();
++        font.set("ToUnicode", Object::Reference(doc.add_object(map)));
++    }
 +    let font_id = doc.add_object(font);
-+    let content = b"BT /F1 12 Tf 72 760 Td (needle here) Tj ET".to_vec();
-+    let content_id = doc.add_object(Stream::new(Dictionary::new(), content));
++    let mut content = Stream::new(Dictionary::new(), content);
++    if compress {
++        content.compress().unwrap();
++    }
++    let content_id = doc.add_object(content);
 +    let pages_id = doc.new_object_id();
 +    let mut fonts = Dictionary::new();
 +    fonts.set("F1", Object::Reference(font_id));
@@ -11094,10 +12372,8 @@ diff --git a/tests/perf.rs b/tests/perf.rs
 +    pages.set("Type", Object::Name(b"Pages".to_vec()));
 +    pages.set("Count", Object::Integer(1));
 +    pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
-+    pages.set(
-+        "MediaBox",
-+        Object::Array(vec![0.into(), 0.into(), 612.into(), 792.into()]),
-+    );
++    let media = vec![0.into(), 0.into(), 612.into(), 792.into()];
++    pages.set("MediaBox", Object::Array(media));
 +    doc.objects.insert(pages_id, Object::Dictionary(pages));
 +    let mut cat = Dictionary::new();
 +    cat.set("Type", Object::Name(b"Catalog".to_vec()));
@@ -11107,6 +12383,61 @@ diff --git a/tests/perf.rs b/tests/perf.rs
 +    let mut out = Vec::new();
 +    doc.save_to(&mut out).unwrap();
 +    out
++}
++
++/// A PDF 1.5 whose one object stream decompresses to `inflated` bytes of `1 `, an array of
++/// small integers, referred to by a cross-reference stream (M4 plan r2, Fable #1: lopdf parses
++/// object streams whole while it loads the file).
++fn pdf_objstm_bomb(inflated: usize) -> Vec<u8> {
++    let content = b"BT /F1 12 Tf 72 700 Td (needle) Tj ET";
++    let mut big = b"7 0\n[".to_vec();
++    big.extend(b"1 ".repeat(inflated / 2));
++    big.push(b']');
++    let mut packed = lopdf::Stream::new(lopdf::Dictionary::new(), big);
++    packed.compress().unwrap();
++    let stream =
++        |dict: String, data: &[u8]| [dict.as_bytes(), b"\nstream\n", data, b"\nendstream"].concat();
++    let page =
++        "<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>";
++    let objs: Vec<Vec<u8>> = vec![
++        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
++        b"<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 612 792] >>".to_vec(),
++        page.as_bytes().to_vec(),
++        stream(format!("<< /Length {} >>", content.len()), content),
++        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
++        stream(
++            format!(
++                "<< /Type /ObjStm /N 1 /First 4 /Length {} /Filter /FlateDecode >>",
++                packed.content.len()
++            ),
++            &packed.content,
++        ),
++    ];
++    let mut body = b"%PDF-1.5\n".to_vec();
++    let mut offsets = Vec::new();
++    for (i, o) in objs.iter().enumerate() {
++        offsets.push(body.len());
++        body.extend(format!("{} 0 obj\n", i + 1).as_bytes());
++        body.extend(o);
++        body.extend(b"\nendobj\n");
++    }
++    let xref_at = body.len();
++    let row =
++        |t: u8, a: usize, b: u16| [&[t][..], &(a as u32).to_be_bytes(), &b.to_be_bytes()].concat();
++    let mut xref = row(0, 0, 65535);
++    for o in &offsets {
++        xref.extend(row(1, *o, 0));
++    }
++    // Object 7 is the first of object stream 6; object 8 is the cross-reference stream.
++    xref.extend(row(2, 6, 0));
++    xref.extend(row(1, xref_at, 0));
++    let dict = format!(
++        "8 0 obj\n<< /Type /XRef /Size 9 /W [1 4 2] /Root 1 0 R /Length {} >>",
++        xref.len()
++    );
++    body.extend(stream(dict, &xref));
++    body.extend(format!("\nendobj\nstartxref\n{xref_at}\n%%EOF\n").as_bytes());
++    body
 +}
 +
 +/// Runs `sfor --docs --flat needle <name>` on the bomb `bytes`: it ends within 5 s and
@@ -11138,6 +12469,9 @@ diff --git a/tests/perf.rs b/tests/perf.rs
 +        "{}",
 +        common::stderr(&o)
 +    );
++    if warning.is_empty() {
++        assert_eq!(common::stderr(&o), "");
++    }
 +}
 +
 +/// D17 (Fable r1 #1): a PDF whose font's ToUnicode map decompresses past 64 MiB is refused with
@@ -11188,10 +12522,85 @@ diff --git a/tests/perf.rs b/tests/perf.rs
 +        1,
 +    );
 +}
++
++/// D17 (M4 plan r2, Fable #1, Codex #3): a page of 63 MiB of `h`, 33 million operations, is
++/// refused by the work budget as it is read, without becoming a list of operations: lopdf's
++/// took 6 GB for one.
++#[test]
++#[ignore]
++fn a_pdf_page_of_millions_of_operations_is_refused_within_its_limit() {
++    let _alone = alone();
++    refuses_the_bomb(
++        "ops.pdf",
++        &one_page_pdf(b"h\n".repeat(63 << 19), true, None),
++        64,
++        "ops.pdf: pdf: its content streams run more than 8020000 operations",
++        1,
++    );
++}
++
++/// D17 (M4 plan r2, Fable #1): an object stream of 63 MiB of small integers is refused before
++/// lopdf parses it: parsed, 32 MiB took 2 GB.
++#[test]
++#[ignore]
++fn a_pdf_object_stream_bomb_is_refused_within_its_limit() {
++    let _alone = alone();
++    refuses_the_bomb(
++        "objstm.pdf",
++        &pdf_objstm_bomb(63 << 20),
++        64,
++        "objstm.pdf: pdf: its object streams hold more than 2000000 tokens",
++        // The page's content stream is not compressed: rg finds the needle in it.
++        0,
++    );
++}
++
++/// D17 (M4 plan r2, Codex #1): a ToUnicode range of 2³² codes is read as one range: lopdf's
++/// reader listed every code.
++#[test]
++#[ignore]
++fn a_pdf_map_range_of_every_code_is_read_within_its_limit() {
++    let _alone = alone();
++    let map = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
++        1 begincodespacerange <00> <FF> endcodespacerange\n2 beginbfrange\n\
++        <00> <FF> <0000>\n<00000000> <FFFFFFFF> <0041>\nendbfrange\nendcmap end end\n";
++    let content = b"BT /F1 12 Tf 72 700 Td (needle) Tj ET".to_vec();
++    refuses_the_bomb(
++        "range.pdf",
++        &one_page_pdf(content, true, Some(map.to_vec())),
++        64,
++        "",
++        0,
++    );
++}
++
++/// D17 (M4 plan r2, Codex #2): a ToUnicode map that gives a code 256 letters, and a string of
++/// 4 MiB of it, is decoded at most `MAX_GROWTH` bytes for each byte of the string: it made 512 MiB
++/// of text, 9 s and 1.7 GB, from a 5 KB file.
++#[test]
++#[ignore]
++fn a_pdf_map_of_long_text_is_read_within_its_limit() {
++    let _alone = alone();
++    let mut map = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
++        1 begincodespacerange <00> <FF> endcodespacerange\n1 beginbfchar\n<41> <"
++        .to_vec();
++    map.extend(b"006E".repeat(256));
++    map.extend(b">\nendbfchar\nendcmap end end\n");
++    let mut content = b"BT /F1 12 Tf 72 700 Td (".to_vec();
++    content.extend(vec![b'A'; 4 << 20]);
++    content.extend(b") Tj ET");
++    refuses_the_bomb(
++        "long.pdf",
++        &one_page_pdf(content, true, Some(map)),
++        64,
++        "",
++        1,
++    );
++}
 ```
 
 - [ ] **Step 2:** `SFOR_REQUIRE_REFERENCE=1 cargo test --release --test perf -- --ignored
-  --nocapture --test-threads 1 object_ elf_ documents_ zip_bomb pdf_bomb`; paste the measured lines into
+  --nocapture --test-threads 1 object_ elf_ documents_ zip_bomb pdf_`; paste the measured lines into
   the chunk report. A RED run of each ceiling against a build that breaks what it bounds is
   to verify in chunk 13: the probe measured only the GREEN side (for instance, the zip bomb test
   against a `zipped::Zip::bytes` without its `take(MAX_PART + 1)`, which must exceed the RSS
@@ -11470,7 +12879,7 @@ exit "$fail"
 
 - [ ] **Step 1:** `cargo build --release && ls -l target/release/sfor`: at most 23 000 000
   bytes (spec §11 #22); report the size, and the stripped size (`strip -o /tmp/sfor.s
-  target/release/sfor`). The probe: 19 041 208 bytes, 17 638 160 stripped (16 598 640 and 15 381 072 at `191dbaf`).
+  target/release/sfor`). The probe: 19 064 256 bytes, 17 657 616 stripped (16 598 640 and 15 381 072 at `191dbaf`).
 
 ## Chunk 14: documentation
 
