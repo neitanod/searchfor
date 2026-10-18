@@ -431,8 +431,19 @@ impl<'a> Scanner<'a> {
                 continue;
             }
             if rest.starts_with(b"<!") && self.xml {
-                // A doctype, with its internal subset in brackets.
-                if !rest[2..].starts_with(b"DOCTYPE") {
+                // A doctype, with its internal subset in brackets: `DOCTYPE`, XML white space
+                // and a Name (M3 code review r3, Codex #1).
+                let mut name = lt + 9;
+                while s
+                    .get(name)
+                    .is_some_and(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+                {
+                    name += 1;
+                }
+                if !rest[2..].starts_with(b"DOCTYPE")
+                    || name == lt + 9
+                    || xml_name_end(s, name).is_err()
+                {
                     self.pos = s.len();
                     return Step::Error(lt);
                 }
@@ -723,6 +734,29 @@ mod tests {
             "<?xml version=\"1.10\"\tencoding=\"utf-8\"?><!DOCTYPE r><?xml-css a?><r/>",
         ] {
             assert_eq!(tags(good, true), ["<r/"], "{good}");
+        }
+    }
+
+    #[test]
+    fn a_doctype_has_white_space_and_a_name() {
+        // M3 code review r3, Codex #1: `<!DOCTYPE` is followed by XML white space and a Name.
+        for bad in [
+            "<!DOCTYPEjunk><r/>",
+            "<!DOCTYPE><r/>",
+            "<!DOCTYPE ><r/>",
+            "<!DOCTYPE\x0cr><r/>",
+            "<!DOCTYPE 1r><r/>",
+            "<!DOCTYPE",
+        ] {
+            assert_eq!(tags(bad, true), ["error at 0"], "{bad:?}");
+        }
+        for good in [
+            "<!DOCTYPE r><r/>",
+            "<!DOCTYPE\n\t r ><r/>",
+            "<!DOCTYPE x:r-1 SYSTEM 'r.dtd'><r/>",
+            "<!DOCTYPE r[<!ENTITY e 'x'>]><r/>",
+        ] {
+            assert_eq!(tags(good, true), ["<r/"], "{good:?}");
         }
     }
 

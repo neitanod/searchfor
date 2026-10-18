@@ -369,3 +369,28 @@ fn m3_17_an_invalid_xml_declaration_ends_the_structure() {
         assert_eq!(code(&o), 1, "{file}: {}", stdout(&o));
     }
 }
+
+#[test]
+fn m3_18_a_doctype_without_a_name_ends_the_structure() {
+    // M3 code review r3, Codex #1: `<!DOCTYPEjunk>` and `<!DOCTYPE>` are not doctypes, so no
+    // Match is inside `a`, read from a file or from stdin.
+    let fx = Fixture::new();
+    for (file, body) in [
+        ("junk.xml", "<!DOCTYPEjunk><r><a>needle</a></r>\n"),
+        ("bare.xml", "<!DOCTYPE><r><a>needle</a></r>\n"),
+    ] {
+        std::fs::write(fx.file(file), body).unwrap();
+        let o = run(&mut fx.sfor(["--format", "xml", "--flat", "--within", "a", "needle", file]));
+        assert_eq!(code(&o), 1, "{file}: {}", stdout(&o));
+        let input = std::fs::File::open(fx.file(file)).unwrap();
+        let o = run(fx
+            .sfor(["--format", "xml", "--flat", "--within", "a", "needle"])
+            .stdin(input));
+        assert_eq!(code(&o), 1, "{file} on stdin: {}", stdout(&o));
+    }
+    // A doctype with its name keeps the structure.
+    std::fs::write(fx.file("named.xml"), "<!DOCTYPE r><r><a>needle</a></r>\n").unwrap();
+    let o = run(&mut fx.sfor(["--flat", "--within", "a", "needle", "named.xml"]));
+    assert_eq!(code(&o), 0);
+    assert_eq!(stdout(&o), "1: r › a │ <!DOCTYPE r><r><a>needle</a></r>\n");
+}
