@@ -10,6 +10,7 @@ pub mod ooxml;
 pub mod pdf;
 pub mod sqlite;
 pub mod xml;
+pub mod zipped;
 
 use crate::trail::{Outline, OutlineSegment};
 
