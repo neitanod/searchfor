@@ -207,6 +207,11 @@ that never ends (`yes`) never answer:
 - `--in-headings`, with any Format: the names are read from the whole Source (code review
   r9, Fable #1).
 
+The output of `--pre` and `-z` is read the same way. When it is read past the `-m`th Match, a
+command that fails at the end of its output is reported as rg reports a command that failed
+when the search closed it, `s4: <path>: <its stderr>`, without the command line (code review
+m4-code-r1, Codex #2).
+
 A plain-text Format gets no Outline, so `--expand` and `--json` stop as rg does (code review
 r4, Fable #5):
 
