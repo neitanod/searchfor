@@ -91,6 +91,8 @@ struct Conn {
     counted: AtomicBool,
     closed: AtomicBool,
     /// D42: set by `abort`; silences the stderr relay.
+    // Only the Unix signal watcher cancels a run: Windows builds would warn (Fable r1 #10).
+    #[cfg_attr(not(unix), allow(dead_code))]
     aborted: Arc<AtomicBool>,
     /// Reaped already: `abort` and `close` may both run (Ctrl-C during a failure).
     reaped: Arc<AtomicBool>,
@@ -230,6 +232,7 @@ impl Conn {
     }
 
     /// D42: kill and reap now, without the grace or the pipe wait of `close` (Ctrl-C).
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn abort(&self) {
         self.aborted.store(true, SeqCst);
         self.alive.store(false, SeqCst);
@@ -714,7 +717,9 @@ pub(crate) mod cancel {
 
         /// Marks the lifecycle cancelled — every later `launch` is refused — and kills and reaps
         /// every registered process, in parallel. Processes being started hold the lock, so
-        /// they finish registering first and are in the list.
+        /// they finish registering first and are in the list. Called by the Unix signal
+        /// watcher alone (`watch`).
+        #[cfg_attr(not(unix), allow(dead_code))]
         pub(crate) fn cancel(&self) {
             let (live, readers): (Vec<Arc<Conn>>, Vec<_>) = {
                 let mut st = self.state.lock().unwrap();
@@ -734,6 +739,7 @@ pub(crate) mod cancel {
 
     /// Kills and reaps the readers, through their `Child`: one already reaped is not
     /// signalled again (`Child::kill` after `wait` does nothing).
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn reap(readers: &[Arc<Mutex<std::process::Child>>]) {
         for r in readers {
             let mut c = r.lock().unwrap_or_else(|e| e.into_inner());
