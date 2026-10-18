@@ -49,9 +49,15 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     if let Some(e) = OBJSTM.with(|c| c.get()).refused {
         return Err(e.error());
     }
-    let doc = loaded.map_err(load_error)?;
+    let mut doc = loaded.map_err(load_error)?;
     if doc.is_encrypted() && doc.encryption_state.is_none() {
         return Err(DocError::Encrypted);
+    }
+    // Before any stream is read: in an encrypted file the load filter is not called.
+    for o in doc.objects.values_mut() {
+        if let Object::Stream(s) = o {
+            unpredictable(s);
+        }
     }
     lost_objects(&doc)?;
     let pages = doc.get_pages();
@@ -216,7 +222,7 @@ fn objstm(id: ObjectId, o: &mut Object) -> Option<(ObjectId, Object)> {
     let Object::Stream(s) = o else {
         return Some((id, o.clone()));
     };
-    if !s.dict.has_type(b"ObjStm") {
+    if unpredictable(s) || !s.dict.has_type(b"ObjStm") {
         return Some((id, o.clone()));
     }
     let mut b = OBJSTM.with(|c| c.get());
@@ -245,6 +251,37 @@ fn objstm(id: ObjectId, o: &mut Object) -> Option<(ObjectId, Object)> {
     }
     OBJSTM.with(|c| c.set(b));
     b.refused.is_none().then(|| (id, o.clone()))
+}
+
+/// Empties the stream `s` when lopdf cannot apply the predictor of its `/DecodeParms`, as
+/// lopdf reads it: `Columns × Colors × BitsPerComponent` bits a row, which lopdf multiplies
+/// unchecked, past what a machine word holds (a panic in a debug build, a wrong row in a
+/// release one: Codex r1 #7). Such a stream does not decompress, and draws or holds nothing.
+/// True when it was emptied.
+fn unpredictable(s: &mut Stream) -> bool {
+    let Ok(p) = s.dict.get(b"DecodeParms").and_then(Object::as_dict) else {
+        return false;
+    };
+    let predictor = p.get(b"Predictor").and_then(Object::as_i64).unwrap_or(1);
+    if predictor != 2 && !(10..=15).contains(&predictor) {
+        return false;
+    }
+    let n = |key: &[u8], default: i64| {
+        p.get(key)
+            .and_then(Object::as_i64)
+            .unwrap_or(default)
+            .max(1) as usize
+    };
+    let row = n(b"Columns", 1)
+        .checked_mul(n(b"Colors", 1))
+        .and_then(|c| c.checked_mul(n(b"BitsPerComponent", 8)));
+    if row.is_some() {
+        return false;
+    }
+    s.dict.remove(b"Filter");
+    s.dict.remove(b"DecodeParms");
+    s.set_content(Vec::new());
+    true
 }
 
 /// How many tokens `data` holds, at most as lopdf reads them: each run of regular bytes, each
@@ -2172,6 +2209,52 @@ mod tests {
             doc.save_to(&mut out).unwrap();
             assert_eq!(text_of(&out), "n\n");
         }
+    }
+
+    /// `data` and 400 spaces (so lopdf deflates them) as rows of one byte each under the PNG
+    /// predictor (filter byte 0, then the byte), with `/DecodeParms` of `columns`.
+    fn predicted(data: &[u8], columns: i64) -> Stream {
+        let padded = [data, &[b' '; 400]].concat();
+        let rows: Vec<u8> = padded.iter().flat_map(|&b| [0, b]).collect();
+        let mut st = Stream::new(Dictionary::new(), rows);
+        st.compress().unwrap();
+        assert!(st.dict.get(b"Filter").is_ok());
+        let mut parms = Dictionary::new();
+        parms.set("Predictor", Object::Integer(12));
+        parms.set("Columns", Object::Integer(columns));
+        parms.set("Colors", Object::Integer(1));
+        parms.set("BitsPerComponent", Object::Integer(8));
+        st.dict.set("DecodeParms", Object::Dictionary(parms));
+        st
+    }
+
+    /// Codex r1 #7: a predictor whose row (`Columns × Colors × BitsPerComponent` bits) is past
+    /// what a machine word holds does not decompress, and its stream draws nothing, in debug
+    /// and in release alike (lopdf multiplies them unchecked: 2³ × (2⁶¹ + 1) wraps to rows of
+    /// one byte); a predictor that fits reads.
+    #[test]
+    fn a_predictor_past_the_largest_row_draws_nothing() {
+        let content = b"BT /F1 12 Tf 72 700 Td (needle) Tj ET";
+        for (columns, want) in [(1, "needle\n"), ((1i64 << 61) + 1, "")] {
+            let pdf = pdf_with(simple_font(|_| {}), b"", &[]);
+            let mut doc = Document::load_mem(&pdf).unwrap();
+            let page = *doc.get_pages().get(&1).unwrap();
+            let id = doc.get_page_contents(page)[0];
+            doc.objects
+                .insert(id, Object::Stream(predicted(content, columns)));
+            let mut out = Vec::new();
+            doc.save_to(&mut out).unwrap();
+            assert_eq!(text_of(&out), want, "columns {columns}");
+        }
+        // An object stream too, in the load filter, before it inflates it.
+        let mut o = Object::Stream(predicted(b"1 0 2 0 (needle)", (1i64 << 61) + 1));
+        if let Object::Stream(s) = &mut o {
+            s.dict.set("Type", Object::Name(b"ObjStm".to_vec()));
+        }
+        super::OBJSTM.with(|c| c.set(super::ObjStmBudget::default()));
+        let kept = super::objstm((9, 0), &mut o);
+        assert!(kept.is_some());
+        assert!(super::OBJSTM.with(|c| c.get()).refused.is_none());
     }
 
     fn compressed_zeros(n: usize) -> Stream {
