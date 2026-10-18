@@ -861,7 +861,9 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
   again for that, never an external program (M4 plan, D30). A worker may allocate 1 024 MiB, a
   count it keeps itself, the same on Linux, macOS and Windows (on Unix, `RLIMIT_DATA` 64 MiB
   above it is a second barrier: M4 plan, D31), and spend 60 s on one document; past either it is ended, and the document gets one warning and
-  is searched as ripgrep searches it. A SIGINT or SIGTERM to sfor ends its workers with it, and
+  is searched as ripgrep searches it. A worker refused memory that its reader went on without
+  (a stream inflated only up to the refusal) gives the same warning, and what it read is
+  dropped (M4 plan r8). A SIGINT or SIGTERM to sfor ends its workers with it, and
   sfor prints nothing more, for the documents they were reading or the ones still waiting for
   a worker, as ripgrep prints nothing then; a worker ends when sfor does:
 
@@ -1194,8 +1196,8 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
     without `--docs` (over those small files sfor's ratio to rg is its own, the same with or
     without `--docs`: M4 plan r6), so that its bound against rg is sfor's own without `--docs`
     times 1.05; without `--docs`, M4's sfor over the whole corpus, with the sparse pattern, at
-    most 1.02 × M3's (`191dbaf`), which bounds what M4 adds to a search without `--docs`, the
-    readers' memory counter included (M4 plan r7); `--binary` over object files with a sparse pattern, sfor's time
+    most 1.03 × M3's (`191dbaf`), the median of three alternated series, which bounds what M4
+    adds to a search without `--docs`, the readers' memory counter included (M4 plan r7, r8); `--binary` over object files with a sparse pattern, sfor's time
     over rg's is at most the largest matching object ÷ 100 MB/s plus all matching objects ÷
     (100 MB/s × threads) plus 0.05 s; `--docs` over the documents, sfor's time over rg's on their
     extracted texts is at most the texts' size ÷ (2 MB/s × threads) plus 0.1 s. In
