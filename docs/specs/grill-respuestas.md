@@ -259,3 +259,20 @@ is a decision; the agent's measurements are the reasons given at the time.
 - **Decision**: «La B». Plain files keep the line number and the separator in the Trail layouts, so every file of
   a search prints the same way; `--no-trail` is the output that is byte-for-byte ripgrep's. The
   deviation is written in `docs/rg-compat.md`.
+
+---
+
+# Follow-up decisions in the Hilo (18/10/2026): the cost of `--docs` and the readers' memory on every platform
+
+- **Performance criterion** (M4 plan, review round 6, Fable #5): without `--docs`, sfor takes
+  1.04–1.11 × ripgrep over small files, a per-file cost inherited from M1–M3; `--docs` adds
+  1.00–1.03 × over sfor alone. The plan's `docs-none` case now only reports its ratio against
+  ripgrep, and the new `docs-added` case requires `--docs` ≤ 1.05 × sfor without `--docs`.
+  **Decision**: «El rendimiento de --docs está bien como quedó.» Finding where the per-file
+  cost comes from is recommended for M5.
+- **Question**: `setrlimit(RLIMIT_DATA)` caps a document reader's memory on Linux; macOS is
+  believed not to enforce it for `malloc` (unverified, no Mac at hand), and on Windows the limit
+  is a no-op. Proposal: a counting global allocator inside the reader that stops at the reader's
+  limit, the same on Linux, macOS and Windows, with `setrlimit` kept as a second barrier on Linux,
+  and a Windows Job Object in M5. **Decision**: «Acepto la sugerencia de sumar el contador de
+  memoria propio.» It goes into M4.
