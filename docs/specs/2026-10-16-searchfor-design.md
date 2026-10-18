@@ -677,7 +677,8 @@ binaries are often named without a telling extension (`libc.so.6`, `ls`; §4.1, 
         0x77:another needle here
   ```
 
-  A string with several Matches is one row, at its first Match and under that Match's Trail,
+  A string with several Matches is one row, however far apart they are, at its first Match and
+  under that Match's Trail,
   with every Match highlighted; `--json` keeps the Trail of each Match. `-m N` keeps the first N
   rows, also after `--within`. Context lines (`-A`, `-B`, `-C`) are not printed for rows, and
   no `--` goes between them. `--within` keeps the Matches whose Trail it selects, and drops a
@@ -834,18 +835,24 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
   limits against decompression bombs and huge documents (D17): a zip part decompresses to at
   most 256 MiB, and all the parts one document reads to 1 GiB; a PDF stream (a page, a Form, a
   font's ToUnicode map, an object stream) to at most 64 MiB, and a PDF's pages, Forms and maps
-  to 1 GiB together; the Forms of a PDF do at most 8 000 000 units of work (16 each time one is
-  drawn, plus one per operation it runs). Past any of these the document is not read:
+  to 1 GiB together (a content stream several pages share counts once); the content streams of
+  a PDF run at most 8 000 000 operations plus 20 000 per page, pages and Forms together, each
+  Form drawn counting 16 more; an operation has at most 65 536 operands; a ToUnicode map holds
+  at most 200 000 entries (a range of codes counts one); the object streams of a PDF hold at
+  most 64 MiB and 2 000 000 tokens together, and while an encrypted PDF loads each of its
+  streams decompresses to at most 1 MiB. Past any of these the document is not read:
 
   ```
   sfor: bomb.docx: docx: word/document.xml is over the 256 MiB limit
   sfor: bomb.xlsx: xlsx: the whole document, decompressed, is over the 1024 MiB limit
   sfor: bomb.pdf: pdf: a font's ToUnicode map is over the 64 MiB limit
-  sfor: forms.pdf: pdf: its Forms run more than 8000000 operations
+  sfor: ops.pdf: pdf: its content streams run more than 8020000 operations
+  sfor: objstm.pdf: pdf: its object streams hold more than 2000000 tokens
   ```
 
   At most 512 MiB of text are extracted from one document, and past that the text is cut, with
-  the warning `sfor: <path>: <format>: the text is cut at 512 MiB`. A malformed part ends the
+  the warning `sfor: <path>: <format>: the text is cut at 512 MiB`; a PDF string writes at most
+  8 bytes of text for each of its bytes, whatever its ToUnicode map says. A malformed part ends the
   text of that part where the reader stops, and a PDF stream that does not decompress draws
   nothing; nothing in a document makes sfor panic (the fuzz of §11 #27).
 - **With the other flags.** `--docs` is independent of `-z`, which keeps ripgrep's meaning
@@ -1172,8 +1179,11 @@ Management actions are flags, not subcommands, because `sfor formats` must keep 
     rg's time over its text plus the text ÷ its Format's rate (docx 12, odt 10, epub 20, pdf 7,
     xlsx 2, ods 1, pptx 1.3 MB/s) plus 1 s; a zip bomb, and a workbook of six 200 MiB sheets,
     refused within 5 s and 256 MiB plus rg's RSS plus 64 MiB; and a PDF whose font's ToUnicode
-    map decompresses to 300 MiB refused within 5 s and 64 MiB plus rg's RSS plus 64 MiB.
+    map decompresses to 300 MiB, a page of 63 MiB of `h` and an object stream of 63 MiB of `1 `,
+    each refused within 5 s and 64 MiB plus rg's RSS plus 64 MiB; a ToUnicode range of 2³² codes
+    and a 4 MiB string of a code mapped to 256 letters, read within the same bounds.
 27. The fuzz of `tests/fuzz.rs` runs the Extractors over mutated documents (bytes changed, cut,
     repeated, and the XML inside the zip changed) and the `object` Processor over mutated object
-    files: nothing panics, an extraction ends within 2 s whatever it returns (one that never ends
-    fails the run), and every Segment and name lies inside the extracted text.
+    files: nothing panics, an extraction ends within 2 s whatever it returns (the documents run
+    in a child process, killed when a case does not end, so one that never ends fails the run),
+    and every Segment and name lies inside the extracted text.
