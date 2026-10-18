@@ -1239,3 +1239,587 @@ fn the_rows_of_one_wide_line_cost_the_line_once() {
         );
     }
 }
+
+// M4 (plan, Task 13.1): object files and documents.
+
+use searchfor::docs::fixture as doc;
+use searchfor::processors::object::fixture as obj;
+
+/// An ELF whose `.rodata` is `SIZE` bytes of NUL-separated strings, with `needle` in the first,
+/// the middle and the last one, and `symbols` symbols spread over it.
+fn big_elf(fx: &Fixture, symbols: usize) -> &'static str {
+    let mut ro = Vec::with_capacity(SIZE + 64);
+    let mut n = 0usize;
+    let mut middle = false;
+    while ro.len() < SIZE {
+        let word: &[u8] = if n == 0 || (!middle && ro.len() >= SIZE / 2) {
+            middle = n > 0;
+            b"version needle!\0"
+        } else {
+            b"some string of hay\0"
+        };
+        ro.extend_from_slice(word);
+        n += 1;
+    }
+    ro.extend_from_slice(b"last needle!\0");
+    let mut spec = obj::Spec::new()
+        .section(".text", b"\xc3\0\0\0")
+        .section(".rodata", &ro);
+    let step = (ro.len() / symbols.max(1)).max(1);
+    for i in 0..symbols {
+        spec = spec.symbol(&format!("sym_{i}"), 1, (i * step) as u64);
+    }
+    std::fs::write(fx.file("big.elf"), obj::elf(&spec).file).unwrap();
+    "big.elf"
+}
+
+fn object_ceiling(symbols: usize) {
+    let fx = Fixture::new();
+    let file = big_elf(&fx, symbols);
+    let args = ["--flat", "needle", file];
+    let (out, err) = sfor_output(&fx, &args);
+    assert_eq!(err, "");
+    assert!(out.lines().count() >= 3, "{out:.400}");
+    assert!(
+        out.lines()
+            .all(|l| l.starts_with("0x") && l.contains("ELF x86-64 › .rodata")),
+        "{out:.400}"
+    );
+    let Some(rg) = rg_bin() else { return };
+    let Some((t, rss)) = best_of_three_drained(&sfor_bin(), &fx, &args, 0) else {
+        return;
+    };
+    // rg -a searches the whole file, as s4 does for an object file with a Match.
+    let (base, base_rss) = best_of_three_drained(&rg, &fx, &["-a", "needle", file], 0).unwrap();
+    eprintln!(
+        "50 MB ELF, {symbols} symbols: s4 {t:?}, RSS {} MiB; rg -a {base:?}, RSS {} MiB",
+        rss / 1_048_576,
+        base_rss / 1_048_576
+    );
+    assert!(
+        t <= base + Duration::from_secs(1),
+        "{t:?} is more than rg -a's {base:?} + 1 s"
+    );
+    assert!(
+        rss <= base_rss + 64 * 1_048_576,
+        "RSS {rss} is more than rg -a's {base_rss} + 64 MiB"
+    );
+}
+
+#[test]
+#[ignore]
+fn object_rows_of_a_big_elf_stay_under_rg_a() {
+    let _alone = alone();
+    object_ceiling(0);
+}
+
+#[test]
+#[ignore]
+fn an_elf_with_two_hundred_thousand_symbols_stays_under_rg_a() {
+    let _alone = alone();
+    object_ceiling(200_000);
+}
+
+/// A document of each kind with `needle` in its first, middle and last unit; the Extractor's
+/// text of it is written beside it as `NAME.txt`, so rg has the same text to search.
+fn big_document(fx: &Fixture, kind: &str, units: usize) -> (String, usize) {
+    let text = |i: usize| {
+        let n = if i == 0 || i == units / 2 || i == units - 1 {
+            "needle"
+        } else {
+            "hay"
+        };
+        format!("Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do {n} {i}.")
+    };
+    let bytes = match kind {
+        "docx" | "odt" => {
+            let mut blocks = Vec::new();
+            for i in 0..units {
+                if i % 1000 == 0 {
+                    blocks.push(doc::h(1, &format!("Chapter {i}")));
+                }
+                blocks.push(doc::p(&text(i)));
+            }
+            if kind == "docx" {
+                doc::docx(&blocks)
+            } else {
+                doc::odt(&blocks)
+            }
+        }
+        "xlsx" | "ods" => {
+            let rows: Vec<[String; 3]> = (0..units)
+                .map(|i| [format!("item {i}"), format!("{}", i * 3), text(i)])
+                .collect();
+            let refs: Vec<Vec<&str>> = rows
+                .iter()
+                .map(|r| r.iter().map(String::as_str).collect())
+                .collect();
+            let rows: Vec<&[&str]> = refs.iter().map(Vec::as_slice).collect();
+            if kind == "xlsx" {
+                doc::xlsx(&[("Sheet", &rows)])
+            } else {
+                doc::ods(&[("Sheet", &rows)])
+            }
+        }
+        "pptx" => {
+            let slides: Vec<[String; 2]> = (0..units)
+                .map(|i| [format!("Slide {i}"), text(i)])
+                .collect();
+            let refs: Vec<Vec<&str>> = slides
+                .iter()
+                .map(|s| s.iter().map(String::as_str).collect())
+                .collect();
+            let slides: Vec<(&[&str], Option<&str>)> =
+                refs.iter().map(|s| (s.as_slice(), None)).collect();
+            doc::pptx(&slides)
+        }
+        "epub" => {
+            let chapters: Vec<(String, String)> = (0..units / 1000)
+                .map(|c| {
+                    (
+                        format!("Chapter {c}"),
+                        (c * 1000..(c + 1) * 1000)
+                            .map(|i| format!("<p>{}</p>", text(i)))
+                            .collect(),
+                    )
+                })
+                .collect();
+            let refs: Vec<(&str, &str)> = chapters
+                .iter()
+                .map(|(a, b)| (a.as_str(), b.as_str()))
+                .collect();
+            doc::epub(&refs, true)
+        }
+        "pdf" => {
+            let lines: Vec<String> = (0..units).map(text).collect();
+            let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+            let pages: Vec<&[&str]> = refs.chunks(50).collect();
+            doc::pdf(&pages, &[(1, "Start", 1)])
+        }
+        k => panic!("{k}"),
+    };
+    let name = format!("big.{kind}");
+    std::fs::write(fx.file(&name), &bytes).unwrap();
+    let kind = searchfor::docs::Kind::from_name(kind).unwrap();
+    let e = searchfor::docs::extract(kind, &bytes).unwrap();
+    std::fs::write(fx.file(&format!("{name}.txt")), &e.text).unwrap();
+    (name, e.text.len())
+}
+
+/// D23: an Extractor reads its document at `rate` MB/s of text or faster, on top of rg's search
+/// of that text and 1 s; its memory stays under rg's plus six times the text, plus 400 bytes
+/// per cell Segment (`cells`: a spreadsheet's), plus 64 MiB.
+fn document_ceiling(kind: &str, units: usize, rate: f64, cells: usize) {
+    let fx = Fixture::new();
+    let (name, text) = big_document(&fx, kind, units);
+    let args = ["--docs", "--flat", "needle", name.as_str()];
+    let (out, err) = sfor_output(&fx, &args);
+    assert_eq!(err, "", "{kind}");
+    assert_eq!(out.lines().count(), 3, "{kind}: {out:.400}");
+    let Some(rg) = rg_bin() else { return };
+    let Some((t, rss)) = best_of_three_drained(&sfor_bin(), &fx, &args, 0) else {
+        return;
+    };
+    let txt = format!("{name}.txt");
+    let (base, base_rss) = best_of_three_drained(&rg, &fx, &["needle", txt.as_str()], 0).unwrap();
+    let budget =
+        base + Duration::from_secs_f64(text as f64 / (rate * 1e6)) + Duration::from_secs(1);
+    eprintln!(
+        "{kind}: {} MB of text: s4 {t:?} (budget {budget:?}), RSS {} MiB; rg on the text {base:?}, RSS {} MiB",
+        text / 1_000_000,
+        rss / 1_048_576,
+        base_rss / 1_048_576
+    );
+    assert!(t <= budget, "{kind}: {t:?} is over {budget:?}");
+    let bound = base_rss + 6 * text as u64 + 400 * cells as u64 + 64 * 1_048_576;
+    assert!(rss <= bound, "{kind}: RSS {rss} is over {bound}");
+}
+
+#[test]
+#[ignore]
+fn documents_extract_within_their_ceilings() {
+    let _alone = alone();
+    // The rates are about a third of what the M4 probe measured (M4 plan, D23).
+    for (kind, units, rate, cells) in [
+        ("docx", 200_000, 12.0, 0),
+        ("odt", 200_000, 10.0, 0),
+        ("epub", 200_000, 20.0, 0),
+        ("pdf", 100_000, 7.0, 0),
+        ("xlsx", 200_000, 2.0, 600_000),
+        ("ods", 200_000, 1.0, 600_000),
+        ("pptx", 20_000, 1.3, 0),
+    ] {
+        document_ceiling(kind, units, rate, cells);
+    }
+}
+
+/// D17: a document whose part decompresses past 256 MiB is refused with a warning, quickly and
+/// within 256 MiB plus rg's memory and 64 MiB, and is then searched as rg searches it.
+#[test]
+#[ignore]
+fn a_zip_bomb_is_refused_within_its_limit() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let mut xml = String::from("<w:document><w:body><w:p><w:r><w:t>");
+    xml.push_str(&" ".repeat(300 << 20));
+    xml.push_str("needle</w:t></w:r></w:p></w:body></w:document>");
+    let bomb = doc::zip(&[("word/document.xml", xml.into_bytes())], &[]);
+    std::fs::write(fx.file("bomb.docx"), &bomb).unwrap();
+    let Some(rg) = rg_bin() else { return };
+    let args = ["--docs", "--flat", "needle", "bomb.docx"];
+    let (t, rss, _) = measure_to(&sfor_bin(), &fx, &args, None, Stdio::null(), 1).unwrap();
+    let (_, base_rss) = measure(&rg, &fx, &["needle", "bomb.docx"], 1).unwrap();
+    eprintln!(
+        "zip bomb of {} KiB: {t:?}, RSS {} MiB",
+        bomb.len() >> 10,
+        rss / 1_048_576
+    );
+    assert!(t <= Duration::from_secs(5), "{t:?}");
+    assert!(rss <= base_rss + (256 + 64) * 1_048_576, "RSS {rss}");
+    let o = common::run(
+        Command::new(sfor_bin())
+            .args(args)
+            .current_dir(fx.path())
+            .env_remove("RIPGREP_CONFIG_PATH")
+            .stdin(Stdio::null()),
+    );
+    assert!(
+        common::stderr(&o).contains("bomb.docx: docx: word/document.xml is over the 256 MiB limit"),
+        "{}",
+        common::stderr(&o)
+    );
+}
+
+/// A one-page PDF whose only font, without `/Encoding`, has a ToUnicode map that decompresses
+/// to `inflated` bytes of spaces.
+fn pdf_font_bomb(inflated: usize) -> Vec<u8> {
+    let content = b"BT /F1 12 Tf 72 760 Td (needle here) Tj ET".to_vec();
+    one_page_pdf(content, false, Some(vec![b' '; inflated]))
+}
+
+/// A one-page PDF drawing `content` (compressed when `compress`) with a Type 1 font, without
+/// `/Encoding`, whose ToUnicode map (compressed) is `map`.
+fn one_page_pdf(content: Vec<u8>, compress: bool, map: Option<Vec<u8>>) -> Vec<u8> {
+    use lopdf::{Dictionary, Document, Object, Stream};
+    let mut doc = Document::with_version("1.5");
+    let mut font = Dictionary::new();
+    font.set("Type", Object::Name(b"Font".to_vec()));
+    font.set("Subtype", Object::Name(b"Type1".to_vec()));
+    font.set("BaseFont", Object::Name(b"Helvetica".to_vec()));
+    if let Some(map) = map {
+        let mut map = Stream::new(Dictionary::new(), map);
+        map.compress().unwrap();
+        font.set("ToUnicode", Object::Reference(doc.add_object(map)));
+    }
+    let font_id = doc.add_object(font);
+    let mut content = Stream::new(Dictionary::new(), content);
+    if compress {
+        content.compress().unwrap();
+    }
+    let content_id = doc.add_object(content);
+    let pages_id = doc.new_object_id();
+    let mut fonts = Dictionary::new();
+    fonts.set("F1", Object::Reference(font_id));
+    let mut res = Dictionary::new();
+    res.set("Font", Object::Dictionary(fonts));
+    let mut page = Dictionary::new();
+    page.set("Type", Object::Name(b"Page".to_vec()));
+    page.set("Parent", Object::Reference(pages_id));
+    page.set("Contents", Object::Reference(content_id));
+    page.set("Resources", Object::Dictionary(res));
+    let page_id = doc.add_object(page);
+    let mut pages = Dictionary::new();
+    pages.set("Type", Object::Name(b"Pages".to_vec()));
+    pages.set("Count", Object::Integer(1));
+    pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+    let media = vec![0.into(), 0.into(), 612.into(), 792.into()];
+    pages.set("MediaBox", Object::Array(media));
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+    let mut cat = Dictionary::new();
+    cat.set("Type", Object::Name(b"Catalog".to_vec()));
+    cat.set("Pages", Object::Reference(pages_id));
+    let cat_id = doc.add_object(cat);
+    doc.trailer.set("Root", Object::Reference(cat_id));
+    let mut out = Vec::new();
+    doc.save_to(&mut out).unwrap();
+    out
+}
+
+/// A PDF 1.5 whose one object stream decompresses to `inflated` bytes of `1 `, an array of
+/// small integers, referred to by a cross-reference stream (M4 plan r2, Fable #1: lopdf parses
+/// object streams whole while it loads the file).
+fn pdf_objstm_bomb(inflated: usize) -> Vec<u8> {
+    let content = b"BT /F1 12 Tf 72 700 Td (needle) Tj ET";
+    let mut big = b"7 0\n[".to_vec();
+    big.extend(b"1 ".repeat(inflated / 2));
+    big.push(b']');
+    let mut packed = lopdf::Stream::new(lopdf::Dictionary::new(), big);
+    packed.compress().unwrap();
+    let stream =
+        |dict: String, data: &[u8]| [dict.as_bytes(), b"\nstream\n", data, b"\nendstream"].concat();
+    let page =
+        "<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>";
+    let objs: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 612 792] >>".to_vec(),
+        page.as_bytes().to_vec(),
+        stream(format!("<< /Length {} >>", content.len()), content),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+        stream(
+            format!(
+                "<< /Type /ObjStm /N 1 /First 4 /Length {} /Filter /FlateDecode >>",
+                packed.content.len()
+            ),
+            &packed.content,
+        ),
+    ];
+    let mut body = b"%PDF-1.5\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offsets.push(body.len());
+        body.extend(format!("{} 0 obj\n", i + 1).as_bytes());
+        body.extend(o);
+        body.extend(b"\nendobj\n");
+    }
+    let xref_at = body.len();
+    let row =
+        |t: u8, a: usize, b: u16| [&[t][..], &(a as u32).to_be_bytes(), &b.to_be_bytes()].concat();
+    let mut xref = row(0, 0, 65535);
+    for o in &offsets {
+        xref.extend(row(1, *o, 0));
+    }
+    // Object 7 is the first of object stream 6; object 8 is the cross-reference stream.
+    xref.extend(row(2, 6, 0));
+    xref.extend(row(1, xref_at, 0));
+    let dict = format!(
+        "8 0 obj\n<< /Type /XRef /Size 9 /W [1 4 2] /Root 1 0 R /Length {} >>",
+        xref.len()
+    );
+    body.extend(stream(dict, &xref));
+    body.extend(format!("\nendobj\nstartxref\n{xref_at}\n%%EOF\n").as_bytes());
+    body
+}
+
+/// Runs `s4 --docs --flat needle <name>` on the bomb `bytes`: it ends within 5 s and
+/// `extra_mib` plus rg's memory and 64 MiB, warning `warning`, and exits with `code`, as rg
+/// searching the file as it is.
+fn refuses_the_bomb(name: &str, bytes: &[u8], extra_mib: u64, warning: &str, code: i32) {
+    let fx = Fixture::new();
+    std::fs::write(fx.file(name), bytes).unwrap();
+    let Some(rg) = rg_bin() else { return };
+    let args = ["--docs", "--flat", "needle", name];
+    let (t, rss, _) = measure_to(&sfor_bin(), &fx, &args, None, Stdio::null(), code).unwrap();
+    let (_, base_rss) = measure(&rg, &fx, &["needle", name], code).unwrap();
+    eprintln!(
+        "{name} of {} KiB: {t:?}, RSS {} MiB",
+        bytes.len() >> 10,
+        rss / 1_048_576
+    );
+    assert!(t <= Duration::from_secs(5), "{t:?}");
+    assert!(rss <= base_rss + (extra_mib + 64) * 1_048_576, "RSS {rss}");
+    let o = common::run(
+        Command::new(sfor_bin())
+            .args(args)
+            .current_dir(fx.path())
+            .env_remove("RIPGREP_CONFIG_PATH")
+            .stdin(Stdio::null()),
+    );
+    assert!(
+        common::stderr(&o).contains(warning),
+        "{}",
+        common::stderr(&o)
+    );
+    if warning.is_empty() {
+        assert_eq!(common::stderr(&o), "");
+    }
+}
+
+/// D17 (Fable r1 #1): a PDF whose font's ToUnicode map decompresses past 64 MiB is refused with
+/// a warning, quickly and within 64 MiB plus rg's memory and 64 MiB, and is then searched as
+/// rg searches it.
+#[test]
+#[ignore]
+fn a_pdf_bomb_is_refused_within_its_limit() {
+    let _alone = alone();
+    refuses_the_bomb(
+        "bomb.pdf",
+        &pdf_font_bomb(300 << 20),
+        64,
+        "bomb.pdf: pdf: a font's ToUnicode map is over the 64 MiB limit",
+        // The page's content stream is not compressed: rg finds the needle in it.
+        0,
+    );
+}
+
+/// D17 (Fable r1 #3): a workbook of sheets under 256 MiB each and over 1 GiB together is
+/// refused with a warning, quickly and within 256 MiB plus rg's memory and 64 MiB, and is then
+/// searched as rg searches it.
+#[test]
+#[ignore]
+fn a_zip_bomb_of_many_parts_is_refused_within_its_limit() {
+    let _alone = alone();
+    let names = ["S1", "S2", "S3", "S4", "S5", "S6"];
+    let row: &[&str] = &["needle"];
+    let sheets: Vec<(&str, &[&[&str]])> = names
+        .iter()
+        .map(|n| (*n, std::slice::from_ref(&row)))
+        .collect();
+    let pad = " ".repeat(200 << 20);
+    let bomb = doc::rezip(&doc::xlsx(&sheets), |name, part| {
+        if !name.starts_with("xl/worksheets/") {
+            return part;
+        }
+        String::from_utf8(part)
+            .unwrap()
+            .replace("</sheetData>", &format!("{pad}</sheetData>"))
+            .into_bytes()
+    });
+    refuses_the_bomb(
+        "bomb.xlsx",
+        &bomb,
+        256,
+        "bomb.xlsx: xlsx: the whole document, decompressed, is over the 1024 MiB limit",
+        1,
+    );
+}
+
+/// D17 (M4 plan r2, Fable #1, Codex #3): a page of 63 MiB of `h`, 33 million operations, is
+/// refused by the work budget as it is read, without becoming a list of operations: lopdf's
+/// took 6 GB for one.
+#[test]
+#[ignore]
+fn a_pdf_page_of_millions_of_operations_is_refused_within_its_limit() {
+    let _alone = alone();
+    refuses_the_bomb(
+        "ops.pdf",
+        &one_page_pdf(b"h\n".repeat(63 << 19), true, None),
+        64,
+        "ops.pdf: pdf: its content streams run more than 8020000 operations",
+        1,
+    );
+}
+
+/// D17 (M4 plan r2, Fable #1): an object stream of 63 MiB of small integers is refused before
+/// lopdf parses it: parsed, 32 MiB took 2 GB.
+#[test]
+#[ignore]
+fn a_pdf_object_stream_bomb_is_refused_within_its_limit() {
+    let _alone = alone();
+    refuses_the_bomb(
+        "objstm.pdf",
+        &pdf_objstm_bomb(63 << 20),
+        64,
+        "objstm.pdf: pdf: its object streams hold more than 2000000 tokens",
+        // The page's content stream is not compressed: rg finds the needle in it.
+        0,
+    );
+}
+
+/// D17 (M4 plan r2, Codex #1): a ToUnicode range of 2³² codes is read as one range: lopdf's
+/// reader listed every code.
+#[test]
+#[ignore]
+fn a_pdf_map_range_of_every_code_is_read_within_its_limit() {
+    let _alone = alone();
+    let map = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
+        1 begincodespacerange <00> <FF> endcodespacerange\n2 beginbfrange\n\
+        <00> <FF> <0000>\n<00000000> <FFFFFFFF> <0041>\nendbfrange\nendcmap end end\n";
+    let content = b"BT /F1 12 Tf 72 700 Td (needle) Tj ET".to_vec();
+    refuses_the_bomb(
+        "range.pdf",
+        &one_page_pdf(content, true, Some(map.to_vec())),
+        64,
+        "",
+        0,
+    );
+}
+
+/// D17 (M4 plan r2, Codex #2): a ToUnicode map that gives a code 256 letters, and a string of
+/// 4 MiB of it, is decoded at most `MAX_GROWTH` bytes for each byte of the string: it made 512 MiB
+/// of text, 9 s and 1.7 GB, from a 5 KB file.
+#[test]
+#[ignore]
+fn a_pdf_map_of_long_text_is_read_within_its_limit() {
+    let _alone = alone();
+    let mut map = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
+        1 begincodespacerange <00> <FF> endcodespacerange\n1 beginbfchar\n<41> <"
+        .to_vec();
+    map.extend(b"006E".repeat(256));
+    map.extend(b">\nendbfchar\nendcmap end end\n");
+    let mut content = b"BT /F1 12 Tf 72 700 Td (".to_vec();
+    content.extend(vec![b'A'; 4 << 20]);
+    content.extend(b") Tj ET");
+    refuses_the_bomb(
+        "long.pdf",
+        &one_page_pdf(content, true, Some(map)),
+        64,
+        "",
+        1,
+    );
+}
+
+/// D30 (M4 plan r3, Codex #3, Fable #2): an encrypted PDF whose 64 object streams hold 1 MiB
+/// of small integers each, which lopdf parses while it decrypts, where no budget of ours is
+/// called: its reader passes 1 GiB and is ended, with one warning, within 10 s. Made by qpdf;
+/// without it the test says so and passes.
+#[test]
+#[ignore]
+fn a_pdf_past_the_readers_memory_is_refused_within_its_limit() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let mut doc = lopdf::Document::load_mem(&doc::pdf(&[&["needle"]], &[])).unwrap();
+    let big: Vec<lopdf::Object> = (0..64)
+        .map(|_| {
+            lopdf::Object::Reference(doc.add_object(lopdf::Object::Array(vec![1.into(); 1 << 19])))
+        })
+        .collect();
+    let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    let cat = doc.get_object_mut(root).unwrap().as_dict_mut().unwrap();
+    cat.set("Big", lopdf::Object::Array(big));
+    let options = lopdf::SaveOptions::builder()
+        .use_object_streams(true)
+        .use_xref_streams(true)
+        .max_objects_per_stream(1)
+        .build();
+    let mut plain = Vec::new();
+    doc.save_with_options(&mut plain, options).unwrap();
+    std::fs::write(fx.file("plain.pdf"), &plain).unwrap();
+    let made = Command::new("qpdf")
+        .args([
+            "--encrypt",
+            "",
+            "",
+            "128",
+            "--use-aes=y",
+            "--",
+            "--object-streams=preserve",
+            "plain.pdf",
+            "enc.pdf",
+        ])
+        .current_dir(fx.path())
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("skipping: qpdf is missing");
+        return;
+    }
+    let Some(rg) = rg_bin() else { return };
+    let args = ["--docs", "--flat", "needle", "enc.pdf"];
+    let (t, rss, _) = measure_to(&sfor_bin(), &fx, &args, None, Stdio::null(), 1).unwrap();
+    let (_, base_rss) = measure(&rg, &fx, &["needle", "enc.pdf"], 1).unwrap();
+    eprintln!("enc.pdf: {t:?}, RSS {} MiB", rss / 1_048_576);
+    assert!(t <= Duration::from_secs(10), "{t:?}");
+    assert!(rss <= base_rss + (1024 + 64) * 1_048_576, "RSS {rss}");
+    let o = common::run(
+        Command::new(sfor_bin())
+            .args(args)
+            .current_dir(fx.path())
+            .env_remove("RIPGREP_CONFIG_PATH")
+            .stdin(Stdio::null()),
+    );
+    assert!(
+        common::stderr(&o)
+            .contains("enc.pdf: pdf: reading it needed more than the 1024 MiB a reader may use"),
+        "{}",
+        common::stderr(&o)
+    );
+}
