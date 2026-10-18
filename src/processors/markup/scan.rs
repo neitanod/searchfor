@@ -432,18 +432,19 @@ impl<'a> Scanner<'a> {
             }
             if rest.starts_with(b"<!") && self.xml {
                 // A doctype, with its internal subset in brackets: `DOCTYPE`, XML white space
-                // and a Name (M3 code review r3, Codex #1).
+                // and a Name (M3 code review r3, Codex #1), then white space, `[` or `>` (r4,
+                // Codex #1: `<!DOCTYPE r©>` is none).
+                let xml_space = |b: &u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r');
                 let mut name = lt + 9;
-                while s
-                    .get(name)
-                    .is_some_and(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
-                {
+                while s.get(name).is_some_and(xml_space) {
                     name += 1;
                 }
-                if !rest[2..].starts_with(b"DOCTYPE")
-                    || name == lt + 9
-                    || xml_name_end(s, name).is_err()
-                {
+                let named = name > lt + 9
+                    && xml_name_end(s, name).is_ok_and(|ne| {
+                        s.get(ne)
+                            .is_some_and(|b| xml_space(b) || matches!(b, b'[' | b'>'))
+                    });
+                if !rest[2..].starts_with(b"DOCTYPE") || !named {
                     self.pos = s.len();
                     return Step::Error(lt);
                 }
@@ -747,6 +748,10 @@ mod tests {
             "<!DOCTYPE\x0cr><r/>",
             "<!DOCTYPE 1r><r/>",
             "<!DOCTYPE",
+            // M3 code review r4, Codex #1: the whole Name, then white space, `[` or `>`.
+            "<!DOCTYPE r©><r/>",
+            "<!DOCTYPE r=><r/>",
+            "<!DOCTYPE r",
         ] {
             assert_eq!(tags(bad, true), ["error at 0"], "{bad:?}");
         }
@@ -755,6 +760,7 @@ mod tests {
             "<!DOCTYPE\n\t r ><r/>",
             "<!DOCTYPE x:r-1 SYSTEM 'r.dtd'><r/>",
             "<!DOCTYPE r[<!ENTITY e 'x'>]><r/>",
+            "<!DOCTYPE ñandú·1\r\n><r/>",
         ] {
             assert_eq!(tags(good, true), ["<r/"], "{good:?}");
         }
