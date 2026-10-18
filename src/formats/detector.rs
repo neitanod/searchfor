@@ -1,7 +1,7 @@
 //! The Detector (spec §4.1): override, exact name, extension, magic bytes, shebang.
 use super::{Registry, definition::FormatDefinition};
 use globset::{Glob, GlobMatcher};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 enum Override {
@@ -19,6 +19,10 @@ pub struct Detector<'r> {
     /// claim (`may_be_document`).
     doc_names: HashSet<String>,
     doc_extensions: HashSet<String>,
+    /// The first active Definition (in the Registry's order) of each exact name and of each
+    /// extension (lowercase): `detect` asks them of every file.
+    by_name: HashMap<String, usize>,
+    by_extension: HashMap<String, usize>,
 }
 
 impl<'r> Detector<'r> {
@@ -38,13 +42,33 @@ impl<'r> Detector<'r> {
                 None => Override::All(name.to_string()),
             });
         }
-        Ok(Self {
+        let mut d = Self {
             registry,
             overrides,
             docs: false,
             doc_names: HashSet::new(),
             doc_extensions: HashSet::new(),
-        })
+            by_name: HashMap::new(),
+            by_extension: HashMap::new(),
+        };
+        d.index();
+        Ok(d)
+    }
+
+    fn index(&mut self) {
+        self.by_name.clear();
+        self.by_extension.clear();
+        for (i, d) in self.registry.all().iter().enumerate() {
+            if !self.active(d) {
+                continue;
+            }
+            for n in &d.names {
+                self.by_name.entry(n.clone()).or_insert(i);
+            }
+            for e in &d.extensions {
+                self.by_extension.entry(e.to_ascii_lowercase()).or_insert(i);
+            }
+        }
     }
 
     /// Detects the document Formats too (`--docs`).
@@ -57,6 +81,7 @@ impl<'r> Detector<'r> {
                     .extend(d.extensions.iter().map(|e| e.to_ascii_lowercase()));
             }
         }
+        self.index();
         self
     }
 
@@ -127,18 +152,19 @@ impl<'r> Detector<'r> {
         }
         // A file name that is not UTF-8 skips the name and extension signals only.
         if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
-            && let Some(d) = defs
-                .iter()
-                .find(|d| self.active(d) && d.names.iter().any(|n| n == file_name))
+            && let Some(&i) = self.by_name.get(file_name)
         {
-            return Some(d);
+            return Some(&defs[i]);
         }
-        if let Some(ext) = path.extension().and_then(|e| e.to_str())
-            && let Some(d) = defs.iter().find(|d| {
-                self.active(d) && d.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext))
-            })
-        {
-            return Some(d);
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            let i = if ext.bytes().any(|b| b.is_ascii_uppercase()) {
+                self.by_extension.get(&ext.to_ascii_lowercase())
+            } else {
+                self.by_extension.get(ext)
+            };
+            if let Some(&i) = i {
+                return Some(&defs[i]);
+            }
         }
         // Magic bytes and shebangs decide only for a name without extension (M2 plan, D15).
         if path.extension().is_some() {
@@ -192,6 +218,54 @@ mod tests {
             .unwrap()
             .with_docs(true);
         assert!(forced.may_be_document(p("a.txt")));
+    }
+
+    /// `detect`'s name and extension signals give the first active Definition, in the
+    /// Registry's order, whose names or extensions (in any case) match, with `--docs` off and on.
+    #[test]
+    fn names_and_extensions_pick_the_first_active_definition() {
+        let r = registry();
+        let scan = |d: &Detector, path: &str| {
+            let p = Path::new(path);
+            let file = p.file_name().and_then(|n| n.to_str()).unwrap();
+            let ext = p.extension().and_then(|e| e.to_str());
+            r.all()
+                .iter()
+                .find(|f| d.active(f) && f.names.iter().any(|n| n == file))
+                .or_else(|| {
+                    ext.and_then(|ext| {
+                        r.all().iter().find(|f| {
+                            d.active(f) && f.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext))
+                        })
+                    })
+                })
+                .map(|f| f.name.clone())
+        };
+        let paths = [
+            "Makefile",
+            "a.md",
+            "README.MD",
+            "x.Rs",
+            "r.pdf",
+            "R.PDF",
+            "t.docx",
+            "s.XLSX",
+            "app.db",
+            "b.epub",
+            "c.odt",
+            "d.json",
+            "e.unknown",
+            "f.HtMl",
+        ];
+        for docs in [false, true] {
+            let d = Detector::new(&r, &[]).unwrap().with_docs(docs);
+            for path in paths {
+                let got = d.detect(Path::new(path), b"").map(|f| f.name.clone());
+                if path.contains('.') || scan(&d, path).is_some() {
+                    assert_eq!(got, scan(&d, path), "{path} with --docs {docs}");
+                }
+            }
+        }
     }
 
     fn known(p: &str) -> bool {
