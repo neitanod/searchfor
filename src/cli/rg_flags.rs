@@ -120,9 +120,9 @@ pub const RG_FLAGS: &[RgFlag] = &[
     RgFlag { long: "no-one-file-system", short: None, takes_value: false, status: NotYet },
     RgFlag { long: "no-pcre2", short: None, takes_value: false, status: NotYet },
     RgFlag { long: "no-pcre2-unicode", short: None, takes_value: false, status: NotYet },
-    RgFlag { long: "no-pre", short: None, takes_value: false, status: NotYet },
+    RgFlag { long: "no-pre", short: None, takes_value: false, status: Implemented },
     RgFlag { long: "no-require-git", short: None, takes_value: false, status: NotYet },
-    RgFlag { long: "no-search-zip", short: None, takes_value: false, status: NotYet },
+    RgFlag { long: "no-search-zip", short: None, takes_value: false, status: Implemented },
     RgFlag { long: "no-sort-files", short: None, takes_value: false, status: NotYet },
     RgFlag { long: "no-stats", short: None, takes_value: false, status: NotYet },
     RgFlag { long: "no-text", short: None, takes_value: false, status: Implemented },
@@ -137,15 +137,15 @@ pub const RG_FLAGS: &[RgFlag] = &[
     RgFlag { long: "pcre2", short: Some('P'), takes_value: false, status: NotYet },
     RgFlag { long: "pcre2-unicode", short: None, takes_value: false, status: NotYet },
     RgFlag { long: "pcre2-version", short: None, takes_value: false, status: NotYet },
-    RgFlag { long: "pre", short: None, takes_value: true, status: NotYet },
-    RgFlag { long: "pre-glob", short: None, takes_value: true, status: NotYet },
+    RgFlag { long: "pre", short: None, takes_value: true, status: Implemented },
+    RgFlag { long: "pre-glob", short: None, takes_value: true, status: Implemented },
     RgFlag { long: "pretty", short: Some('p'), takes_value: false, status: NotYet },
     RgFlag { long: "quiet", short: Some('q'), takes_value: false, status: Implemented },
     RgFlag { long: "regex-size-limit", short: None, takes_value: true, status: NotYet },
     RgFlag { long: "regexp", short: Some('e'), takes_value: true, status: Implemented },
     RgFlag { long: "replace", short: Some('r'), takes_value: true, status: NotYet },
     RgFlag { long: "require-git", short: None, takes_value: false, status: NotYet },
-    RgFlag { long: "search-zip", short: Some('z'), takes_value: false, status: NotYet },
+    RgFlag { long: "search-zip", short: Some('z'), takes_value: false, status: Implemented },
     RgFlag { long: "smart-case", short: Some('S'), takes_value: false, status: Implemented },
     RgFlag { long: "sort", short: None, takes_value: true, status: Implemented },
     RgFlag { long: "sort-files", short: None, takes_value: false, status: NotYet },
@@ -284,6 +284,29 @@ searched before the read that brings the NUL. For UTF-16 that cut cannot follow 
 through the decoder, so it is the larger of the last reported line and `bytes_searched`: with a
 context (`-A`, `-B`, `-C`) on a UTF-16 file that holds U+0000, the names of the last lines of
 that buffer can be missing (fix after code review r9).
+
+### Object files
+
+rg 14.1.1 prints `binary file matches (found \"\\0\" byte around offset N)` for an ELF, PE or
+Mach-O file that it searches with a Match (a file named on the command line, or any with
+`--binary`), and stops at its first Match. sfor prints one row per printable string that holds
+Matches instead, at the hex offset of its first Match and with its Trail (spec §5.7), and so
+searches the whole file: in `--json`, `bytes_searched` is the file's size, `matched_lines` the
+rows and `matches` the Matches, and `binary_offset` is null. `-c`, `-l`, `-q` and `--no-trail`
+print what rg prints. With `-v` the file is printed as rg prints it. A walked object file
+without `--binary` stops at its first NUL, as in rg, and prints nothing (M4 plan, D4):
+
+```sh
+sfor --flat version /usr/bin/ls      # rows; rg: binary file matches
+sfor --flat --binary version /usr/bin    # the same for every object file with a Match
+```
+
+### Documents with `--docs`
+
+`--docs` has no ripgrep counterpart: a PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB or SQLite
+file is searched in the text its Extractor takes from it (spec §5.8), also with `--no-trail`,
+`-c`, `-l` and `-q`, which print what rg would print for that text. `bytes_searched` counts the
+text. Without `--docs` these files are searched as rg searches them.
 ";
 
 #[cfg(test)]
@@ -452,6 +475,12 @@ mod tests {
             "version",
             "with-filename",
             "word-regexp",
+            // M4: ripgrep's input transforms (spec §8).
+            "pre",
+            "no-pre",
+            "pre-glob",
+            "search-zip",
+            "no-search-zip",
         ];
         expected.sort();
         assert_eq!(implemented, expected);
