@@ -704,8 +704,10 @@ impl Ctx<'_> {
             return Ok(Box::new(std::io::Cursor::new(doc.text.as_slice())));
         }
         match &t.through {
+            // The path printed, as rg 14.1.1 gives the command and the decompressor (`./a.txt`
+            // walked is `a.txt`): the same file (code review r1, Fable #1).
             Some(how @ (Through::Pre | Through::Zip)) => {
-                self.pre.open(how, p).map(|r| r as Box<dyn Read>)
+                self.pre.open(how, &t.path).map(|r| r as Box<dyn Read>)
             }
             _ => Ok(Box::new(File::open(p)?)),
         }

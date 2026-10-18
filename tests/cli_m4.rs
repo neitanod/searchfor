@@ -448,6 +448,25 @@ fn m4_08_pre_and_z_as_ripgrep() {
         assert_eq!(code(&s), code(&r), "{args:?}");
         assert_eq!(stderr(&s).replace("s4: ", "rg: "), stderr(&r), "{args:?}");
     }
+    // Walking the current directory, the command and the decompressor get the path rg prints,
+    // without `./`, in their arguments and in rg's errors (code review r1, Fable #1).
+    let show = script("show.sh", "#!/bin/sh\nprintf 'ARG=%s\\n' \"$1\"\n");
+    let mut walked: Vec<Vec<&str>> = vec![
+        vec!["--pre", &show, "--sort", "path", "ARG="],
+        vec!["--pre", &fail, "--sort", "path", "needle"],
+        vec!["--pre", "/nonexistent/pre", "--sort", "path", "needle"],
+    ];
+    if have_gzip {
+        std::fs::write(d.join("bad.gz"), "not gzip, needle\n").unwrap();
+        walked.push(vec!["-z", "--sort", "path", "needle"]);
+    }
+    for args in walked {
+        let s = run(fx.s4(args.iter().chain(&["--no-trail"])).current_dir(&d));
+        let r = run(fx.rg(&args).current_dir(&d));
+        assert_eq!(stdout(&s), stdout(&r), "{args:?}");
+        assert_eq!(code(&s), code(&r), "{args:?}");
+        assert_eq!(stderr(&s).replace("s4: ", "rg: "), stderr(&r), "{args:?}");
+    }
     // In the Trail layouts the output of --pre gets the Trails of the file's Format.
     assert_eq!(
         ok(&fx, &["--flat", "--pre", &up, "NEEDLE", "m4/pre/b.md"]),
