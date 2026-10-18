@@ -641,6 +641,10 @@ pub(crate) mod cancel {
     struct Lifecycle {
         cancelled: bool,
         live: Vec<Weak<Conn>>,
+        /// The readers of documents (M4 plan, D30): the same `Child` their pool and watchdog
+        /// use, so one lock orders every kill and wait, and a pid is never signalled after
+        /// its process was reaped (M4 plan r5, Codex #1).
+        readers: Vec<Weak<Mutex<std::process::Child>>>,
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -654,6 +658,7 @@ pub(crate) mod cancel {
                 state: Mutex::new(Lifecycle {
                     cancelled: false,
                     live: Vec::new(),
+                    readers: Vec::new(),
                 }),
                 signals,
             }
@@ -680,6 +685,27 @@ pub(crate) mod cancel {
             Ok(started)
         }
 
+        /// `launch` for a reader of documents (M4 plan, D30): started under the lock and
+        /// registered by its pid, so a signal either comes first or sees it.
+        pub(crate) fn launch_reader(
+            &self,
+            start: impl FnOnce() -> std::io::Result<std::process::Child>,
+        ) -> Result<std::io::Result<Arc<Mutex<std::process::Child>>>, Cancelled> {
+            if self.signals {
+                watch();
+            }
+            let mut st = self.state.lock().unwrap();
+            if st.cancelled {
+                return Err(Cancelled);
+            }
+            let started = start().map(|c| Arc::new(Mutex::new(c)));
+            if let Ok(c) = &started {
+                st.readers.retain(|w| w.strong_count() > 0);
+                st.readers.push(Arc::downgrade(c));
+            }
+            Ok(started)
+        }
+
         /// The run was cancelled: hosts stop warning, since sfor is about to die by the signal
         /// and ripgrep prints nothing on Ctrl-C (review r4, Fable #3).
         pub(crate) fn cancelled(&self) -> bool {
@@ -690,16 +716,29 @@ pub(crate) mod cancel {
         /// every registered process, in parallel. Processes being started hold the lock, so
         /// they finish registering first and are in the list.
         pub(crate) fn cancel(&self) {
-            let live: Vec<Arc<Conn>> = {
+            let (live, readers): (Vec<Arc<Conn>>, Vec<_>) = {
                 let mut st = self.state.lock().unwrap();
                 st.cancelled = true;
-                st.live.iter().filter_map(Weak::upgrade).collect()
+                let live = st.live.iter().filter_map(Weak::upgrade).collect();
+                let readers = st.readers.iter().filter_map(Weak::upgrade).collect();
+                (live, readers)
             };
+            reap(&readers);
             std::thread::scope(|s| {
                 for c in &live {
                     s.spawn(move || c.abort());
                 }
             });
+        }
+    }
+
+    /// Kills and reaps the readers, through their `Child`: one already reaped is not
+    /// signalled again (`Child::kill` after `wait` does nothing).
+    fn reap(readers: &[Arc<Mutex<std::process::Child>>]) {
+        for r in readers {
+            let mut c = r.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = c.kill();
+            let _ = c.wait();
         }
     }
 
@@ -1665,6 +1704,45 @@ mod tests {
             "{:?}",
             r.warnings.lock().unwrap()
         );
+    }
+
+    /// M4 plan r5, Codex #1: a reader of documents that its pool retires while a signal
+    /// cancels the run, with a Helper Processor busy: both go through its one `Child`, so it is
+    /// killed and reaped once, and a kill after the wait signals no pid.
+    #[cfg(unix)]
+    #[test]
+    fn a_reader_retired_while_the_run_is_cancelled_is_reaped_once() {
+        let r = run(Mode::Pool, 1, 2000, deaf());
+        let reader = r
+            .sup
+            .launch_reader(|| std::process::Command::new("sleep").arg("30").spawn())
+            .unwrap()
+            .unwrap();
+        let go = Arc::new(std::sync::Barrier::new(3));
+        std::thread::scope(|s| {
+            let h = r.host.clone();
+            s.spawn(move || {
+                let _ = trails(&h, "a.ini");
+            });
+            std::thread::sleep(Duration::from_millis(50)); // the helper is busy
+            let (g, rd) = (go.clone(), reader.clone());
+            s.spawn(move || {
+                g.wait();
+                let mut c = rd.lock().unwrap();
+                let _ = c.kill();
+                let _ = c.wait();
+            });
+            let (g, sup) = (go.clone(), r.sup);
+            s.spawn(move || {
+                g.wait();
+                sup.cancel();
+            });
+            go.wait();
+        });
+        let mut c = reader.lock().unwrap();
+        assert!(c.try_wait().unwrap().is_some());
+        assert!(c.kill().is_ok());
+        assert_eq!(r.reaps.load(SeqCst), r.launches.load(SeqCst));
     }
 
     #[test]

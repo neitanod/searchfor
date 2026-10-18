@@ -5,6 +5,7 @@
 pub mod epub;
 #[doc(hidden)]
 pub mod fixture;
+pub mod isolated;
 pub mod memory;
 pub mod odf;
 pub mod ooxml;
