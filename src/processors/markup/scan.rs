@@ -30,6 +30,8 @@ pub struct Scanner<'a> {
     src: &'a [u8],
     pos: usize,
     xml: bool,
+    /// XML: still in the prolog, before the doctype and the root, where a doctype may come.
+    prolog: bool,
 }
 
 fn is_space(b: u8) -> bool {
@@ -103,7 +105,12 @@ fn name_start(b: u8, xml: bool) -> bool {
 
 impl<'a> Scanner<'a> {
     pub fn new(src: &'a [u8], xml: bool) -> Self {
-        Self { src, pos: 0, xml }
+        Self {
+            src,
+            pos: 0,
+            xml,
+            prolog: true,
+        }
     }
 
     /// The byte after `pat`, searched from `from`; None when the file ends first.
@@ -444,10 +451,12 @@ impl<'a> Scanner<'a> {
                         s.get(ne)
                             .is_some_and(|b| xml_space(b) || matches!(b, b'[' | b'>'))
                     });
-                if !rest[2..].starts_with(b"DOCTYPE") || !named {
+                // One doctype, before the root (r4, Fable #2).
+                if !rest[2..].starts_with(b"DOCTYPE") || !named || !self.prolog {
                     self.pos = s.len();
                     return Step::Error(lt);
                 }
+                self.prolog = false;
                 match self.doctype_end(lt + 9) {
                     Some(e) => self.pos = e,
                     None => return unfinished(self),
@@ -499,6 +508,7 @@ impl<'a> Scanner<'a> {
                 }
             };
             self.pos = end;
+            self.prolog = false;
             let name = ns..ne;
             let tag = lt..end;
             if close {
@@ -764,6 +774,34 @@ mod tests {
         ] {
             assert_eq!(tags(good, true), ["<r/"], "{good:?}");
         }
+    }
+
+    #[test]
+    fn a_doctype_comes_once_and_before_the_root() {
+        // M3 code review r4, Fable #2: XML 1.0 has one doctype, in the prolog.
+        for (bad, out) in [
+            ("<!DOCTYPE r><!DOCTYPE r><r/>", &["error at 12"][..]),
+            (
+                "<!DOCTYPE r>\n<!-- c -->\n<!DOCTYPE r><r/>",
+                &["error at 24"],
+            ),
+            ("<r><!DOCTYPE r><a/></r>", &["<r", "error at 3"]),
+            ("<r/><!DOCTYPE r>", &["<r/", "error at 4"]),
+        ] {
+            assert_eq!(tags(bad, true), out, "{bad:?}");
+        }
+        assert_eq!(
+            tags(
+                "<?xml version='1.0'?><!-- c --><?p?>\n<!DOCTYPE r><?q?><r/>",
+                true
+            ),
+            ["<r/"]
+        );
+        // HTML keeps skipping any doctype.
+        assert_eq!(
+            tags("<!DOCTYPE html><p><!DOCTYPE html></p>", false),
+            ["<p", "</p"]
+        );
     }
 
     #[test]

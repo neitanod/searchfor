@@ -381,6 +381,12 @@ fn m3_18_a_doctype_without_a_name_ends_the_structure() {
         // M3 code review r4, Codex #1: a valid prefix of the name is not enough.
         ("copy.xml", "<!DOCTYPE r©><r><a>needle</a></r>\n"),
         ("equals.xml", "<!DOCTYPE r=><r><a>needle</a></r>\n"),
+        // M3 code review r4, Fable #2: one doctype, before the root.
+        (
+            "twice.xml",
+            "<!DOCTYPE r><!DOCTYPE r><r><a>needle</a></r>\n",
+        ),
+        ("inside.xml", "<r><!DOCTYPE r><a>needle</a></r>\n"),
     ] {
         std::fs::write(fx.file(file), body).unwrap();
         let o = run(&mut fx.sfor(["--format", "xml", "--flat", "--within", "a", "needle", file]));
