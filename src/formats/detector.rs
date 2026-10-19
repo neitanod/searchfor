@@ -229,6 +229,29 @@ impl<'r> Detector<'r> {
     }
 }
 
+/// The exact names and the extensions (lowercase) the built-in document Formats claim
+/// (formats/docx.toml and the other eight; a unit test keeps them equal).
+pub const BUILTIN_DOC_NAMES: &[&str] = &[];
+pub const BUILTIN_DOC_EXTENSIONS: &[&str] = &[
+    "docx", "docm", "dotx", "dotm", "epub", "xlsx", "xlsm", "xltx", "xltm", "pdf", "pptx", "pptm",
+    "potx", "potm", "ppsx", "ppsm", "ods", "ots", "odt", "ott", "sqlite", "sqlite3", "db", "db3",
+    "s3db", "sl3", "odp", "otp",
+];
+
+/// `Detector::may_be_document` with `--docs`, no override and only the built-in Definitions,
+/// before the Registry is loaded: a search with no candidate never loads it (code review r7,
+/// Codex #3).
+pub fn builtin_may_be_document(path: &Path) -> bool {
+    let (Some(name), Some(ext)) = (
+        path.file_name().and_then(|n| n.to_str()),
+        path.extension().and_then(|e| e.to_str()),
+    ) else {
+        return true;
+    };
+    BUILTIN_DOC_NAMES.contains(&name)
+        || BUILTIN_DOC_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
+}
+
 /// `#!/usr/bin/env bash -e` → "bash"; `#!/bin/sh` → "sh".
 fn shebang_interpreter(head: &[u8]) -> Option<&str> {
     let line = head.strip_prefix(b"#!")?;
@@ -247,6 +270,39 @@ fn shebang_interpreter(head: &[u8]) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Code review r7, Codex #3: before the Registry is loaded, the built-in document Formats'
+    /// exact names and extensions tell which names may be documents, as the Detector of the
+    /// built-in Definitions does.
+    #[test]
+    fn the_built_in_document_names_are_the_document_formats() {
+        let r = registry();
+        let docs = r.all().iter().filter(|d| d.processor == "docs");
+        let names: HashSet<String> = docs.clone().flat_map(|d| d.names.clone()).collect();
+        let extensions: HashSet<String> = docs
+            .flat_map(|d| d.extensions.iter().map(|e| e.to_ascii_lowercase()))
+            .collect();
+        let set = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<HashSet<_>>();
+        assert_eq!(names, set(BUILTIN_DOC_NAMES));
+        assert_eq!(extensions, set(BUILTIN_DOC_EXTENSIONS));
+        let d = Detector::new(&r, &[]).unwrap().with_docs(true);
+        for path in [
+            "a.txt",
+            "r.pdf",
+            "R.PDF",
+            "app.db",
+            "x.Sqlite3",
+            "Makefile",
+            "bin/ls",
+            ".bashrc",
+            "a.b.docx",
+            "dir.pdf/a.md",
+            "noext/",
+        ] {
+            let p = Path::new(path);
+            assert_eq!(builtin_may_be_document(p), d.may_be_document(p), "{path}");
+        }
+    }
 
     #[test]
     fn only_some_names_may_be_documents() {

@@ -315,34 +315,37 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         args.fragment_width
     };
     // The Format Definitions: for the Trails, and with --docs (the default) for every mode,
-    // which must tell a document by its name before the search (M4 plan, design note 3).
-    let registry = (matches!(mode, Mode::Trail) || args.docs)
-        .then(|| load_registry(&msgs, formats::user_formats_dir().as_deref()));
-    let detector = match &registry {
-        Some(r) => Some(Detector::new(r, &args.formats)?.with_docs(args.docs)),
-        None => None,
-    };
-    let roots = match args.docs {
-        true => paths
-            .iter()
-            .filter(|p| p.as_path() != Path::new("-"))
-            .map(|p| (p.clone(), resolve(p)))
-            .collect(),
-        false => Vec::new(),
-    };
-    let reach = roots.iter().any(|(_, r)| match r {
-        Resolved::At(at) => reaches(at),
-        Resolved::Descriptors | Resolved::Unknown => true,
-    });
+    // which must tell a document by its name before the search (M4 plan, design note 3). Only
+    // the built-in ones and no override: loaded once a file may be a document by the built-in
+    // document Formats' names (`Ctx::detector`), so a search without one costs what it costs
+    // with --no-docs (code review r7, Codex #3 and Fable #3). Else loaded here: the Trails
+    // need them for every file, an unknown override is an error before the search, and a
+    // user's or a Grammar's Definition may claim any name as a document, and warns first.
+    let user_formats = formats::user_formats_dir();
+    let registry = std::sync::OnceLock::new();
+    let detector = std::sync::OnceLock::new();
+    let lazy = args.docs
+        && matches!(mode, Mode::Passthrough | Mode::Quiet | Mode::QuietJson)
+        && args.formats.is_empty()
+        && !formats::any_user_definition(
+            user_formats.as_deref(),
+            crate::grammars::grammars_dir().as_deref(),
+        );
+    if (matches!(mode, Mode::Trail) || args.docs) && !lazy {
+        let r = registry.get_or_init(|| load_registry(&msgs, user_formats.as_deref()));
+        let _ = detector.set(Detector::new(r, &args.formats)?.with_docs(args.docs));
+    }
     let ctx = Ctx {
         args,
         matcher,
-        roots,
-        reach,
+        registry: &registry,
+        detector: &detector,
+        roots: Default::default(),
         follow: args.follow && !args.no_follow,
+        links: Default::default(),
+        linked: AtomicBool::new(false),
         msgs,
         pre,
-        docs: detector.as_ref().filter(|_| args.docs),
         in_memory: search::rg_in_memory(&paths, implicit_stdin),
         paths,
         walker,
@@ -395,7 +398,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
             }
         }
         Mode::Trail => {
-            let detector = detector.as_ref().expect("built for Mode::Trail");
+            let detector = ctx.detector();
             let ro = RenderOptions {
                 layout,
                 line_numbers: !args.no_line_number,
@@ -488,6 +491,33 @@ struct Target {
 struct Held {
     head: Vec<u8>,
     rest: Option<File>,
+}
+
+/// A reader of a file from the first bytes `Ctx::document` read of it and on through the file,
+/// each of whose reads fills the buffer as the file's own read would: what is left of the head,
+/// and the file after it in the same call. The searcher's first read then holds what rg
+/// 14.1.1's holds, and binary data is detected in the same read (code review r7, Fable #1).
+struct HeadThen {
+    head: Vec<u8>,
+    at: usize,
+    rest: File,
+}
+
+impl Read for HeadThen {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = (self.head.len() - self.at).min(buf.len());
+        buf[..n].copy_from_slice(&self.head[self.at..self.at + n]);
+        self.at += n;
+        if n == buf.len() {
+            return Ok(n);
+        }
+        match self.rest.read(&mut buf[n..]) {
+            Ok(m) => Ok(n + m),
+            // What was copied is returned; the next read meets the error again.
+            Err(_) if n > 0 => Ok(n),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 /// What a Trail-mode thread keeps between files: a searcher for files and stdin (BOM sniffing
@@ -622,17 +652,25 @@ struct Ctx<'a> {
     processors: processors::Processors,
     /// `--pre` and `-z`.
     pre: Preprocess,
-    /// With --docs, the Detector that tells documents by their name or magic bytes.
-    docs: Option<&'a Detector<'a>>,
-    /// With --docs, each path to search and how its name resolves (`Ctx::through_descriptors`).
-    roots: Vec<(PathBuf, Resolved)>,
+    /// The Format Definitions and their Detector, which with --docs tells documents by their
+    /// name or magic bytes: loaded in `main`, or once needed (`Ctx::detector`).
+    registry: &'a std::sync::OnceLock<Registry>,
+    detector: &'a std::sync::OnceLock<Detector<'a>>,
+    /// With --docs, each path to search and how its name resolves, and whether some root may
+    /// have a name of a descriptor below it (`reaches`) or is not resolved: resolved once a
+    /// file may be a document (`Ctx::roots`).
+    roots: std::sync::OnceLock<(Vec<(PathBuf, Resolved)>, bool)>,
     /// `--follow`: the walker follows links below the roots.
     follow: bool,
-    /// Some root may have a name of a descriptor below it (`reaches`), or is not resolved.
-    reach: bool,
+    /// With --docs and `--follow`, each directory below a root the walker reached by following
+    /// a link, by the bytes of its name, and how it resolves, recorded when the walker yields
+    /// it, before any name below it (`Ctx::through_descriptors`).
+    links: std::sync::RwLock<Links>,
+    /// `links` is not empty.
+    linked: AtomicBool,
 }
 
-impl Ctx<'_> {
+impl<'a> Ctx<'a> {
     /// Walks the paths, sequentially where ripgrep 14.1.1 uses one thread (`--sort path`, `-j1`,
     /// one file), else in parallel with one state per thread (design note 11), and calls `visit`
     /// for every file to search.
@@ -644,13 +682,14 @@ impl Ctx<'_> {
         let w = &self.walker;
         if self.sequential {
             let mut state = init();
+            let mut above = Above::default();
             for r in w.build() {
                 if self.quit.load(Relaxed) {
                     break;
                 }
                 match r {
                     Ok(d) => {
-                        if let Some(t) = self.target(&d) {
+                        if let Some(t) = self.target(&d, &mut above) {
                             visit(&mut state, self.prepare(t));
                         }
                     }
@@ -661,13 +700,14 @@ impl Ctx<'_> {
             let (init, visit) = (&init, &visit);
             w.build_parallel().run(|| {
                 let mut state = init();
+                let mut above = Above::default();
                 Box::new(move |r| {
                     if self.quit.load(Relaxed) {
                         return WalkState::Quit;
                     }
                     match r {
                         Ok(d) => {
-                            if let Some(t) = self.target(&d) {
+                            if let Some(t) = self.target(&d, &mut above) {
                                 visit(&mut state, self.prepare(t));
                             }
                         }
@@ -686,7 +726,7 @@ impl Ctx<'_> {
 
     /// ripgrep's choice of what to search: stdin, every file named on the command line, and
     /// regular files found by walking.
-    fn target(&self, d: &DirEntry) -> Option<Target> {
+    fn target(&self, d: &DirEntry, above: &mut Above) -> Option<Target> {
         if d.is_stdin() {
             return Some(Target {
                 path: PathBuf::from("<stdin>"),
@@ -704,6 +744,13 @@ impl Ctx<'_> {
         let is_dir = d.file_type().is_some_and(|t| t.is_dir())
             || (d.depth() == 0 && d.path_is_symlink() && d.path().is_dir());
         let explicit = d.depth() == 0 && !is_dir;
+        if is_dir && d.depth() > 0 && self.follow && self.args.docs && d.path_is_symlink() {
+            let resolved = resolve(d.path());
+            let mut links = self.links.write().unwrap_or_else(|e| e.into_inner());
+            let key = d.path().as_os_str().as_encoded_bytes().to_vec();
+            links.insert(key, (d.path().to_path_buf(), resolved));
+            self.linked.store(true, Relaxed);
+        }
         if is_dir || (!explicit && !d.file_type().is_some_and(|t| t.is_file())) {
             return None;
         }
@@ -720,10 +767,11 @@ impl Ctx<'_> {
         // and the file is opened again, which a FIFO, a descriptor or stdin by name would not
         // survive (code review of the M4 plan r1, Codex #3).
         let mut held = None;
-        let through = self
-            .pre
-            .through(p)
-            .or_else(|| regular.then(|| self.document(d, &mut held)).flatten());
+        let through = self.pre.through(p).or_else(|| {
+            regular
+                .then(|| self.document(d, &mut held, above))
+                .flatten()
+        });
         Some(Target {
             path: shown.to_path_buf(),
             fs: Some(p.to_path_buf()),
@@ -735,16 +783,63 @@ impl Ctx<'_> {
         })
     }
 
+    /// The Detector, loaded on the first call when `main` did not load it: then there is no
+    /// override and no Definition but the built-in ones, whose directories are not read again.
+    fn detector(&self) -> &'a Detector<'a> {
+        self.detector.get_or_init(|| {
+            let r = self
+                .registry
+                .get_or_init(|| Registry::load_all(None, None, &processors::Processors::known).0);
+            Detector::new(r, &self.args.formats)
+                .expect("without overrides")
+                .with_docs(self.args.docs)
+        })
+    }
+
+    /// With --docs, the Detector when `p` may be a document (`Detector::may_be_document`):
+    /// before it is loaded, as the built-in document Formats tell by the name, which are all
+    /// there are then (`main`).
+    fn may_be_document(&self, p: &Path) -> Option<&'a Detector<'a>> {
+        if !self.args.docs
+            || (self.detector.get().is_none() && !formats::detector::builtin_may_be_document(p))
+        {
+            return None;
+        }
+        Some(self.detector()).filter(|det| det.may_be_document(p))
+    }
+
+    /// `Ctx::roots`, resolved on the first call.
+    fn roots(&self) -> &(Vec<(PathBuf, Resolved)>, bool) {
+        self.roots.get_or_init(|| {
+            let roots: Vec<(PathBuf, Resolved)> = self
+                .paths
+                .iter()
+                .filter(|p| p.as_path() != Path::new("-"))
+                .map(|p| (p.clone(), resolve(p)))
+                .collect();
+            let reach = roots.iter().any(|(_, r)| match r {
+                Resolved::At(at) => reaches(at),
+                Resolved::Descriptors | Resolved::Unknown => true,
+            });
+            (roots, reach)
+        })
+    }
+
     /// With --docs, `Through::Docs` for a file whose Format is a document Format: by its name,
     /// or, for a name without an extension, by its first bytes (read only then, and kept in
     /// `held` when the file is no document).
-    fn document(&self, d: &DirEntry, held: &mut Option<Held>) -> Option<Through> {
+    fn document(
+        &self,
+        d: &DirEntry,
+        held: &mut Option<Held>,
+        above: &mut Above,
+    ) -> Option<Through> {
         let p = d.path();
-        let det = self.docs.filter(|det| det.may_be_document(p))?;
+        let det = self.may_be_document(p)?;
         // `/dev/stdin` redirected from a file is a regular file, which the reader would open
         // as its own stdin (code review r1, Codex #1), and so is a file under a directory
         // named by a descriptor (code review r2, Codex #2).
-        if self.through_descriptors(d) {
+        if self.through_descriptors(d, above) {
             return None;
         }
         let def = match det.detect_by_path(p) {
@@ -779,27 +874,56 @@ impl Ctx<'_> {
     }
 
     /// Whether the walked `d` names a file through this process's descriptors
-    /// (`through_descriptors`), resolved once per root (`Ctx::roots`): a file the walker found
-    /// below a root without following a link is the root's resolved name and the names after
-    /// it, none of them a link, so only those names are looked at, with no system call. With
-    /// `--follow`, a name below a root may be a link, and is resolved whole (code review r6,
-    /// Fable #1).
-    fn through_descriptors(&self, d: &DirEntry) -> bool {
-        if d.depth() > 0 && !self.follow && !self.reach {
+    /// (`through_descriptors`), resolved once per root (`Ctx::roots`) and, with `--follow`, once
+    /// per link the walker followed below it (`Ctx::links`): a file the walker found below
+    /// them is the resolved name of the nearest and the names after it, none of them a link,
+    /// so only those names are looked at, with no system call. A name that is a link itself is
+    /// resolved whole (code review r6 and r7, Fable #1 and #2).
+    fn through_descriptors(&self, d: &DirEntry, above: &mut Above) -> bool {
+        let (roots, reach) = self.roots();
+        if d.depth() > 0 && !self.follow && !reach {
             return false;
         }
         let p = d.path();
-        let root = p.ancestors().nth(d.depth());
-        let resolved = root.and_then(|r| self.roots.iter().find(|(q, _)| q == r));
-        match resolved {
+        if d.depth() > 0 && self.follow && d.path_is_symlink() {
+            return through_descriptors(p);
+        }
+        // The nearest followed link above it, else its root: a walked name is under one of
+        // them, and with one root, under it. The walker yields a directory's files one after
+        // the other, mostly to one thread, which looks the link up once for them (`Above`).
+        let linked = match d.depth() > 1 && self.linked.load(Relaxed) {
+            true => {
+                let name = p.as_os_str().as_encoded_bytes();
+                let end = name
+                    .iter()
+                    .rposition(|&b| std::path::is_separator(b as char));
+                let dir = &name[..end.unwrap_or(0)];
+                if above.dir != dir {
+                    let links = self.links.read().unwrap_or_else(|e| e.into_inner());
+                    above.link = nearest_link(&links, dir, d.depth() - 1).cloned();
+                    above.dir.clear();
+                    above.dir.extend_from_slice(dir);
+                }
+                above.link.as_ref()
+            }
+            false => None,
+        };
+        let base = linked.or_else(|| match roots.as_slice() {
+            [only] => Some(only),
+            roots => p
+                .ancestors()
+                .nth(d.depth())
+                .and_then(|r| roots.iter().find(|(q, _)| q == r)),
+        });
+        match base {
             Some((_, Resolved::Descriptors)) => true,
             Some((_, Resolved::Unknown)) if d.depth() == 0 => false,
-            Some((root, Resolved::At(at))) if d.depth() == 0 || !self.follow => {
+            Some((from, Resolved::At(at))) => {
                 if d.depth() == 0 || !reaches(at) {
                     return false;
                 }
                 let mut at = at.clone();
-                let below = p.strip_prefix(root).unwrap_or(Path::new(""));
+                let below = p.strip_prefix(from).unwrap_or(Path::new(""));
                 below.iter().any(|part| {
                     at.push(part);
                     a_descriptor(&at)
@@ -885,7 +1009,11 @@ impl Ctx<'_> {
             Some(Held {
                 head,
                 rest: Some(f),
-            }) => Box::new(std::io::Cursor::new(head).chain(f)),
+            }) => Box::new(HeadThen {
+                head,
+                at: 0,
+                rest: f,
+            }),
             None => Box::new(File::open(p)?),
         })
     }
@@ -912,7 +1040,12 @@ impl Ctx<'_> {
         searcher.set_binary_detection(search::binary_detection(self.args, t.explicit));
         let m = &self.matcher;
         match &t.fs {
-            Some(p) if self.in_memory && t.through.is_none() => searcher.search_path(m, p, sink),
+            // The first bytes `Ctx::document` read, when they are the whole file, are what the
+            // memory map would hold (code review r7, Fable #3).
+            Some(p) if self.in_memory && t.through.is_none() => match t.held.take() {
+                Some(Held { head, rest: None }) => searcher.search_slice(m, &head, sink),
+                _ => searcher.search_path(m, p, sink),
+            },
             _ => {
                 let mut input = self.open_input(t)?;
                 let searched = searcher.search_reader(m, &mut input, sink);
@@ -1268,7 +1401,7 @@ impl Ctx<'_> {
     ) -> bool {
         let object = |head: &[u8]| !self.args.invert_match && detector.object(head).is_some();
         match &t.fs {
-            Some(p) if self.in_memory && t.through.is_none() => match Source::open(p, t.explicit) {
+            Some(p) if self.in_memory && t.through.is_none() => match self.source(t, p) {
                 Ok(src) if object(src.head()) => return false,
                 Ok(src) => self.stream_file(st, t, ro, Streamed::Source(&src), None, None),
                 Err(e) => self.msgs.error(format_args!("{}: {e}", t.path.display())),
@@ -2551,10 +2684,44 @@ fn through_descriptors(p: &Path) -> bool {
 /// Whether a name of a descriptor (`a_descriptor`) can be below the link-free absolute `at`:
 /// every one is under /dev or /proc.
 fn reaches(at: &Path) -> bool {
-    at == Path::new("/") || at.starts_with("/dev") || at.starts_with("/proc")
+    // By its bytes, as it is asked for every walked name (code review r7, Fable #2).
+    let at = at.as_os_str().as_encoded_bytes();
+    let under = |top: &[u8]| at.starts_with(top) && at.get(top.len()).is_none_or(|&b| b == b'/');
+    at == b"/" || under(b"/dev") || under(b"/proc")
+}
+
+/// The followed links below the roots, by the bytes of their names (`Ctx::links`).
+type Links = std::collections::HashMap<Vec<u8>, (PathBuf, Resolved)>;
+
+/// The nearest of `dir`, the bytes of the name of a walked directory at `depth`, and the
+/// names above it down to the root's child, that is in `links`: each is `dir` up to one of its
+/// separators, as the walker joins a name to the one above it with one.
+fn nearest_link<'l>(links: &'l Links, dir: &[u8], depth: usize) -> Option<&'l (PathBuf, Resolved)> {
+    let mut name = dir;
+    for up in 0..depth {
+        if up > 0 {
+            let end = name
+                .iter()
+                .rposition(|&b| std::path::is_separator(b as char))?;
+            name = &name[..end];
+        }
+        if let Some(linked) = links.get(name) {
+            return Some(linked);
+        }
+    }
+    None
+}
+
+/// What a walking thread keeps of the last name `Ctx::through_descriptors` looked at below a
+/// followed link: the bytes of the directory it is in, and the nearest followed link above it.
+#[derive(Default)]
+struct Above {
+    dir: Vec<u8>,
+    link: Option<(PathBuf, Resolved)>,
 }
 
 /// How a name resolves, part by part (`through_descriptors`).
+#[derive(Clone)]
 enum Resolved {
     /// Through this process's descriptors.
     Descriptors,

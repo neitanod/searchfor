@@ -1912,7 +1912,9 @@ fn system_calls(fx: &Fixture, args: &[&str], code: i32) -> Option<u64> {
 /// an extension, seven levels deep (as `.git/objects` or `bin/`), with one thread, the default
 /// makes at most 1.05 × the system calls of --no-docs, counted by strace when it can trace, and
 /// takes at most 1.1 × its CPU time, the medians of nine alternated runs (the margin is the
-/// noise of a loaded machine), with and without the Trail.
+/// noise of a loaded machine), with and without the Trail. With `-L` too, through a tree that
+/// has a link to one of its directories (code review r7, Fable #2): a name below a root is
+/// resolved only where the walker followed a link.
 #[cfg(unix)]
 #[test]
 #[ignore]
@@ -1934,7 +1936,14 @@ fn files_without_an_extension_cost_by_default_what_they_cost_without_documents()
         }
     }
     assert_eq!(n, 20_000);
-    for trail in [&["--no-trail"][..], &[]] {
+    std::os::unix::fs::symlink("d2", fx.file("noext/d3/linked")).unwrap();
+    for (follow, trail) in [
+        (&[][..], &["--no-trail"][..]),
+        (&[], &[]),
+        (&["-L"], &["--no-trail"]),
+        (&["-L"], &[]),
+    ] {
+        let trail = &[follow, trail].concat();
         let with = |docs: &[&'static str]| {
             let mut a = vec!["-j1"];
             a.extend_from_slice(docs);
@@ -1967,6 +1976,88 @@ fn files_without_an_extension_cost_by_default_what_they_cost_without_documents()
         assert!(
             d.as_secs_f64() <= 1.1 * o.as_secs_f64(),
             "{d:?} > 1.1 × {o:?}"
+        );
+    }
+}
+
+/// The system calls s4 with `args` makes, as `strace -f -e trace=…` writes them, one per line;
+/// None without strace, or where it cannot trace.
+#[cfg(unix)]
+fn traced(fx: &Fixture, args: &[&str], calls: &str, code: i32) -> Option<String> {
+    let out = fx.path().join("trace.txt");
+    let _ = std::fs::remove_file(&out);
+    let mut c = command(Path::new("strace"), fx, &["-f", "-e"]);
+    c.arg(format!("trace={calls}")).arg("-o").arg(&out);
+    c.arg(sfor_bin()).args(args).env("LC_ALL", "C");
+    let status = c.status().ok()?;
+    let trace = std::fs::read_to_string(&out).ok()?;
+    assert_eq!(status.code(), Some(code), "strace s4 {args:?}");
+    Some(trace)
+}
+
+/// Code review r7, Codex #3 and Fable #3: a search that finds no document costs what it costs
+/// with --no-docs. One explicit Plain file, with and without the Trail: the Format Definitions
+/// are loaded only once a file may be a document, or for a Trail, and the names are resolved
+/// only then (the `readlink` and `getcwd` of --no-docs); s4 by default takes at most 1.05 × the CPU time of
+/// --no-docs, the medians of 31 alternated runs. A file without an extension is opened once:
+/// its first bytes, read to tell a document, are what is searched, in memory too.
+#[cfg(unix)]
+#[test]
+#[ignore]
+fn one_file_that_is_no_document_costs_what_it_costs_without_documents() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    std::fs::create_dir_all(fx.file("one")).unwrap();
+    let text = "a line of a small plain file\n".repeat(20);
+    std::fs::write(fx.file("one/small.txt"), &text).unwrap();
+    std::fs::write(fx.file("one/small"), &text).unwrap();
+    // Lines of the calls, without the exit line.
+    let calls = |args: &[&str]| {
+        traced(&fx, args, "readlink,getcwd", 1)
+            .map(|t| t.lines().filter(|l| !l.contains("+++")).count())
+    };
+    let txt = ["--no-trail", "zzqq-absent", "one/small.txt"];
+    match (calls(&txt), calls(&[&["--no-docs"][..], &txt].concat())) {
+        (Some(d), Some(o)) => assert_eq!(d, o, "readlink and getcwd by default and with --no-docs"),
+        _ => eprintln!("strace cannot trace here: system calls not looked at"),
+    }
+    for trail in [&["--no-trail"][..], &[]] {
+        for (file, code) in [("one/small", 0), ("one/small", 1)] {
+            let pattern = if code == 0 { "plain" } else { "zzqq-absent" };
+            let mut a = trail.to_vec();
+            a.extend([pattern, file]);
+            if let Some(trace) = traced(&fx, &a, "open,openat", code) {
+                let opened = trace
+                    .lines()
+                    .filter(|l| l.contains("\"one/small\""))
+                    .count();
+                assert_eq!(opened, 1, "{a:?}: {trace}");
+            }
+        }
+        let with = |docs: &[&'static str]| {
+            let mut a = trail.to_vec();
+            a.extend_from_slice(docs);
+            a.extend(["zzqq-absent", "one/small.txt"]);
+            a
+        };
+        let (default, off) = (with(&[]), with(&["--no-docs"]));
+        let (mut d, mut o) = (Vec::new(), Vec::new());
+        for i in 0..31 {
+            if i % 2 == 0 {
+                d.push(cpu_time(&fx, &default, 1));
+                o.push(cpu_time(&fx, &off, 1));
+            } else {
+                o.push(cpu_time(&fx, &off, 1));
+                d.push(cpu_time(&fx, &default, 1));
+            }
+        }
+        d.sort();
+        o.sort();
+        let (d, o) = (d[15], o[15]);
+        eprintln!("{trail:?}: CPU {d:?} by default, {o:?} with --no-docs");
+        assert!(
+            d.as_secs_f64() <= 1.05 * o.as_secs_f64(),
+            "{d:?} > 1.05 × {o:?}"
         );
     }
 }

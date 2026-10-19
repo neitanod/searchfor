@@ -16,6 +16,9 @@
 #     with and without the Trail: s4 ≤ 1.05 × s4 --no-docs. A name without an extension may be
 #     a document's, so the default reads its first bytes; the search reads on from them (code
 #     review r6, Fable #1: the corpus's few large object files hid what it cost a small file);
+#     and with -L through the same tree, which has a link to one of its directories: s4 -L ≤
+#     1.05 × s4 -L --no-docs (a name is resolved only where the walker followed a link: code
+#     review r7, Fable #2);
 #   - with --no-docs, s4 against M3's (SEARCHFOR_BASE_BIN, the sfor of 191dbaf), the sparse
 #     pattern over the whole corpus: ≤ 1.03 ×, the median of three series (what M4 adds with
 #     --no-docs, the readers' memory counter of D31 included; M4 plan r7, Fable #2); skipped
@@ -116,6 +119,7 @@ for a in range(4):
                 with open(os.path.join(d, f"f{n:05x}"), "w") as f:
                     f.write(f"line {n:05} of a small file without an extension\n" * 2)
                 n += 1
+os.symlink("d2", os.path.join(sys.argv[1], "d3", "linked"))
 __NOEXT__
 export SEARCHFOR_BENCH_NOEXT="$iso/noext"
 median noext-rg '"$SEARCHFOR_RG_PATH" --color never -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_NOEXT"' \
@@ -126,6 +130,12 @@ median noext-added '"$SEARCHFOR_BIN_PATH" --color never --flat --no-docs -e "$SE
 median noext-passthru '"$SEARCHFOR_BIN_PATH" --color never --no-trail --no-docs -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_NOEXT"' \
   '"$SEARCHFOR_BIN_PATH" --color never --no-trail -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_NOEXT"' \
   's4 --no-docs' s4; within 1.05
+median noext-L-added '"$SEARCHFOR_BIN_PATH" --color never --flat -L --no-docs -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_NOEXT"' \
+  '"$SEARCHFOR_BIN_PATH" --color never --flat -L -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_NOEXT"' \
+  's4 -L --no-docs' 's4 -L'; within 1.05
+median noext-L-passthru '"$SEARCHFOR_BIN_PATH" --color never --no-trail -L --no-docs -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_NOEXT"' \
+  '"$SEARCHFOR_BIN_PATH" --color never --no-trail -L -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_NOEXT"' \
+  's4 -L --no-docs' 's4 -L'; within 1.05
 if [ -n "${SEARCHFOR_BASE_BIN:-}" ]; then
   # Three series in alternating order, and the median of their ratios: one series of the same
   # code with and without D31's counter gave 0.98–1.04 here (M4 plan r7).
