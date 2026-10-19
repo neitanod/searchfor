@@ -2060,3 +2060,58 @@ fn m4_34_a_pipe_searches_documents_as_a_terminal_does() {
         stdout(&pipe_off)
     );
 }
+
+/// Code review r7, Fable #2: with `-L`, a walked name is resolved only where the walker
+/// followed a link, and the rest inherit its verdict. Here stdin is a directory with a SQLite
+/// database in it and in a directory below; the walked tree reaches it through links to
+/// descriptors (a directory link below a plain directory, a link to that link, a link to a
+/// file) and through a link to the directory itself. Below a descriptor every file is searched
+/// as rg searches it, with one thread and with several; through the plain link they are
+/// documents.
+#[cfg(target_os = "linux")]
+#[test]
+fn m4_35_with_follow_names_below_links_to_descriptors_are_no_documents() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = fixture();
+    let at = |p: &str| fx.path().join(p);
+    for dir in ["m4l/stdin/inner", "m4l/walk/sub"] {
+        std::fs::create_dir_all(at(dir)).unwrap();
+    }
+    let shop = at("docs/shop.sqlite");
+    std::fs::copy(&shop, at("m4l/stdin/shop.sqlite")).unwrap();
+    std::fs::copy(&shop, at("m4l/stdin/inner/shop.sqlite")).unwrap();
+    let link = |to: &str, name: &str| std::os::unix::fs::symlink(to, at(name)).unwrap();
+    link("/dev/fd/0", "m4l/walk/sub/in");
+    link("in", "m4l/walk/sub/again");
+    link("/proc/self/fd/0/shop.sqlite", "m4l/walk/sub/file.sqlite");
+    link("../stdin", "m4l/walk/plain");
+    let count = ok(&fx, &["-c", "needle", "m4l/stdin/shop.sqlite"]);
+    let plain = |l: &&str| l.starts_with("m4l/walk/plain/");
+    for threads in [&["-j1"][..], &[]] {
+        let mut args = vec!["-L", "-c"];
+        args.extend_from_slice(threads);
+        args.extend(["needle", "m4l/walk"]);
+        let stdin = || std::fs::File::open(at("m4l/stdin")).unwrap();
+        let s = run(fx
+            .s4(["--no-trail"].iter().chain(args.iter()))
+            .stdin(stdin()));
+        let r = run(fx.rg(&args).stdin(stdin()));
+        assert_eq!(stderr(&s), "", "{args:?}");
+        let sorted = |o: &str, keep: &dyn Fn(&&str) -> bool| {
+            let mut l: Vec<String> = o.lines().filter(keep).map(str::to_string).collect();
+            l.sort();
+            l
+        };
+        let (s, r) = (stdout(&s), stdout(&r));
+        assert_eq!(
+            sorted(&s, &|l| !plain(l)),
+            sorted(&r, &|l| !plain(l)),
+            "{args:?}"
+        );
+        let docs = ["inner/shop.sqlite", "shop.sqlite"]
+            .map(|f| format!("m4l/walk/plain/{f}:{}", count.trim_end()));
+        assert_eq!(sorted(&s, &plain), docs, "{args:?}");
+    }
+}

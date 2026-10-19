@@ -340,6 +340,8 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         roots,
         reach,
         follow: args.follow && !args.no_follow,
+        links: Default::default(),
+        linked: AtomicBool::new(false),
         msgs,
         pre,
         docs: detector.as_ref().filter(|_| args.docs),
@@ -655,6 +657,12 @@ struct Ctx<'a> {
     roots: Vec<(PathBuf, Resolved)>,
     /// `--follow`: the walker follows links below the roots.
     follow: bool,
+    /// With --docs and `--follow`, each directory below a root the walker reached by following
+    /// a link, by the bytes of its name, and how it resolves, recorded when the walker yields
+    /// it, before any name below it (`Ctx::through_descriptors`).
+    links: std::sync::RwLock<Links>,
+    /// `links` is not empty.
+    linked: AtomicBool,
     /// Some root may have a name of a descriptor below it (`reaches`), or is not resolved.
     reach: bool,
 }
@@ -671,13 +679,14 @@ impl Ctx<'_> {
         let w = &self.walker;
         if self.sequential {
             let mut state = init();
+            let mut above = Above::default();
             for r in w.build() {
                 if self.quit.load(Relaxed) {
                     break;
                 }
                 match r {
                     Ok(d) => {
-                        if let Some(t) = self.target(&d) {
+                        if let Some(t) = self.target(&d, &mut above) {
                             visit(&mut state, self.prepare(t));
                         }
                     }
@@ -688,13 +697,14 @@ impl Ctx<'_> {
             let (init, visit) = (&init, &visit);
             w.build_parallel().run(|| {
                 let mut state = init();
+                let mut above = Above::default();
                 Box::new(move |r| {
                     if self.quit.load(Relaxed) {
                         return WalkState::Quit;
                     }
                     match r {
                         Ok(d) => {
-                            if let Some(t) = self.target(&d) {
+                            if let Some(t) = self.target(&d, &mut above) {
                                 visit(&mut state, self.prepare(t));
                             }
                         }
@@ -713,7 +723,7 @@ impl Ctx<'_> {
 
     /// ripgrep's choice of what to search: stdin, every file named on the command line, and
     /// regular files found by walking.
-    fn target(&self, d: &DirEntry) -> Option<Target> {
+    fn target(&self, d: &DirEntry, above: &mut Above) -> Option<Target> {
         if d.is_stdin() {
             return Some(Target {
                 path: PathBuf::from("<stdin>"),
@@ -731,6 +741,13 @@ impl Ctx<'_> {
         let is_dir = d.file_type().is_some_and(|t| t.is_dir())
             || (d.depth() == 0 && d.path_is_symlink() && d.path().is_dir());
         let explicit = d.depth() == 0 && !is_dir;
+        if is_dir && d.depth() > 0 && self.follow && self.docs.is_some() && d.path_is_symlink() {
+            let resolved = resolve(d.path());
+            let mut links = self.links.write().unwrap_or_else(|e| e.into_inner());
+            let key = d.path().as_os_str().as_encoded_bytes().to_vec();
+            links.insert(key, (d.path().to_path_buf(), resolved));
+            self.linked.store(true, Relaxed);
+        }
         if is_dir || (!explicit && !d.file_type().is_some_and(|t| t.is_file())) {
             return None;
         }
@@ -747,10 +764,11 @@ impl Ctx<'_> {
         // and the file is opened again, which a FIFO, a descriptor or stdin by name would not
         // survive (code review of the M4 plan r1, Codex #3).
         let mut held = None;
-        let through = self
-            .pre
-            .through(p)
-            .or_else(|| regular.then(|| self.document(d, &mut held)).flatten());
+        let through = self.pre.through(p).or_else(|| {
+            regular
+                .then(|| self.document(d, &mut held, above))
+                .flatten()
+        });
         Some(Target {
             path: shown.to_path_buf(),
             fs: Some(p.to_path_buf()),
@@ -765,13 +783,18 @@ impl Ctx<'_> {
     /// With --docs, `Through::Docs` for a file whose Format is a document Format: by its name,
     /// or, for a name without an extension, by its first bytes (read only then, and kept in
     /// `held` when the file is no document).
-    fn document(&self, d: &DirEntry, held: &mut Option<Held>) -> Option<Through> {
+    fn document(
+        &self,
+        d: &DirEntry,
+        held: &mut Option<Held>,
+        above: &mut Above,
+    ) -> Option<Through> {
         let p = d.path();
         let det = self.docs.filter(|det| det.may_be_document(p))?;
         // `/dev/stdin` redirected from a file is a regular file, which the reader would open
         // as its own stdin (code review r1, Codex #1), and so is a file under a directory
         // named by a descriptor (code review r2, Codex #2).
-        if self.through_descriptors(d) {
+        if self.through_descriptors(d, above) {
             return None;
         }
         let def = match det.detect_by_path(p) {
@@ -806,27 +829,55 @@ impl Ctx<'_> {
     }
 
     /// Whether the walked `d` names a file through this process's descriptors
-    /// (`through_descriptors`), resolved once per root (`Ctx::roots`): a file the walker found
-    /// below a root without following a link is the root's resolved name and the names after
-    /// it, none of them a link, so only those names are looked at, with no system call. With
-    /// `--follow`, a name below a root may be a link, and is resolved whole (code review r6,
-    /// Fable #1).
-    fn through_descriptors(&self, d: &DirEntry) -> bool {
+    /// (`through_descriptors`), resolved once per root (`Ctx::roots`) and, with `--follow`, once
+    /// per link the walker followed below it (`Ctx::links`): a file the walker found below
+    /// them is the resolved name of the nearest and the names after it, none of them a link,
+    /// so only those names are looked at, with no system call. A name that is a link itself is
+    /// resolved whole (code review r6 and r7, Fable #1 and #2).
+    fn through_descriptors(&self, d: &DirEntry, above: &mut Above) -> bool {
         if d.depth() > 0 && !self.follow && !self.reach {
             return false;
         }
         let p = d.path();
-        let root = p.ancestors().nth(d.depth());
-        let resolved = root.and_then(|r| self.roots.iter().find(|(q, _)| q == r));
-        match resolved {
+        if d.depth() > 0 && self.follow && d.path_is_symlink() {
+            return through_descriptors(p);
+        }
+        // The nearest followed link above it, else its root: a walked name is under one of
+        // them, and with one root, under it. The walker yields a directory's files one after
+        // the other, mostly to one thread, which looks the link up once for them (`Above`).
+        let linked = match d.depth() > 1 && self.linked.load(Relaxed) {
+            true => {
+                let name = p.as_os_str().as_encoded_bytes();
+                let end = name
+                    .iter()
+                    .rposition(|&b| std::path::is_separator(b as char));
+                let dir = &name[..end.unwrap_or(0)];
+                if above.dir != dir {
+                    let links = self.links.read().unwrap_or_else(|e| e.into_inner());
+                    above.link = nearest_link(&links, dir, d.depth() - 1).cloned();
+                    above.dir.clear();
+                    above.dir.extend_from_slice(dir);
+                }
+                above.link.as_ref()
+            }
+            false => None,
+        };
+        let base = linked.or_else(|| match self.roots.as_slice() {
+            [only] => Some(only),
+            roots => p
+                .ancestors()
+                .nth(d.depth())
+                .and_then(|r| roots.iter().find(|(q, _)| q == r)),
+        });
+        match base {
             Some((_, Resolved::Descriptors)) => true,
             Some((_, Resolved::Unknown)) if d.depth() == 0 => false,
-            Some((root, Resolved::At(at))) if d.depth() == 0 || !self.follow => {
+            Some((from, Resolved::At(at))) => {
                 if d.depth() == 0 || !reaches(at) {
                     return false;
                 }
                 let mut at = at.clone();
-                let below = p.strip_prefix(root).unwrap_or(Path::new(""));
+                let below = p.strip_prefix(from).unwrap_or(Path::new(""));
                 below.iter().any(|part| {
                     at.push(part);
                     a_descriptor(&at)
@@ -2582,10 +2633,44 @@ fn through_descriptors(p: &Path) -> bool {
 /// Whether a name of a descriptor (`a_descriptor`) can be below the link-free absolute `at`:
 /// every one is under /dev or /proc.
 fn reaches(at: &Path) -> bool {
-    at == Path::new("/") || at.starts_with("/dev") || at.starts_with("/proc")
+    // By its bytes, as it is asked for every walked name (code review r7, Fable #2).
+    let at = at.as_os_str().as_encoded_bytes();
+    let under = |top: &[u8]| at.starts_with(top) && at.get(top.len()).is_none_or(|&b| b == b'/');
+    at == b"/" || under(b"/dev") || under(b"/proc")
+}
+
+/// The followed links below the roots, by the bytes of their names (`Ctx::links`).
+type Links = std::collections::HashMap<Vec<u8>, (PathBuf, Resolved)>;
+
+/// The nearest of `dir`, the bytes of the name of a walked directory at `depth`, and the
+/// names above it down to the root's child, that is in `links`: each is `dir` up to one of its
+/// separators, as the walker joins a name to the one above it with one.
+fn nearest_link<'l>(links: &'l Links, dir: &[u8], depth: usize) -> Option<&'l (PathBuf, Resolved)> {
+    let mut name = dir;
+    for up in 0..depth {
+        if up > 0 {
+            let end = name
+                .iter()
+                .rposition(|&b| std::path::is_separator(b as char))?;
+            name = &name[..end];
+        }
+        if let Some(linked) = links.get(name) {
+            return Some(linked);
+        }
+    }
+    None
+}
+
+/// What a walking thread keeps of the last name `Ctx::through_descriptors` looked at below a
+/// followed link: the bytes of the directory it is in, and the nearest followed link above it.
+#[derive(Default)]
+struct Above {
+    dir: Vec<u8>,
+    link: Option<(PathBuf, Resolved)>,
 }
 
 /// How a name resolves, part by part (`through_descriptors`).
+#[derive(Clone)]
 enum Resolved {
     /// Through this process's descriptors.
     Descriptors,

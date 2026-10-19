@@ -1912,7 +1912,9 @@ fn system_calls(fx: &Fixture, args: &[&str], code: i32) -> Option<u64> {
 /// an extension, seven levels deep (as `.git/objects` or `bin/`), with one thread, the default
 /// makes at most 1.05 × the system calls of --no-docs, counted by strace when it can trace, and
 /// takes at most 1.1 × its CPU time, the medians of nine alternated runs (the margin is the
-/// noise of a loaded machine), with and without the Trail.
+/// noise of a loaded machine), with and without the Trail. With `-L` too, through a tree that
+/// has a link to one of its directories (code review r7, Fable #2): a name below a root is
+/// resolved only where the walker followed a link.
 #[cfg(unix)]
 #[test]
 #[ignore]
@@ -1934,7 +1936,14 @@ fn files_without_an_extension_cost_by_default_what_they_cost_without_documents()
         }
     }
     assert_eq!(n, 20_000);
-    for trail in [&["--no-trail"][..], &[]] {
+    std::os::unix::fs::symlink("d2", fx.file("noext/d3/linked")).unwrap();
+    for (follow, trail) in [
+        (&[][..], &["--no-trail"][..]),
+        (&[], &[]),
+        (&["-L"], &["--no-trail"]),
+        (&["-L"], &[]),
+    ] {
+        let trail = &[follow, trail].concat();
         let with = |docs: &[&'static str]| {
             let mut a = vec!["-j1"];
             a.extend_from_slice(docs);
