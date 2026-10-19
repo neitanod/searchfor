@@ -362,7 +362,8 @@ struct Columns {
     without_rowid: bool,
     /// The declared column of each value as a record stores it: in order, except in a
     /// `WITHOUT ROWID` table, which stores its primary key's columns first, in the key's order,
-    /// then the others (Codex r1 #4).
+    /// then the others (Codex r1 #4). A column the key names twice with one collation is stored
+    /// once, and twice with two (Codex M4 code r5 #2): the record then holds its value twice.
     stored: Vec<usize>,
     /// Each column's `DEFAULT`, when it is a constant: a column added by `ALTER TABLE ADD
     /// COLUMN` has it in the rows written before, whose records end earlier (M4 plan r5,
@@ -504,6 +505,23 @@ fn generated_virtual(part: &[Tok]) -> bool {
     true
 }
 
+/// The collation a column definition or a key's term names (`COLLATE nocase`), in lower case,
+/// outside parentheses.
+fn collation(part: &[Tok]) -> Option<String> {
+    let mut depth = 0usize;
+    for (i, t) in part.iter().enumerate() {
+        match t {
+            Tok::Punct('(') => depth += 1,
+            Tok::Punct(')') => depth = depth.saturating_sub(1),
+            t if depth == 0 && t.is("COLLATE") => {
+                return part.get(i + 1)?.name().map(|c| c.to_ascii_lowercase());
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The index of the token after `PRIMARY KEY` in `toks`, if it holds one.
 fn primary_key(toks: &[Tok]) -> Option<usize> {
     toks.windows(2)
@@ -539,8 +557,11 @@ fn columns(sql: &str) -> Columns {
     let mut types = Vec::new();
     let mut integers: Vec<bool> = Vec::new();
     let mut ipk = None;
-    // The primary key's columns, by name, from a column's `PRIMARY KEY` or the table's.
-    let mut pk: Vec<String> = Vec::new();
+    // The primary key's columns, by name and with the collation the key gives them, from a
+    // column's `PRIMARY KEY` or the table's.
+    let mut pk: Vec<(String, Option<String>)> = Vec::new();
+    // Each column's own collation.
+    let mut collations: Vec<Option<String>> = Vec::new();
     // Whether `pk` is the table's constraint, `PRIMARY KEY(…)`, rather than a column's.
     let mut table_pk = false;
     let mut virtuals: Vec<usize> = Vec::new();
@@ -560,7 +581,7 @@ fn columns(sql: &str) -> Columns {
                     .unwrap_or(part.len());
                 pk = split_commas(&part[at + 1..end.max(at + 1)])
                     .iter()
-                    .filter_map(|c| c.first().and_then(Tok::name))
+                    .filter_map(|c| Some((c.first().and_then(Tok::name)?, collation(c))))
                     .collect();
                 table_pk = true;
             }
@@ -602,7 +623,7 @@ fn columns(sql: &str) -> Columns {
             virtuals.push(names.len());
         }
         if let Some(at) = primary_key(part) {
-            pk = vec![name.clone()];
+            pk = vec![(name.clone(), None)];
             table_pk = false;
             if integer && !part.get(at).is_some_and(|t| t.is("DESC")) {
                 ipk = Some(names.len());
@@ -614,16 +635,33 @@ fn columns(sql: &str) -> Columns {
                 .and_then(|d| constant(&part[d + 1..]))
                 .map(|(lit, _)| lit.with_affinity(affinity(&ty))),
         );
+        collations.push(collation(part));
         names.push(name);
         types.push(ty);
         integers.push(integer);
     }
-    let key: Vec<usize> = pk
-        .iter()
-        .filter_map(|k| names.iter().position(|n| n.eq_ignore_ascii_case(k)))
-        .collect();
+    // A column the key names again with the same collation is left out of it, as SQLite's
+    // `convertToWithoutRowidTable` does: its collation is the term's, else the column's, else
+    // BINARY.
+    let mut key: Vec<usize> = Vec::new();
+    let mut terms: Vec<(usize, String)> = Vec::new();
+    for (k, coll) in &pk {
+        let Some(i) = names.iter().position(|n| n.eq_ignore_ascii_case(k)) else {
+            continue;
+        };
+        let coll = coll
+            .clone()
+            .or_else(|| collations[i].clone())
+            .unwrap_or_else(|| "binary".into());
+        if !terms.contains(&(i, coll.clone())) {
+            terms.push((i, coll));
+            key.push(i);
+        }
+    }
+    // `PRIMARY KEY(id, id)` has two terms, and is no rowid.
     if ipk.is_none()
         && table_pk
+        && pk.len() == 1
         && let [only] = key.as_slice()
         && integers[*only]
     {
@@ -941,14 +979,21 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
         let r = db.walk(root, &mut |rowid, stored| {
             b.start_row(Some(&format!("row {rowid}")));
             // The values in their declared order: a record may hold fewer (columns added
-            // since), which have their DEFAULT, or more, which keep their stored place. A NULL
-            // the record holds stays NULL.
-            let n = cols.names.len().max(stored.len());
-            let mut values = vec![Value::Null; n];
+            // since), which have their DEFAULT, or more, which go after the declared ones. A
+            // NULL the record holds stays NULL. A column the key stores twice (two collations)
+            // has its first value.
             let held = stored.len();
+            let extra = held.saturating_sub(cols.stored.len());
+            let mut values = vec![Value::Null; cols.names.len() + extra];
+            let mut set = vec![false; values.len()];
             for (k, v) in stored.into_iter().enumerate() {
-                let at = cols.stored.get(k).copied().unwrap_or(k);
-                values[at] = v;
+                let at = match cols.stored.get(k) {
+                    Some(&at) => at,
+                    None => cols.names.len() + k - cols.stored.len(),
+                };
+                if !std::mem::replace(&mut set[at], true) {
+                    values[at] = v;
+                }
             }
             for &at in cols.stored.iter().skip(held) {
                 if let Some(Some(d)) = cols.defaults.get(at) {
@@ -1010,6 +1055,50 @@ mod tests {
         let c = columns("CREATE TABLE t(a INTEGER, b, PRIMARY KEY(a))");
         assert_eq!(c.names, ["a", "b"]);
         assert_eq!(c.ipk, Some(0));
+    }
+
+    /// Codex M4 code r5 #2: a `WITHOUT ROWID` key that names a column twice stores it once
+    /// per collation it has in the key (its own, BINARY when it declares none, unless the key
+    /// says another), as SQLite 3.46.1 stores `keys.sqlite`; each declared column prints once,
+    /// with its value, as `SELECT *` gives it.
+    #[test]
+    fn a_key_naming_a_column_twice_stores_it_once_per_collation() {
+        let e = extracted("keys.sqlite");
+        let text = String::from_utf8_lossy(&e.text);
+        assert_eq!(
+            text,
+            "one1\tneedle1\none2\tneedle2\none3\tneedle3\tthree3\n\
+             one4\tneedle4\tthree4\none5\tneedle5\none6\tneedle6\n"
+        );
+        assert_eq!(trail(&e, "needle1"), ["k1", "row 1", "b"]);
+        assert_eq!(trail(&e, "three3"), ["k3", "row 1", "c"]);
+        let stored = |sql: &str| columns(sql).stored;
+        assert_eq!(
+            stored("CREATE TABLE t(a, b, PRIMARY KEY(b, b)) WITHOUT ROWID"),
+            [1, 0]
+        );
+        assert_eq!(
+            stored("CREATE TABLE t(a, b, PRIMARY KEY(b, b COLLATE NOCASE)) WITHOUT ROWID"),
+            [1, 1, 0]
+        );
+        assert_eq!(
+            stored(
+                "CREATE TABLE t(a, b COLLATE NOCASE, c, PRIMARY KEY(b, a, b COLLATE nocase, c, a)) \
+                 WITHOUT ROWID"
+            ),
+            [1, 0, 2]
+        );
+        assert_eq!(
+            stored(
+                "CREATE TABLE t(a, b COLLATE \"NoCase\", PRIMARY KEY(b COLLATE nocase, b)) WITHOUT ROWID"
+            ),
+            [1, 0]
+        );
+        // Two terms over one INTEGER column: no alias of the rowid, as SQLite 3.46.1 reads it.
+        assert_eq!(
+            columns("CREATE TABLE t(id INTEGER, x, PRIMARY KEY(id, id))").ipk,
+            None
+        );
     }
 
     /// Codex r1 #6: SQLite's quirk: a column's `INTEGER PRIMARY KEY DESC` is no alias of the

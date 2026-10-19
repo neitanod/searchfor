@@ -96,3 +96,23 @@ db.execute("CREATE TABLE t (name TEXT)")
 db.execute("INSERT INTO t VALUES ('año needle')")
 db.commit()
 db.close()
+
+# keys.sqlite: WITHOUT ROWID tables whose primary key names a column twice. SQLite stores a
+# column of the key once per collation it has there, the column's own (BINARY when it declares
+# none) unless the key says another, and every other column once after the key (Codex M4 code
+# r5 #2).
+db = fresh("keys.sqlite")
+for i, (cols, key) in enumerate([
+    ("a TEXT, b TEXT", "b, b"),
+    ("a TEXT, b TEXT", "b, b COLLATE NOCASE"),
+    ("a TEXT, b TEXT COLLATE NOCASE, c TEXT", "b, a, b COLLATE nocase, c, a"),
+    ("a TEXT, b TEXT, c TEXT", "c DESC, b, c ASC"),
+    ("a TEXT, b TEXT COLLATE NOCASE", "b COLLATE BINARY, b, b COLLATE rtrim"),
+    ('"x y" TEXT, b TEXT', '"x y", [x y], b, `X Y` COLLATE nocase'),
+]):
+    db.execute(f"CREATE TABLE k{i + 1} ({cols}, PRIMARY KEY ({key})) WITHOUT ROWID")
+    n = cols.count(",") + 1
+    values = ["one", "needle", "three"][:n]
+    db.execute(f"INSERT INTO k{i + 1} VALUES ({', '.join('?' * n)})", [f"{v}{i + 1}" for v in values])
+db.commit()
+db.close()
