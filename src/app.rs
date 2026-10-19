@@ -62,6 +62,8 @@ pub fn run(argv: Vec<OsString>) -> i32 {
 /// makes the exit code 2 (as ripgrep).
 struct Messages {
     silent: bool,
+    /// `--no-ignore-messages`: the errors of ignore files are not printed.
+    ignore_silent: bool,
     errored: AtomicBool,
 }
 
@@ -76,6 +78,15 @@ impl Messages {
     fn warn(&self, msg: impl std::fmt::Display) {
         if !self.silent && !stopped() {
             eprintln!("{msg}");
+        }
+    }
+
+    /// An error of an ignore file (a glob it cannot parse, an `--ignore-file` it cannot read):
+    /// printed unless `--no-messages` or `--no-ignore-messages`, and no error for the exit code,
+    /// as rg 14.1.1's `ignore_message!`.
+    fn ignore(&self, msg: impl std::fmt::Display) {
+        if !self.silent && !self.ignore_silent && !stopped() {
+            eprintln!("s4: {msg}");
         }
     }
 }
@@ -159,6 +170,7 @@ fn install_grammar(lang: &str) -> i32 {
 fn main(args: &Args) -> anyhow::Result<i32> {
     let msgs = Messages {
         silent: args.no_messages,
+        ignore_silent: args.no_ignore_messages,
         errored: AtomicBool::new(false),
     };
     // Actions (step 3).
@@ -220,7 +232,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     // validated in this order before a pattern is compiled (code review r3, Codex #4). The
     // walker is built once, here, and walks the paths (code review r4, Fable #1).
     let cwd = std::env::current_dir()?;
-    let walker = search::walker(args, &paths, &cwd)?;
+    let (walker, ignore_errors) = search::walker_with(args, &paths, &cwd)?;
     let pre = Preprocess::new(args, &cwd)?;
     // Nothing can match: ripgrep 14.1.1 searches nothing and exits 1, in every mode and without
     // a JSON summary, once its file types and globs are valid (an unknown type is still an
@@ -231,6 +243,10 @@ fn main(args: &Args) -> anyhow::Result<i32> {
             Detector::new(&registry, &args.formats)?;
         }
         return Ok(1);
+    }
+    // rg 14.1.1 adds the --ignore-file files as it builds its walker, before the matcher.
+    for e in ignore_errors {
+        msgs.ignore(e);
     }
     // The error carries rg 14.1.1's suggestions (`matcher::build`).
     let matcher = search::matcher(args, &pats.patterns)?;
@@ -345,7 +361,9 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         linked: AtomicBool::new(false),
         msgs,
         pre,
-        in_memory: search::rg_in_memory(&paths, implicit_stdin),
+        decoding: crate::source::Decoding::of(args),
+        mapping: crate::source::Mapping::of(args),
+        in_memory: search::rg_in_memory(args, &paths, implicit_stdin),
         paths,
         walker,
         strip_dot: implicit_cwd,
@@ -652,6 +670,11 @@ struct Ctx<'a> {
     processors: processors::Processors,
     /// `--pre` and `-z`.
     pre: Preprocess,
+    /// How files are decoded: by their BOM, or as `-E` says (M5a plan, D10).
+    decoding: crate::source::Decoding,
+    /// Whether a large file is mapped: never with `--no-mmap` (review r2 of the M5a plan,
+    /// Codex #1).
+    mapping: crate::source::Mapping,
     /// The Format Definitions and their Detector, which with --docs tells documents by their
     /// name or magic bytes: loaded in `main`, or once needed (`Ctx::detector`).
     registry: &'a std::sync::OnceLock<Registry>,
@@ -683,7 +706,31 @@ impl<'a> Ctx<'a> {
         if self.sequential {
             let mut state = init();
             let mut above = Above::default();
-            for r in w.build() {
+            // `--sort` other than by path, and `--sortr`: every entry first, then in order, as
+            // rg 14.1.1 sorts its haystacks (M5a plan, D8).
+            let entries: Box<dyn Iterator<Item = Result<DirEntry, ignore::Error>>> =
+                match self.args.sort {
+                    Some(sort) if !search::walker_sorts(self.args) => {
+                        let mut all = Vec::new();
+                        for r in w.build() {
+                            match r {
+                                Ok(d) => {
+                                    self.entry_error(&d);
+                                    all.push(d);
+                                }
+                                Err(e) => self.msgs.error(e),
+                            }
+                        }
+                        search::sort_entries(&mut all, sort);
+                        Box::new(all.into_iter().map(Ok))
+                    }
+                    _ => Box::new(w.build().inspect(|r| {
+                        if let Ok(d) = r {
+                            self.entry_error(d);
+                        }
+                    })),
+                };
+            for r in entries {
                 if self.quit.load(Relaxed) {
                     break;
                 }
@@ -707,6 +754,7 @@ impl<'a> Ctx<'a> {
                     }
                     match r {
                         Ok(d) => {
+                            self.entry_error(&d);
                             if let Some(t) = self.target(&d, &mut above) {
                                 visit(&mut state, self.prepare(t));
                             }
@@ -722,6 +770,14 @@ impl<'a> Ctx<'a> {
             });
         }
         Ok(())
+    }
+
+    /// The error of an ignore file the walker read for this entry (a glob it cannot parse),
+    /// printed as rg 14.1.1's `Haystack::build` prints it.
+    fn entry_error(&self, d: &DirEntry) {
+        if let Some(e) = d.error() {
+            self.msgs.ignore(e);
+        }
     }
 
     /// ripgrep's choice of what to search: stdin, every file named on the command line, and
@@ -1023,10 +1079,13 @@ impl<'a> Ctx<'a> {
     /// the whole file and no search read them yet, else read by its name.
     fn source(&self, t: &Target, p: &Path) -> std::io::Result<Source> {
         match t.held.take() {
-            Some(Held { head, rest: None }) => {
-                Ok(Source::from_bytes(p.to_path_buf(), head, t.explicit))
-            }
-            _ => Source::open(p, t.explicit),
+            Some(Held { head, rest: None }) => Ok(Source::from_bytes_as(
+                p.to_path_buf(),
+                head,
+                t.explicit,
+                self.decoding,
+            )),
+            _ => Source::open_as(p, t.explicit, self.decoding, self.mapping),
         }
     }
 
@@ -1452,7 +1511,7 @@ impl<'a> Ctx<'a> {
         if !self.in_memory && self.probe(st, t, path) != Some(true) {
             return true;
         }
-        let src = match Source::open(path, t.explicit) {
+        let src = match Source::open_as(path, t.explicit, self.decoding, self.mapping) {
             Ok(mut s) => {
                 s.path = t.path.clone();
                 s
@@ -1730,13 +1789,16 @@ impl<'a> Ctx<'a> {
             return Ok(None);
         }
         let src = match (kept, &t.fs) {
-            (Some(tee), _) => Source::from_bytes(t.path.clone(), tee.read, t.explicit),
+            (Some(tee), _) => {
+                Source::from_bytes_as(t.path.clone(), tee.read, t.explicit, self.decoding)
+            }
             (None, Some(p)) => open(p)?,
             (None, None) => unreachable!("stdin is always kept"),
         };
         let mut items = sink.items;
         if stats.binary_offset.is_none() {
-            search::number_lines(&mut items, src.bytes());
+            let term = search::line_terminator(self.args).as_byte();
+            search::number_lines(&mut items, src.bytes(), term);
         } else {
             // The searcher counts a NUL it converted as a line terminator: the bytes as the
             // first search read them, searched again counting lines.
@@ -1771,7 +1833,7 @@ impl<'a> Ctx<'a> {
             return false;
         }
         let head = read[..read.len().min(crate::source::READ_HEAD)].to_vec();
-        let partial = Source::from_bytes(t.path.clone(), head, t.explicit);
+        let partial = Source::from_bytes_as(t.path.clone(), head, t.explicit, self.decoding);
         detector
             .detect(&partial.path, partial.head())
             .is_some_and(|d| self.processors.describes(d))
@@ -2363,7 +2425,7 @@ impl<'a> Ctx<'a> {
             report(&e);
             return Err(());
         }
-        let src = Source::from_bytes(t.path.clone(), tee.read, t.explicit);
+        let src = Source::from_bytes_as(t.path.clone(), tee.read, t.explicit, self.decoding);
         let binary = probe.and_then(|p| BinaryProbe::read(p, quit, &src));
         Ok((src, binary))
     }
@@ -2969,11 +3031,11 @@ impl Sink for StatsSink<'_> {
         Ok(true)
     }
 
-    fn matched(&mut self, _s: &Searcher, m: &SinkMatch<'_>) -> std::io::Result<bool> {
+    fn matched(&mut self, s: &Searcher, m: &SinkMatch<'_>) -> std::io::Result<bool> {
         self.max.matched();
         self.lines += 1;
         self.stats.matched_lines += m.lines().count() as u64;
-        let subs = search::match_submatches(self.matcher, self.invert, m);
+        let subs = search::match_submatches_in(s, self.matcher, self.invert, m);
         self.stats.matches += subs.len() as u64;
         Ok(self.max.go_on())
     }

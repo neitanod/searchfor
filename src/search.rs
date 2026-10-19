@@ -1,10 +1,10 @@
 //! Walking and searching with ripgrep's crates (ADR 0001, design notes 3 and 4).
-use crate::cli::{Args, BinaryMode, SortKind, SortMode, TypeChange};
+use crate::cli::{Args, BinaryMode, EncodingMode, MmapMode, SortKind, SortMode, TypeChange};
 use crate::matcher::PatternMatcher;
 use crate::model::{FileMatches, FileStats, Item, Line, Submatch};
 use crate::source::Source;
 use anyhow::Result;
-use grep_matcher::Matcher;
+use grep_matcher::{LineTerminator, Matcher};
 use grep_searcher::{
     BinaryDetection, MmapChoice, Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind,
     SinkFinish, SinkMatch,
@@ -24,8 +24,16 @@ pub fn matcher(args: &Args, patterns: &[String]) -> Result<PatternMatcher> {
 /// M1). C9 verifies this rule by behaviour against rg: `--json` on `misc/bin.dat` as one
 /// explicit file (second Match on line 2, offset 13), walked inside `misc`, as 11 explicit
 /// files, and through stdin (line 3, offset 18).
-pub fn rg_in_memory(paths: &[PathBuf], stdin: bool) -> bool {
-    !stdin && !paths.is_empty() && paths.len() <= 10 && paths.iter().all(|p| p.is_file())
+///
+/// `--mmap` maps every file searched, walked ones too, and `--no-mmap` none (M5a plan, D9).
+pub fn rg_in_memory(args: &Args, paths: &[PathBuf], stdin: bool) -> bool {
+    match args.mmap_mode {
+        MmapMode::Never => false,
+        MmapMode::Always => true,
+        MmapMode::Auto => {
+            !stdin && !paths.is_empty() && paths.len() <= 10 && paths.iter().all(|p| p.is_file())
+        }
+    }
 }
 
 /// `explicit`: the file was named on the command line, or is stdin (design note 3).
@@ -59,7 +67,13 @@ pub fn printing_searcher(args: &Args, explicit: bool, mmap: bool, line_number: b
 
 /// ripgrep's binary policy for one file (design note 3). A searcher built for one kind of
 /// file is reused for the other with `Searcher::set_binary_detection`.
+///
+/// `--null-data` turns it off, as `-a` does: a NUL ends a line (rg 14.1.1, hiargs.rs
+/// `BinaryDetection::from_low_args`).
 pub fn binary_detection(args: &Args, explicit: bool) -> BinaryDetection {
+    if args.null_data {
+        return BinaryDetection::none();
+    }
     match args.binary_mode(explicit) {
         BinaryMode::Text => BinaryDetection::none(),
         BinaryMode::Binary => BinaryDetection::convert(b'\0'),
@@ -67,16 +81,47 @@ pub fn binary_detection(args: &Args, explicit: bool) -> BinaryDetection {
     }
 }
 
+/// The line terminator of the search: CRLF with `--crlf`, NUL with `--null-data`, else `\n`.
+pub fn line_terminator(args: &Args) -> LineTerminator {
+    if args.crlf {
+        LineTerminator::crlf()
+    } else if args.null_data {
+        LineTerminator::byte(b'\0')
+    } else {
+        LineTerminator::byte(b'\n')
+    }
+}
+
+/// `decoded`: the input is a Source already decoded (`Source::open_as`), so the searcher reads
+/// it as it is; else it decodes as rg's: by its BOM, with `-E`'s encoding, or not at all with
+/// `-E none` (hiargs.rs `searcher`).
 fn searcher_builder(args: &Args, explicit: bool, decoded: bool) -> SearcherBuilder {
     let binary = binary_detection(args, explicit);
     let mut b = SearcherBuilder::new();
     b.line_number(true) // Trails need line numbers even when they are not printed.
-        .before_context(args.before())
-        .after_context(args.after())
+        .line_terminator(line_terminator(args))
         .invert_match(args.invert_match)
+        .multi_line(args.multiline)
+        .stop_on_nonmatch(args.stop_on_nonmatch)
         // -m is counted by the sinks, as ripgrep 14.1.1's printers count it (`MaxCount`).
         .binary_detection(binary)
         .bom_sniffing(!decoded);
+    if args.passthru {
+        b.passthru(true);
+    } else {
+        b.before_context(args.before()).after_context(args.after());
+    }
+    if !decoded {
+        match &args.encoding {
+            EncodingMode::Auto => {}
+            EncodingMode::Label(label) => {
+                b.encoding(grep_searcher::Encoding::new(label).ok());
+            }
+            EncodingMode::Disabled => {
+                b.bom_sniffing(false);
+            }
+        }
+    }
     b
 }
 
@@ -92,8 +137,19 @@ thread_local! {
     pub static WALKERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// `cwd` anchors the globs, as ripgrep does (`-g 'docs/*.md' x docs` works).
+/// `walker_with` without the errors of `--ignore-file`, for the actions that only validate.
 pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder> {
+    Ok(walker_with(args, paths, cwd)?.0)
+}
+
+/// The walker of rg 14.1.1 (hiargs.rs `walk_builder`), and the errors of the `--ignore-file`
+/// files it could not read, which rg prints as ignore messages. `cwd` anchors the globs, as
+/// ripgrep does (`-g 'docs/*.md' x docs` works).
+pub fn walker_with(
+    args: &Args,
+    paths: &[PathBuf],
+    cwd: &Path,
+) -> Result<(WalkBuilder, Vec<ignore::Error>)> {
     #[cfg(test)]
     WALKERS.with(|n| n.set(n.get() + 1));
     let first = paths.first().cloned().unwrap_or_else(|| PathBuf::from("."));
@@ -101,17 +157,29 @@ pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder>
     for p in paths.iter().skip(1) {
         w.add(p);
     }
-    let no_ignore = args.no_ignore();
+    let mut errors = Vec::new();
+    if !args.no_ignore_files {
+        for p in &args.ignore_file {
+            if let Some(e) = w.add_ignore(p) {
+                errors.push(e);
+            }
+        }
+    }
+    let ig = args.ignores;
     w.hidden(!args.hidden())
-        .ignore(!no_ignore)
-        .git_ignore(!no_ignore)
-        .git_global(!no_ignore)
-        .git_exclude(!no_ignore)
-        .parents(!no_ignore)
+        .parents(!ig.no_parent)
+        .ignore(!ig.no_dot)
+        .git_global(!ig.no_vcs && !ig.no_global)
+        .git_ignore(!ig.no_vcs)
+        .git_exclude(!ig.no_vcs && !ig.no_exclude)
+        .require_git(!args.no_require_git)
+        .ignore_case_insensitive(args.ignore_file_case_insensitive)
         .follow_links(args.follow && !args.no_follow)
         .max_depth(args.max_depth)
+        .max_filesize(args.max_filesize)
+        .same_file_system(args.one_file_system)
         .skip_stdout(true);
-    if !no_ignore {
+    if !ig.no_dot {
         w.add_custom_ignore_filename(".rgignore");
     }
     // The file types before the globs, as ripgrep 14.1.1 validates them (code review r3).
@@ -133,9 +201,13 @@ pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder>
         }
     }
     w.types(tb.build()?);
-    // As ripgrep 14.1.1: every -g first, then every --iglob (case-insensitive); the relative
-    // order of the two kinds on the command line does not matter (measured in review r2).
+    // As ripgrep 14.1.1: every -g first, case-insensitive with --glob-case-insensitive, then
+    // every --iglob (case-insensitive); the relative order of the two kinds on the command line
+    // does not matter (measured in review r2).
     let mut ob = OverrideBuilder::new(cwd);
+    if args.glob_case_insensitive {
+        ob.case_insensitive(true)?;
+    }
     for g in &args.globs {
         ob.add(g)?;
     }
@@ -150,7 +222,44 @@ pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder>
         w.sort_by_file_path(|a, b| a.cmp(b));
     }
     w.threads(walker_threads(args));
-    Ok(w)
+    Ok((w, errors))
+}
+
+/// The files of a walk in the order of `--sort`/`--sortr` when the walker cannot give it (all
+/// but `--sort path`), as rg 14.1.1 sorts its haystacks (hiargs.rs `sort`): by path, or by a
+/// time of each file's metadata, a file whose time cannot be read after the others (before
+/// them with `--sortr`), equal times keeping the walk's order.
+pub fn sort_entries(entries: &mut [ignore::DirEntry], sort: SortMode) {
+    use std::time::SystemTime;
+    let time = |e: &ignore::DirEntry| -> Option<SystemTime> {
+        let md = e.path().metadata().ok()?;
+        match sort.kind {
+            SortKind::Path => None,
+            SortKind::Modified => md.modified().ok(),
+            SortKind::Accessed => md.accessed().ok(),
+            SortKind::Created => md.created().ok(),
+        }
+    };
+    use std::cmp::Reverse;
+    // Stable sorts whose comparison `--sortr` reverses, as rg's: equal keys keep the walk's
+    // order either way.
+    match (sort.kind, sort.reverse) {
+        (SortKind::Path, false) => entries.sort_by(|a, b| a.path().cmp(b.path())),
+        (SortKind::Path, true) => entries.sort_by(|a, b| b.path().cmp(a.path())),
+        (_, false) => entries.sort_by_cached_key(|e| {
+            let t = time(e);
+            (t.is_none(), t)
+        }),
+        (_, true) => entries.sort_by_cached_key(|e| {
+            let t = time(e);
+            Reverse((t.is_none(), t))
+        }),
+    }
+}
+
+/// Whether the walker gives the order of `--sort` itself: only `--sort path`, ascending.
+pub fn walker_sorts(args: &Args) -> bool {
+    args.sort.is_none_or(|s| s == PATH)
 }
 
 /// `--sort path`, the order the walker itself can give.
@@ -336,9 +445,10 @@ impl<'m> CollectSink<'m> {
 /// Numbers the lines of `items`, reported in file order by a search that did not count lines
 /// (`printing_searcher` without line numbers, as ripgrep searches without `-n`), from
 /// `bytes`, the Source the items' offsets point into: a line's number is one more than the
-/// line terminators before it. Only for a search that converted no binary data, whose NUL
-/// bytes the searcher would have counted as line terminators.
-pub fn number_lines(items: &mut [Item], bytes: &[u8]) {
+/// line terminators before it, `term` being the search's (`\n`, or NUL with `--null-data`).
+/// Only for a search that converted no binary data, whose NUL bytes the searcher would have
+/// counted as line terminators.
+pub fn number_lines(items: &mut [Item], bytes: &[u8], term: u8) {
     let (mut counted, mut line) = (0usize, 1u64);
     for item in items {
         let (Item::Match(l) | Item::Context(l)) = item;
@@ -346,7 +456,7 @@ pub fn number_lines(items: &mut [Item], bytes: &[u8]) {
         if at < counted {
             (counted, line) = (0, 1);
         }
-        line += memchr::memchr_iter(b'\n', &bytes[counted..at]).count() as u64;
+        line += memchr::memchr_iter(term, &bytes[counted..at]).count() as u64;
         counted = at;
         l.line_number = line;
     }
@@ -354,20 +464,33 @@ pub fn number_lines(items: &mut [Item], bytes: &[u8]) {
 
 /// grep-printer 0.2.2's JSON sink (`record_matches`, json.rs:611–644, and
 /// `find_iter_at_in_context`, util.rs:467–522), copied because those helpers are
-/// `pub(crate)`. Only the single-line branch: our searcher never runs in multi-line mode
-/// (`-U` is not in M1). The line terminator is trimmed from the end of `range` (a `\r`
-/// stays: CRLF mode is not in M1) and the matcher runs over the buffer up to there, from
+/// `pub(crate)`. On a line, the line terminator of `searcher` (a CRLF's `\r` too) is trimmed
+/// from the end of `range` and the matcher runs over the buffer up to there, from
 /// `range.start`, so `\A` sees what ripgrep's printer sees (`bar\nfoo needle\n` with
-/// `\Afoo|needle` reports only `needle`). Matches starting at or after `range.end` stop
-/// the search; offsets are relative to `range.start`.
-pub fn submatches(matcher: &PatternMatcher, buffer: &[u8], range: Range<usize>) -> Vec<Submatch> {
-    let mut end = range.end;
-    if buffer[..end].ends_with(b"\n") {
-        end -= 1;
-    }
-    let haystack = &buffer[..end];
+/// `\Afoo|needle` reports only `needle`); in multi-line mode (`-U`) it runs over the buffer up
+/// to 128 bytes past `range`, for a look-ahead (grep-printer's `MAX_LOOK_AHEAD`). Matches
+/// starting at or after `range.end` stop the search; offsets are relative to `range.start`.
+/// A search error (PCRE2's match limit) ends the list: the search itself reported it.
+pub fn submatches_in(
+    searcher: &Searcher,
+    matcher: &PatternMatcher,
+    buffer: &[u8],
+    range: Range<usize>,
+) -> Vec<Submatch> {
+    let haystack = if searcher.multi_line_with_matcher(matcher) {
+        &buffer[..buffer.len().min(range.end + MAX_LOOK_AHEAD)]
+    } else {
+        let mut end = range.end;
+        let term = searcher.line_terminator();
+        if end > 0 && term.is_suffix(&buffer[..end]) {
+            end -= 1;
+            if term.is_crlf() && end > 0 && buffer[end - 1] == b'\r' {
+                end -= 1;
+            }
+        }
+        &buffer[..end]
+    };
     let mut subs = Vec::new();
-    // PatternMatcher's error type is NoError: the search cannot fail.
     let _ = matcher.find_iter_at(haystack, range.start, |m| {
         if m.start() >= range.end {
             return false;
@@ -389,9 +512,13 @@ pub fn submatches(matcher: &PatternMatcher, buffer: &[u8], range: Range<usize>) 
     subs
 }
 
+/// grep-printer 0.2.2's `MAX_LOOK_AHEAD` (lib.rs:87).
+const MAX_LOOK_AHEAD: usize = 128;
+
 /// The submatches of a reported line as ripgrep's printers record them: none on an inverted
 /// Match; on a context line, only with `-v`, searched in the line's own bytes.
-pub fn match_submatches(
+pub fn match_submatches_in(
+    searcher: &Searcher,
     matcher: &PatternMatcher,
     invert: bool,
     m: &SinkMatch<'_>,
@@ -400,17 +527,51 @@ pub fn match_submatches(
     if invert {
         Vec::new()
     } else {
-        submatches(matcher, m.buffer(), m.bytes_range_in_buffer())
+        submatches_in(searcher, matcher, m.buffer(), m.bytes_range_in_buffer())
     }
 }
 
-pub fn context_submatches(matcher: &PatternMatcher, invert: bool, bytes: &[u8]) -> Vec<Submatch> {
+pub fn context_submatches_in(
+    searcher: &Searcher,
+    matcher: &PatternMatcher,
+    invert: bool,
+    bytes: &[u8],
+) -> Vec<Submatch> {
     // grep-printer's context path searches the line's own bytes (range 0..len).
     if invert {
-        submatches(matcher, bytes, 0..bytes.len())
+        submatches_in(searcher, matcher, bytes, 0..bytes.len())
     } else {
         Vec::new()
     }
+}
+
+/// `match_submatches_in` for a search with `\n` lines and no `-U`, M1–M4's: the streaming
+/// printer's until chunk 9 moves it to the searcher's terminator.
+pub fn match_submatches(
+    matcher: &PatternMatcher,
+    invert: bool,
+    m: &SinkMatch<'_>,
+) -> Vec<Submatch> {
+    if invert {
+        Vec::new()
+    } else {
+        lines_submatches(matcher, m.buffer(), m.bytes_range_in_buffer())
+    }
+}
+
+/// `context_submatches_in` as `match_submatches` is `match_submatches_in`.
+pub fn context_submatches(matcher: &PatternMatcher, invert: bool, bytes: &[u8]) -> Vec<Submatch> {
+    if invert {
+        lines_submatches(matcher, bytes, 0..bytes.len())
+    } else {
+        Vec::new()
+    }
+}
+
+/// `submatches_in` for `\n` lines without `-U`.
+fn lines_submatches(matcher: &PatternMatcher, buffer: &[u8], range: Range<usize>) -> Vec<Submatch> {
+    let searcher = SearcherBuilder::new().build();
+    submatches_in(&searcher, matcher, buffer, range)
 }
 
 impl Sink for CollectSink<'_> {
@@ -421,9 +582,9 @@ impl Sink for CollectSink<'_> {
         Ok(true)
     }
 
-    fn matched(&mut self, _s: &Searcher, m: &SinkMatch<'_>) -> Result<bool, Self::Error> {
+    fn matched(&mut self, s: &Searcher, m: &SinkMatch<'_>) -> Result<bool, Self::Error> {
         self.max_count.matched();
-        let subs = match_submatches(self.matcher, self.invert, m);
+        let subs = match_submatches_in(s, self.matcher, self.invert, m);
         self.stats.matched_lines += m.lines().count() as u64;
         self.stats.matches += subs.len() as u64;
         self.items.push(Item::Match(Line {
@@ -439,14 +600,14 @@ impl Sink for CollectSink<'_> {
         Ok(self.max_count.go_on())
     }
 
-    fn context(&mut self, _s: &Searcher, c: &SinkContext<'_>) -> Result<bool, Self::Error> {
+    fn context(&mut self, s: &Searcher, c: &SinkContext<'_>) -> Result<bool, Self::Error> {
         self.max_count.context(c);
         self.items.push(Item::Context(Line {
             line_number: c.line_number().unwrap_or(0),
             absolute_offset: c.absolute_byte_offset(),
             len: c.bytes().len(),
             owned: self.copy(c.bytes()),
-            submatches: context_submatches(self.matcher, self.invert, c.bytes()),
+            submatches: context_submatches_in(s, self.matcher, self.invert, c.bytes()),
         }));
         Ok(self.max_count.go_on())
     }
@@ -800,7 +961,7 @@ mod tests {
                 };
                 let counted = collect(&mut streaming_searcher(&a, false, false));
                 let mut numbered = collect(&mut printing_searcher(&a, false, false, false));
-                number_lines(&mut numbered, src.bytes());
+                number_lines(&mut numbered, src.bytes(), b'\n');
                 assert!(!counted.is_empty(), "{flags:?} {bytes:?}");
                 assert_eq!(numbered, counted, "{flags:?} {bytes:?}");
             }
@@ -1168,14 +1329,25 @@ mod tests {
                 p
             })
             .collect();
-        assert!(rg_in_memory(&files[..1], false));
-        assert!(rg_in_memory(&files[..10], false));
-        assert!(!rg_in_memory(&files, false));
-        assert!(!rg_in_memory(&files[..1], true));
-        assert!(!rg_in_memory(&[], false));
-        assert!(!rg_in_memory(&[d.path().into()], false));
-        assert!(!rg_in_memory(&[files[0].clone(), d.path().into()], false));
-        assert!(!rg_in_memory(&[d.path().join("missing")], false));
+        let a = args(&["s4", "x"]);
+        assert!(rg_in_memory(&a, &files[..1], false));
+        assert!(rg_in_memory(&a, &files[..10], false));
+        assert!(!rg_in_memory(&a, &files, false));
+        assert!(!rg_in_memory(&a, &files[..1], true));
+        assert!(!rg_in_memory(&a, &[], false));
+        assert!(!rg_in_memory(&a, &[d.path().into()], false));
+        assert!(!rg_in_memory(
+            &a,
+            &[files[0].clone(), d.path().into()],
+            false
+        ));
+        assert!(!rg_in_memory(&a, &[d.path().join("missing")], false));
+        // M5a plan, D9: --mmap maps every file, walked ones too; --no-mmap none.
+        let always = args(&["s4", "--mmap", "x"]);
+        assert!(rg_in_memory(&always, &files, false));
+        assert!(rg_in_memory(&always, &[d.path().into()], false));
+        let never = args(&["s4", "--no-mmap", "x"]);
+        assert!(!rg_in_memory(&never, &files[..1], false));
     }
 
     fn walk_names(a: &Args, paths: &[PathBuf], cwd: &Path) -> Vec<String> {
@@ -1194,6 +1366,214 @@ mod tests {
             .collect();
         v.sort();
         v
+    }
+
+    /// M5a plan, D8: each kind of ignore file is turned off by its own flag, and
+    /// --no-ignore-vcs also stops reading the exclude and global files.
+    #[test]
+    fn walker_ignore_kinds_and_files() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".git/info")).unwrap();
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        std::fs::write(d.path().join(".gitignore"), "vcs.md\n").unwrap();
+        std::fs::write(d.path().join(".git/info/exclude"), "excluded.md\n").unwrap();
+        std::fs::write(d.path().join(".ignore"), "dot.md\n").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("extra.ignore"), "extra.md\n").unwrap();
+        for n in ["keep.md", "vcs.md", "excluded.md", "dot.md", "extra.md"] {
+            std::fs::write(d.path().join(n), "x").unwrap();
+        }
+        let names = |v: &[&str]| {
+            let mut argv = vec!["s4"];
+            argv.extend_from_slice(v);
+            argv.push("x");
+            walk_names(&args(&argv), &[d.path().into()], d.path())
+        };
+        assert_eq!(names(&[]), ["extra.md", "keep.md"]);
+        assert_eq!(
+            names(&["--no-ignore-vcs"]),
+            ["excluded.md", "extra.md", "keep.md", "vcs.md"]
+        );
+        assert_eq!(
+            names(&["--no-ignore-exclude"]),
+            ["excluded.md", "extra.md", "keep.md"]
+        );
+        assert_eq!(
+            names(&["--no-ignore-dot"]),
+            ["dot.md", "extra.md", "keep.md"]
+        );
+        let extra = outside.path().join("extra.ignore");
+        let extra = extra.to_str().unwrap();
+        assert_eq!(names(&["--ignore-file", extra]), ["keep.md"]);
+        assert_eq!(
+            names(&["--ignore-file", extra, "--no-ignore-files"]),
+            ["extra.md", "keep.md"]
+        );
+        // --no-ignore then --ignore-vcs: .gitignore is read again, the exclude file stays off
+        // (`rg --files --no-ignore --ignore-vcs` lists the same four).
+        assert_eq!(
+            names(&["--no-ignore", "--ignore-vcs"]),
+            ["dot.md", "excluded.md", "extra.md", "keep.md"]
+        );
+        // A missing --ignore-file is an error rg prints, and the walk goes on.
+        let a = args(&["s4", "--ignore-file", "/nonexistent/s4-ignore", "x"]);
+        let (_, errors) = walker_with(&a, &[d.path().into()], d.path()).unwrap();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].to_string().contains("/nonexistent/s4-ignore"));
+    }
+
+    #[test]
+    fn walker_size_globs_and_types() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("small.TXT"), "x").unwrap();
+        std::fs::write(d.path().join("large.txt"), "x".repeat(2048)).unwrap();
+        std::fs::write(d.path().join("a.foo"), "x").unwrap();
+        let names = |v: &[&str]| {
+            let mut argv = vec!["s4"];
+            argv.extend_from_slice(v);
+            argv.push("x");
+            walk_names(&args(&argv), &[d.path().into()], d.path())
+        };
+        assert_eq!(names(&["--max-filesize", "1K"]), ["a.foo", "small.TXT"]);
+        assert_eq!(names(&["-g", "*.txt"]), ["large.txt"]);
+        assert_eq!(
+            names(&["--glob-case-insensitive", "-g", "*.txt"]),
+            ["large.txt", "small.TXT"]
+        );
+        assert_eq!(names(&["--type-add", "foo:*.foo", "-t", "foo"]), ["a.foo"]);
+        // --type-clear empties a type: selecting it then selects nothing, as in rg.
+        let a = args(&["s4", "--type-clear", "txt", "-t", "txt", "x"]);
+        assert!(walker(&a, &[d.path().into()], d.path()).is_err());
+        let a = args(&["s4", "--type-add", "nocolon", "-t", "nocolon", "x"]);
+        let e = walker(&a, &[d.path().into()], d.path())
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("invalid definition"), "{e}");
+    }
+
+    #[test]
+    fn sorted_by_time_and_in_reverse() {
+        let d = tempfile::tempdir().unwrap();
+        let t = |secs: u64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        for (n, at) in [("b", 300), ("a", 100), ("c", 200)] {
+            let p = d.path().join(n);
+            std::fs::write(&p, "x").unwrap();
+            let f = std::fs::File::options().write(true).open(&p).unwrap();
+            f.set_modified(t(at)).unwrap();
+        }
+        let sorted = |v: &[&str]| {
+            let mut argv = vec!["s4"];
+            argv.extend_from_slice(v);
+            argv.push("x");
+            let a = args(&argv);
+            let mut entries: Vec<_> = walker(&a, &[d.path().into()], d.path())
+                .unwrap()
+                .build()
+                .flatten()
+                .filter(|e| e.depth() > 0)
+                .collect();
+            sort_entries(&mut entries, a.sort.unwrap());
+            entries
+                .iter()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sorted(&["--sort", "modified"]), ["a", "c", "b"]);
+        assert_eq!(sorted(&["--sortr", "modified"]), ["b", "c", "a"]);
+        assert_eq!(sorted(&["--sortr", "path"]), ["c", "b", "a"]);
+        assert!(walker_sorts(&args(&["s4", "--sort", "path", "x"])));
+        assert!(!walker_sorts(&args(&["s4", "--sortr", "path", "x"])));
+    }
+
+    /// M5a plan, D9: the searcher's line terminator, multi-line mode, passthru and
+    /// --stop-on-nonmatch, as rg 14.1.1's `searcher`.
+    #[test]
+    fn searcher_flags_as_ripgrep() {
+        let lines = |argv: &[&str], pat: &str, text: &[u8]| -> Vec<(char, u64, Vec<u8>)> {
+            let mut v = vec!["s4"];
+            v.extend_from_slice(argv);
+            v.push(pat);
+            let a = args(&v);
+            let src = Source::from_bytes("a".into(), text.to_vec(), true);
+            let Some(fm) = run(&a, &[pat], &src) else {
+                return Vec::new();
+            };
+            fm.items
+                .iter()
+                .map(|i| match i {
+                    Item::Match(l) => ('m', l.line_number, l.bytes(src.bytes()).to_vec()),
+                    Item::Context(l) => ('c', l.line_number, l.bytes(src.bytes()).to_vec()),
+                })
+                .collect()
+        };
+        assert_eq!(
+            lines(
+                &["--null-data"],
+                "needle",
+                b"one needle\ntwo\0three\0x needle"
+            ),
+            [
+                ('m', 1, b"one needle\ntwo\0".to_vec()),
+                ('m', 3, b"x needle".to_vec())
+            ]
+        );
+        assert_eq!(
+            lines(&["-U"], r"one\ntwo", b"one\ntwo\nthree\n"),
+            [('m', 1, b"one\ntwo\n".to_vec())]
+        );
+        assert_eq!(
+            lines(&["--passthru"], "two", b"one\ntwo\nthree\n")
+                .iter()
+                .map(|l| l.0)
+                .collect::<String>(),
+            "cmc"
+        );
+        assert_eq!(
+            lines(
+                &["--stop-on-nonmatch"],
+                "needle",
+                b"needle\nneedle\nx\nneedle\n"
+            )
+            .len(),
+            2
+        );
+        assert_eq!(lines(&["--crlf"], "needle$", b"a needle\r\n").len(), 1);
+    }
+
+    /// The submatches grep-printer records with each line terminator and in multi-line mode.
+    #[test]
+    fn submatches_follow_the_searchers_terminator() {
+        let subs = |argv: &[&str], pat: &str, text: &[u8]| -> Vec<(usize, usize)> {
+            let mut v = vec!["s4"];
+            v.extend_from_slice(argv);
+            v.push(pat);
+            let a = args(&v);
+            let src = Source::from_bytes("a".into(), text.to_vec(), true);
+            run(&a, &[pat], &src)
+                .map(|fm| summary(&fm).into_iter().flat_map(|r| r.2).collect())
+                .unwrap_or_default()
+        };
+        // CRLF: the \r is not part of the line's text.
+        assert_eq!(subs(&["--crlf"], r"\s$", b"a \r\n"), [(1, 2)]);
+        // Multi-line: one submatch across the lines of its block.
+        assert_eq!(subs(&["-U"], r"a\nb", b"a\nb\n"), [(0, 3)]);
+    }
+
+    #[test]
+    fn lines_are_numbered_by_the_searchs_terminator() {
+        let src = b"a\0needle\0b\nc\0needle\0".to_vec();
+        let mut items = vec![
+            Item::Match(Line::owned(0, 2, b"needle\0")),
+            Item::Match(Line::owned(0, 15, b"needle\0")),
+        ];
+        number_lines(&mut items, &src, 0);
+        let numbers: Vec<u64> = items
+            .iter()
+            .map(|i| match i {
+                Item::Match(l) | Item::Context(l) => l.line_number,
+            })
+            .collect();
+        assert_eq!(numbers, [2, 4]);
     }
 
     #[test]
