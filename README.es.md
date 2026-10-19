@@ -343,7 +343,8 @@ descompresión, una parte de un zip se descomprime hasta 256 MiB y un documento 
   tabla, fila, columna, celda, capítulo y notas quedan fuera del texto, así que
   `--in-headings` sólo encuentra títulos en los documentos.
 - Un PDF cifrado que abre con la contraseña vacía se lee. El texto dibujado como imagen
-  (escaneos) queda sin texto, porque no hay OCR.
+  (escaneos) queda sin texto, porque no hay OCR. Un objeto de un PDF con un entero de más de 64
+  bits queda afuera del lector de PDF, y con él el texto que dibuja, sin aviso.
 - Quedan sin leer los formatos binarios de Office (`.doc`, `.xls`, `.ppt`), los encabezados,
   pies de página, notas al pie y comentarios de los documentos de Office, y el archivo `-wal`
   de una base SQLite.

@@ -333,7 +333,8 @@ bombs, a zip part decompresses to at most 256 MiB and a whole document to 1 GiB,
   a cell, the page of a PDF match. Page, sheet, slide, table, row, column, cell, chapter and
   notes names are not in the text, so `--in-headings` finds only headings in documents.
 - An encrypted PDF that opens with the empty password is read. Text drawn as images (scans)
-  has no text, since there is no OCR.
+  has no text, since there is no OCR. A PDF object with an integer past 64 bits is left out by
+  the PDF parser, and with it the text it draws, without a warning.
 - The binary Office formats (`.doc`, `.xls`, `.ppt`) are not read, nor the headers, footers,
   footnotes and comments of Office documents, nor a SQLite `-wal` file.
 - A zip archive is never opened.
