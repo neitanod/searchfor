@@ -1,14 +1,23 @@
 # searchfor — v1 design
 
-Status: draft · 2026-10-18, aligned with the M1 implementation, the M2 decisions of the Hilo
+Status: draft · 2026-10-19, aligned with the M1 implementation, the M2 decisions of the Hilo
 (8449–8459), the M2 implementation (v0.2), the decisions of the M3 plan and the M3
-implementation (v0.3), the decisions of the M4 plan and the M4 implementation (v0.4) · Task
-768 · source of truth for decisions: [grill-respuestas.md](grill-respuestas.md) (numbers below,
-like **#6**, refer to its questions; four-digit numbers are Hilo messages; «M2 plan», «M3 plan»
-and «M4 plan» mark a decision taken in [the M2 plan](../plans/2026-10-17-searchfor-m2.md),
-[the M3 plan](../plans/2026-10-17-searchfor-m3.md) or
-[the M4 plan](../plans/2026-10-18-searchfor-m4.md) where Sebastián left it open)
+implementation (v0.3), the decisions of the M4 plan and the M4 implementation (v0.4), and the
+decisions of the M5a plan (v0.5, not implemented yet) · Task 768 · source of truth for
+decisions: [grill-respuestas.md](grill-respuestas.md) (numbers below, like **#6**, refer to its
+questions; four-digit numbers are Hilo messages; «M2 plan», «M3 plan», «M4 plan» and «M5a
+plan» mark a decision taken in [the M2 plan](../plans/2026-10-17-searchfor-m2.md),
+[the M3 plan](../plans/2026-10-17-searchfor-m3.md),
+[the M4 plan](../plans/2026-10-18-searchfor-m4.md) or
+[the M5a plan](../plans/2026-10-19-searchfor-m5.md) where Sebastián left it open)
 and [../../CONTEXT.md](../../CONTEXT.md) for the vocabulary.
+
+**M5 in two parts (M5a plan, D1).** The fifth milestone is split: **M5a** (v0.5) implements
+every remaining flag of ripgrep 14.1.1 (§8) and the MCP server (§9); **M5b** (v1.0) brings
+Windows and macOS (with the Windows Job Object of the M4 plan's D31), CI on the three systems,
+the releases and their channels (§10), the Grammar Helper binaries in the Grammar index (§7),
+the External Processor guide (§4.4) and the streaming of dense files (§3, item 5). M5b gets a
+plan of its own once M5a is merged.
 
 ## 1. Goal
 
@@ -30,7 +39,7 @@ contract. That combination is the product.
 |---|---|---|
 | Formats | Markdown, YAML, JSON, TOML, code via tree-sitter, HTML, XML, CSV and TSV, subtitles (SubRip, WebVTT), ELF/PE/Mach-O; by default, PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite, which `--no-docs` turns off (§3, M4) | #1, 8380, 8390, 8395, 8750 |
 | Engine | ripgrep's crates in-process ([ADR 0001](../adr/0001-embed-ripgrep-engine-as-library.md)) | #2 |
-| Flags | Full ripgrep flag compatibility as the target, plus searchfor's own flags; ripgrep's `--pre` and `-z` from M4 (§5.9) | #3, 8395 |
+| Flags | Every flag of ripgrep 14.1.1, plus searchfor's own flags; ripgrep's `--pre` and `-z` from M4 (§5.9), the rest in M5a (§8) | #3, 8375, 8395 |
 | Structural search | `--within`, `--expand`, `--in-headings` | #4 |
 | Detection | extension, exact name, shebang, magic bytes, `--format` override | #5 |
 | Format Definitions | embedded TOML + user directory + export command ([ADR 0002](../adr/0002-format-definitions-as-embedded-toml.md)) | #6 |
@@ -95,13 +104,18 @@ paths ─▶ walker (ignore crate: .gitignore, -g, -t, --hidden…)
    `--binary` or `-a` — searchfor searches the whole file and prints each printable string with
    Matches at its hex offset, with its Trail (§5.7). A walked object file without `--binary`, and
    any other binary file, keep ripgrep's behaviour, including `-a/--text` and `--binary`.
-5. **Dense Matches (pending, M5).** The pipeline keeps the Trails of a whole file before
+5. **Dense Matches (pending, M5b).** The pipeline keeps the Trails of a whole file before
    printing it, so a file where every line matches costs time and memory in proportion to its
    Matches, in every Format. Measured in the M3 plan on 50 MB files where every line matches
    (2026-10-17): JSON Lines 3.51 s and 876 MiB, Markdown 3.62 s and 409 MiB, CSV 5.36 s and
    1.48 GiB, against 0.16–0.46 s with `--no-trail`. M3 reports this cost in
    `scripts/bench-m3.sh` and bounds nothing (M3 plan, D16); streaming the Trails of such a file
-   is left for M5, whose flag work touches the printers anyway.
+   is left for M5, whose flag work touches the printers anyway. M5a settles the printers'
+   rows for every ripgrep flag; the streaming itself, with its criterion, is M5b's (M5a plan,
+   D1). Measured on M4's code (2026-10-19, 50 MB files where every line matches): Markdown
+   1.30 s and 159 MiB, JSON Lines 1.43 s and 258 MiB, CSV 3.74 s and 946 MiB in the one-line
+   layout, and with `--json` 1.29 s / 159 MiB, 1.90 s / 572 MiB and 4.43 s / 1.88 GiB, against
+   0.11–0.20 s and 54 MiB with `--no-trail`.
 
 ## 4. Formats, Detector and Format Definitions
 
@@ -917,7 +931,7 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
   are not documents: an extracted text has no binary data. A file that `--pre` (when its globs
   take the file) or `-z` (when its extension has a decompressor) reads is never extracted, so
   `report.pdf.gz` with `-z` is searched as decompressed bytes (§5.9, D21). The filters
-  (`-g`, `-t`, `--hidden`, ignore files, and `--max-filesize` once M5 implements it) select
+  (`-g`, `-t`, `--hidden`, ignore files, and `--max-filesize`, from M5a) select
   documents by their path and size on disk, as any file. `--no-trail`, `-c`, `--count-matches`, `-l`, `--files-without-match`
   and `-q` work on the extracted text and print what ripgrep would print for it (D22).
 
@@ -1090,7 +1104,7 @@ ones easy to add, and a flag that installs them. 8454 replaced the WebAssembly G
   ``s4: <format>: grammar `<lang>` is neither compiled in nor installed (see --list-grammars)``,
   printed only when a file of that Format has a Match (§4.4, Failures).
 - A Grammar Helper binary per Grammar and system is built and published by the release pipeline
-  (§10, M5). M2 ships the client side, the Grammar Helper template and a script that builds one
+  (§10, M5b). M2 ships the client side, the Grammar Helper template and a script that builds one
   for the running system (M2 plan).
 
 Measured in the M2 research (2026-10-16 and 2026-10-17, on this machine): native parsing is
@@ -1109,10 +1123,80 @@ v0.3 release binary, which adds `markup`, `csv` (with `csv-core`) and `subtitles
   30 `--no-` negations and 12 negations with other names (counted from its source in M1, C2).
   v1 accepts all of them by name; they are implemented in order of use. v0.1 implements 51
   and accepts the other 95 as «not supported yet»; v0.4 implements 56 (M4 adds `--pre`,
-  `--pre-glob`, `--no-pre`, `-z` and `--no-search-zip`) and accepts the other 90. A flag that
-  is accepted but not yet implemented fails with `s4: --<flag> is not supported yet` and exit
-  code 2, never silently ignored. The compatibility table lives in `docs/rg-compat.md` and is
-  checked by a test that parses `rg --help`.
+  `--pre-glob`, `--no-pre`, `-z` and `--no-search-zip`); v0.5 implements all 146 (M5a, 8375),
+  and the «not supported yet» error stays only as the mechanism of a flag a later ripgrep adds.
+  The compatibility table lives in `docs/rg-compat.md` and is checked by a test that parses
+  `rg --help`; every flag of M5a is compared with rg 14.1.1 byte for byte with `--no-trail`
+  (§11 #29).
+- **Flags in command-line order (M5a plan, D2).** ripgrep applies each flag in order, so a
+  later flag undoes the part of an earlier one it shares: `--no-ignore --ignore-vcs` reads
+  `.gitignore` again, `--pretty --no-heading` prints no heading, `--null-data` turns `--crlf`
+  off, a `-A` after `--passthru` replaces it. s4 resolves the same flags from the place of their
+  last occurrence on the command line (`cli::order`), which gives rg's result because a switch
+  sets the same values every time; flags with values keep every place (`-t`, `-T`,
+  `--type-add` and `--type-clear` in one ordered list, as rg's `TypeChange`s).
+- **The configuration file (M5a plan, D3).** `SEARCHFOR_CONFIG_PATH` names a file read as rg 14.1.1
+  reads `RIPGREP_CONFIG_PATH`: one argument per line, trimmed, blank lines and `#` comments
+  skipped, the arguments put before the command line's. The command line is parsed alone first,
+  so `--help`, `--version`, `--pcre2-version` and `--no-config` never depend on the file; a file
+  that cannot be read is a message (`s4: failed to read the file specified in
+  SEARCHFOR_CONFIG_PATH: …`). There is no default location: without the variable nothing is
+  read.
+- **rg's output flags in the Trail layouts (M5a plan, D4–D6).** With `--no-trail`, and in the
+  summaries and `--files`, grep-printer's printers print, configured as rg configures them, so
+  every output flag prints what rg prints. In the tree and one-line layouts:
+  - `--column` and `-b` add the column of a row's first Match and the row's byte offset after
+    its line number (`path:12:13:96: Trail │ text`; in the tree `12:13:96:text`). A row is the
+    part of a line under one Trail, so its column is its own first Match's.
+  - `-o` makes a row of each Match, its text the matched bytes, under that Match's Trail;
+    `--vimgrep` makes a row of each Match with its whole line, `path:line:column:`, always in
+    the one-line layout (rg's `--vimgrep` turns the heading off).
+  - `-r` prints each line with its Matches replaced (`$1`, `$name`, `${name}` from each
+    Match's groups, as grep-printer replaces them), each row's replacements highlighted;
+    `--trim` leaves out a line's leading ASCII white space; `--max-columns-preview` prints the
+    first `-M` graphemes of a long line and rg's ` [... N more matches]`.
+  - `--field-match-separator`, `--field-context-separator`, `--context-separator` and
+    `--no-context-separator` replace `:`, `-` and `--`; `-0` puts a NUL after each path, in the
+    tree after the header's path in place of its line break; `--path-separator` replaces `/`.
+  - `--colors` takes rg's specs and the type `trail`, the Trail's colour (s4's own, D11);
+    `--hyperlink-format` makes the path and the numbers of a row one OSC 8 link on a terminal
+    with colour, built as grep-printer builds it (D12).
+  - `--heading`, `--pretty` and `--tree` choose the tree, `--no-heading` and `--flat` the
+    one-line layout, the last one given winning (D5); `--pretty` also sets `--color always` and
+    `-n` where it comes after them.
+  - A `-U` Match that spans lines, and a `--null-data` record that holds line breaks, print a
+    row per line: a Match's lines numbered as rg numbers them, under the Trail of the Match; a
+    record's lines with the record's number (D6). `-o` prints each line of a Match's text that is
+    not empty, as rg's.
+  - `--passthru` prints every line of every file searched, a file without a Match too, whose
+    exit code stays 1.
+  - `--stats` prints rg's block after the output: every file searched is counted, the bytes
+    printed are s4's (D14). `--include-zero` prints the files with a zero count, and `-0` ends
+    each path of the summaries with a NUL.
+  - `--json` prints rg's JSON Lines, which ignore these flags as rg's printer does.
+- **Search flags (M5a plan, D7–D10).** `-P`/`--engine pcre2` search with PCRE2 (grep-pcre2,
+  PCRE2 built into the binary), `--engine auto` falls back to it when the default engine
+  refuses the pattern, with rg's combined error when neither compiles; `--no-unicode`,
+  `--crlf`, `--null-data`, `-U`, `--multiline-dotall`, `--dfa-size-limit` and
+  `--regex-size-limit` configure the matcher as rg's; a pattern that can match a NUL is refused
+  while binary data is detected, with rg's suggestion of `-a`. `-E` decodes as grep-searcher
+  decodes for rg (a BOM wins over the label, `none` decodes nothing), the Trails computed on the
+  decoded text. `--stop-on-nonmatch`, `--mmap` and `--no-mmap` act on the searcher as rg's. The
+  walker takes `--no-ignore-*` and their negations one kind at a time, `--ignore-file`
+  (an unreadable one is an ignore message), `--no-require-git`, `--one-file-system`,
+  `--max-filesize` (walked files only, as rg), `--glob-case-insensitive`, and
+  `--sort`/`--sortr` by path, modification, access or creation time (a stable sort of the whole
+  walk, files without the time last). The errors of an ignore file are printed unless
+  `--no-messages` or `--no-ignore-messages`, and a search of the current directory that read no
+  file says so, as rg (`s4: No files were searched, …`, exit 2).
+- **Actions (M5a plan, D15–D17, D20).** `--files` lists the files a search would read (its
+  positional arguments are all paths), from the walker's threads unless sorted;
+  `--pcre2-version` prints PCRE2's version; `--generate man|complete-bash|complete-zsh|
+  complete-fish|complete-powershell` writes s4's man page and completions from s4's own
+  flags; `--debug` and `--trace` print the messages of the crates s4 shares with rg in rg's
+  format (`s4: DEBUG|target|file:line: message`); `--mcp` serves the search (§9).
+- **Buffering (M5a plan, D13).** stdout is flushed per line on a terminal and with
+  `--line-buffered`, per block in a pipe and with `--block-buffered`, as rg's.
 - **searchfor's own flags** use names ripgrep does not use:
 
 | Flag | Meaning |
@@ -1128,15 +1212,25 @@ v0.3 release binary, which adds `markup`, `csv` (with `csv-core`) and `subtitles
 | `--install-grammar <LANG>`, `--list-grammars` | Grammar Helpers (§7) |
 | `--no-docs` | search PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite files as ripgrep does, at ripgrep's cost, instead of through the built-in Extractors, which is the default (§5.8, 8395, 8750) |
 | `--docs` | turn the default back on after a `--no-docs`; the last of the two wins (8750) |
-| `--mcp` | run as an MCP server over stdio |
+| `--mcp` | run as an MCP server over stdin and stdout (§9) |
 
 Management actions are flags, not subcommands, because `s4 formats` must keep meaning
 "search for the word formats", as `rg formats` does.
 
 ## 9. Agents (#19)
 
-- **MCP server** (`s4 --mcp`): one tool, `search`, with `pattern`, `paths`, `within`,
-  `expand`, `glob`, `case_insensitive`, `max_results`; returns the `--json` matches.
+- **MCP server** (`s4 --mcp`, M5a plan, D17): JSON-RPC 2.0, one message per line, over stdin
+  and stdout, as the Model Context Protocol's stdio transport; it answers `initialize` with the
+  client's protocol version when it is one it speaks (2025-06-18, 2025-03-26, 2024-11-05) and
+  else the newest, `ping`, `tools/list` and `tools/call`, and ignores notifications. One tool,
+  `search`, with `pattern` (required), `paths`, `within`, `expand`, `glob`, `case_insensitive`
+  and `max_results` (100 when not given); unknown arguments are refused. Each call runs `s4
+  --json` with those flags as a child process of the same binary, so a search that fails never
+  ends the server, and returns `{"matches": [{"path", "line", "trail": [names], "text",
+  "format", "section"?}], "truncated"}` both as `structuredContent` and as the text of its
+  `content`; a search s4 refuses (a pattern that does not compile) is a tool result with
+  `isError` and s4's message, which the model can read. Management actions stay flags, so `s4
+  mcp` searches for the word `mcp`.
 - **Claude Code skill** in `skills/searchfor/SKILL.md`: when to use `s4` instead of `rg`,
   with `--within` and `--expand` recipes.
 - **README section "For AI agents"** with copy-ready commands.
@@ -1145,9 +1239,13 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
 
 - Public repository: https://github.com/neitanod/searchfor (account chosen in 8366).
 - `dist` (formerly cargo-dist) builds GitHub Releases for Linux, macOS and Windows on x86-64
-  and arm64, and publishes the Homebrew tap and the npm package from the same configuration.
+  and arm64, and publishes the Homebrew tap and the npm package from the same configuration
+  (M5b; nothing is published without Sebastián's go-ahead).
 - The same pipeline builds a Grammar Helper per Grammar for the same systems and writes their
-  URLs and SHA-256 to `grammars/index.json` (§7, M5).
+  URLs and SHA-256 to `grammars/index.json` (§7, M5b).
+- PCRE2 is built into every binary from the C that pcre2-sys bundles (`PCRE2_SYS_STATIC` in
+  `.cargo/config.toml`, M5a plan, D7); a `cargo install searchfor` links the system's libpcre2
+  when pkg-config finds one, as ripgrep's does.
 - The crate `searchfor` is published on crates.io when v0.1 works (#20).
 
 ## 11. Acceptance criteria
@@ -1194,11 +1292,13 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
     at most the largest matching file divided by 50 MB/s, plus the size of all the matching files
     divided by 50 MB/s per search thread, plus 0.05 s. A 50 MB file of each of these Formats with
     three Matches gets its Trails within `rg`'s time plus 1 s (`tests/perf.rs`). A pattern that
-    matches every line is measured and reported, not bounded (§3, item 5; pending for M5). The
+    matches every line is measured and reported, not bounded (§3, item 5; pending for M5b). The
     reference is `/usr/bin/rg`, which must be ripgrep 14.1.1 (another `rg` may come first on
     `PATH`), and a comparison that cannot run makes an acceptance run fail instead of passing
     silently (`SEARCHFOR_REQUIRE_REFERENCE=1`, M3 plan, D33).
-14. `s4 --mcp` answers a `search` call from Claude Code.
+14. `s4 --mcp` answers a `search` call from Claude Code: `initialize`, `tools/list` and
+    `tools/call` over stdin and stdout, the Matches of a call with their Trails, an error of s4
+    as a tool result with `isError` (§9; M5a, `m5_11` and `mcp::tests`).
 15. In `pool`, `concurrent` and `oneshot` modes, an example Helper Processor gives the same
     Trails; a pool never runs more copies than search threads; a concurrent helper that answers
     out of order still gets each answer to its own file.
@@ -1216,7 +1316,8 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
 21. A key `"a\nb"` in JSON, TOML, YAML or JavaScript prints `a\nb` on one row in tree and one-line
     output, and as the decoded name in `--json`.
 22. The release binary (`target/release/s4`, Linux x86-64, the profile of `Cargo.toml`) weighs
-    at most 23 MB (8612; 20 MB until then, M3 plan).
+    at most 23 MB (8612; 20 MB until then, M3 plan). M4's weighs 19.3 MB and M5a's 21.0 MB (M5a
+    plan, D22).
 23. By default, a Match in each document Format gets the Trail of §5.8: `1 Intro › 1.1 Scope`
     and `2 Costs › table 1 › row 2 › Price` in Word and OpenDocument text, `Budget › A3` in Excel
     and OpenDocument spreadsheets, `slide 1 › notes` in PowerPoint and OpenDocument
@@ -1261,3 +1362,36 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
     `.pdf` print the Trails of §5.8 with no flag, and the same output on a pseudo-terminal as
     with `--tree` in a pipe. `--no-docs` gives rg's output, errors and exit codes included;
     `--no-docs --docs` searches the documents and `--docs --no-docs` does not (8750).
+29. **Every ripgrep flag (M5a).** `docs/rg-compat.md` marks all 146 names of ripgrep 14.1.1
+    implemented, and `s4 --no-docs --no-trail` prints what rg 14.1.1 prints, stdout and exit
+    code, for each case of `tests/rg_compat_m5.rs`: the output flags (`--column`, `-b`,
+    `--heading`, `--pretty`, `--vimgrep`, `-o`, `-r`, `-0`, `--path-separator`, `--trim`,
+    `--passthru`, the separators, `--max-columns-preview`, `--colors`, `--hyperlink-format`,
+    `--include-zero`, the buffering flags), the search flags (`-P`, `--engine`, `--no-unicode`,
+    `--crlf`, `--null-data`, `-U`, `--multiline-dotall`, `--stop-on-nonmatch`, the size limits,
+    `-E`, `--mmap`), the walk flags (the `--no-ignore-*` family, `--ignore-file`,
+    `--require-git`, `--one-file-system`, `--max-filesize`, `--glob-case-insensitive`,
+    `--type-add`, `--type-clear`, `--sort` and `--sortr`, `--files`), and `--stats` and
+    `--json` with their times masked.
+30. **The Trail layouts with rg's flags (M5a).** `tests/cli_m5.rs` gives, over the fixtures, the
+    rows of §8 for `--column`, `-b`, `-o`, `--vimgrep`, `-r`, `-0`, `--path-separator`, the
+    separators, `--heading`/`--no-heading`/`--pretty`, `-U`, `--null-data`, `--crlf`,
+    `--passthru`, `-P`, `-E`, `--colors` with `trail`, `--hyperlink-format`, `--stats` and the
+    summaries with `-0` and `--include-zero`, each Row keeping its Trail.
+31. **Actions and the configuration (M5a).** `--files` lists rg's files (sorted and not),
+    `--generate` writes its five kinds, `--pcre2-version` prints `PCRE2 10.x is available`,
+    `--debug` prints rg's format, `SEARCHFOR_CONFIG_PATH`'s arguments apply before the command
+    line's and `--no-config` skips them, and a search of the current directory that read no file
+    prints rg's message and exits 2.
+32. **Performance of M5a** (`scripts/bench-m5.sh`, M5a plan, D18): over the M4 corpus, with
+    `--no-docs --no-trail`, `-P`, `-U`, `--column -b -o`, `--vimgrep` and `-r --trim` at most
+    1.1 × rg; `--files` and `--files --sort path` at most 1.1 × rg; in the one-line layout,
+    `--column -b`, `-o`, `--vimgrep`, `-r`, `--trim` and `--stats` at most 1.1 × the same search
+    without them; and with `--no-docs`, M5a's s4 against M4's (522bf96), `--flat` and
+    `--no-trail`, at most 1.03 ×, the median of three alternated series. In `tests/perf.rs`: `-P`
+    and `-U` over 10 MB with `--no-trail` within 1.25 × rg; `--files` over 20 000 files within
+    1.25 × rg plus 10 ms; on a 50 MB Markdown file, `--column -b`, `-o`, `--vimgrep`, `-r` and
+    `--trim` within 1.25 × the default's time and its RSS plus 16 MiB.
+33. **No flag combination panics (M5a).** `tests/fuzz_m5.rs` runs seeded combinations of
+    ripgrep's and s4's flags, patterns and paths (CRLF, NUL records, Latin-1, long lines): no
+    run panics, none takes more than 10 s, every exit code is 0, 1, or 2 with a message.
