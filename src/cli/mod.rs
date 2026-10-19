@@ -1,5 +1,9 @@
 //! Command line: ripgrep-compatible flags plus searchfor's own (spec §8).
+pub mod config;
+pub mod generate;
+mod order;
 pub mod rg_flags;
+pub mod values;
 
 use clap::{
     Arg, ArgAction, CommandFactory, FromArgMatches, Parser, ValueEnum, parser::ValueSource,
@@ -37,6 +41,101 @@ pub enum BinaryChoice {
     Auto,
     Binary,
     Text,
+}
+
+/// The ignore files the walker reads, after --no-ignore, --ignore, the first -u and the
+/// --no-ignore-* flags in command-line order (rg 14.1.1, defs.rs `NoIgnore`): true turns that
+/// kind off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IgnoreRules {
+    /// `.ignore` and `.rgignore`.
+    pub no_dot: bool,
+    /// `.git/info/exclude`.
+    pub no_exclude: bool,
+    /// git's global excludes file.
+    pub no_global: bool,
+    /// Ignore files in the parents of a path given.
+    pub no_parent: bool,
+    /// `.gitignore`, and with it the exclude and global files.
+    pub no_vcs: bool,
+}
+
+impl IgnoreRules {
+    fn all(no: bool) -> Self {
+        IgnoreRules {
+            no_dot: no,
+            no_exclude: no,
+            no_global: no,
+            no_parent: no,
+            no_vcs: no,
+        }
+    }
+}
+
+/// One of -t, -T, --type-add and --type-clear, applied in command-line order as rg's
+/// `TypeChange`s.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeChange {
+    Select(String),
+    Negate(String),
+    Add(String),
+    Clear(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortKind {
+    Path,
+    Modified,
+    Accessed,
+    Created,
+}
+
+/// `--sort` (ascending) and `--sortr` (descending).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortMode {
+    pub kind: SortKind,
+    pub reverse: bool,
+}
+
+/// The regex engine: Rust's (`default`), PCRE2, or Rust's falling back to PCRE2 (`auto`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Engine {
+    #[default]
+    Default,
+    Pcre2,
+    Auto,
+}
+
+/// `-E`: a BOM decides (`auto`), a WHATWG label, or no transcoding at all (`none`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum EncodingMode {
+    #[default]
+    Auto,
+    Label(String),
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MmapMode {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+/// How stdout is flushed: per line on a terminal and per block in a pipe (`Auto`), as rg.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BufferMode {
+    #[default]
+    Auto,
+    Line,
+    Block,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Logging {
+    Debug,
+    Trace,
 }
 
 #[derive(Debug, Parser)]
@@ -89,10 +188,6 @@ pub struct Args {
     pub types: Vec<String>,
     #[arg(short = 'T', long = "type-not", action = ArgAction::Append)]
     pub types_not: Vec<String>,
-    /// `-t` (true) and `-T` (false) in command-line order, resolved in `parse`: ripgrep applies
-    /// them in that order, so the last selection of a type wins.
-    #[arg(skip)]
-    pub type_selections: Vec<(bool, String)>,
     #[arg(long)]
     pub type_list: bool,
     #[arg(short = '.', long, overrides_with = "no_hidden")]
@@ -112,18 +207,16 @@ pub struct Args {
     pub unrestricted_flags: Vec<u8>,
     #[arg(skip)]
     pub unrestricted: u8,
-    /// Resolved in `parse` by position, like `binary_choice`: the first -u acts as --no-ignore
-    /// and the second as --hidden at the place where they appear (rg 14.1.1: `-u --ignore`
-    /// keeps ignores, `--ignore -u` drops them, `-uu --no-hidden` hides).
-    #[arg(skip)]
-    pub no_ignore_resolved: bool,
+    /// Resolved in `parse` by position, like `binary_choice`: the second -u acts as --hidden at
+    /// the place where it appears (rg 14.1.1: `-uu --no-hidden` hides nothing), as the first
+    /// acts as --no-ignore (`ignores`: `-u --ignore` keeps ignores, `--ignore -u` drops them).
     #[arg(skip)]
     pub hidden_resolved: bool,
     #[arg(short = 'L', long, overrides_with = "no_follow")]
     pub follow: bool,
     #[arg(long, hide = true)]
     pub no_follow: bool,
-    #[arg(short = 'd', long)]
+    #[arg(short = 'd', long, alias = "maxdepth")]
     pub max_depth: Option<usize>,
     #[arg(short = 'A', long)]
     pub after_context: Option<usize>,
@@ -159,9 +252,6 @@ pub struct Args {
     pub json: bool,
     #[arg(long, hide = true)]
     pub no_json: bool,
-    /// Only `path` and `none` in M1; any other value is «not supported yet».
-    #[arg(long)]
-    pub sort: Option<String>,
     #[arg(short = 'j', long)]
     pub threads: Option<usize>,
     // The four binary-mode flags override each other (last wins); the third -u competes with
@@ -202,6 +292,297 @@ pub struct Args {
     pub no_messages: bool,
     #[arg(long, hide = true, overrides_with = "no_messages")]
     pub messages: bool,
+
+    // M5: the rest of ripgrep 14.1.1's flags (M5a plan, D2). Pairs override each other, the
+    // last one given winning; flags that set more than one thing are resolved in `parse` by
+    // their place on the command line (`order::resolve`), as rg applies them in order.
+    /// Don't use .ignore or .rgignore files.
+    #[arg(long, overrides_with = "ignore_dot")]
+    pub no_ignore_dot: bool,
+    #[arg(long, hide = true, overrides_with = "no_ignore_dot")]
+    pub ignore_dot: bool,
+    /// Don't use local exclusion files.
+    #[arg(long, overrides_with = "ignore_exclude")]
+    pub no_ignore_exclude: bool,
+    #[arg(long, hide = true, overrides_with = "no_ignore_exclude")]
+    pub ignore_exclude: bool,
+    /// Don't use --ignore-file arguments.
+    #[arg(long, overrides_with = "ignore_files")]
+    pub no_ignore_files: bool,
+    #[arg(long, hide = true, overrides_with = "no_ignore_files")]
+    pub ignore_files: bool,
+    /// Don't use global ignore files.
+    #[arg(long, overrides_with = "ignore_global")]
+    pub no_ignore_global: bool,
+    #[arg(long, hide = true, overrides_with = "no_ignore_global")]
+    pub ignore_global: bool,
+    /// Suppress gitignore parse error messages.
+    #[arg(long, overrides_with = "ignore_messages")]
+    pub no_ignore_messages: bool,
+    #[arg(long, hide = true, overrides_with = "no_ignore_messages")]
+    pub ignore_messages: bool,
+    /// Don't use ignore files in parent directories.
+    #[arg(long, overrides_with = "ignore_parent")]
+    pub no_ignore_parent: bool,
+    #[arg(long, hide = true, overrides_with = "no_ignore_parent")]
+    pub ignore_parent: bool,
+    /// Don't use ignore files from source control.
+    #[arg(long, overrides_with = "ignore_vcs")]
+    pub no_ignore_vcs: bool,
+    #[arg(long, hide = true, overrides_with = "no_ignore_vcs")]
+    pub ignore_vcs: bool,
+    /// Use .gitignore outside of git repositories.
+    #[arg(long, overrides_with = "require_git")]
+    pub no_require_git: bool,
+    #[arg(long, hide = true, overrides_with = "no_require_git")]
+    pub require_git: bool,
+    /// The ignore rules after --no-ignore, the first -u and the --no-ignore-* flags, in order.
+    #[arg(skip)]
+    pub ignores: IgnoreRules,
+    /// Specify additional ignore files.
+    #[arg(long = "ignore-file", value_name = "PATH", action = ArgAction::Append)]
+    pub ignore_file: Vec<PathBuf>,
+    /// Process ignore files case insensitively.
+    #[arg(long, overrides_with = "no_ignore_file_case_insensitive")]
+    pub ignore_file_case_insensitive: bool,
+    #[arg(long, hide = true, overrides_with = "ignore_file_case_insensitive")]
+    pub no_ignore_file_case_insensitive: bool,
+    /// Process all glob patterns case insensitively.
+    #[arg(long, overrides_with = "no_glob_case_insensitive")]
+    pub glob_case_insensitive: bool,
+    #[arg(long, hide = true, overrides_with = "glob_case_insensitive")]
+    pub no_glob_case_insensitive: bool,
+    /// Skip directories on other file systems.
+    #[arg(long, overrides_with = "no_one_file_system")]
+    pub one_file_system: bool,
+    #[arg(long, hide = true, overrides_with = "one_file_system")]
+    pub no_one_file_system: bool,
+    /// Ignore files larger than NUM in size.
+    #[arg(long, value_name = "NUM+SUFFIX?", value_parser = values::human_u64)]
+    pub max_filesize: Option<u64>,
+    /// Add a new glob for a file type.
+    #[arg(long = "type-add", value_name = "TYPESPEC", action = ArgAction::Append)]
+    pub type_add: Vec<String>,
+    /// Clear globs for a file type.
+    #[arg(long = "type-clear", value_name = "TYPE", action = ArgAction::Append)]
+    pub type_clear: Vec<String>,
+    /// -t, -T, --type-add and --type-clear in command-line order, resolved in `parse`.
+    #[arg(skip)]
+    pub type_changes: Vec<TypeChange>,
+    /// Sort results in ascending order.
+    #[arg(long = "sort", value_name = "SORTBY", action = ArgAction::Append,
+          value_parser = ["path", "modified", "accessed", "created", "none"])]
+    pub sort_flags: Vec<String>,
+    /// Sort results in descending order.
+    #[arg(long = "sortr", value_name = "SORTBY", action = ArgAction::Append,
+          value_parser = ["path", "modified", "accessed", "created", "none"])]
+    pub sortr_flags: Vec<String>,
+    /// (DEPRECATED) Sort results by file path.
+    #[arg(long, overrides_with = "no_sort_files")]
+    pub sort_files: bool,
+    #[arg(long, hide = true, overrides_with = "sort_files")]
+    pub no_sort_files: bool,
+    /// --sort, --sortr, --sort-files and --no-sort-files, the last one winning.
+    #[arg(skip)]
+    pub sort: Option<SortMode>,
+    /// Print each file that would be searched.
+    #[arg(long)]
+    pub files: bool,
+
+    /// Enable PCRE2 matching.
+    #[arg(short = 'P', long, overrides_with = "no_pcre2")]
+    pub pcre2: bool,
+    #[arg(long, hide = true, overrides_with = "pcre2")]
+    pub no_pcre2: bool,
+    /// Specify which regex engine to use.
+    #[arg(long = "engine", value_name = "ENGINE", action = ArgAction::Append,
+          value_parser = ["default", "pcre2", "auto"])]
+    pub engine_flags: Vec<String>,
+    /// (DEPRECATED) Use PCRE2 if appropriate.
+    #[arg(long, overrides_with = "no_auto_hybrid_regex")]
+    pub auto_hybrid_regex: bool,
+    #[arg(long, hide = true, overrides_with = "auto_hybrid_regex")]
+    pub no_auto_hybrid_regex: bool,
+    /// -P, --engine and --auto-hybrid-regex, the last one winning.
+    #[arg(skip)]
+    pub engine: Engine,
+    /// Print the version of PCRE2 that s4 uses.
+    #[arg(long)]
+    pub pcre2_version: bool,
+    /// Disable Unicode mode.
+    #[arg(long)]
+    pub no_unicode: bool,
+    #[arg(long, hide = true)]
+    pub unicode: bool,
+    /// (DEPRECATED) Disable Unicode mode for PCRE2.
+    #[arg(long)]
+    pub no_pcre2_unicode: bool,
+    #[arg(long, hide = true)]
+    pub pcre2_unicode: bool,
+    /// Use CRLF line terminators (nice for Windows).
+    #[arg(long)]
+    pub crlf: bool,
+    #[arg(long, hide = true)]
+    pub no_crlf: bool,
+    /// Use NUL as a line terminator.
+    #[arg(long)]
+    pub null_data: bool,
+    /// Enable searching across multiple lines.
+    #[arg(short = 'U', long)]
+    pub multiline: bool,
+    #[arg(long, hide = true)]
+    pub no_multiline: bool,
+    /// Make '.' match line terminators.
+    #[arg(long, overrides_with = "no_multiline_dotall")]
+    pub multiline_dotall: bool,
+    #[arg(long, hide = true, overrides_with = "multiline_dotall")]
+    pub no_multiline_dotall: bool,
+    /// Stop searching after a non-match.
+    #[arg(long)]
+    pub stop_on_nonmatch: bool,
+    /// The upper size limit of the regex DFA.
+    #[arg(long, value_name = "NUM+SUFFIX?", value_parser = values::human_usize)]
+    pub dfa_size_limit: Option<usize>,
+    /// The size limit of the compiled regex.
+    #[arg(long, value_name = "NUM+SUFFIX?", value_parser = values::human_usize)]
+    pub regex_size_limit: Option<usize>,
+    /// Specify the text encoding of files to search.
+    #[arg(short = 'E', long = "encoding", value_name = "ENCODING", action = ArgAction::Append,
+          value_parser = values::encoding)]
+    pub encoding_flags: Vec<String>,
+    #[arg(long, hide = true)]
+    pub no_encoding: bool,
+    /// -E and --no-encoding, the last one winning.
+    #[arg(skip)]
+    pub encoding: EncodingMode,
+    /// Search with memory maps when possible.
+    #[arg(long, overrides_with = "no_mmap")]
+    pub mmap: bool,
+    #[arg(long, hide = true, overrides_with = "mmap")]
+    pub no_mmap: bool,
+    /// --mmap and --no-mmap, the last one winning.
+    #[arg(skip)]
+    pub mmap_mode: MmapMode,
+
+    /// Print both matching and non-matching lines.
+    #[arg(long, alias = "passthrough")]
+    pub passthru: bool,
+    /// Print the byte offset for each matching line.
+    #[arg(short = 'b', long, overrides_with = "no_byte_offset")]
+    pub byte_offset: bool,
+    #[arg(long, hide = true, overrides_with = "byte_offset")]
+    pub no_byte_offset: bool,
+    /// Show column numbers.
+    #[arg(long, overrides_with = "no_column")]
+    pub column: bool,
+    #[arg(long, hide = true, overrides_with = "column")]
+    pub no_column: bool,
+    /// Print matches grouped by each file (the tree layout with Trails).
+    #[arg(long)]
+    pub heading: bool,
+    /// Print the file path on every line (the one-line layout with Trails).
+    #[arg(long)]
+    pub no_heading: bool,
+    /// Alias for colors, headings and line numbers.
+    #[arg(short = 'p', long)]
+    pub pretty: bool,
+    /// Print a NUL byte after file paths.
+    #[arg(short = '0', long)]
+    pub null: bool,
+    /// Print only matched parts of a line.
+    #[arg(short = 'o', long)]
+    pub only_matching: bool,
+    /// Replace matches with the given text.
+    #[arg(
+        short = 'r',
+        long,
+        value_name = "REPLACEMENT",
+        allow_hyphen_values = true
+    )]
+    pub replace: Option<String>,
+    /// Trim prefix whitespace from matches.
+    #[arg(long, overrides_with = "no_trim")]
+    pub trim: bool,
+    #[arg(long, hide = true, overrides_with = "trim")]
+    pub no_trim: bool,
+    /// Print results in a vim compatible format.
+    #[arg(long)]
+    pub vimgrep: bool,
+    /// Show preview for lines exceeding the limit.
+    #[arg(long, overrides_with = "no_max_columns_preview")]
+    pub max_columns_preview: bool,
+    #[arg(long, hide = true, overrides_with = "max_columns_preview")]
+    pub no_max_columns_preview: bool,
+    /// Set the path separator for printing paths.
+    #[arg(long, value_name = "SEPARATOR", allow_hyphen_values = true,
+          value_parser = values::path_separator)]
+    pub path_separator: Option<values::PathSeparator>,
+    /// Set the separator for contextual chunks.
+    #[arg(long = "context-separator", value_name = "SEPARATOR", allow_hyphen_values = true,
+          value_parser = values::separator)]
+    pub context_separator_flag: Option<values::Bytes>,
+    #[arg(long, hide = true)]
+    pub no_context_separator: bool,
+    /// The separator between context groups, None with --no-context-separator.
+    #[arg(skip = Some(b"--".to_vec()))]
+    pub context_separator: Option<Vec<u8>>,
+    /// Set the field context separator.
+    #[arg(long, value_name = "SEPARATOR", allow_hyphen_values = true,
+          value_parser = values::separator, default_value = "-")]
+    pub field_context_separator: values::Bytes,
+    /// Set the field match separator.
+    #[arg(long, value_name = "SEPARATOR", allow_hyphen_values = true,
+          value_parser = values::separator, default_value = ":")]
+    pub field_match_separator: values::Bytes,
+    /// Configure color settings and styles.
+    #[arg(long, value_name = "COLOR_SPEC", action = ArgAction::Append,
+          value_parser = values::color_spec)]
+    pub colors: Vec<String>,
+    /// Set the format of hyperlinks.
+    #[arg(long, value_name = "FORMAT", value_parser = values::hyperlink_format)]
+    pub hyperlink_format: Option<String>,
+    /// Run a program to get this system's hostname.
+    #[arg(long, value_name = "COMMAND")]
+    pub hostname_bin: Option<PathBuf>,
+    /// Include zero matches in summary output.
+    #[arg(long, overrides_with = "no_include_zero")]
+    pub include_zero: bool,
+    #[arg(long, hide = true, overrides_with = "include_zero")]
+    pub no_include_zero: bool,
+    /// Print statistics about the search.
+    #[arg(long, overrides_with = "no_stats")]
+    pub stats: bool,
+    #[arg(long, hide = true, overrides_with = "stats")]
+    pub no_stats: bool,
+    /// Force line buffering.
+    #[arg(long)]
+    pub line_buffered: bool,
+    #[arg(long, hide = true)]
+    pub no_line_buffered: bool,
+    /// Force block buffering.
+    #[arg(long)]
+    pub block_buffered: bool,
+    #[arg(long, hide = true)]
+    pub no_block_buffered: bool,
+    /// --line-buffered, --block-buffered and their negations, the last one winning.
+    #[arg(skip)]
+    pub buffer: BufferMode,
+    /// Generate man pages and completion scripts.
+    #[arg(long, value_name = "KIND",
+          value_parser = ["man", "complete-bash", "complete-zsh", "complete-fish", "complete-powershell"])]
+    pub generate: Option<String>,
+    /// Show debug messages.
+    #[arg(long)]
+    pub debug: bool,
+    /// Show trace messages.
+    #[arg(long)]
+    pub trace: bool,
+    /// --debug and --trace, the last one winning.
+    #[arg(skip)]
+    pub logging: Option<Logging>,
+    /// Never read configuration files.
+    #[arg(long)]
+    pub no_config: bool,
 
     // searchfor's own flags (spec §8)
     /// Keep Matches whose Trail contains these Segment names, in order ("A › B", "A > B", "A/B").
@@ -247,6 +628,9 @@ pub struct Args {
     /// Install a Grammar Helper from the Grammar index (spec §7).
     #[arg(long, value_name = "LANG")]
     pub install_grammar: Option<String>,
+    /// Run as an MCP server over stdin and stdout (spec §9).
+    #[arg(long)]
+    pub mcp: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -286,6 +670,38 @@ pub fn command() -> clap::Command {
     cmd
 }
 
+/// The command line with the configuration file's arguments before it (`config`), as rg 14.1.1
+/// reads `RIPGREP_CONFIG_PATH` (flags/parse.rs): the command line is parsed alone first, so
+/// `--help`, `--version` and `--pcre2-version` never depend on the file, and `--no-config` is
+/// seen; the file's messages are printed on stderr, prefixed `s4: `.
+pub fn parse_all(argv: Vec<OsString>) -> Result<Args, CliError> {
+    parse_with_config(argv, config::args)
+}
+
+/// `parse_all` with the reader of the configuration file given. `--mcp` reads no file either:
+/// the server and the searches it runs take only what the client asks for (review r1 of the
+/// M5a plan, Fable #1), so a `--generate` or a `--pre` in the file changes neither.
+fn parse_with_config(
+    argv: Vec<OsString>,
+    read: impl FnOnce() -> (Vec<OsString>, Vec<String>),
+) -> Result<Args, CliError> {
+    let alone = parse(argv.clone())?;
+    if alone.no_config || alone.pcre2_version || alone.mcp {
+        return Ok(alone);
+    }
+    let (extra, msgs) = read();
+    for m in msgs {
+        eprintln!("s4: {m}");
+    }
+    if extra.is_empty() {
+        return Ok(alone);
+    }
+    let mut all: Vec<OsString> = argv.iter().take(1).cloned().collect();
+    all.extend(extra);
+    all.extend(argv.into_iter().skip(1));
+    parse(all)
+}
+
 pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
     let m = command().try_get_matches_from(args)?;
     for f in rg_flags::RG_FLAGS
@@ -309,21 +725,14 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
         m.indices_of("unrestricted_flags")
             .and_then(|mut it| it.nth(n))
     };
-    a.no_ignore_resolved = last_by_index(&m, &[("no_ignore", true), ("ignore", false)], u(0), true);
     a.hidden_resolved = last_by_index(&m, &[("hidden", true), ("no_hidden", false)], u(1), true);
     a.binary_choice = binary_choice(&m);
     a.docs = !a.no_docs;
     (a.pre, a.search_zip) = pre_and_zip(&m);
-    a.type_selections = type_selections(&m);
     a.pattern_sources = pattern_sources(&m);
+    order::resolve(&m, &mut a, u(0));
     // `-M0` turns the limit off, as in ripgrep 14.1.1 (code review r2, Codex #3).
     a.max_columns = a.max_columns.filter(|&n| n > 0);
-    if let Some(s) = &a.sort
-        && s != "path"
-        && s != "none"
-    {
-        return Err(CliError::NotYet(format!("sort={s}")));
-    }
     if a.no_trail && a.structural() {
         return Err(CliError::Usage(
             "--no-trail cannot be combined with --within, --expand or --in-headings".into(),
@@ -442,18 +851,6 @@ fn binary_choice(m: &clap::ArgMatches) -> BinaryChoice {
     last.map(|(_, c)| c).unwrap_or_default()
 }
 
-/// `-t` and `-T` values, each with whether it selects, sorted by their place on the command line.
-fn type_selections(m: &clap::ArgMatches) -> Vec<(bool, String)> {
-    let mut v: Vec<(usize, bool, String)> = Vec::new();
-    for (id, select) in [("types", true), ("types_not", false)] {
-        if let (Some(vals), Some(idx)) = (m.get_many::<String>(id), m.indices_of(id)) {
-            v.extend(idx.zip(vals).map(|(i, t)| (i, select, t.clone())));
-        }
-    }
-    v.sort_by_key(|e| e.0);
-    v.into_iter().map(|(_, s, t)| (s, t)).collect()
-}
-
 /// One `-e` or `-f`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PatternSource {
@@ -567,10 +964,11 @@ impl Args {
     pub fn hidden(&self) -> bool {
         self.hidden_resolved
     }
-    /// --no-ignore after --ignore and the first -u, by position (see `hidden`).
+    /// Every kind of ignore file is off: --no-ignore or the first -u, after --ignore, by
+    /// position, and no --ignore-* after them (`ignores`).
     #[allow(clippy::misnamed_getters)]
     pub fn no_ignore(&self) -> bool {
-        self.no_ignore_resolved
+        self.ignores == IgnoreRules::all(true)
     }
     /// ripgrep's three binary modes for one file: quit at NUL, «binary» (search, stop at NUL
     /// and print the binary message), text.
