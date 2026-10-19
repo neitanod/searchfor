@@ -85,7 +85,10 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         jo: &'a JsonOptions,
         file: StreamFile<'a>,
     ) -> Self {
-        let fast = !w.supports_color() && o.max_columns.is_none() && file.outline.is_none();
+        let fast = !w.supports_color()
+            && o.max_columns.is_none()
+            && file.outline.is_none()
+            && o.look.plain();
         Self {
             w,
             matcher,
@@ -159,6 +162,8 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
                 subs,
                 is_match: false,
                 gap_before: p.gap_before,
+                column: None,
+                byte_offset: p.line.absolute_offset,
             };
             self.row(&row)?;
         }
@@ -254,9 +259,11 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
                 trail,
                 line_number: line.line_number,
                 line: text.clone(),
+                column: subs.first().map(|s| s.0 as u64 + 1),
                 subs: subs.clone(),
                 is_match: true,
                 gap_before: gap_before && n == 0,
+                byte_offset: line.absolute_offset,
             };
             self.row(&row)?;
             self.group = Some(trail.clone());
@@ -306,6 +313,8 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
                     subs,
                     is_match: false,
                     gap_before,
+                    column: None,
+                    byte_offset: line.absolute_offset,
                 };
                 self.row(&row)
             }

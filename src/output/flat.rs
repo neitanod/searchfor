@@ -195,7 +195,7 @@ pub(crate) fn write_row(
     let trail = if r.trail.is_empty() {
         None
     } else {
-        let text_width = if super::omitted(r.line.bytes, o) {
+        let text_width = if super::omitted(r.line.bytes(), o) {
             width(&super::omission_message(
                 r.subs.len(),
                 true,
