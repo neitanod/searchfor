@@ -292,3 +292,22 @@ is a decision; the agent's measurements are the reasons given at the time.
   `SEARCHFOR_READER_MIB`, …), since nothing is published yet and a two-letter prefix collides
   easily; the rename lands after chunk 11 and before tanda 5, so the README, the skill and the
   snapshots of chunk 14 already show `s4`.
+
+---
+
+# Follow-up decision in the Hilo (18/10/2026): documents are searched by default
+
+- **Request** (8742): «Cambiemos eliminemos --docs, haciendo que esté activa por defecto, ya que es
+  la función más útil que tiene, y pongamos --no-docs para desactivarla.»
+- **Question**: with `--docs` on by default, the extra cost is no longer only in files with
+  Matches (every document in the tree is extracted to be searched), and `--no-trail` prints
+  more than ripgrep when there are documents. Proposal: on by default, documented as
+  deviations, and off by itself when the output is not a terminal (pipes, scripts).
+- **Decision** (8750): «--docs activo siempre. Es muy raro que se comporte distinto sin avisar
+  si es en terminal o en pipe, porque un humano primero lo prueba en terminal y luego lo usa en
+  el pipe. Si no les gusta esperar un poquito más, pueden usar --no-docs y listo. Pero no
+  enterarse que existe --docs (y por eso perderse lo mejor de la herramienta) es peor.»
+  Documents are searched by default, in a terminal and in a pipe alike; `--no-docs` turns it
+  off and gives ripgrep's behaviour and cost; `--docs` stays accepted and turns it back on
+  after a `--no-docs` (the last one wins, as ripgrep's negations). This supersedes, for
+  documents only, the «extra cost only in files with Matches» of 8385; the rest of 8385 holds.
