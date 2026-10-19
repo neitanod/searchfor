@@ -24,6 +24,10 @@
   `SEARCHFOR_GRAMMARS_DIR` and `SEARCHFOR_GRAMMAR_INDEX` inside its fixture, and
   `SEARCHFOR_CONFIG_PATH` removed (C1); a test of the configuration file writes it in the
   fixture.
+- **Low priority on the shared machine** (Sebastián, 19/10): every cargo command runs as
+  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo …`, and every binary under test, benchmarks
+  included, under `nice -n 19 ionice -c3`, rg too, with `uptime` written beside each
+  measurement.
 - **ripgrep 14.1.1's pins stay.** The `=` versions of ADR 0001 (grep-searcher, grep-printer,
   grep-regex, grep-matcher, ignore, globset…) do not move; the new PCRE2 crates are pinned at
   rg 14.1.1's lock (D7), and acceptance criterion 8 checks the lock.
@@ -61,7 +65,7 @@ chunk. Each chunk branches `t-768-searchfor-m5-c<N>` from the work branch and is
 its tanda, as `ciclo` stage 7 describes (`using-git-worktrees`, `finishing-a-development-branch`).
 Line numbers in the diffs are those of the state they apply to and only hints: locate code by
 the names given. The code of this plan was built and tested in a probe copy of the repository,
-frozen as `/tmp/subtask/m5-plan/m5tree-005ea08` (see «Verified for this plan»).
+frozen as `/tmp/subtask/m5-plan/m5tree-4b029c4` (see «Verified for this plan»).
 
 ---
 
@@ -140,12 +144,12 @@ in «Questions for Sebastián».
 | D1 | M5 is cut in two: M5a (this plan, v0.5) is every flag of ripgrep 14.1.1 and the MCP server; M5b (v1.0) is Windows and macOS with the Job Object of the M4 plan's D31, CI on the three systems, the releases and their channels, the Grammar Helper binaries in the index, signed releases, the External Processor guide, the streaming of dense files and the per-file cost over rg | 8375 orders the flags before the platforms; the flags touch the same files and are designed once here; the MCP server is one independent module; the releases need the platforms; dense streaming rewrites how the pipeline holds a file, after the rows are settled. The whole of M5 in one plan would be about twenty-six chunks (an estimate: this plan's eleven are written and tested, the other fifteen counted without code) |
 | D2 | Flags that set more than one thing are resolved by their place on the command line (`cli::order`): `--no-ignore`/`--ignore`/the first `-u` against each `--no-ignore-*`; `--sort`, `--sortr`, `--sort-files`, `--no-sort-files`; `-P`, `--no-pcre2`, `--engine`, `--auto-hybrid-regex`; `--no-unicode` and `--no-pcre2-unicode` with their negations; `--crlf`/`--null-data`; `-U`/`--stop-on-nonmatch`; `-E`/`--no-encoding`; the buffering flags; `--debug`/`--trace`; `--context-separator`/`--no-context-separator`; `--passthru` against `-A`, `-B`, `-C`; `--heading`, `--no-heading`, `--tree`, `--flat`, `--pretty` (and `--pretty` against `--color`, `-n`, `-N`); `--files`, `--type-list`, `--generate`. A switch is replayed at the place of its last occurrence; a flag with values at each | ripgrep 14.1.1 applies each flag's `update` in order to its `LowArgs` (defs.rs), so a later flag undoes part of an earlier one: `--no-ignore --ignore-vcs` reads `.gitignore` again but not `.git/info/exclude` (measured with `rg --files`). A switch sets the same values every time, so its last occurrence is the only one that can be the last to set any of them, and clap keeps that place. clap's `overrides_with` stays for plain pairs |
 | D3 | `SEARCHFOR_CONFIG_PATH` names a configuration file in the format of rg's `RIPGREP_CONFIG_PATH` (one argument per line, trimmed, `#` comments and blank lines skipped), its arguments before the command line's; the command line is parsed alone first (`--no-config`, `--pcre2-version`, `--help`, `--version` never depend on the file); `--mcp` reads no file, and neither do the searches it runs (D17); no default location; a file that cannot be read is a message, the search goes on | rg 14.1.1's `config.rs` and `parse.rs`. The variable is s4's own, as the Hilo of 18/10 named every variable `SEARCHFOR_*`: a user's `RIPGREP_CONFIG_PATH` was written for rg and s4 is not rg (it prints Trails, searches documents by default); and with no default location no test can read the user's files. Reading `RIPGREP_CONFIG_PATH` as well is a question for Sebastián. A file's `--generate` would win over the command line's `--mcp` by the order of the actions, and its `--pre` would run on every call of the tool (review r1, Fable #1) |
-| D4 | rg's output flags print in the Trail layouts as rg's standard printer prints them, row by row, each row keeping its Trail: `--column` the 1-based column of the row's first Match (rg: the line's first), `-b` the byte offset rg gives (the line's, with `-o` and `--vimgrep` the Match's), both after the line number with the field separator; `-o` a row per Match, its text the matched bytes; `--vimgrep` a row per Match with its line (rg's `per_match_one_line`), with its Trail; `-r` the line with every Match replaced over the Source as grep-printer's `Replacer` does, each row's replacements highlighted, columns those of the replacements (rg's); `--trim`; `--max-columns-preview`; the field, context and path separators; `-0`; `--colors`; `--hyperlink-format`; `--include-zero` in s4's summaries. `--json` keeps rg's JSON, which ignores them | A row of the Trail layouts is the part of a line under one Trail (M1), so its column is its own; the rest is rg's printer applied to that row. `--vimgrep` keeps the Trail because an editor's quickfix shows it as the message (`%f:%l:%c:%m`): `--no-trail --vimgrep` gives rg's exact lines. rg's JSON printer has no `-o`, `-r`, `--column`… (measured: `rg --json -o -r X --column` prints the plain match), and 8365 made s4's JSON rg's plus fields |
+| D4 | rg's output flags print in the Trail layouts as rg's standard printer prints them, row by row, each row keeping its Trail: `--column` the 1-based column of the row's first Match (rg: the line's first), `-b` the byte offset rg gives (the line's, with `-o` and `--vimgrep` the Match's), both after the line number with the field separator; `-o` a row per Match, its text the matched bytes, an empty Match or an empty replacement an empty row, as rg's printer of one line prints them, and only the active terminator left out (review r2, Codex #4); `--vimgrep` a row per Match with its line (rg's `per_match_one_line`), with its Trail; `-r` the line with every Match replaced over the Source as grep-printer's `Replacer` does, each row's replacements highlighted, columns those of the replacements (rg's), and in an object file's string each Match replaced where the search found it in the file's bytes, its anchors and groups read there, the string made printable after (review r2, Codex #2); `--trim`; `--max-columns-preview`; the field, context and path separators; `-0`; `--colors`; `--hyperlink-format`; `--include-zero` in s4's summaries. `--json` keeps rg's JSON, which ignores them | A row of the Trail layouts is the part of a line under one Trail (M1), so its column is its own; the rest is rg's printer applied to that row. `--vimgrep` keeps the Trail because an editor's quickfix shows it as the message (`%f:%l:%c:%m`): `--no-trail --vimgrep` gives rg's exact lines. rg's JSON printer has no `-o`, `-r`, `--column`… (measured: `rg --json -o -r X --column` prints the plain match), and 8365 made s4's JSON rg's plus fields |
 | D5 | `--heading`, `--pretty` and `--tree` choose the tree, `--no-heading` and `--flat` the one-line layout, the last one given winning; `--vimgrep` forces the one-line layout whatever comes before or after it; `--pretty` also sets `--color always` and `-n` where it comes after them. With `--no-trail` the same choice is rg's heading | The tree is s4's heading (grouped by file, the default on a terminal as rg's heading), the one-line layout rg's `--no-heading`. rg's `Pretty` sets color, heading and line numbers (defs.rs); rg's heading is `!vimgrep` whatever `--heading` says (hiargs.rs) |
-| D6 | A `-U` Match that spans lines prints a row per line, numbered as rg numbers each line of the block, under the Trail of the first Match that touches the line; `-o` a row per line of a Match's text that is not empty (rg's `sink_slow_multi_line_only_matching`); `--vimgrep` the first line of each Match. A `--null-data` record prints a row per `\n` line of it with the record's number, its NUL left out. A row's highlight is clipped to its text | Every row of the Trail layouts is one line of text, the invariant the layouts' widths, Fragments and Trails rest on; rg prints a block line by line (`sink_slow_multi_line`) and a record whole. The fuzz of C10 found a `\n` Match inside a record whose highlight ran past its row's text and panicked in the Fragments; the clip fixes it |
+| D6 | A `-U` Match that spans lines prints a row per line, numbered as rg numbers each line of the block, under the Trail of the first Match that touches the line; `-o` a row per line of a Match's text that is not empty (rg's `sink_slow_multi_line_only_matching`), while a `-U` search whose pattern cannot match a line break prints as a search of lines, as grep-printer's printers choose by `multi_line_with_matcher` (review r2, Codex #4); `--vimgrep` the first line of each Match. A `--null-data` record prints a row per `\n` line of it with the record's number, its NUL left out. A row's highlight is clipped to its text | Every row of the Trail layouts is one line of text, the invariant the layouts' widths, Fragments and Trails rest on; rg prints a block line by line (`sink_slow_multi_line`) and a record whole. The fuzz of C10 found a `\n` Match inside a record whose highlight ran past its row's text and panicked in the Fragments; the clip fixes it |
 | D7 | PCRE2 through `grep-pcre2` =0.1.8, `pcre2` =0.2.9, `pcre2-sys` =0.2.9 (rg 14.1.1's lock), PCRE2's C built into the binary (`PCRE2_SYS_STATIC=1` in `.cargo/config.toml`), configured as rg's `matcher_pcre2` (JIT with a 10 MiB stack on 64 bits, `utf` and `ucp` unless `--no-unicode`). Each search thread matches with a clone of its own of the PCRE2 matcher (`matcher::Pcre2::with`) | rg's `pcre2` feature. pkg-config finds the system's libpcre2 (10.45 here) and pcre2-sys links it unless asked not to: the release binary must not depend on it, and the tests must search with one PCRE2. A `cargo install searchfor` does not read `.cargo/config.toml` and links the system's, as ripgrep's. The pcre2 crate keeps a PCRE2 matcher's scratch space in a pool behind a lock; twelve threads sharing one matcher took 1.55 × rg over the M4 corpus, where rg builds a matcher per thread; with a clone per thread, 1.02–1.05 × (the ratio s4 has with the default engine). A clone shares the compiled pattern |
 | D8 | The walker takes each kind of ignore file on its own (`.ignore`/`.rgignore`, `.git/info/exclude`, git's global excludes, parent directories, `.gitignore`), `--ignore-file` (unless `--no-ignore-files`; an unreadable one is an ignore message), `--ignore-file-case-insensitive`, `--no-require-git`, `--one-file-system`, `--max-filesize` (walked files only, as rg), `--glob-case-insensitive` (every `-g` case-insensitive, then the `--iglob`s), `--type-add` and `--type-clear` in order with `-t` and `-T`. `--sort`/`--sortr` other than ascending path collect the walk and sort it stably, a file whose time cannot be read after the others (before them with `--sortr`); `--sort path` stays the walker's, siblings by name. The errors of an ignore file the walk reads (a glob it cannot parse) are printed, unless `--no-messages` or `--no-ignore-messages`, and do not change the exit code | rg 14.1.1's `walk_builder` and `sort` (hiargs.rs) and `Haystack::build`. s4 printed no error of a `.gitignore` since M1 (rg prints `rg: ./.gitignore: line 1: error parsing glob …`), a gap this plan closes |
-| D9 | The searcher takes rg's line terminator (CRLF with `--crlf`, NUL with `--null-data`), `-U`, `--stop-on-nonmatch` and `--passthru` (which replaces `-A`/`-B`/`-C` before it); `--null-data` turns binary detection off, as rg's; `--mmap` maps every file searched, walked ones too, `--no-mmap` none. The submatches the sinks record follow the searcher's terminator and, with `-U`, look 128 bytes past the block, as grep-printer's `find_iter_at_in_context`; a line's numbers count the search's terminator. With `--passthru` the Trail layouts print a file without a Match too | rg's `searcher` (hiargs.rs) and `BinaryDetection::from_low_args`. rg with `--passthru` prints every file it searches; its exit code says whether one matched. grep-searcher never memory-maps on macOS, which `rg_in_memory` must follow there: M5b's |
+| D9 | The searcher takes rg's line terminator (CRLF with `--crlf`, NUL with `--null-data`), `-U`, `--stop-on-nonmatch` and `--passthru` (which replaces `-A`/`-B`/`-C` before it); `--null-data` turns binary detection off, as rg's; `--mmap` maps every file searched, walked ones too, `--no-mmap` none, the `Source` of a file of 8 MiB or more included (`source::Mapping`; review r2, Codex #1); a document's reader maps its document in its own process, which a truncation can end without ending s4. The submatches the sinks record follow the searcher's terminator and, with `-U`, look 128 bytes past the block, as grep-printer's `find_iter_at_in_context`; a line's numbers count the search's terminator. With `--passthru` the Trail layouts print a file without a Match too | rg's `searcher` (hiargs.rs) and `BinaryDetection::from_low_args`. rg with `--passthru` prints every file it searches; its exit code says whether one matched. grep-searcher never memory-maps on macOS, which `rg_in_memory` must follow there: M5b's |
 | D10 | `-E LABEL` decodes as grep-searcher decodes for rg: a BOM wins over the label, UTF-8 passes through as it is, any other label transcodes with U+FFFD for what does not decode, and the search runs through a reader as rg's; `-E none` sniffs no BOM and searches the bytes as they are; `-E auto` and `--no-encoding` are the default. The Source holds the decoded text, so Trails and rows read it | grep-searcher 0.1.14's `DecodeReaderBytesBuilder` settings and `slice_needs_transcoding` (a set encoding always transcodes, through a reader). A Latin-1 Markdown file gets its headings' Trails (`Café`) |
 | D11 | `--colors` applies rg's specs over rg's defaults (grep-printer's `ColorSpecs`), and takes a type of s4's own, `trail`, with the same attributes (`trail:fg:yellow`) over the Trail's cyan (8381); s4's markers stay dimmed. With `--no-trail` a `trail:` spec is left out | rg rejects an unknown type, so an rg command line never has one; the Trail's colour was fixed since M1 and a user who changes the others wants that one too |
 | D12 | `--hyperlink-format` in the Trail layouts: the one-line layout links each row's path, line, column and offset as one OSC 8 link (rg's no-heading prelude), the tree its header's path (line 1) and, when the format names `{line}` or `{column}`, each row's numbers; the URL as grep-printer builds it (canonical path, percent-encoded, `{host}` from `--hostname-bin` or the system, `{wslprefix}`); only with colour on a writer that takes links | grep-printer 0.2.2's `Interpolator` and `HyperlinkPath` are `pub(crate)`; `output::hyperlink` copies their rules, about 150 lines. rg prints no link without colour |
@@ -153,18 +157,18 @@ in «Questions for Sebastián».
 | D14 | `--stats`: with `--no-trail` and the summaries, the sum of grep-printer's statistics of every file, as rg adds them; in the Trail layouts every file goes through the model's path, which counts every search (matched or not) as `--json -q` already counted them, the bytes printed being s4's own. `-q --stats` searches every file. With `--json` the summary message, as rg | rg's `print_stats` (main.rs) and `quit_after_match` (`-q` stops at the first Match unless `--stats`). The JSON summary of `--no-trail --json` counted only the files with a Match; grep-printer's JSON sink counts each file it printed a `begin` for, which `--passthru` makes every file (measured `searches 1` for a file without a Match): fixed with it |
 | D15 | `--debug` and `--trace` install a `log` logger that prints in rg's format, `s4: LEVEL|target|file:line: message`; the crates s4 shares with rg log through `log`, so their messages (why a file is ignored, the globs built) read as rg's | rg's `logger.rs`. s4's own messages differ from rg's; a test checks the format and that nothing is logged without the flags |
 | D16 | `--generate man|complete-bash|complete-zsh|complete-fish|complete-powershell` writes s4's man page (clap_mangen) and completions (clap_complete) from s4's own clap command | rg generates them from its flag definitions; s4's flags are clap's, so its man page and completions list s4's own flags and help too. Two small crates (`roff` with them) |
-| D17 | `s4 --mcp` (a flag: Sebastián, 8837): JSON-RPC 2.0, a message per line on stdin and stdout; protocol versions 2025-06-18, 2025-03-26 and 2024-11-05 (the client's when it is one, else the newest); `initialize`, `ping`, `tools/list`, `tools/call`, notifications and responses ignored; a message JSON-RPC 2.0 does not allow (not an object, a batch, no `"jsonrpc": "2.0"`, an `id` that is not a string or a number, a `method` that is not a string) is -32600, a line that is not JSON or not UTF-8 -32700, a request over 1 MiB -32600, and the server goes on. One tool, `search` (spec §9's arguments, each of its schema's type and nothing else; `max_results` 100 by default, at most 1 000), which runs `s4 --no-config --json --color never [flags] --regexp=PATTERN -- [paths]` as a child of the same binary, with neither `SEARCHFOR_CONFIG_PATH` nor `RIPGREP_CONFIG_PATH` in its environment and every value joined to its flag (`--within=…`, `--glob=…`), so no configuration file and nothing the client sends is read as a flag: no `--pre` and no `-z` ever run (the tool has no argument for them). Its stdout is read a line at a time, at most 4 MiB a line (a longer `match` is left out, `truncated: true`), up to `max_results` Matches and 256 KiB of answer (then the child is killed, `truncated: true`). The answer is `{"matches": [{"path", "line", "trail": [names], "text", "format", "section"?}], "truncated", "errors"?}` as `structuredContent` and as text: `text` is the line, or s4's Fragment of it when the line is longer than the Fragment width (`omitted_before`, `omitted_after`), at most 2 KiB; a name at most 256 bytes, the 32 innermost names (`trail_omitted`); a Section at most 16 KiB, and once per answer (a later Match of it has `same_as`, the index of the Match that holds it); `cut: true` on a Match something of which was cut; bytes that are not UTF-8 decoded with U+FFFD (`lossy: true`), and a path that is not UTF-8 also exact in base64 (`path_base64`). s4's stderr (at most 4 KiB) is `errors`; a child that exits 2 with no Match, exits with another code or ends by a signal is a tool result with `isError` and what s4 printed | The flag form because `s4 mcp` must search for `mcp` (§8); Sebastián chose it (8837, after the grill's #19 had said a subcommand). A child process keeps the server alive whatever a search does, and its output is exactly `s4 --json`'s for the flags of the call. The client's arguments are the whole search: a user's configuration file holds flags for the terminal, and its `--pre` ran on every call (review r1, Codex #1, Fable #1). The limits protect the agent's context: one minified line or one Section could fill it whatever `max_results` said (r1, Codex #2, Fable #2); the Fragment is what s4 already computes for `--json`. Exit 2 with Matches is a search with errors, not a failed one: the Matches and the errors both go to the model, and a signal is never a success (r1, Codex #3). The envelope's checks are JSON-RPC 2.0's (r1, Codex #6; Fable #8); the bytes of grep-printer's `{"bytes": base64}` are decoded, never shown as base64 text (r1, Codex #7). A protocol error (an unknown method, bad arguments) is JSON-RPC's (-32601, -32602, -32700) |
+| D17 | `s4 --mcp` (a flag: Sebastián, 8837): JSON-RPC 2.0, a message per line on stdin and stdout; protocol versions 2025-06-18, 2025-03-26 and 2024-11-05 (the client's when it is one, else the newest); `initialize`, `ping`, `tools/list`, `tools/call`, notifications and responses ignored; a message JSON-RPC 2.0 does not allow (not an object, a batch, no `"jsonrpc": "2.0"`, an `id` that is not a string or a number, a `method` that is not a string) is -32600, a line that is not JSON or not UTF-8 -32700, a request over 1 MiB -32600, and the server goes on. One tool, `search` (spec §9's arguments, each of its schema's type and nothing else; `max_results` 100 by default, at most 1 000), which runs `s4 --no-config --json --color never [flags] --regexp=PATTERN -- [paths]` as a child of the same binary, with neither `SEARCHFOR_CONFIG_PATH` nor `RIPGREP_CONFIG_PATH` in its environment and every value joined to its flag (`--within=…`, `--glob=…`), so no configuration file and nothing the client sends is read as a flag: no `--pre` and no `-z` ever run (the tool has no argument for them). Its stdout is read a line at a time, at most 4 MiB a line (a longer `match` is left out and its file named in `errors`, `truncated_by: "long_line"`), up to `max_results` Matches (`"max_results"`) and 256 KiB of result (`"bytes"`); at either the child is killed, `truncated: true`. The first Match is never left out for its size, which counts its escapes: its Section and then its text are cut by halves until it fits. The 256 KiB bound the tool's result; the response's line adds the JSON-RPC envelope, 33 bytes, and the id as the client sent it, at most a request's 1 MiB (review r2, Codex #6). A request over 1 MiB gets -32600 with the id a member of its first MiB holds, else null (review r2, Fable #3). A line whose submatches lie under different Trails is a Match per Trail, in the order they come, each with the Section of its first submatch (review r2, Fable #2). The answer is `{"matches": [{"path", "line", "trail": [names], "text", "format", "section"?}], "truncated", "errors"?}` as `structuredContent` and as text: `text` is the line, or s4's Fragment of it when the line is longer than the Fragment width (`omitted_before`, `omitted_after`), at most 2 KiB; a name at most 256 bytes, the 32 innermost names (`trail_omitted`); a Section at most 16 KiB, and once per answer (a later Match of it in the same file, told by the exact path s4 gave, has `same_as`, the index of the Match that holds it: review r2, Codex #5); `cut: true` on a Match something of which was cut; bytes that are not UTF-8 decoded with U+FFFD (`lossy: true`), and a path that is not UTF-8 also exact in base64 (`path_base64`). s4's stderr (at most 4 KiB) is `errors`; a child that exits 2 with no Match, exits with another code or ends by a signal is a tool result with `isError` and what s4 printed | The flag form because `s4 mcp` must search for `mcp` (§8); Sebastián chose it (8837, after the grill's #19 had said a subcommand). A child process keeps the server alive whatever a search does, and its output is exactly `s4 --json`'s for the flags of the call. The client's arguments are the whole search: a user's configuration file holds flags for the terminal, and its `--pre` ran on every call (review r1, Codex #1, Fable #1). The limits protect the agent's context: one minified line or one Section could fill it whatever `max_results` said (r1, Codex #2, Fable #2); the Fragment is what s4 already computes for `--json`. Exit 2 with Matches is a search with errors, not a failed one: the Matches and the errors both go to the model, and a signal is never a success (r1, Codex #3). The envelope's checks are JSON-RPC 2.0's (r1, Codex #6; Fable #8); the bytes of grep-printer's `{"bytes": base64}` are decoded, never shown as base64 text (r1, Codex #7). A protocol error (an unknown method, bad arguments) is JSON-RPC's (-32601, -32602, -32700). Review r2: an answer that leaves Matches out says which limit did, since the advice differs (raise `max_results`, narrow the search, or search a 5 MiB minified line from a shell: Fable #1); a model reading one Match per line would think a second cell had no Match (Fable #2); two paths that read alike with U+FFFD are two files (Codex #5) |
 | D18 | Performance (`scripts/bench-m5.sh`, `tests/perf.rs`): over the M4 corpus, `--no-trail` with `-P`, `-U`, `--column -b -o`, `--vimgrep` and `-r --trim` at most 1.1 × rg; `--files` and `--files --sort path` at most 1.1 × rg over a generated tree of 100 000 files (over the corpus, 31 ms for rg, 3 ms were the 10 %: review r1, Fable #5); the one-line layout with `--column -b`, `-o`, `--vimgrep`, `-r`, `--trim`, `--stats` at most 1.1 × without them; with `--no-docs`, M5a against M4's s4 (`SEARCHFOR_BASE_BIN`, 522bf96), `--flat` and `--no-trail`, at most 1.03 ×, the median of three series. Perf tests: `-P` and `-U` over 10 MB within 1.25 × rg; `--files` over 20 000 files within 1.25 × rg + 10 ms; on 50 MB of Markdown each output flag within 1.25 × the default's time and its RSS + 16 MiB | The probe measured (12 threads, a machine with other sessions): M5a/M4 1.017 (0.984, 1.017, 1.023); `-P` 1.02–1.05 × rg after D7, `-U` 1.05; `--files` 1.02 (47.2 against 48.0 ms over 32 430 files), sorted 1.02; the output flags 0.98–1.01 × the default over the corpus and 1.00–1.02 on the 50 MB file. 1.1 leaves the room M4's ceilings left |
 | D19 | The matcher's errors are rg's: `matcher::build` adds rg's suggestions (PCRE2 for look-around and backreferences with the default engine, `-U` for a literal line terminator, `-a` for a NUL), `--engine auto` reports both engines' errors under rg's heading; a pattern that can match a NUL is refused while binary data is detected (rg's `ban_byte`); a search of the current directory that read no file prints rg's `No files were searched …` (with `s4` for `ripgrep`) and exits 2 | M1–M4 had the suggestions in `app.rs` and neither the NUL ban (`s4 'a\x00b'` exited 1 where rg exits 2 with its message) nor the message of an empty search (`s4 -g '*.zzz' x` exited 1 silently, rg exits 2): gaps this plan closes |
-| D20 | `--files`: every positional argument is a path (the pattern too), the current directory without one even with a readable stdin, a file listed when named or walked, printed by grep-printer's path printer; from the walker's threads through one printing thread, or in `--sort`'s order from one thread; `-q` stops at the first file. `--files`, `--type-list` and `--generate`: the last one given runs, as rg's `Mode::update` | rg's `files` and `files_parallel` (main.rs) and `Paths::from_low_args`. The first version walked with one thread: 6 × rg's time over 32 430 files |
+| D20 | `--files`: every positional argument is a path (the pattern too), the current directory without one even with a readable stdin, a file listed when named or walked, printed by grep-printer's path printer; from the walker's threads through one printing thread, or in `--sort`'s order from one thread; `-q` stops at the first file. `--files`, `--type-list` and `--generate`: the last one given runs, as rg's `Mode::update`. `--type-list` prints the types after `--type-add` and `--type-clear`, each with its globs sorted, and exits 1 when none is left (review r2, Codex #3) | rg's `files` and `files_parallel` (main.rs) and `Paths::from_low_args`; rg's `types` prints `HiArgs::types()`, the built types. The first version walked with one thread: 6 × rg's time over 32 430 files |
 | D21 | Usage errors stay clap's messages (exit 2, as rg), the deviation of `rg-compat.md` since M1 | Matching rg's message for each flag is a parser of its own, for stderr text only; the exit codes and the order of rg's validations (types, globs, pre-globs, patterns) hold since M4 |
 | D22 | The release binary grows from 19.3 MB (19 298 032 bytes at `522bf96`, 17 859 024 stripped) to 21.0 MB (20 953 944 bytes, 19 402 656 stripped), under 23 MB (8612) | PCRE2 linked statically (`PCRE2_SYS_STATIC`, D7), clap_complete, clap_mangen and the new code; the probe did not measure how much each one adds |
 
 ---
 ## Verified for this plan (2026-10-18 and 2026-10-19)
 
-Outputs in `/tmp/subtask/m5-plan/` (round 0) and `/tmp/subtask/m5-plan-r1-fix/` (review round
-1). The probe `/tmp/subtask/m5-plan/m5v` is a clone of the work branch at `522bf96` with M5a's
+Outputs in `/tmp/subtask/m5-plan/` (round 0), `/tmp/subtask/m5-plan-r1-fix/` (review round
+1) and `/tmp/subtask/m5-plan-r2-fix/` (review round 2). The probe `/tmp/subtask/m5-plan/m5v` is a clone of the work branch at `522bf96` with M5a's
 code in commits named after the chunk each belongs to. Its history rebuilt in tanda order
 (`/tmp/subtask/m5-plan/states/rebuild.sh`) was the frozen copy
 `/tmp/subtask/m5-plan/m5tree-5c6226b`: branch `t0` is `522bf96`, one branch per chunk (`c1` …
@@ -173,9 +177,10 @@ code in commits named after the chunk each belongs to. Its history rebuilt in ta
 which added up to the probe (`git diff probe t5` was empty). Review round 1 fixed a copy of it:
 each fix a commit on the branch of its chunk (`c1`, `c4`, `c6`, `c9`, `c10`, `c11`), merged
 forward into every later chunk and tanda, so each chunk's branch is still its tanda's state plus
-its own commits. That copy is frozen as
-`/tmp/subtask/m5-plan/m5tree-005ea08` (`t5` is `005ea08`), and every code block below
-was generated from it (`/tmp/subtask/m5-plan-r1-fix/plan/gen.py`), each diff from the state of
+its own commits. That copy was frozen as `/tmp/subtask/m5-plan/m5tree-005ea08`; review round 2
+fixed a copy of it the same way (commits on `c3`, `c4`, `c6`, `c9` and `c11`), frozen as
+`/tmp/subtask/m5-plan/m5tree-4b029c4` (`t5` is `4b029c4`), and every code block below
+was generated from it (`/tmp/subtask/m5-plan-r2-fix/plan/gen.py`), each diff from the state of
 the tanda before its chunk.
 
 - `rustc 1.90.0`, `cargo 1.90.0`, 20 cores. `/usr/bin/rg` 14.1.1 is linked to the system's
@@ -195,24 +200,26 @@ the tanda before its chunk.
 |---|---|---|---|---|---|
 | `t1`, tanda 1 (C1) | ok | ok | ok | 784 | 50 |
 | `c2`, C2 alone | ok | ok | ok | 790 | 50 |
-| `c3`, C3 alone | ok | ok | ok | 791 | 50 |
-| `c4`, C4 alone | ok | ok | ok | 804 | 50 |
+| `c3`, C3 alone | ok | ok | ok | 792 | 50 |
+| `c4`, C4 alone | ok | ok | ok | 806 | 50 |
 | `c5`, C5 alone | ok | ok | ok | 788 | 50 |
-| `c6`, C6 alone | ok | ok | ok | 794 | 50 |
-| `t2`, tanda 2 | ok | ok | ok | 831 | 50 |
-| `c7`, C7 alone | ok | ok | ok | 835 | 50 |
-| `c8`, C8 alone | ok | ok | ok | 833 | 50 |
-| `t3`, tanda 3 | ok | ok | ok | 837 | 50 |
-| `c9`, C9 alone | ok | ok | ok | 863 | 50 |
-| `t4`, tanda 4 (C9) | ok | ok | ok | 863 | 50 |
-| `c10`, C10 alone | ok | ok | ok | 865 | 53 |
-| `c11`, C11 alone | ok | ok | ok | 864 | 50 |
-| `t5`, tanda 5, M5a | ok | ok | ok | 866 | 53 |
+| `c6`, C6 alone | ok | ok | ok | 797 | 50 |
+| `t2`, tanda 2 | ok | ok | ok | 837 | 50 |
+| `c7`, C7 alone | ok | ok | ok | 841 | 50 |
+| `c8`, C8 alone | ok | ok | ok | 839 | 50 |
+| `t3`, tanda 3 | ok | ok | ok | 843 | 50 |
+| `c9`, C9 alone | ok | ok | ok | 871 | 50 |
+| `t4`, tanda 4 (C9) | ok | ok | ok | 871 | 50 |
+| `c10`, C10 alone | ok | ok | ok | 873 | 53 |
+| `c11`, C11 alone | ok | ok | ok | 872 | 50 |
+| `t5`, tanda 5, M5a | ok | ok | ok | 874 | 53 |
 
-  The table is review round 1's (`/tmp/subtask/m5-plan-r1-fix/states/verify.sh`, the same
-  steps); round 0's gave 783 for `t1` and 854 for `t5`: round 1 adds twelve tests (one in C1,
-  two in C4, six in `mcp::tests`, two in `cli_m5.rs`, `benchmarks_run_isolated` in C10).
-  With `SEARCHFOR_REQUIRE_REFERENCE=1` no comparison with rg skipped.
+  The table is review round 2's (`/tmp/subtask/m5-plan-r2-fix/states/verify.sh`, the same
+  steps); round 0's gave 783 for `t1` and 854 for `t5`, round 1's 784 and 866: round 1 adds
+  twelve tests (one in C1, two in C4, six in `mcp::tests`, two in `cli_m5.rs`,
+  `benchmarks_run_isolated` in C10), round 2 eight (one in C3, two in C4, three in `mcp::tests`,
+  `m5_19` and `m5_20` in C9; its other checks extend existing tests). With
+  `SEARCHFOR_REQUIRE_REFERENCE=1` no comparison with rg skipped.
 - **Two chunks alone that failed, and their fixes.** The first run of the script found `c3` and `c4`
   red alone: C1's matcher set the line terminator to `\n` always, so the searcher C3 builds
   with `--null-data` or `--crlf` refused it (`mismatched line terminators`), and C4's test of a
@@ -244,6 +251,15 @@ the tanda before its chunk.
   `--flat` and 1.035, 1.020 and 1.026 with `--no-trail`: the first run exited 1 on that 1.035,
   the next two exited 0. Round 1's binary against round 0's over the same corpus, 40 runs each:
   `--no-trail` 47.9 against 48.6 ms, `--flat` 50.1 against 50.2 ms, so round 1 adds no cost to a
+  search. Review round 2's `bench-m5.sh`, three runs under `nice -n 19 ionice -c3` (load average 7–12,
+  other sessions running; `bench-m5*.log` in `/tmp/subtask/m5-plan-r2-fix/`): M5a against M4
+  1.032, 1.023 and 1.025 with `--flat`, 1.025, 1.027 and 1.024 with `--no-trail`; `--files`
+  0.95, 1.01 and 0.94 × rg, sorted 1.09, 1.03 and 1.04; `--no-trail` with M5a's flags 1.02–1.10
+  × rg but one 1.13 (`-r X --trim`, third run); the output flags in `--flat` 0.96–1.02. The first
+  run exited 1 on the 1.032 and the third on the 1.13, each a gate over its ceiling once in three
+  runs, which Task 10.3 does not count as a finding. Side by side, 40 runs each: round 2's binary
+  against round 1's, `--flat` 49.0 against 51.0 ms and `--no-trail` 47.1 against 47.5; with
+  `-r X --trim --no-trail` rg 46.6, round 1 47.1 and round 2 47.5 ms: round 2 adds no cost to a
   search.
 - **M1–M4's benchmarks** with M5a's binary: `bench.sh` exit 0 (1.05 × rg with Trails, 1.04
   with `--no-trail`); `bench-m3.sh` exit 0; `bench-code.sh` exit 1, its `--no-trail` check
@@ -257,7 +273,7 @@ the tanda before its chunk.
   `~/.local/share/searchfor`), checked in round 1. Round 1 did not rerun them.
 - **Binary.** `target/release/s4` of `522bf96`: 19 298 032 bytes (17 859 024 stripped); of the
   probe: 20 953 944 bytes (19 402 656 stripped), 1.66 MB more, under 23 MB (8612); after review
-  round 1, 21 002 720 bytes.
+  round 1, 21 002 720 bytes; after review round 2, 21 031 896 bytes.
 - **Fuzz.** `tests/fuzz_m5.rs` with its default count and with `SEARCHFOR_FUZZ_N=2000` at seeds
   12345 (199 s) and 777 (194 s): PASS. An earlier run found a panic (`range end index 716 out
   of range` in the Fragments) with `-a --null-data -e '\n'` over a long Markdown file: a Match
@@ -268,7 +284,9 @@ the tanda before its chunk.
   --mcp`, from `tests/fixtures`, asked to find `needle-pkg` under `md` with the `search` tool,
   answered `md/guide.md`, line 12, `Deploy guide › Install › Linux › bash` (Task 9.4, Step 4);
   with round 1's server, the same three facts (`md/guide.md, línea 12, trail: Deploy guide ›
-  Install › Linux › bash`).
+  Install › Linux › bash`); with round 2's, asked also for `needle-[ab]` in `md/guide.md`, the
+  same three facts and both Trails of line 24 (`Deploy guide › Install › Plans › Plan` and
+  `… › Plans › Price`).
 - **Documentation.** The new examples of `README.md`, `README.es.md` and the skill, run from
   `tests/fixtures`, print what the files show; the skill's `-o` example had lost its `…`, fixed.
 
@@ -281,7 +299,7 @@ of the frozen tree (`/tmp/subtask/m5-plan/m5tree-5c6226b`) and seen RED over rou
 (`mcp::tests`, whose `Searcher` changed, does not compile over it: each of its new checks was
 seen failing with its fix undone instead), then GREEN, as a commit on the branch of its chunk,
 merged forward into every later state; the copy is frozen again as
-`/tmp/subtask/m5-plan/m5tree-005ea08` («Verified for this plan»).
+`/tmp/subtask/m5-plan/m5tree-005ea08`, which review round 2 fixed in turn.
 No chunk or tanda was added or moved and no dependency changed; C10 gains M1–M4's four
 benchmark scripts. Sebastián's decision of 19/10 (8837) settled the server as the flag
 `s4 --mcp`, and that question left the plan.
@@ -302,6 +320,29 @@ benchmark scripts. Sebastián's decision of 19/10 (8837) settled the server as t
 | Fable #6 (MINOR): what the subcommand would change was not said | Settled by Sebastián (8837): the flag; the question left the plan | plan, spec §9 | — |
 | Fable #7 (NIT): Task 10.2 cited §11 #31 for the fuzz | #33 | plan | — |
 | A `within` that starts with `-` (found while fixing Codex #1) | `--within -x` was clap's usage error, exit 2 (`-g -x` and `-e -x` already took their value): every value is joined to its flag (`--within=`, `--glob=`, `--regexp=`) | C6, C9 | `search_arguments_become_flags`; `m5_11` with `"within": "-x"` |
+
+---
+## Review round 2
+
+`reviews/m5-plan-r2/{codex,fable}.md`, over `224a92d`: Codex 2 MAJOR and 4 MINOR, Fable 2 MINOR
+and 1 NIT, no BLOCKER; every finding fixed. Each fix was written test first in a copy of round
+1's frozen tree (`/tmp/subtask/m5-plan/m5tree-005ea08`), seen RED, then GREEN, as a commit on the
+branch of its chunk (`c3`, `c4`, `c6`, `c9`, `c11`), merged forward into every later state; the
+copy is frozen again as `/tmp/subtask/m5-plan/m5tree-4b029c4` («Verified for this plan»). No chunk or tanda was added or
+moved and no dependency changed; C4 gains one function in M4's `src/processors/object/rows.rs`,
+which no other chunk touches.
+
+| Finding | What changed | Where | RED |
+|---|---|---|---|
+| Codex #1 (MAJOR): `--no-mmap` turned the searcher's maps off, but `Source::open_as` still mapped every file of 8 MiB or more | `source::Mapping` (`Large`, `Never`), taken by `open_as` and set from `--no-mmap` in `Ctx` for both places that open a file by name; D9, spec §8. A document's reader still maps its document in its own process (M4's `docs::isolated`), which a truncation can end without ending s4: said in D9 and rg-compat | C3, C9, C11 | `no_mmap_maps_no_file` (does not compile over round 1); `m5_19_no_mmap_maps_no_file` reads `/proc/PID/maps` of s4 while it waits on a full pipe: with the fix undone, `--no-mmap` maps `big.md` |
+| Codex #2 (MAJOR): an object file's `-r` ran the regex again over the printable string: `^needle\|target` replaced `needle` too (`X X`), and `ab\x01cd` was not replaced (`ab.cd`) | `sunk` replaces each Match of an object file's string where the search found it in the file's bytes (`Replacer::replace_each`: the Match found again at its own offset, its anchors and groups reading the bytes up to its line's end), then makes the string printable (`object::rows::shown` over each replacement); D4, spec §5.7, rg-compat | C4, C9, C11 | `object_rows_replace_over_the_files_bytes` (`X X` over round 1); `m5_17` over ELF, PE and Mach-O with `^`, a control byte in the Match and in a group |
+| Codex #3 (MINOR): `--type-list` printed rg's catalogue whatever `--type-add` and `--type-clear` said | `search::file_types`, the walker's types, which `--type-list` prints too (exit 1 with none, as rg's `types`); D20 | C9 | Three cases of `m5_walk_flags_equal_ripgrep` against rg (`--type-add 'review:*.review'`, `--type-clear rust`, a merged and an `include:` type) |
+| Codex #4 (MINOR): `-o` dropped a Match whose text or replacement was empty, and the `\r` of a CRLF line without `--crlf` | `-o` prints a row for every Match, an empty one as an empty row, unless a `-U` search left it empty, as rg's printers of one line and of several; rows clip at the active terminator only (`cut_of` in `match_rows` and `clip_line`). Found on the way: rg prints a `-U` search whose pattern cannot match a line break with its printer of one line (`multi_line_with_matcher`), so `-U -o 'x*'` printed one row where rg prints eleven; `output::rg::look` takes the same choice. D4, D6, spec §8, rg-compat | C4, C9, C11 | `only_matching_rows_as_ripgrep`; `m5_20` against rg (`-o -r '' needle`, `-o -r '' e`, `-o 'x*'`, `-o '\r'`, and with `-U`); `the_look_of_the_command_line` |
+| Codex #5 (MINOR): `same_as` keyed a Section by the path decoded with U+FFFD, so `a\xfe.md` pointed at `a\xff.md`'s Section | `SectionKey` holds the path's JSON as s4 wrote it (`{"bytes": …}`); D17, spec §9 | C6 | `sections_of_files_whose_names_read_alike` |
+| Codex #6 (MINOR): the 256 KiB excluded the id without saying so (a 300 000-character id made a 303 082-byte line) | The limit is the result's, both copies; the line adds `ENVELOPE_BYTES` (33) and the id as sent, at most a request's 1 MiB; D17, spec §9 | C6 | None: round 1 already bounded the result so; `the_answer_has_a_size_limit` now pins it with a 300 000-character id |
+| Fable #1 (MINOR): a Match past 4 MiB, or a first Match whose escaped Section did not fit, left `{"matches":[],"truncated":true}` and advice that did not help | `truncated_by` (`max_results`, `bytes`, `long_line`) in the answer, its schema and the tool's description; a `match` past `MAX_MESSAGE_BYTES` named in `errors` by the path its first bytes hold (`path_of_prefix`); the first Match cut by halves until it fits (`shrink`); D17, spec §9, README, README.es, skill | C6, C9, C11 | `left_out_matches_say_why`; `m5_11` with a 5 MiB line |
+| Fable #2 (MINOR): a line with Matches under two Trails kept only the first Trail | `by_trail`: a Match per distinct Trail of the line's submatches, each with the Section of its first submatch; D17, spec §9 | C6, C9 | `a_match_per_trail_of_the_line`; `m5_11` with `needle-[ab]` on line 24 of `md/guide.md` (`Plan`, `Price`) |
+| Fable #3 (NIT): a request over 1 MiB was answered with `id: null` | `id_of_prefix` reads the object's members before the cut, so an `"id"` inside `params` is never taken; null when the id comes after the cut | C6 | `invalid_requests_are_answered` with both orders |
 
 ## M5a acceptance criteria
 
@@ -384,8 +425,9 @@ src/cli/config.rs                              SEARCHFOR_CONFIG_PATH (C1)
 src/cli/rg_flags.rs, docs/rg-compat.md         every flag implemented (C1); M5a's deviations (C11)
 src/lib.rs                                     `log`, `matcher`, `mcp` (C1)
 src/matcher.rs                                 PatternMatcher: Rust's engine (stub C1), PCRE2 and rg's matcher flags (C2)
-src/search.rs                                  the retyped matcher, type changes, sort (C1); walker, searcher, submatches, sort_entries (C3); old helpers dropped (C9)
-src/source.rs                                  Decoding: -E (C3)
+src/search.rs                                  the retyped matcher, type changes, sort (C1); walker, searcher, submatches, sort_entries (C3); old helpers dropped, `file_types` (C9)
+src/source.rs                                  Decoding: -E; Mapping: --no-mmap (C3)
+src/processors/object/rows.rs                  `shown`, a Match's byte as its row shows it (C4)
 src/app.rs                                     parse_all, suggestions moved, retyped (C1); call sites of C3; summary call (C7); the pipeline (C9)
 src/output/mod.rs                              Look in RenderOptions (C1); rows, line writing, paths, links (C4); `rg` module (C9)
 src/output/{style,hyperlink,replace}.rs        stubs (C1); palette, hyperlinks, replacements (C4)
@@ -409,7 +451,7 @@ README.md, README.es.md, skills/searchfor/SKILL.md     (C11)
 | C1 | Dependencies; every flag parsed and resolved; the configuration file; `PatternMatcher` with the Rust engine; `Look`; the stubs | — | `Cargo.toml`, `Cargo.lock`, `.cargo/config.toml`, `src/cli/{mod,order,values,config,generate,rg_flags}.rs`, `docs/rg-compat.md`, `src/lib.rs`, `src/matcher.rs`, `src/log.rs`, `src/mcp.rs`, `src/output/{mod,style,hyperlink,replace,stream}.rs`, `src/search.rs`, `src/app.rs`, `tests/{cli,cli_m4,perf}.rs`, `tests/common/mod.rs` | 1 |
 | C2 | The matcher: PCRE2, the engines, rg's matcher flags and errors | C1 | `src/matcher.rs` | 2 |
 | C3 | The walker, the searcher and the decoding | C1 | `src/search.rs`, `src/source.rs`, `src/app.rs` | 2 |
-| C4 | The output core: rows, line writing, palette, hyperlinks, replacements | C1 | `src/output/{mod,style,hyperlink,replace,stream}.rs`, `src/output/flat.rs` (one call) | 2 |
+| C4 | The output core: rows, line writing, palette, hyperlinks, replacements | C1 | `src/output/{mod,style,hyperlink,replace,stream}.rs`, `src/output/flat.rs` (one call), `src/processors/object/rows.rs` (`shown`) | 2 |
 | C5 | `--generate` and the logger of `--debug`/`--trace` | C1 | `src/cli/generate.rs`, `src/log.rs` | 2 |
 | C6 | The MCP server | C1 | `src/mcp.rs` | 2 |
 | C7 | The one-line layout and s4's summaries with rg's output flags | C4 | `src/output/{flat,summary}.rs`, `src/output/mod.rs` (two attributes), `src/app.rs` (the summary call) | 3 |
@@ -3732,14 +3774,15 @@ index f90f79a..bdd3181 100644
          let d = tempfile::tempdir().unwrap();
 ```
 
-- [ ] **Step 2:** the test of `src/source.rs` (D10):
+- [ ] **Step 2:** the tests of `src/source.rs` (D10, and D9's `--no-mmap`, which maps no file
+  however large: review r2, Codex #1):
 
 ```diff
 diff --git a/src/source.rs b/src/source.rs
-index a64fa04..57b7ca5 100644
+index a64fa04..a90077d 100644
 --- a/src/source.rs
 +++ b/src/source.rs
-@@ -174,6 +242,40 @@ mod tests {
+@@ -174,6 +267,40 @@ mod tests {
          assert!(src.had_bom);
      }
  
@@ -3780,10 +3823,40 @@ index a64fa04..57b7ca5 100644
      #[test]
      fn plain_file_is_unchanged() {
          let src = Source::open(&fixture("misc/bin.dat"), false).unwrap();
+@@ -192,6 +319,28 @@ mod tests {
+         assert_eq!(src.bytes().len(), size);
+     }
+ 
++    /// Review r2 of the M5a plan, Codex #1: with `--no-mmap` no file is mapped, however large,
++    /// as ripgrep reads every file then; a truncation while s4 reads it cannot end the process.
++    #[test]
++    fn no_mmap_maps_no_file() {
++        let d = tempfile::tempdir().unwrap();
++        let p = d.path().join("big.txt");
++        let size = MMAP_THRESHOLD as usize;
++        std::fs::write(&p, vec![b'x'; size]).unwrap();
++        let read = Source::open_as(&p, false, Decoding::Auto, Mapping::Never).unwrap();
++        assert!(matches!(read.data, Data::Owned(_)));
++        assert_eq!(read.bytes().len(), size);
++        let mapped = Source::open_as(&p, false, Decoding::Auto, Mapping::Large).unwrap();
++        assert!(matches!(mapped.data, Data::Mapped(_)));
++        let args = |v: &[&str]| crate::cli::parse(v.iter().map(Into::into).collect()).unwrap();
++        assert_eq!(
++            Mapping::of(&args(&["s4", "--no-mmap", "x"])),
++            Mapping::Never
++        );
++        assert_eq!(Mapping::of(&args(&["s4", "--mmap", "x"])), Mapping::Large);
++        assert_eq!(Mapping::of(&args(&["s4", "x"])), Mapping::Large);
++    }
++
+     #[test]
+     fn from_bytes_strips_a_utf8_bom() {
+         let src = Source::from_bytes("<stdin>".into(), b"\xEF\xBB\xBFhi\n".to_vec(), true);
 ```
 
 - [ ] **Step 3:** `cargo test --lib -- search:: source::` does not compile (`walker_with`,
-  `sort_entries`, `walker_sorts`, `Source::from_bytes_as`, `Decoding`… are unknown): RED.
+  `sort_entries`, `walker_sorts`, `Source::from_bytes_as`, `Decoding`, `Mapping`… are
+  unknown): RED.
 
 ### Task 3.2: the walker and the searcher
 
@@ -4194,14 +4267,46 @@ index f90f79a..bdd3181 100644
 
 **Files:** `src/source.rs`.
 
-- [ ] **Step 1:** `Decoding` and the `_as` constructors (D10):
+- [ ] **Step 1:** `Decoding` and the `_as` constructors (D10), and `Mapping`, which `open_as`
+  takes: a file of `MMAP_THRESHOLD` bytes or more is mapped unless `--no-mmap` (D9):
 
 ```diff
 diff --git a/src/source.rs b/src/source.rs
-index a64fa04..57b7ca5 100644
+index a64fa04..a90077d 100644
 --- a/src/source.rs
 +++ b/src/source.rs
-@@ -27,6 +27,29 @@ impl Data {
+@@ -3,9 +3,29 @@ use std::path::{Path, PathBuf};
+ 
+ /// Files at least this large are memory-mapped; smaller ones are read. (A memory-mapped file
+ /// truncated by another process while we search it can crash the process; ripgrep accepts the
+-/// same risk.)
++/// same risk, and `--no-mmap` avoids it: `Mapping::Never`.)
+ pub const MMAP_THRESHOLD: u64 = 8 * 1024 * 1024;
+ 
++/// Whether `Source::open_as` maps a file of `MMAP_THRESHOLD` bytes or more (`Large`) or reads
++/// every file (`Never`, `--no-mmap`), as ripgrep reads every file then (review r2 of the M5a
++/// plan, Codex #1). `--mmap` changes nothing here: a smaller file is read either way.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
++pub enum Mapping {
++    #[default]
++    Large,
++    Never,
++}
++
++impl Mapping {
++    /// The mapping `--mmap`/`--no-mmap` ask for.
++    pub fn of(args: &crate::cli::Args) -> Mapping {
++        match args.mmap_mode {
++            crate::cli::MmapMode::Never => Mapping::Never,
++            _ => Mapping::Large,
++        }
++    }
++}
++
+ /// What `Source::head` gives the Detector.
+ const HEAD: usize = 512;
+ 
+@@ -27,6 +47,29 @@ impl Data {
      }
  }
  
@@ -4231,7 +4336,7 @@ index a64fa04..57b7ca5 100644
  pub struct Source {
      /// The path as printed.
      pub path: PathBuf,
-@@ -37,13 +60,19 @@ pub struct Source {
+@@ -37,16 +80,27 @@ pub struct Source {
      skip: usize,
      /// The text of a UTF-16 file, transcoded to UTF-8.
      decoded: Option<Vec<u8>>,
@@ -4245,15 +4350,24 @@ index a64fa04..57b7ca5 100644
  
  impl Source {
      pub fn open(path: &Path, explicit: bool) -> std::io::Result<Self> {
-+        Self::open_as(path, explicit, Decoding::Auto)
++        Self::open_as(path, explicit, Decoding::Auto, Mapping::Large)
 +    }
 +
-+    /// `open`, decoded as `-E` asks (`Decoding`).
-+    pub fn open_as(path: &Path, explicit: bool, decoding: Decoding) -> std::io::Result<Self> {
++    /// `open`, decoded as `-E` asks (`Decoding`) and mapped as `--no-mmap` allows (`Mapping`).
++    pub fn open_as(
++        path: &Path,
++        explicit: bool,
++        decoding: Decoding,
++        mapping: Mapping,
++    ) -> std::io::Result<Self> {
          let file = std::fs::File::open(path)?;
          let len = file.metadata()?.len();
-         let data = if len >= MMAP_THRESHOLD {
-@@ -54,16 +83,37 @@ impl Source {
+-        let data = if len >= MMAP_THRESHOLD {
++        let data = if len >= MMAP_THRESHOLD && mapping == Mapping::Large {
+             // SAFETY: read-only map; see MMAP_THRESHOLD about concurrent truncation.
+             Data::Mapped(unsafe { memmap2::Mmap::map(&file)? })
+         } else {
+@@ -54,16 +108,37 @@ impl Source {
              std::io::Read::read_to_end(&mut &file, &mut v)?;
              Data::Owned(v)
          };
@@ -4294,7 +4408,7 @@ index a64fa04..57b7ca5 100644
          if raw.starts_with(b"\xEF\xBB\xBF") {
              return Self {
                  path,
-@@ -93,6 +143,24 @@ impl Source {
+@@ -93,6 +168,24 @@ impl Source {
                  had_bom: true,
              };
          }
@@ -4329,12 +4443,13 @@ index a64fa04..57b7ca5 100644
   printed where rg's walker prints them (after the patterns are known to be searched, before
   the matcher), an entry's ignore-file error printed as the walk yields it (`entry_error`), the
   walk sorted when the walker cannot sort (D8), `rg_in_memory` with the arguments, the decoding
-  in every `Source` built from a file's bytes, and the new signatures of `match_submatches_in`
+  in every `Source` built from a file's bytes and the mapping in every one opened by name (D9),
+  and the new signatures of `match_submatches_in`
   and `number_lines`:
 
 ```diff
 diff --git a/src/app.rs b/src/app.rs
-index 4c91a6f..25151be 100644
+index 4c91a6f..1caa229 100644
 --- a/src/app.rs
 +++ b/src/app.rs
 @@ -62,6 +62,8 @@ pub fn run(argv: Vec<OsString>) -> i32 {
@@ -4390,26 +4505,30 @@ index 4c91a6f..25151be 100644
      // The error carries rg 14.1.1's suggestions (`matcher::build`).
      let matcher = search::matcher(args, &pats.patterns)?;
      let one_file = paths.len() == 1 && (paths[0] == Path::new("-") || !paths[0].is_dir());
-@@ -345,7 +361,8 @@ fn main(args: &Args) -> anyhow::Result<i32> {
+@@ -345,7 +361,9 @@ fn main(args: &Args) -> anyhow::Result<i32> {
          linked: AtomicBool::new(false),
          msgs,
          pre,
 -        in_memory: search::rg_in_memory(&paths, implicit_stdin),
 +        decoding: crate::source::Decoding::of(args),
++        mapping: crate::source::Mapping::of(args),
 +        in_memory: search::rg_in_memory(args, &paths, implicit_stdin),
          paths,
          walker,
          strip_dot: implicit_cwd,
-@@ -652,6 +669,8 @@ struct Ctx<'a> {
+@@ -652,6 +670,11 @@ struct Ctx<'a> {
      processors: processors::Processors,
      /// `--pre` and `-z`.
      pre: Preprocess,
 +    /// How files are decoded: by their BOM, or as `-E` says (M5a plan, D10).
 +    decoding: crate::source::Decoding,
++    /// Whether a large file is mapped: never with `--no-mmap` (review r2 of the M5a plan,
++    /// Codex #1).
++    mapping: crate::source::Mapping,
      /// The Format Definitions and their Detector, which with --docs tells documents by their
      /// name or magic bytes: loaded in `main`, or once needed (`Ctx::detector`).
      registry: &'a std::sync::OnceLock<Registry>,
-@@ -683,7 +702,31 @@ impl<'a> Ctx<'a> {
+@@ -683,7 +706,31 @@ impl<'a> Ctx<'a> {
          if self.sequential {
              let mut state = init();
              let mut above = Above::default();
@@ -4442,7 +4561,7 @@ index 4c91a6f..25151be 100644
                  if self.quit.load(Relaxed) {
                      break;
                  }
-@@ -707,6 +750,7 @@ impl<'a> Ctx<'a> {
+@@ -707,6 +754,7 @@ impl<'a> Ctx<'a> {
                      }
                      match r {
                          Ok(d) => {
@@ -4450,7 +4569,7 @@ index 4c91a6f..25151be 100644
                              if let Some(t) = self.target(&d, &mut above) {
                                  visit(&mut state, self.prepare(t));
                              }
-@@ -724,6 +768,14 @@ impl<'a> Ctx<'a> {
+@@ -724,6 +772,14 @@ impl<'a> Ctx<'a> {
          Ok(())
      }
  
@@ -4465,7 +4584,7 @@ index 4c91a6f..25151be 100644
      /// ripgrep's choice of what to search: stdin, every file named on the command line, and
      /// regular files found by walking.
      fn target(&self, d: &DirEntry, above: &mut Above) -> Option<Target> {
-@@ -1023,10 +1075,13 @@ impl<'a> Ctx<'a> {
+@@ -1023,10 +1079,13 @@ impl<'a> Ctx<'a> {
      /// the whole file and no search read them yet, else read by its name.
      fn source(&self, t: &Target, p: &Path) -> std::io::Result<Source> {
          match t.held.take() {
@@ -4479,20 +4598,20 @@ index 4c91a6f..25151be 100644
 +                t.explicit,
 +                self.decoding,
 +            )),
-+            _ => Source::open_as(p, t.explicit, self.decoding),
++            _ => Source::open_as(p, t.explicit, self.decoding, self.mapping),
          }
      }
  
-@@ -1452,7 +1507,7 @@ impl<'a> Ctx<'a> {
+@@ -1452,7 +1511,7 @@ impl<'a> Ctx<'a> {
          if !self.in_memory && self.probe(st, t, path) != Some(true) {
              return true;
          }
 -        let src = match Source::open(path, t.explicit) {
-+        let src = match Source::open_as(path, t.explicit, self.decoding) {
++        let src = match Source::open_as(path, t.explicit, self.decoding, self.mapping) {
              Ok(mut s) => {
                  s.path = t.path.clone();
                  s
-@@ -1730,13 +1785,16 @@ impl<'a> Ctx<'a> {
+@@ -1730,13 +1789,16 @@ impl<'a> Ctx<'a> {
              return Ok(None);
          }
          let src = match (kept, &t.fs) {
@@ -4511,7 +4630,7 @@ index 4c91a6f..25151be 100644
          } else {
              // The searcher counts a NUL it converted as a line terminator: the bytes as the
              // first search read them, searched again counting lines.
-@@ -1771,7 +1829,7 @@ impl<'a> Ctx<'a> {
+@@ -1771,7 +1833,7 @@ impl<'a> Ctx<'a> {
              return false;
          }
          let head = read[..read.len().min(crate::source::READ_HEAD)].to_vec();
@@ -4520,7 +4639,7 @@ index 4c91a6f..25151be 100644
          detector
              .detect(&partial.path, partial.head())
              .is_some_and(|d| self.processors.describes(d))
-@@ -2359,7 +2417,7 @@ impl<'a> Ctx<'a> {
+@@ -2359,7 +2421,7 @@ impl<'a> Ctx<'a> {
              report(&e);
              return Err(());
          }
@@ -4529,7 +4648,7 @@ index 4c91a6f..25151be 100644
          let binary = probe.and_then(|p| BinaryProbe::read(p, quit, &src));
          Ok((src, binary))
      }
-@@ -2965,11 +3023,11 @@ impl Sink for StatsSink<'_> {
+@@ -2965,11 +3027,11 @@ impl Sink for StatsSink<'_> {
          Ok(true)
      }
  
@@ -4560,17 +4679,21 @@ index 4c91a6f..25151be 100644
   Match's, a `-U` block's lines numbered 1, 2, 3 under the Match's Trail, a record's lines with
   its number, rg's ` [... 1 more match]`, the replaced line with each row's replacement
   highlighted, an object file's string with `-o`, `--vimgrep` and `-r` (a row per Match at that
-  Match's offset and under its Trail, the string replaced in one row), `--trim`'s white space as
+  Match's offset and under its Trail, the string replaced in one row; with `-r` each Match
+  replaced where the search found it in the file, so `^needle` is not replaced after a NUL and a
+  control byte inside a Match or a group is replaced with it: review r2, Codex #2), `-o` rows as
+  rg's printer of one line prints them (an empty Match and an empty replacement an empty row, a
+  `\r` without `--crlf` printed: review r2, Codex #4), `--trim`'s white space as
   grep-printer's (`\r` and `\x0B` included, the terminator's bytes never); and
   `a_match_of_a_records_line_break_stays_in_its_row`, the case C10's fuzz found (a `\n` Match
   inside a `--null-data` record panicked in the Fragments):
 
 ```diff
 diff --git a/src/output/mod.rs b/src/output/mod.rs
-index ba4626f..b73f168 100644
+index ba4626f..ab6be4e 100644
 --- a/src/output/mod.rs
 +++ b/src/output/mod.rs
-@@ -865,6 +1312,473 @@ pub(crate) mod tests {
+@@ -865,6 +1356,582 @@ pub(crate) mod tests {
          String::from_utf8(out).unwrap()
      }
  
@@ -4827,6 +4950,115 @@ index ba4626f..b73f168 100644
 +        );
 +    }
 +
++    /// A Replacer of `pattern` by `with`, as `-r` builds it.
++    fn replacer(pattern: &str, with: &[u8]) -> Look {
++        let a = crate::cli::parse(["s4", "x"].iter().map(Into::into).collect()).unwrap();
++        let m = crate::matcher::build(&a, &[pattern.into()]).unwrap();
++        let r = replace::Replacer::new(
++            m,
++            with.to_vec(),
++            grep_matcher::LineTerminator::byte(b'\n'),
++            false,
++        );
++        Look {
++            replace: Some(std::sync::Arc::new(r)),
++            ..Look::default()
++        }
++    }
++
++    /// Review r2 of the M5a plan, Codex #2: an object file's `-r` replaces each Match where the
++    /// search found it in the file's bytes, its anchors and groups read there, and only then
++    /// makes the string printable. `^needle` does not match after a NUL, and a control byte in a
++    /// Match is replaced with the Match.
++    #[test]
++    fn object_rows_replace_over_the_files_bytes() {
++        use super::fixture::*;
++        let src = b"\x7fELF\0\0needle target\0zz ab\x01cd yy\0".to_vec();
++        // As processors::object::rows makes them: each string at its offset, the control bytes
++        // of its Matches shown as `.`.
++        let row = |at: u64, text: &[u8], sub: (usize, usize)| {
++            let mut l = Line::owned(1, at, text);
++            l.submatches = vec![Submatch {
++                start: sub.0,
++                end: sub.1,
++            }];
++            l
++        };
++        let base = || vec![vec![seg("object", "ELF x86-64", 1, 1)]];
++        let texts = |l: Line, look: Look| -> Vec<(String, Vec<(usize, usize)>)> {
++            let mut d = described(&src, vec![Item::Match(l)], vec![base()]);
++            d.offsets = true;
++            rows(&d, &src, &with(look))
++                .map(|r| (r.line.text().to_string(), r.subs.clone()))
++                .collect()
++        };
++        let target = || row(6, b"needle target", (7, 13));
++        assert_eq!(
++            texts(target(), replacer("^needle|target", b"X")),
++            [("needle X".to_string(), vec![(7, 8)])]
++        );
++        let control = || row(20, b"zz ab.cd yy", (3, 8));
++        assert_eq!(
++            texts(control(), replacer("ab\\x01cd", b"X")),
++            [("zz X yy".to_string(), vec![(3, 4)])]
++        );
++        // A group that holds the control byte: read from the file, then shown as `.`.
++        assert_eq!(
++            texts(control(), replacer("a(b\\x01c)d", b"<$1>")),
++            [("zz <b.c> yy".to_string(), vec![(3, 8)])]
++        );
++        let only = Look {
++            only_matching: true,
++            ..replacer("a(b\\x01c)d", b"<$1>")
++        };
++        assert_eq!(
++            texts(control(), only),
++            [("<b.c>".to_string(), vec![(0, 5)])]
++        );
++    }
++
++    /// Review r2 of the M5a plan, Codex #4: `-o` prints a row for every Match, as rg's printer
++    /// of one line does: an empty Match and an empty replacement are an empty row, and only the
++    /// active line terminator is left out (a `\r` Match without `--crlf` is printed).
++    #[test]
++    fn only_matching_rows_as_ripgrep() {
++        use super::fixture::*;
++        let texts = |src: &[u8], subs: &[(usize, usize)], look: Look| -> Vec<Seen> {
++            let mut item = mat(src, 1);
++            if let Item::Match(l) = &mut item {
++                l.submatches = subs
++                    .iter()
++                    .map(|&(start, end)| Submatch { start, end })
++                    .collect();
++            }
++            let trails = vec![vec![seg("key", "A", 1, 1)]; subs.len()];
++            let d = described(src, vec![item], vec![trails]);
++            seen(
++                &d,
++                src,
++                &with(Look {
++                    only_matching: true,
++                    ..look
++                }),
++            )
++        };
++        let row = |text: &str, subs: Vec<(usize, usize)>, column, at| {
++            (1, text.to_string(), subs, Some(column), at, "A".to_string())
++        };
++        assert_eq!(
++            texts(b"needle\n", &[(0, 6)], replacer("needle", b"")),
++            [row("", vec![], 1, 0)]
++        );
++        assert_eq!(
++            texts(b"needle\n", &[(0, 0), (3, 3)], Look::default()),
++            [row("", vec![], 1, 0), row("", vec![], 4, 3)]
++        );
++        assert_eq!(
++            texts(b"needle\r\n", &[(6, 7)], Look::default()),
++            [row("\r", vec![(0, 1)], 7, 6)]
++        );
++    }
++
 +    /// An object file's rows (review r1 of the plan, Codex #4): `-o` and `--vimgrep` make a
 +    /// row of each Match, at that Match's offset and under its Trail; `-r` replaces in the
 +    /// string, which stays one row at its first Match.
@@ -5079,7 +5311,7 @@ index 1daa7f9..7448c72 100644
 ```
 
 - [ ] **Step 2:** `cargo test --lib output::` does not compile (`Row::column`, `shown_path`,
-  `link_start`, `Palette::new`'s colours… are missing): RED.
+  `link_start`, `Palette::new`'s colours, `Replacer::replace_each`… are missing): RED.
 
 ### Task 4.2: rows, line writing, paths and links
 
@@ -5089,13 +5321,16 @@ index 1daa7f9..7448c72 100644
   `write_line_text` with `--trim`, `-M`'s preview and the palette, and a highlight clamped to
   the text; `Row`'s `column` and `byte_offset` (read by C7 and C8, so `#[allow(dead_code)]`
   until then); `match_rows` for `-o`, `--vimgrep`, `-r` and multi-line items, an object file's
-  string through the same paths as one line at hex offsets (spec §5.7), `context_rows`,
+  string through the same paths as one line at hex offsets (spec §5.7), its `-r` over the file's
+  bytes before the string is made printable (`sunk`), a row for every `-o` Match unless a `-U`
+  search left it empty (D6), each row's highlight clipped at its active terminator only
+  (`clip_line`), `context_rows`,
   `last_number`; `shown_path`, `link_start`, `link_end`; `write_path` public until C9 drops it
   (design note 6):
 
 ```diff
 diff --git a/src/output/mod.rs b/src/output/mod.rs
-index ba4626f..b73f168 100644
+index ba4626f..ab6be4e 100644
 --- a/src/output/mod.rs
 +++ b/src/output/mod.rs
 @@ -79,6 +79,36 @@ pub struct Look {
@@ -5423,7 +5658,7 @@ index ba4626f..b73f168 100644
  }
  
  /// What tree and flat print in a file's place: its rows, or with --expand its Sections.
-@@ -362,9 +524,97 @@ where
+@@ -362,9 +524,124 @@ where
      groups
  }
  
@@ -5472,16 +5707,42 @@ index ba4626f..b73f168 100644
 +}
 +
 +/// The text of a line with its Matches replaced (`-r`), or as it is; and its submatches in it.
++/// `object`: the line is an object file's string (spec §5.7).
 +fn sunk<'a>(
 +    m: &'a Line,
 +    src: &'a [u8],
 +    subs: Vec<(usize, usize)>,
 +    o: &RenderOptions,
++    object: bool,
 +) -> (Cow<'a, [u8]>, Vec<(usize, usize)>) {
 +    let bytes = m.bytes(src);
 +    let Some(r) = o.look.replace.as_ref().filter(|_| !subs.is_empty()) else {
 +        return (Cow::Borrowed(bytes), subs);
 +    };
++    // An object file's string is printable text made from the file's bytes: each Match is
++    // replaced where the search found it in those bytes, its anchors and groups read there, and
++    // the string made printable after (review r2 of the M5a plan, Codex #2).
++    if object {
++        let start = (m.absolute_offset as usize).min(src.len());
++        let string = &src[start..(start + m.len).min(src.len())];
++        let hits: Vec<(usize, usize)> = subs
++            .iter()
++            .map(|&(s, e)| (start + s.min(string.len()), start + e.min(string.len())))
++            .collect();
++        let mut text = Vec::with_capacity(string.len());
++        let mut spans = Vec::with_capacity(subs.len());
++        let mut last = 0;
++        for (&(s, e), with) in hits.iter().zip(r.replace_each(src, &hits)) {
++            let (s, e) = (s - start, e - start);
++            text.extend_from_slice(&string[last.min(s)..s]);
++            let at = text.len();
++            text.extend(with.into_iter().map(crate::processors::object::rows::shown));
++            spans.push((at, text.len()));
++            last = last.max(e);
++        }
++        text.extend_from_slice(&string[last..]);
++        return (Cow::Owned(text), spans);
++    }
 +    // Over the Source, as rg's printer replaces over its buffer; a line converted from binary
 +    // data is its own haystack.
 +    let replaced = match &m.owned {
@@ -5495,16 +5756,17 @@ index ba4626f..b73f168 100644
 +    (Cow::Owned(replaced.bytes), mapped)
 +}
 +
-+/// `subs` clipped to the text of the line `bytes[start..end]`, its terminator left out (a
-+/// Match of a `\n` inside a `--null-data` record ends where its row's text ends), and made
-+/// relative to `start`.
++/// `subs` clipped to the text of the line `bytes[start..end]`, its active terminator left out
++/// (a Match of a `\n` inside a `--null-data` record ends where its row's text ends; a `\r`
++/// without `--crlf` is text), and made relative to `start`.
 +fn clip_line(
 +    bytes: &[u8],
 +    subs: &[(usize, usize)],
 +    start: usize,
 +    end: usize,
++    o: &RenderOptions,
 +) -> Vec<(usize, usize)> {
-+    clip(subs, start, start + content_len(&bytes[start..end]))
++    clip(subs, start, end - cut_of(&bytes[start..end], o))
 +}
 +
 +/// `subs` clipped to `start..end` and made relative to `start`.
@@ -5524,7 +5786,7 @@ index ba4626f..b73f168 100644
  fn match_rows<'a>(
      d: &'a Described,
      i: usize,
-@@ -372,38 +622,193 @@ fn match_rows<'a>(
+@@ -372,38 +649,210 @@ fn match_rows<'a>(
      src: &'a [u8],
      o: &RenderOptions,
  ) -> Vec<Row<'a>> {
@@ -5544,7 +5806,7 @@ index ba4626f..b73f168 100644
 +    let original = m.bytes(src);
 +    let off = m.absolute_offset;
 +    let found = subs_of(&m.submatches);
-+    let (bytes, subs) = sunk(m, src, found.clone(), o);
++    let (bytes, subs) = sunk(m, src, found.clone(), o, d.offsets);
 +    let trails: Vec<&'a [Segment]> = (0..subs.len().max(1)).map(|k| trail_of(d, i, k)).collect();
 +    // An object file's row is one string at the hex offset of a Match (spec §5.7): one row at
 +    // its first Match, with that Match's Trail (code review of the M4 plan r1, Codex #9); with
@@ -5593,9 +5855,10 @@ index ba4626f..b73f168 100644
 +    if !subs.is_empty() && o.look.only_matching {
 +        let mut rows = Vec::new();
 +        for (k, &(s, e)) in subs.iter().enumerate() {
++            let before = rows.len();
 +            for (n, &(ls, le)) in lines.iter().enumerate() {
 +                let (ps, pe) = (s.max(ls), e.min(le));
-+                let pe = pe.min(ls + content_len(&bytes[ls..le]));
++                let pe = pe.min(le - cut_of(&bytes[ls..le], o));
 +                if ps >= pe {
 +                    continue;
 +                }
@@ -5607,6 +5870,22 @@ index ba4626f..b73f168 100644
 +                    number_of(m.line_number, n, o),
 +                    text,
 +                    vec![(0, len)],
++                    Some(s as u64 + 1),
++                    off + s as u64,
++                ));
++            }
++            // Nothing of the Match to print: it is empty, its replacement is, or it is a line
++            // terminator. rg's printer of one line prints it as an empty line, its printer of a
++            // `-U` search nothing (review r2 of the M5a plan, Codex #4).
++            if rows.len() == before && !o.look.multi_line {
++                let n = lines.iter().position(|&(_, le)| s < le);
++                let n = n.unwrap_or(lines.len() - 1);
++                rows.push(row(
++                    k,
++                    trails[k],
++                    number_of(m.line_number, n, o),
++                    piece(s, s),
++                    Vec::new(),
 +                    Some(s as u64 + 1),
 +                    off + s as u64,
 +                ));
@@ -5634,7 +5913,7 @@ index ba4626f..b73f168 100644
 +                trails[k],
 +                number_of(m.line_number, n, o),
 +                piece(ls, le),
-+                clip_line(&bytes, &[(s, e)], ls, le),
++                clip_line(&bytes, &[(s, e)], ls, le, o),
 +                Some(column),
 +                at,
 +            ));
@@ -5663,7 +5942,7 @@ index ba4626f..b73f168 100644
 +    for (n, &(ls, le)) in lines.iter().enumerate() {
 +        let g = groups
 +            .iter()
-+            .position(|(_, subs)| !clip_line(&bytes, subs, ls, le).is_empty())
++            .position(|(_, subs)| !clip_line(&bytes, subs, ls, le, o).is_empty())
 +            .unwrap_or(last);
 +        last = g;
 +        let (trail, subs) = &groups[g];
@@ -5672,7 +5951,7 @@ index ba4626f..b73f168 100644
 +            trail,
 +            number_of(m.line_number, n, o),
 +            piece(ls, le),
-+            clip_line(&bytes, subs, ls, le),
++            clip_line(&bytes, subs, ls, le, o),
 +            subs.first().map(|s| s.0 as u64 + 1),
 +            off + ls as u64,
 +        ));
@@ -5697,7 +5976,7 @@ index ba4626f..b73f168 100644
 +/// The rows of a context line: one, or with `--null-data` one per line of its record. With
 +/// `-v` its submatches are the pattern's, which `-r` replaces.
 +fn context_rows<'a>(c: &'a Line, src: &'a [u8], o: &RenderOptions) -> Vec<Row<'a>> {
-+    let (bytes, subs) = sunk(c, src, subs_of(&c.submatches), o);
++    let (bytes, subs) = sunk(c, src, subs_of(&c.submatches), o, false);
 +    let lines = split_lines(&bytes, o);
 +    lines
 +        .iter()
@@ -5717,7 +5996,7 @@ index ba4626f..b73f168 100644
 +                subs: if lines.len() == 1 {
 +                    subs.clone()
 +                } else {
-+                    clip_line(&bytes, &subs, ls, le)
++                    clip_line(&bytes, &subs, ls, le, o)
 +                },
 +                is_match: false,
 +                gap_before: false,
@@ -5741,7 +6020,7 @@ index ba4626f..b73f168 100644
  /// The rows of a file, in file order, produced as they are printed (only the context lines
  /// that open a group wait for the Match after them). A context line takes the Trail of the row
  /// before it in its group, or else of the row after.
-@@ -448,29 +853,26 @@ impl<'a> Rows<'a> {
+@@ -448,29 +897,26 @@ impl<'a> Rows<'a> {
              self.ready.extend(self.pending.drain(..));
              self.last = None;
          }
@@ -5783,7 +6062,7 @@ index ba4626f..b73f168 100644
                  for mut r in self.pending.drain(..) {
                      r.trail = first;
                      self.ready.push_back(r);
-@@ -656,7 +1058,52 @@ pub(crate) fn path_bytes(p: &std::path::Path) -> Vec<u8> {
+@@ -656,7 +1102,52 @@ pub(crate) fn path_bytes(p: &std::path::Path) -> Vec<u8> {
      }
  }
  
@@ -5911,7 +6190,8 @@ index df24ac1..ecbac18 100644
 
 ### Task 4.3: the palette, the hyperlinks and the replacements
 
-**Files:** `src/output/style.rs`, `src/output/hyperlink.rs`, `src/output/replace.rs`.
+**Files:** `src/output/style.rs`, `src/output/hyperlink.rs`, `src/output/replace.rs`,
+`src/processors/object/rows.rs`.
 
 - [ ] **Step 1:** `Palette` from rg's defaults and `--colors`, the `trail` type (D11), and the
   writers that take it:
@@ -6312,7 +6592,9 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3:** `src/output/replace.rs` in place of its stub (D4); its tests module first:
+- [ ] **Step 3:** `src/output/replace.rs` in place of its stub (D4), with `replace_each`, the
+  replacement of each Match of an object file's string found again where the search found it;
+  its tests module first:
 
 ```rust
 //! `-r`/`--replace` in the Trail layouts (M5a plan, D4): each Match of a line replaced by the
@@ -6417,6 +6699,44 @@ impl Replacer {
     }
 }
 
+impl Replacer {
+    /// The replacement of each Match at `hits` (ranges of `haystack`, in order), each Match
+    /// found again where the search found it, so its anchors and groups read the bytes around
+    /// it up to its line's end: an object file's string, whose printable text differs from the
+    /// file's bytes (review r2 of the M5a plan, Codex #2). A Match not found there again keeps
+    /// its bytes.
+    pub fn replace_each(&self, haystack: &[u8], hits: &[(usize, usize)]) -> Vec<Vec<u8>> {
+        let Ok(mut caps) = self.matcher.new_captures() else {
+            return hits.iter().map(|&(s, e)| haystack[s..e].to_vec()).collect();
+        };
+        hits.iter()
+            .map(|&(s, e)| {
+                let term = memchr::memchr(self.term.as_byte(), &haystack[e..]).map(|i| e + i);
+                let end = match term {
+                    Some(t) if self.multi_line => haystack.len().min(t + 1 + 128),
+                    Some(t) => {
+                        t - usize::from(self.term.is_crlf() && t > e && haystack[t - 1] == b'\r')
+                    }
+                    None => haystack.len(),
+                };
+                let hay = &haystack[..end];
+                let mut out = Vec::new();
+                let found = self.matcher.captures_at(hay, s, &mut caps).unwrap_or(false);
+                match caps.get(0) {
+                    Some(m) if found && m.start() == s && m.end() == e => caps.interpolate(
+                        |name| self.matcher.capture_index(name),
+                        hay,
+                        &self.template,
+                        &mut out,
+                    ),
+                    _ => out.extend_from_slice(&haystack[s..e]),
+                }
+                out
+            })
+            .collect()
+    }
+}
+
 /// The length of `line` without its terminator (a CRLF's `\r` too).
 fn content_len(line: &[u8], term: LineTerminator) -> usize {
     let mut end = line.len();
@@ -6475,6 +6795,43 @@ mod tests {
         assert_eq!(r.replace(hay, 0..4).bytes, b"X\n");
     }
 }
+```
+
+- [ ] **Step 3b:** `shown`, the byte of a Match as an object file's row shows it, shared by M4's
+  rows and `sunk`:
+
+```diff
+diff --git a/src/processors/object/rows.rs b/src/processors/object/rows.rs
+index 75b5381..d2eb571 100644
+--- a/src/processors/object/rows.rs
++++ b/src/processors/object/rows.rs
+@@ -77,9 +77,7 @@ pub fn rows(
+             let mut owned = bytes[w.clone()].to_vec();
+             for s in &subs {
+                 for b in &mut owned[s.start - w.start..s.end - w.start] {
+-                    if *b < 0x20 && *b != b'\t' || *b == 0x7f {
+-                        *b = b'.';
+-                    }
++                    *b = shown(*b);
+                 }
+             }
+             Line {
+@@ -99,6 +97,15 @@ pub fn rows(
+         .collect()
+ }
+ 
++/// A byte of a Match as its row shows it: a control byte (a tab aside) as `.`.
++pub fn shown(b: u8) -> u8 {
++    if b < 0x20 && b != b'\t' || b == 0x7f {
++        b'.'
++    } else {
++        b
++    }
++}
++
+ /// Whether `bytes[from..to]` is printable characters only.
+ fn printable(bytes: &[u8], from: usize, to: usize) -> bool {
+     let mut i = from;
 ```
 
 - [ ] **Step 4:** `cargo test --lib output::`: PASS; `cargo clippy --workspace --all-targets --
@@ -6689,15 +7046,24 @@ mod tests {
   `MAX_RESULTS` (`search_arguments_become_flags`); the child's environment without either
   configuration variable (`the_search_runs_without_configuration`); long texts, long names,
   deep Trails and repeated Sections (`long_texts_come_cut`); the answer's byte limit and a
-  message too long to read (`the_answer_has_a_size_limit`); every way a search ends
+  message too long to read, and the limit's scope beside a 300 000-character id
+  (`the_answer_has_a_size_limit`); why a Match was left out: a line past `MAX_MESSAGE_BYTES`
+  named in `errors`, a first Match cut until it fits, `truncated_by`
+  (`left_out_matches_say_why`); a Match per Trail of a line (`a_match_per_trail_of_the_line`);
+  Sections of two files whose names read alike (`sections_of_files_whose_names_read_alike`); a
+  long request answered with its id (`invalid_requests_are_answered`); every way a search ends
   (`how_a_search_ends`); a line and a path that are not UTF-8 (`bytes_are_decoded`). `cargo test
   --lib mcp::` does not compile (`Searcher`, `Search`, `Ended`, `search_args`…): RED.
 - [ ] **Step 2:** the server (D17). `serve` runs each search as a child `s4 --no-config --json`
   of the same binary (`Child`, `command`), its environment without `SEARCHFOR_CONFIG_PATH` and
   `RIPGREP_CONFIG_PATH`; `run` reads its stdout a line at a time without ever holding more than
-  `MAX_MESSAGE_BYTES` (`read_line_capped`), makes each `match` message a compact Match
-  (`compact`), stops the child at the first Match past `max_results` or past the answer's bytes
-  (`truncated`), and turns how the child ended into the answer: its Matches and its messages as
+  `MAX_MESSAGE_BYTES` (`read_line_capped`; a longer `match` named in `errors` by the path its
+  first bytes hold, `path_of_prefix`), makes each `match` message a Match per Trail of its
+  submatches (`by_trail`) and each a compact Match (`compact`, a Section known by its file's exact
+  path), cuts the first Match until it fits (`shrink`), stops the child at the first Match past
+  `max_results` or past the answer's bytes (`truncated`, `truncated_by`), answers a request past
+  `MAX_REQUEST_BYTES` with the id its first bytes hold (`id_of_prefix`), and turns how the child
+  ended into the answer: its Matches and its messages as
   `errors` when it exits 0, 1 or 2 with Matches, a tool error with its message otherwise:
 
 ```rust
@@ -6708,7 +7074,8 @@ mod tests {
 //! `expand` the Section. Each search is a child process of the same binary, so a search that
 //! fails or is slow never takes the server down. The child reads no configuration file and gets
 //! only the flags the arguments ask for; what it prints is read and answered within fixed limits
-//! of Matches and bytes (review r1 of the M5a plan: Codex #1, #2, #3, #6, #7; Fable #1, #2, #8).
+//! of Matches and bytes (review r1 of the M5a plan: Codex #1, #2, #3, #6, #7; Fable #1, #2, #8),
+//! saying why a Match was left out (review r2: Codex #5, #6; Fable #1, #2, #3).
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -6723,9 +7090,13 @@ pub const VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 pub const DEFAULT_MAX_RESULTS: u64 = 100;
 /// The most Matches a call may ask for.
 pub const MAX_RESULTS: u64 = 1000;
-/// The longest answer to a `tools/call`, in bytes of its line, both copies of the result
-/// included; the id the client sent comes on top.
+/// The longest result of a `tools/call`, in bytes, both copies of the Matches included. Its
+/// line adds the JSON-RPC envelope: `ENVELOPE_BYTES` and the id as the client sent it, at most
+/// a request's `MAX_REQUEST_BYTES` (review r2 of the M5a plan, Codex #6).
 pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+/// The bytes of a response's line besides its result and its id:
+/// `{"jsonrpc":"2.0","id":` `,"result":` `}`.
+pub const ENVELOPE_BYTES: usize = 33;
 /// What the answer keeps out of the Matches' share: its envelope and the search's messages.
 const RESERVED_BYTES: usize = 64 * 1024;
 /// The most bytes of a Match's `text`.
@@ -6736,7 +7107,8 @@ pub const MAX_SECTION_BYTES: usize = 16 * 1024;
 pub const MAX_NAME_BYTES: usize = 256;
 /// The most names of a Trail a Match keeps: the innermost.
 pub const MAX_TRAIL: usize = 32;
-/// The longest message of `s4 --json` the server reads; a longer `match` is left out unread.
+/// The longest message of `s4 --json` the server reads; a longer `match` is left out unread,
+/// its file named in `errors`.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 /// The longest request the server reads.
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
@@ -6788,8 +7160,8 @@ pub enum Ended {
 }
 
 /// `serve` over any reader, writer and searcher. A request longer than `MAX_REQUEST_BYTES` is
-/// read to its end and refused; a line that is not JSON (or not UTF-8) gets -32700; the
-/// server goes on after either.
+/// read to its end and refused, with its id when the part read holds it; a line that is not
+/// JSON (or not UTF-8) gets -32700; the server goes on after either.
 pub fn serve_io(
     mut input: impl BufRead,
     mut output: impl Write,
@@ -6799,7 +7171,7 @@ pub fn serve_io(
     while let Some(whole) = read_line_capped(&mut input, MAX_REQUEST_BYTES, &mut line)? {
         let answer = if !whole {
             Some(error(
-                Value::Null,
+                id_of_prefix(&line),
                 -32600,
                 &format!("a request is at most {MAX_REQUEST_BYTES} bytes"),
             ))
@@ -6844,6 +7216,53 @@ fn read_line_capped(
         if done {
             return Ok(Some(whole));
         }
+    }
+}
+
+/// The JSON value that starts at `i` of `b` and where it ends, when `b` holds it whole.
+fn value_at(b: &[u8], i: usize) -> Option<(Value, usize)> {
+    let mut values = serde_json::Deserializer::from_slice(b.get(i..)?).into_iter::<Value>();
+    let v = values.next()?.ok()?;
+    let end = i + values.byte_offset();
+    (end < b.len()).then_some((v, end))
+}
+
+/// The `id` of a request cut at `MAX_REQUEST_BYTES`, when the members of its object before the
+/// cut hold it: read member by member, so an `"id"` inside `params` is never taken for it
+/// (review r2 of the M5a plan, Fable #3). Null otherwise.
+fn id_of_prefix(prefix: &[u8]) -> Value {
+    let skip = |i: usize| {
+        let rest = prefix.get(i..).unwrap_or_default();
+        i + rest.iter().take_while(|c| c.is_ascii_whitespace()).count()
+    };
+    let mut i = skip(0);
+    if prefix.get(i) != Some(&b'{') {
+        return Value::Null;
+    }
+    i += 1;
+    loop {
+        let Some((Value::String(key), end)) = value_at(prefix, skip(i)) else {
+            return Value::Null;
+        };
+        i = skip(end);
+        if prefix.get(i) != Some(&b':') {
+            return Value::Null;
+        }
+        let Some((v, end)) = value_at(prefix, i + 1) else {
+            return Value::Null;
+        };
+        if key == "id" {
+            return if v.is_string() || v.is_number() {
+                v
+            } else {
+                Value::Null
+            };
+        }
+        i = skip(end);
+        if prefix.get(i) != Some(&b',') {
+            return Value::Null;
+        }
+        i += 1;
     }
 }
 
@@ -6935,9 +7354,13 @@ fn search_tool() -> Value {
         "description": "Search files like ripgrep (Rust regex syntax). Each Match comes with its \
             Trail: the headings, function, key path, table row, page or symbol it lies in. \
             Markdown, code, YAML/JSON/TOML, HTML/XML, CSV, subtitles, PDF and Office documents, \
-            SQLite and object files. Long texts come cut (`cut`), a Section repeated by a later \
-            Match comes once (`same_as`), and `truncated` says the search found more than the \
-            answer holds: narrow `paths`, `glob` or `within`, or raise `max_results`.",
+            SQLite and object files. A line with Matches under two Trails is a Match per Trail. \
+            Long texts come cut (`cut`), a Section repeated by a later Match comes once \
+            (`same_as`), and `truncated` says the search found more than the answer holds, \
+            `truncated_by` why: `max_results` (raise it, or narrow `paths`, `glob` or \
+            `within`), `bytes` (the answer is full: narrow the search, or leave out `expand`), \
+            or `long_line` (a line longer than 4 MiB, its file named in `errors`: search it \
+            with s4 from a shell).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -6961,6 +7384,7 @@ fn search_tool() -> Value {
             "properties": {
                 "matches": { "type": "array", "items": { "type": "object" } },
                 "truncated": { "type": "boolean" },
+                "truncated_by": { "type": "string", "enum": ["max_results", "bytes", "long_line"] },
                 "errors": { "type": "string" }
             },
             "required": ["matches", "truncated"]
@@ -7044,10 +7468,40 @@ pub fn search_args(arguments: &Value) -> Result<(Vec<OsString>, u64), String> {
     Ok((args, max))
 }
 
-/// A Section already in the answer: its path, first and last line.
+/// A Section already in the answer: its file, by the exact path s4 gave (its JSON, so two
+/// paths that read the same with U+FFFD differ: review r2 of the M5a plan, Codex #5), and its
+/// first and last line.
 type SectionKey = (String, Value, Value);
 
-/// A `match` message of `s4 --json` as the tool returns it (D17): `path`, `line`, the Trail's
+/// The Matches of a `match` message's `data`: one per distinct Trail of its submatches, in the
+/// order they first come, each with that Trail and the Section of the first submatch under
+/// it, as the Trail layouts print a row per Trail. s4 gives a submatch its own `trail` and
+/// `section` only when they differ from the line's (spec §6.4; review r2 of the M5a plan,
+/// Fable #2).
+fn by_trail(d: &Value) -> Vec<std::borrow::Cow<'_, Value>> {
+    let subs = d["submatches"].as_array().map_or(&[][..], Vec::as_slice);
+    if !subs.iter().any(|s| s.get("trail").is_some()) {
+        return vec![std::borrow::Cow::Borrowed(d)];
+    }
+    let mut trails: Vec<&Value> = Vec::new();
+    let mut out = Vec::new();
+    for sub in subs {
+        let trail = sub.get("trail").unwrap_or(&d["trail"]);
+        if trails.contains(&trail) {
+            continue;
+        }
+        trails.push(trail);
+        let mut one = d.clone();
+        one["trail"] = trail.clone();
+        if let Some(section) = sub.get("section") {
+            one["section"] = section.clone();
+        }
+        out.push(std::borrow::Cow::Owned(one));
+    }
+    out
+}
+
+/// A Match of `s4 --json` (`by_trail`) as the tool returns it (D17): `path`, `line`, the Trail's
 /// names, the line's `text` without its terminator, the Format, and with `expand` the Section.
 /// Bytes that are not UTF-8 are decoded with U+FFFD (`lossy`), and a path that is not UTF-8
 /// also comes exact, in base64 (`path_base64`). The text is s4's Fragment when the line is
@@ -7055,8 +7509,7 @@ type SectionKey = (String, Value, Value);
 /// its limit is cut (`cut`), the outermost names past `MAX_TRAIL` left out (`trail_omitted`),
 /// and a Section `seen` before gives the Match that holds it (`same_as`). Returns the Section
 /// this Match holds, to remember once the Match is in the answer.
-fn compact(m: &Value, seen: &HashMap<SectionKey, usize>) -> (Value, Option<SectionKey>) {
-    let d = &m["data"];
+fn compact(d: &Value, seen: &HashMap<SectionKey, usize>) -> (Value, Option<SectionKey>) {
     let (path, path_lossy) = decoded(&d["path"]);
     let (mut line, line_lossy) = decoded(&d["lines"]);
     if line.ends_with('\n') {
@@ -7066,7 +7519,7 @@ fn compact(m: &Value, seen: &HashMap<SectionKey, usize>) -> (Value, Option<Secti
         }
     }
     let mut out = Map::new();
-    out.insert("path".into(), Value::String(path.clone()));
+    out.insert("path".into(), Value::String(path));
     if path_lossy {
         out.insert("path_base64".into(), d["path"]["bytes"].clone());
     }
@@ -7110,7 +7563,8 @@ fn compact(m: &Value, seen: &HashMap<SectionKey, usize>) -> (Value, Option<Secti
         let value = match section.as_object() {
             None => Value::Null,
             Some(s) => {
-                let key = (path, s["start_line"].clone(), s["end_line"].clone());
+                let file = d["path"].to_string();
+                let key = (file, s["start_line"].clone(), s["end_line"].clone());
                 let mut v = json!({ "start_line": key.1.clone(), "end_line": key.2.clone() });
                 match seen.get(&key) {
                     Some(&i) => v["same_as"] = i.into(),
@@ -7182,6 +7636,41 @@ fn cut_to(s: &str, max: usize) -> (String, bool) {
     (s[..end].to_string(), true)
 }
 
+/// Cuts a Match's Section and then its text by halves until the Match costs at most `room`:
+/// the first Match of an answer is never left out for its size, which counts its escapes (a
+/// control character is six bytes in JSON and twelve in `content`; review r2 of the M5a plan,
+/// Fable #1).
+fn shrink(m: &mut Value, room: usize) {
+    for section in [true, false] {
+        while cost(m) > room {
+            let text = if section {
+                m.get_mut("section").and_then(|s| s.get_mut("text"))
+            } else {
+                m.get_mut("text")
+            };
+            let Some(Value::String(t)) = text else { break };
+            if t.is_empty() {
+                break;
+            }
+            *t = cut_to(t, t.len() / 2).0;
+            m["cut"] = Value::Bool(true);
+        }
+    }
+}
+
+/// The file a `match` message longer than `MAX_MESSAGE_BYTES` is about, read from the part of
+/// it read: s4 writes `path` first.
+fn path_of_prefix(prefix: &[u8]) -> String {
+    const HEAD: &[u8] = br#"{"type":"match","data":{"path":"#;
+    prefix
+        .strip_prefix(HEAD)
+        .and_then(|_| value_at(prefix, HEAD.len()))
+        .map_or_else(
+            || "a file".to_string(),
+            |(p, _)| format!("`{}`", decoded(&p).0),
+        )
+}
+
 /// The bytes a Match adds to the answer: its JSON in `structuredContent`, the same again
 /// escaped in the text of `content`, and a comma in each.
 fn cost(m: &Value) -> usize {
@@ -7204,9 +7693,10 @@ fn call(params: &Value, s: &dyn Searcher) -> Result<Value, String> {
 }
 
 /// Runs a search and answers with what it found (D17): at most `max` Matches and
-/// `MAX_RESPONSE_BYTES` (the search is ended at the first Match past either, `truncated`), a
-/// `match` message longer than `MAX_MESSAGE_BYTES` left out (`truncated`), and s4's messages,
-/// if any, as `errors`. A search that exits 2 with no Match, ends with any other code, or
+/// `MAX_RESPONSE_BYTES` (the search is ended at the first Match past either: `truncated`, and
+/// `truncated_by` says which), a `match` message longer than `MAX_MESSAGE_BYTES` left out and
+/// its file named (`truncated_by: "long_line"` when nothing else ended the answer), and s4's
+/// messages, if any, as `errors`. A search that exits 2 with no Match, ends with any other code, or
 /// does not exit (a signal) is a tool error with what s4 printed, which the model can read.
 fn run(s: &dyn Searcher, args: &[OsString], max: u64) -> Value {
     let mut search = match s.start(args) {
@@ -7216,13 +7706,24 @@ fn run(s: &dyn Searcher, args: &[OsString], max: u64) -> Value {
     let mut matches = Vec::new();
     let mut sections = HashMap::new();
     let mut room = MAX_RESPONSE_BYTES - RESERVED_BYTES;
-    let mut truncated = false;
+    let mut truncated_by = None;
+    let mut left_out = Vec::new();
     let mut stop = false;
     let mut line = Vec::new();
     // A failed read ends the loop like the end of the output; how the search ended says why.
-    while let Ok(Some(whole)) = read_line_capped(search.output(), MAX_MESSAGE_BYTES, &mut line) {
+    'read: while let Ok(Some(whole)) =
+        read_line_capped(search.output(), MAX_MESSAGE_BYTES, &mut line)
+    {
         if !whole {
-            truncated |= line.starts_with(br#"{"type":"match""#);
+            if line.starts_with(br#"{"type":"match""#) {
+                truncated_by = truncated_by.or(Some("long_line"));
+                left_out.push(format!(
+                    "a Match in {} was left out: its line is longer than {} MiB; search that \
+                     file with s4 from a shell",
+                    path_of_prefix(&line),
+                    MAX_MESSAGE_BYTES >> 20
+                ));
+            }
             continue;
         }
         let Ok(v) = serde_json::from_slice::<Value>(&line) else {
@@ -7231,20 +7732,30 @@ fn run(s: &dyn Searcher, args: &[OsString], max: u64) -> Value {
         if v["type"] != "match" {
             continue;
         }
-        let (m, holds) = compact(&v, &sections);
-        let size = cost(&m);
-        if matches.len() as u64 == max || size > room {
-            (truncated, stop) = (true, true);
-            break;
+        for d in by_trail(&v["data"]) {
+            let (mut m, holds) = compact(&d, &sections);
+            if matches.is_empty() {
+                shrink(&mut m, room);
+            }
+            let size = cost(&m);
+            if matches.len() as u64 == max || size > room {
+                let full = matches.len() as u64 == max;
+                truncated_by = Some(if full { "max_results" } else { "bytes" });
+                stop = true;
+                break 'read;
+            }
+            room -= size;
+            if let Some(key) = holds {
+                sections.insert(key, matches.len());
+            }
+            matches.push(m);
         }
-        room -= size;
-        if let Some(key) = holds {
-            sections.insert(key, matches.len());
-        }
-        matches.push(m);
     }
     let (ended, stderr) = search.end(stop);
-    let messages = stderr.trim_end();
+    left_out.push(stderr.trim_end().to_string());
+    left_out.retain(|m| !m.is_empty());
+    let messages = left_out.join("\n");
+    let messages = messages.as_str();
     let says = |what: String| {
         if messages.is_empty() {
             what
@@ -7265,7 +7776,10 @@ fn run(s: &dyn Searcher, args: &[OsString], max: u64) -> Value {
         Ended::Code(c) => return tool_error(&says(format!("s4 ended with exit code {c}"))),
         Ended::Other(why) => return tool_error(&says(format!("s4 {why}"))),
     };
-    let mut structured = json!({ "matches": matches, "truncated": truncated });
+    let mut structured = json!({ "matches": matches, "truncated": truncated_by.is_some() });
+    if let Some(why) = truncated_by {
+        structured["truncated_by"] = why.into();
+    }
     if !errors.is_empty() {
         structured["errors"] = Value::String(errors);
     }
@@ -7585,6 +8099,15 @@ mod tests {
         input.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":\"\xff\",\"method\":\"ping\"}\n");
         input.extend_from_slice(&vec![b' '; MAX_REQUEST_BYTES + 1]);
         input.extend_from_slice(b"\n{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"ping\"}\n");
+        // Longer than a request may be: answered with its id when the id comes before what
+        // is cut (review r2 of the M5a plan, Fable #3), else with null.
+        let long = "x".repeat(MAX_REQUEST_BYTES);
+        let early = json!({"jsonrpc":"2.0","id":"r-11","method":"tools/call","params":{"name":"search","arguments":{"pattern":long}}});
+        input.extend_from_slice(format!("{early}\n").as_bytes());
+        input.extend_from_slice(
+            format!("{{\"params\":{{\"note\":\"{long}\"}},\"id\":12,\"jsonrpc\":\"2.0\"}}\n")
+                .as_bytes(),
+        );
         let out = raw_session(&input, &s);
         let codes: Vec<(Value, Value)> = out
             .iter()
@@ -7607,6 +8130,8 @@ mod tests {
                 (Value::Null, json!(-32700)),
                 (Value::Null, json!(-32600)),
                 (json!(10), Value::Null),
+                (json!("r-11"), json!(-32600)),
+                (Value::Null, json!(-32600)),
             ]
         );
         assert!(
@@ -7757,16 +8282,36 @@ mod tests {
     fn the_answer_has_a_size_limit() {
         let mut big = guide();
         big["data"]["lines"]["text"] = json!(format!("{}\n", "\"x".repeat(MAX_TEXT_BYTES / 2)));
-        let s = with(&vec![big; 400], Ended::Code(0), "");
+        let s = with(&vec![big.clone(); 400], Ended::Code(0), "");
         let out = session(
             &[json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
                 "params":{"name":"search","arguments":{"pattern":"x","max_results":MAX_RESULTS}}})],
             &s,
         );
         let line = out[0].to_string();
-        assert!(line.len() <= MAX_RESPONSE_BYTES, "{}", line.len());
+        assert!(
+            line.len() <= MAX_RESPONSE_BYTES + ENVELOPE_BYTES + 1,
+            "{}",
+            line.len()
+        );
         let r = &out[0]["result"]["structuredContent"];
         assert_eq!(r["truncated"], true);
+        assert_eq!(r["truncated_by"], "bytes");
+        // The limit is the result's; the envelope adds `ENVELOPE_BYTES` and the client's id as
+        // it sent it (review r2 of the M5a plan, Codex #6).
+        let id = "i".repeat(300_000);
+        let s = with(&vec![big; 400], Ended::Code(0), "");
+        let out = session(
+            &[json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":"search","arguments":{"pattern":"x","max_results":MAX_RESULTS}}})],
+            &s,
+        );
+        let result = out[0]["result"].to_string().len();
+        assert!(result <= MAX_RESPONSE_BYTES, "{result}");
+        assert_eq!(
+            out[0].to_string().len(),
+            result + ENVELOPE_BYTES + json!(id).to_string().len()
+        );
         assert!(!r["matches"].as_array().unwrap().is_empty());
         assert_eq!(s.stopped.get(), Some(true));
         let mut huge = br#"{"type":"match","data":{"lines":{"text":""#.to_vec();
@@ -7786,6 +8331,121 @@ mod tests {
             ),
             (json!(true), 1)
         );
+    }
+
+    /// Review r2 of the M5a plan, Fable #1: a Match left out says why. A `match` longer than
+    /// `MAX_MESSAGE_BYTES` names its file in `errors`; the first Match is never left out for
+    /// its size, its texts cut until it fits; and `truncated_by` says which limit ended the
+    /// answer.
+    #[test]
+    fn left_out_matches_say_why() {
+        let mut huge =
+            br#"{"type":"match","data":{"path":{"text":"x/huge.txt"},"lines":{"text":""#.to_vec();
+        huge.extend(std::iter::repeat_n(b'x', MAX_MESSAGE_BYTES));
+        huge.extend_from_slice(b"\"}}}\n");
+        huge.extend_from_slice(format!("{}\n", guide()).as_bytes());
+        let s = Canned {
+            out: huge,
+            ..with(&[], Ended::Code(0), "")
+        };
+        let r = call_with(json!({"pattern":"x"}), &s);
+        let r = &r["structuredContent"];
+        assert_eq!(r["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            (&r["truncated"], &r["truncated_by"]),
+            (&json!(true), &json!("long_line"))
+        );
+        let errors = r["errors"].as_str().unwrap();
+        assert!(
+            errors.contains("x/huge.txt") && errors.contains("4 MiB"),
+            "{errors}"
+        );
+        // A Section of control characters, each six bytes escaped and twelve in `content`.
+        let mut ctrl = guide();
+        ctrl["data"]["section"] =
+            json!({"start_line":9,"end_line":18,"text":"\u{1}".repeat(MAX_SECTION_BYTES)});
+        let s = with(&[ctrl], Ended::Code(0), "");
+        let r = call_with(json!({"pattern":"needle","expand":true}), &s);
+        let r = &r["structuredContent"];
+        let m = r["matches"].as_array().unwrap();
+        assert_eq!((m.len(), &m[0]["cut"]), (1, &json!(true)));
+        assert!(!m[0]["section"]["text"].as_str().unwrap().is_empty());
+        assert_eq!(
+            (&r["truncated"], &r["truncated_by"]),
+            (&json!(false), &Value::Null)
+        );
+        let s = with(&[guide(), guide()], Ended::Code(0), "");
+        let r = call_with(json!({"pattern":"needle","max_results":1}), &s);
+        assert_eq!(r["structuredContent"]["truncated_by"], "max_results");
+    }
+
+    /// Review r2 of the M5a plan, Fable #2: a line whose submatches lie under different
+    /// Trails is a Match per Trail, as the Trail layouts print a row per Trail; a submatch's
+    /// own Section, when s4 gives one, is that Match's.
+    #[test]
+    fn a_match_per_trail_of_the_line() {
+        let cell = |name: &str| {
+            json!([{"kind":"heading","name":"Plans","line":19,"end_line":34,"level":2},
+                   {"kind":"cell","name":name,"line":24,"end_line":24}])
+        };
+        let mut row = guide();
+        row["data"]["line_number"] = json!(24);
+        row["data"]["lines"] = json!({"text":"| needle-a | needle-b |\n"});
+        row["data"]["trail"] = cell("Plan");
+        row["data"]["submatches"] = json!([
+            {"match":{"text":"needle-a"},"start":2,"end":10,"trail":cell("Plan")},
+            {"match":{"text":"needle-b"},"start":13,"end":21,"trail":cell("Price")},
+            {"match":{"text":"needle-a"},"start":22,"end":30,"trail":cell("Plan"),
+             "section":{"start_line":20,"end_line":24,"text":"other"}}
+        ]);
+        row["data"]["section"] = json!({"start_line":21,"end_line":24,"text":"| Plan | Price |"});
+        let s = with(&[row], Ended::Code(0), "");
+        let r = call_with(json!({"pattern":"needle-[ab]","expand":true}), &s);
+        let m = r["structuredContent"]["matches"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let seen: Vec<(Value, Value, Value)> = m
+            .iter()
+            .map(|m| (m["line"].clone(), m["trail"].clone(), m["section"].clone()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (
+                    json!(24),
+                    json!(["Plans", "Plan"]),
+                    json!({"start_line":21,"end_line":24,"text":"| Plan | Price |"})
+                ),
+                (
+                    json!(24),
+                    json!(["Plans", "Price"]),
+                    json!({"start_line":21,"end_line":24,"same_as":0})
+                ),
+            ]
+        );
+        assert_eq!(m[1]["text"], "| needle-a | needle-b |");
+    }
+
+    /// Review r2 of the M5a plan, Codex #5: a Section is the same only in the same file, told
+    /// by its exact path: two paths that read the same with U+FFFD are two files.
+    #[test]
+    fn sections_of_files_whose_names_read_alike() {
+        let at = |b64: &str| {
+            let mut m = guide();
+            m["data"]["path"] = json!({"bytes": b64});
+            m["data"]["section"] = json!({"start_line":9,"end_line":18,"text":b64});
+            m
+        };
+        let s = with(&[at("Yf4ubWQ="), at("Yf8ubWQ=")], Ended::Code(0), "");
+        let r = call_with(json!({"pattern":"needle","expand":true}), &s);
+        let m = &r["structuredContent"]["matches"];
+        assert_eq!(
+            (&m[0]["path"], &m[1]["path"]),
+            (&json!("a\u{FFFD}.md"), &json!("a\u{FFFD}.md"))
+        );
+        assert_eq!(m[1]["section"]["text"], "Yf8ubWQ=");
+        assert_eq!(m[1]["section"]["same_as"], Value::Null);
     }
 
     /// Codex r1 #3: every way a search ends. Exit 2 with Matches gives them and s4's errors;
@@ -8421,7 +9081,7 @@ index 0490f2c..c3fc953 100644
 
 ```diff
 diff --git a/src/output/mod.rs b/src/output/mod.rs
-index b73f168..2a4f777 100644
+index ab6be4e..d82f7e9 100644
 --- a/src/output/mod.rs
 +++ b/src/output/mod.rs
 @@ -430,11 +430,9 @@ pub(crate) struct Row<'a> {
@@ -8442,10 +9102,10 @@ index b73f168..2a4f777 100644
 
 ```diff
 diff --git a/src/app.rs b/src/app.rs
-index 25151be..4ef4ba9 100644
+index 1caa229..e004c45 100644
 --- a/src/app.rs
 +++ b/src/app.rs
-@@ -1373,7 +1373,8 @@ impl<'a> Ctx<'a> {
+@@ -1377,7 +1377,8 @@ impl<'a> Ctx<'a> {
              if failed == Some(true) {
                  return;
              }
@@ -8887,7 +9547,8 @@ index ecbac18..6f94bda 100644
 
 - [ ] **Step 1:** `tests/rg_compat_m5.rs`: every M5a flag with `--no-trail` against rg 14.1.1,
   byte for byte, over the fixture copy and the files `write_m5_files` adds (spec §11 #29), each
-  negation after its flag too (D2: `--no-ignore --ignore-dot`, `-b --no-byte-offset`…). Each
+  negation after its flag too (D2: `--no-ignore --ignore-dot`, `-b --no-byte-offset`…), and
+  `--type-list` after `--type-add` and `--type-clear` (review r2, Codex #3). Each
   case runs with `--sort path` first; `--stats` and `--json` with their times masked:
 
 ```rust
@@ -9275,6 +9936,16 @@ fn m5_walk_flags_equal_ripgrep() {
         vec!["--files", "-g", "*.zzz"],
         vec!["--files", "--type-list"],
         vec!["--type-list", "--files", "md"],
+        // The types as the command line changes them (review r2 of the plan, Codex #3).
+        vec!["--type-add", "review:*.review", "--type-list"],
+        vec!["--type-clear", "rust", "--type-list"],
+        vec![
+            "--type-add",
+            "rust:*.aa",
+            "--type-add",
+            "web:include:html,css",
+            "--type-list",
+        ],
         vec!["--maxdepth", "1", "-l", "needle"],
         vec!["-g", "*.zzz", "needle"],
     ];
@@ -9351,10 +10022,12 @@ fn m5_json_equals_ripgrep() {
 - [ ] **Step 2:** `tests/cli_m5.rs`: the Trail layouts with rg's flags, the actions, the
   configuration file, `--debug`, the MCP server over the real binary (with a configuration file
   whose `--pre` and `--generate` it must not take, a value that starts with `-`, a missing path
-  beside a Match, a long line, a line that is not UTF-8 and a repeated Section: D17), rg's
-  message when nothing was searched, `--stats`, colours and links, the summaries,
-  `--line-buffered`, the rows of an ELF, a PE and a Mach-O file with `-o`, `--vimgrep` and `-r`,
-  and `--trim` before `\r` and `\x0B` (spec §11 #14, #30, #31). Every expected output is whole
+  beside a Match, a long line, a line that is not UTF-8, a repeated Section, a line past 4 MiB
+  and a line with Matches under two cells: D17), rg's message when nothing was searched,
+  `--stats`, colours and links, the summaries, `--line-buffered`, the rows of an ELF, a PE and a
+  Mach-O file with `-o`, `--vimgrep` and `-r` (`-r` with `^` and with a control byte in the
+  Match), `--trim` before `\r` and `\x0B`, `--no-mmap` seen in `/proc/PID/maps` (`m5_19`), and
+  `-o`'s rows against rg's (`m5_20`) (spec §11 #14, #30, #31). Every expected output is whole
   and was read row by row against the fixtures:
 
 ````rust
@@ -9728,6 +10401,9 @@ fn m5_11_mcp_server() {
     std::fs::create_dir_all(&dir).unwrap();
     let long = format!("{} needle {}\n", "x".repeat(3000), "y".repeat(3000));
     std::fs::write(dir.join("long.txt"), long).unwrap();
+    // A line longer than the 4 MiB a message of s4 may be (review r2 of the plan, Fable #1).
+    let huge = format!("{} needle\n", "x".repeat(5 << 20));
+    std::fs::write(dir.join("huge.txt"), huge).unwrap();
     std::fs::write(dir.join("lossy.txt"), b"needle\xff\n").unwrap();
     std::fs::write(dir.join("two.md"), "# Part\n\nneedle one\n\nneedle two\n").unwrap();
     let mut child = fx
@@ -9779,6 +10455,10 @@ fn m5_11_mcp_server() {
         2
     );
     assert_eq!(r["result"]["structuredContent"]["truncated"], true);
+    assert_eq!(
+        r["result"]["structuredContent"]["truncated_by"],
+        "max_results"
+    );
     let r = ask(
         json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search",
         "arguments":{"pattern":"(","paths":["md"]}}}),
@@ -9814,6 +10494,32 @@ fn m5_11_mcp_server() {
         "# Part\n\nneedle one\n\nneedle two\n"
     );
     assert_eq!(m[1]["section"]["same_as"], 0);
+    // Review r2 of the plan, Fable #1: a Match on a line past 4 MiB is left out, and said.
+    let r = search(json!({"pattern":"needle","paths":["mcp/huge.txt"]}));
+    let r = &r["structuredContent"];
+    assert_eq!(r["matches"], json!([]));
+    assert_eq!(
+        (&r["truncated"], &r["truncated_by"]),
+        (&json!(true), &json!("long_line"))
+    );
+    assert!(
+        r["errors"].as_str().unwrap().contains("`mcp/huge.txt`"),
+        "{r}"
+    );
+    // Review r2 of the plan, Fable #2: line 24 holds Matches under two cells, two Matches.
+    let r = search(json!({"pattern":"needle-[ab]","paths":["md/guide.md"]}));
+    let trails: Vec<(Value, Value)> = r["structuredContent"]["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["line"] == 24)
+        .map(|m| (m["trail"][3].clone(), m["text"].clone()))
+        .collect();
+    let row = json!("| needle-a | needle-b |");
+    assert_eq!(
+        trails,
+        [(json!("Plan"), row.clone()), (json!("Price"), row)]
+    );
     let r = search(json!({"pattern":"needle","paths":["md"],"within":"-x"}));
     assert_eq!(r["isError"], false, "{r}");
     assert_eq!(r["structuredContent"]["matches"], json!([]));
@@ -10035,6 +10741,58 @@ fn m5_17_object_rows_take_o_vimgrep_and_r() {
             format!("{a}: {trail} › {sym1} │ first X|second X\n")
         );
     }
+    // Review r2 of the plan, Codex #2: `-r` replaces each Match where the search found it in
+    // the file, so `^` does not match after a NUL and a group reads the file's bytes, and only
+    // then is the string made printable.
+    let strings = b"\0needle target\0zz ab\x01cd yy\0";
+    let files = [
+        (
+            "anchors",
+            obj::elf(
+                &obj::Spec::new()
+                    .section(".text", b"\xc3\0\0\0")
+                    .section(".rodata", strings),
+            )
+            .file,
+        ),
+        (
+            "anchors.exe",
+            obj::pe(
+                &obj::Spec::new()
+                    .section(".text", b"\xc3\0\0\0")
+                    .section(".rdata", strings),
+            )
+            .file,
+        ),
+        (
+            "anchors-mac",
+            obj::macho(
+                &obj::Spec::new()
+                    .section("__TEXT,__text", b"\xc3\0\0\0")
+                    .section("__TEXT,__cstring", strings),
+            )
+            .file,
+        ),
+    ];
+    let texts = |args: &[&str], name: &str| -> Vec<String> {
+        let mut a = vec!["--flat"];
+        a.extend_from_slice(args);
+        a.push(name);
+        ok(&fx, &a)
+            .lines()
+            .map(|l| l.split_once(" │ ").unwrap().1.to_string())
+            .collect()
+    };
+    for (name, bytes) in &files {
+        std::fs::write(fx.file(name), bytes).unwrap();
+        assert_eq!(texts(&["-r", "X", "^needle|target"], name), ["needle X"]);
+        assert_eq!(texts(&["-r", "X", "ab\\x01cd"], name), ["zz X yy"]);
+        assert_eq!(texts(&["-r", "<$1>", "a(b\\x01c)d"], name), ["zz <b.c> yy"]);
+        assert_eq!(
+            texts(&["-o", "-r", "[$1]", "(tar)get|a(b\\x01c)d"], name),
+            ["[tar]", "[]"]
+        );
+    }
 }
 
 /// Review r1 of the M5a plan, Codex #8: `--trim` in the Trail layouts leaves out the white
@@ -10053,6 +10811,77 @@ fn m5_18_trim_as_ripgrep() {
         "1: \r\tneedle\n"
     );
 }
+
+/// Review r2 of the plan, Codex #1: `--no-mmap` maps no file, however large, as rg; without it
+/// s4 maps a file of 8 MiB or more. Seen in `/proc/PID/maps` while s4 prints: the test reads
+/// the first line and no more, so s4 waits on a full pipe with the file still open.
+#[cfg(target_os = "linux")]
+#[test]
+fn m5_19_no_mmap_maps_no_file() {
+    let fx = Fixture::new();
+    let line = format!("needle {}\n", "x".repeat(90));
+    let lines = line.repeat(9 * 1024 * 1024 / line.len() + 1);
+    std::fs::write(fx.file("big.md"), format!("# Big\n{lines}")).unwrap();
+    let big = fx.file("big.md").canonicalize().unwrap();
+    let mapped = |flags: &[&str]| -> bool {
+        let mut args = flags.to_vec();
+        args.extend(["--flat", "needle", "big.md"]);
+        let mut child = fx
+            .s4(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut first = String::new();
+        out.read_line(&mut first).unwrap();
+        assert!(first.contains("needle"), "{flags:?}: {first}");
+        let maps = std::fs::read_to_string(format!("/proc/{}/maps", child.id())).unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        maps.contains(big.to_str().unwrap())
+    };
+    assert!(mapped(&[]), "a file of 8 MiB is mapped by default");
+    assert!(!mapped(&["--no-mmap"]));
+    assert!(!mapped(&["--mmap", "--no-mmap"]));
+}
+
+/// Review r2 of the plan, Codex #4: `-o` in the Trail layouts prints the rows rg prints, an
+/// empty Match or an empty replacement as an empty row, and a `\r` Match without `--crlf`.
+/// A Plain file's row is `N: text`, rg's `N:text`.
+#[test]
+fn m5_20_only_matching_rows_as_ripgrep() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::write(fx.file("n.txt"), b"needle\nnext\n").unwrap();
+    std::fs::write(fx.file("cr.txt"), b"needle\r\n").unwrap();
+    let cases: [&[&str]; 7] = [
+        &["-o", "-r", "", "needle", "n.txt"],
+        &["-o", "-r", "", "e", "n.txt"],
+        &["-o", "x*", "n.txt"],
+        &["-o", "\\r", "cr.txt"],
+        // With -U, a pattern that cannot match a line break prints as without it; one that
+        // can, as rg's printer of several lines, which skips what is left empty.
+        &["-U", "-o", "x*", "n.txt"],
+        &["-U", "-o", "-r", "", "needle", "n.txt"],
+        &["-U", "-o", "-r", "Z", "e\\nn", "n.txt"],
+    ];
+    for case in cases {
+        let mut rg = vec!["-n"];
+        rg.extend_from_slice(case);
+        let want = stdout(&run(&mut fx.rg(&rg)));
+        let mut s4 = vec!["--flat"];
+        s4.extend_from_slice(case);
+        let got: String = ok(&fx, &s4)
+            .split_inclusive('\n')
+            .map(|l| l.replacen(": ", ":", 1))
+            .collect();
+        assert_eq!(got, want, "{case:?}");
+        assert!(!want.is_empty(), "{case:?}");
+    }
+}
 ````
 
 - [ ] **Step 3:** `SEARCHFOR_REQUIRE_REFERENCE=1 cargo test --test rg_compat_m5 --test cli_m5`:
@@ -10067,7 +10896,9 @@ fn m5_18_trim_as_ripgrep() {
 - [ ] **Step 1:** `src/output/rg.rs` (design note 5; D4, D5, D14): rg's colours with the
   `--colors` specs, its hyperlink configuration, heading and column, the standard, summary and
   path printers as rg's `printer_standard`, `printer_summary` and `path_printer_builder`, the
-  `Look` of the Trail layouts, which files stream (`streams`) and the `--stats` block:
+  `Look` of the Trail layouts (a `-U` search is several lines only where grep-printer's
+  `multi_line_with_matcher` says so: review r2, Codex #4), which files stream (`streams`) and
+  the `--stats` block:
 
 ```rust
 //! The run's output settings from the command line (M5a plan, D4): grep-printer's printers
@@ -10202,8 +11033,12 @@ pub fn path_printer<W: WriteColor>(args: &Args, w: W) -> PathPrinter<W> {
         .build(w)
 }
 
-/// How the Trail layouts print rg's output flags (M5a plan, D4).
+/// How the Trail layouts print rg's output flags (M5a plan, D4). A `-U` search whose pattern
+/// cannot match a line terminator prints as a search of lines, as grep-printer's printers do
+/// (`multi_line_with_matcher`): `-o` then prints an empty Match as an empty row (review r2 of
+/// the M5a plan, Codex #4).
 pub fn look(args: &Args, matcher: &PatternMatcher) -> Look {
+    let multi_line = crate::search::searcher(args, false, true).multi_line_with_matcher(matcher);
     Look {
         column: column(args),
         byte_offset: args.byte_offset,
@@ -10216,7 +11051,7 @@ pub fn look(args: &Args, matcher: &PatternMatcher) -> Look {
                 matcher.clone(),
                 r.clone().into_bytes(),
                 crate::search::line_terminator(args),
-                args.multiline,
+                multi_line,
             ))
         }),
         sep_match: args.field_match_separator.0.clone(),
@@ -10232,7 +11067,7 @@ pub fn look(args: &Args, matcher: &PatternMatcher) -> Look {
             .map(Arc::new),
         crlf: args.crlf,
         null_data: args.null_data,
-        multi_line: args.multiline,
+        multi_line,
     }
 }
 
@@ -10305,9 +11140,13 @@ mod tests {
             r"\\",
             "-U",
         ]);
+        // `-U` prints as several lines only when the pattern can match a line break (review r2
+        // of the plan, Codex #4).
+        let spans = crate::matcher::build(&a, &["x\\nx".into()]).unwrap();
+        assert!(look(&a, &spans).multi_line);
         let m = crate::matcher::build(&a, &["x".into()]).unwrap();
         let l = look(&a, &m);
-        assert!(l.only_matching && l.trim && l.multi_line);
+        assert!(l.only_matching && l.trim && !l.multi_line);
         assert_eq!(l.sep_match, b"=");
         assert_eq!(l.sep_group, None);
         assert_eq!(l.path_terminator, Some(0));
@@ -10345,7 +11184,7 @@ mod tests {
 
 ```diff
 diff --git a/src/output/mod.rs b/src/output/mod.rs
-index 2a4f777..aad420a 100644
+index d82f7e9..f9db1b6 100644
 --- a/src/output/mod.rs
 +++ b/src/output/mod.rs
 @@ -4,6 +4,7 @@ pub mod fragment;
@@ -10356,7 +11195,7 @@ index 2a4f777..aad420a 100644
  pub mod stream;
  pub mod style;
  pub mod summary;
-@@ -1101,12 +1102,6 @@ pub fn link_end(w: &mut dyn WriteColor, started: bool) -> std::io::Result<()> {
+@@ -1145,12 +1146,6 @@ pub fn link_end(w: &mut dyn WriteColor, started: bool) -> std::io::Result<()> {
      Ok(())
  }
  
@@ -10401,7 +11240,7 @@ index b432f57..0d329e2 100644
 - [ ] **Step 4:** the streaming printer with the searcher's submatches (design note 3), and M4's
   helpers dropped from `search.rs`; the walker sorts siblings by name, as rg's (D8, D20); and
   the look-ahead case of `submatches_follow_the_searchers_terminator`, which C3 could not test
-  without C2's PCRE2:
+  without C2's PCRE2; and `file_types`, the walker's types, which `--type-list` prints too:
 
 ```diff
 diff --git a/src/output/stream.rs b/src/output/stream.rs
@@ -10449,10 +11288,36 @@ index 6f94bda..c7dc89e 100644
 
 ```diff
 diff --git a/src/search.rs b/src/search.rs
-index bdd3181..c2fbd9f 100644
+index bdd3181..7a871ea 100644
 --- a/src/search.rs
 +++ b/src/search.rs
-@@ -218,8 +218,9 @@ pub fn walker_with(
+@@ -183,24 +183,7 @@ pub fn walker_with(
+         w.add_custom_ignore_filename(".rgignore");
+     }
+     // The file types before the globs, as ripgrep 14.1.1 validates them (code review r3).
+-    let mut tb = rg_types()?;
+-    // In command-line order, as ripgrep (hiargs.rs `types`): the last selection of a type wins,
+-    // and --type-add and --type-clear change the types the selections after them see.
+-    for change in &args.type_changes {
+-        match change {
+-            TypeChange::Select(t) => {
+-                tb.select(t);
+-            }
+-            TypeChange::Negate(t) => {
+-                tb.negate(t);
+-            }
+-            TypeChange::Add(def) => tb.add_def(def)?,
+-            TypeChange::Clear(t) => {
+-                tb.clear(t);
+-            }
+-        }
+-    }
+-    w.types(tb.build()?);
++    w.types(file_types(args)?.build()?);
+     // As ripgrep 14.1.1: every -g first, case-insensitive with --glob-case-insensitive, then
+     // every --iglob (case-insensitive); the relative order of the two kinds on the command line
+     // does not matter (measured in review r2).
+@@ -218,8 +201,9 @@ pub fn walker_with(
          }
      }
      w.overrides(ob.build()?);
@@ -10463,7 +11328,37 @@ index bdd3181..c2fbd9f 100644
      }
      w.threads(walker_threads(args));
      Ok((w, errors))
-@@ -545,35 +546,6 @@ pub fn context_submatches_in(
+@@ -288,6 +272,29 @@ pub fn walker_threads(args: &Args) -> usize {
+ /// ripgrep 14.1.1's file types, as `rg --type-list` prints them: `name: glob, glob`.
+ pub const RG_TYPES: &str = include_str!("rg_types.txt");
+ 
++/// The file types of a run: ripgrep 14.1.1's, changed in command-line order, as ripgrep
++/// (hiargs.rs `types`): the last selection of a type wins, and --type-add and --type-clear
++/// change the types the selections after them see, and the ones `--type-list` prints (review
++/// r2 of the M5a plan, Codex #3).
++pub fn file_types(args: &Args) -> anyhow::Result<TypesBuilder> {
++    let mut tb = rg_types()?;
++    for change in &args.type_changes {
++        match change {
++            TypeChange::Select(t) => {
++                tb.select(t);
++            }
++            TypeChange::Negate(t) => {
++                tb.negate(t);
++            }
++            TypeChange::Add(def) => tb.add_def(def)?,
++            TypeChange::Clear(t) => {
++                tb.clear(t);
++            }
++        }
++    }
++    Ok(tb)
++}
++
+ /// A `TypesBuilder` with ripgrep 14.1.1's file types, which differ from the ignore crate's
+ /// defaults.
+ pub fn rg_types() -> anyhow::Result<TypesBuilder> {
+@@ -545,35 +552,6 @@ pub fn context_submatches_in(
      }
  }
  
@@ -10499,7 +11394,7 @@ index bdd3181..c2fbd9f 100644
  impl Sink for CollectSink<'_> {
      type Error = std::io::Error;
  
-@@ -810,7 +782,9 @@ fn search_with(
+@@ -810,7 +788,9 @@ fn search_with(
      }
      sink.stats.elapsed = started.elapsed();
      let stats = sink.stats.clone();
@@ -10510,7 +11405,7 @@ index bdd3181..c2fbd9f 100644
          return Ok((None, stats));
      }
      let fm = FileMatches {
-@@ -1557,6 +1531,8 @@ mod tests {
+@@ -1557,6 +1537,8 @@ mod tests {
          assert_eq!(subs(&["--crlf"], r"\s$", b"a \r\n"), [(1, 2)]);
          // Multi-line: one submatch across the lines of its block.
          assert_eq!(subs(&["-U"], r"a\nb", b"a\nb\n"), [(0, 3)]);
@@ -10527,7 +11422,8 @@ index bdd3181..c2fbd9f 100644
 
 - [ ] **Step 1:** the logger started after the command line is read; the actions
   `--pcre2-version` (first, as rg's special mode), `--generate`, `--mcp` and `--files` (D16,
-  D17, D20); `-o --count` as `--count-matches` (rg's hiargs.rs); `-q --stats` searching every
+  D17, D20) and `--type-list` with the types the command line changed (exit 1 without any, as
+  rg's `types`); `-o --count` as `--count-matches` (rg's hiargs.rs); `-q --stats` searching every
   file; `--vimgrep`'s layout, file names and line numbers; rg's heading for `--no-trail`; the
   context separator from `--context-separator`; `Out` (stdout with the bytes printed and the
   spill per line under line buffering, D13); the Look in the Trail options; the streaming paths
@@ -10538,7 +11434,7 @@ index bdd3181..c2fbd9f 100644
 
 ```diff
 diff --git a/src/app.rs b/src/app.rs
-index 4ef4ba9..daf5321 100644
+index e004c45..eed5099 100644
 --- a/src/app.rs
 +++ b/src/app.rs
 @@ -19,10 +19,7 @@ use crate::search::{self, CollectSink, MaxCount};
@@ -10591,17 +11487,29 @@ index 4ef4ba9..daf5321 100644
      if args.list_grammars {
          return Ok(list_grammars(&msgs));
      }
-@@ -214,6 +224,9 @@ fn main(args: &Args) -> anyhow::Result<i32> {
-             .write_all(search::RG_TYPES.as_bytes())?;
-         return Ok(0);
-     }
+@@ -209,10 +219,17 @@ fn main(args: &Args) -> anyhow::Result<i32> {
+         let cwd = std::env::current_dir()?;
+         search::walker(args, &[], &cwd)?;
+         Preprocess::new(args, &cwd)?;
+-        std::io::stdout()
+-            .lock()
+-            .write_all(search::RG_TYPES.as_bytes())?;
+-        return Ok(0);
++        // The types as `--type-add` and `--type-clear` changed them, and exit 1 without any, as
++        // rg's `types` (review r2 of the M5a plan, Codex #3).
++        let defs = search::file_types(args)?.definitions();
++        let mut out = std::io::stdout().lock();
++        for d in &defs {
++            writeln!(out, "{}: {}", d.name(), d.globs().join(", "))?;
++        }
++        return Ok(if defs.is_empty() { 1 } else { 0 });
++    }
 +    if args.files {
 +        return files(args, &msgs);
-+    }
+     }
  
      // Patterns and paths (step 4).
-     if args.pattern.is_none() && args.regexp.is_empty() && args.pattern_files.is_empty() {
-@@ -256,7 +269,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
+@@ -256,7 +273,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
      } else if args.no_filename {
          false
      } else {
@@ -10610,7 +11518,7 @@ index 4ef4ba9..daf5321 100644
      };
      let tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
      let color = match args.color {
-@@ -266,8 +279,11 @@ fn main(args: &Args) -> anyhow::Result<i32> {
+@@ -266,8 +283,11 @@ fn main(args: &Args) -> anyhow::Result<i32> {
          ColorWhen::Always => ColorChoice::Always,
          ColorWhen::Ansi => ColorChoice::AlwaysAnsi,
      };
@@ -10624,7 +11532,7 @@ index 4ef4ba9..daf5321 100644
          Some(summary::Mode::Count)
      } else if args.count_matches {
          Some(summary::Mode::CountMatches)
-@@ -279,7 +295,8 @@ fn main(args: &Args) -> anyhow::Result<i32> {
+@@ -279,7 +299,8 @@ fn main(args: &Args) -> anyhow::Result<i32> {
          None
      };
      let context = args.before() > 0 || args.after() > 0;
@@ -10634,7 +11542,7 @@ index 4ef4ba9..daf5321 100644
          Mode::QuietJson
      } else if args.quiet && !args.structural() {
          Mode::Quiet
-@@ -290,6 +307,9 @@ fn main(args: &Args) -> anyhow::Result<i32> {
+@@ -290,6 +311,9 @@ fn main(args: &Args) -> anyhow::Result<i32> {
      };
      let layout = if args.json {
          Layout::Json
@@ -10644,7 +11552,7 @@ index 4ef4ba9..daf5321 100644
      } else if args.tree {
          Layout::Tree
      } else if args.flat {
-@@ -299,7 +319,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
+@@ -299,7 +323,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
      } else {
          Layout::Flat
      };
@@ -10653,7 +11561,7 @@ index 4ef4ba9..daf5321 100644
      // The separator between files, which BufferWriter prints between two non-empty file
      // outputs, as ripgrep's. One file needs none, so its output is printed as it grows
      // (`Ctx::spill`), and a closed pipe stops the search as rg's (code review r4 replay).
-@@ -307,10 +327,10 @@ fn main(args: &Args) -> anyhow::Result<i32> {
+@@ -307,10 +331,10 @@ fn main(args: &Args) -> anyhow::Result<i32> {
          _ if one_file => None,
          Mode::Passthrough if args.json || summary_mode.is_some() => None,
          Mode::Passthrough if heading => Some(Vec::new()),
@@ -10666,7 +11574,7 @@ index 4ef4ba9..daf5321 100644
          _ => None,
      };
      // With one thread, ripgrep 14.1.1's printer writes it instead, before a file's first line
-@@ -326,6 +346,17 @@ fn main(args: &Args) -> anyhow::Result<i32> {
+@@ -326,6 +350,17 @@ fn main(args: &Args) -> anyhow::Result<i32> {
      let separator = separator.filter(|_| line_separator.is_none());
      let mut out = BufferWriter::stdout(color);
      out.separator(separator.clone());
@@ -10684,15 +11592,15 @@ index 4ef4ba9..daf5321 100644
      let width = if tty && layout != Layout::Json {
          terminal_size::terminal_size().map_or(args.fragment_width, |(w, _)| w.0 as usize)
      } else {
-@@ -361,6 +392,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
+@@ -361,6 +396,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
          linked: AtomicBool::new(false),
          msgs,
          pre,
 +        searched: AtomicBool::new(false),
          decoding: crate::source::Decoding::of(args),
+         mapping: crate::source::Mapping::of(args),
          in_memory: search::rg_in_memory(args, &paths, implicit_stdin),
-         paths,
-@@ -396,7 +428,9 @@ fn main(args: &Args) -> anyhow::Result<i32> {
+@@ -397,7 +433,9 @@ fn main(args: &Args) -> anyhow::Result<i32> {
                  || search::streaming_searcher(args, false, ctx.in_memory),
                  |s, t| ctx.quiet_json_file(s, &t),
              )?;
@@ -10703,7 +11611,7 @@ index 4ef4ba9..daf5321 100644
          }
          Mode::Passthrough => {
              let line_number =
-@@ -424,7 +458,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
+@@ -425,7 +463,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
                  context,
                  expand: args.expand,
                  binary: args.binary_choice,
@@ -10712,7 +11620,7 @@ index 4ef4ba9..daf5321 100644
              };
              ctx.walk(
                  || TrailState {
-@@ -442,6 +476,17 @@ fn main(args: &Args) -> anyhow::Result<i32> {
+@@ -443,6 +481,17 @@ fn main(args: &Args) -> anyhow::Result<i32> {
              }
          }
      }
@@ -10730,7 +11638,7 @@ index 4ef4ba9..daf5321 100644
      let matched = ctx.matched.load(Relaxed);
      let errored = ctx.msgs.errored.load(Relaxed);
      Ok(if matched && (args.quiet || !errored) {
-@@ -453,6 +498,152 @@ fn main(args: &Args) -> anyhow::Result<i32> {
+@@ -454,6 +503,152 @@ fn main(args: &Args) -> anyhow::Result<i32> {
      })
  }
  
@@ -10883,7 +11791,7 @@ index 4ef4ba9..daf5321 100644
  /// ripgrep 14.1.1's default for line numbers in passthrough (hiargs.rs:200-221): `-n` and `-N`
  /// first, always with `--json`, never with a summary, and else on a tty unless stdin, implicit
  /// or `-`, is all that is searched (hiargs.rs:214 and 1128), so a pipe reads as a pipe.
-@@ -465,7 +656,7 @@ fn passthrough_line_number(args: &Args, summary: bool, tty: bool, paths: &[PathB
+@@ -466,7 +661,7 @@ fn passthrough_line_number(args: &Args, summary: bool, tty: bool, paths: &[PathB
      } else if args.json {
          true
      } else {
@@ -10892,7 +11800,7 @@ index 4ef4ba9..daf5321 100644
      }
  }
  
-@@ -646,7 +837,7 @@ struct Ctx<'a> {
+@@ -647,7 +842,7 @@ struct Ctx<'a> {
      in_memory: bool,
      with_filename: bool,
      summary: Option<summary::Mode>,
@@ -10901,7 +11809,7 @@ index 4ef4ba9..daf5321 100644
      /// Set to stop every worker: `-q` found a Match, or stdout was closed.
      quit: AtomicBool,
      /// A file had a kept Match (or, for --files-without-match, was listed).
-@@ -669,6 +860,9 @@ struct Ctx<'a> {
+@@ -670,6 +865,9 @@ struct Ctx<'a> {
      processors: processors::Processors,
      /// `--pre` and `-z`.
      pre: Preprocess,
@@ -10910,8 +11818,8 @@ index 4ef4ba9..daf5321 100644
 +    searched: AtomicBool,
      /// How files are decoded: by their BOM, or as `-E` says (M5a plan, D10).
      decoding: crate::source::Decoding,
-     /// The Format Definitions and their Detector, which with --docs tells documents by their
-@@ -733,6 +927,7 @@ impl<'a> Ctx<'a> {
+     /// Whether a large file is mapped: never with `--no-mmap` (review r2 of the M5a plan,
+@@ -737,6 +935,7 @@ impl<'a> Ctx<'a> {
                  match r {
                      Ok(d) => {
                          if let Some(t) = self.target(&d, &mut above) {
@@ -10919,7 +11827,7 @@ index 4ef4ba9..daf5321 100644
                              visit(&mut state, self.prepare(t));
                          }
                      }
-@@ -752,6 +947,7 @@ impl<'a> Ctx<'a> {
+@@ -756,6 +955,7 @@ impl<'a> Ctx<'a> {
                          Ok(d) => {
                              self.entry_error(&d);
                              if let Some(t) = self.target(&d, &mut above) {
@@ -10927,7 +11835,7 @@ index 4ef4ba9..daf5321 100644
                                  visit(&mut state, self.prepare(t));
                              }
                          }
-@@ -1135,6 +1331,27 @@ impl<'a> Ctx<'a> {
+@@ -1139,6 +1339,27 @@ impl<'a> Ctx<'a> {
          self.print(&buf);
      }
  
@@ -10955,7 +11863,7 @@ index 4ef4ba9..daf5321 100644
      fn quiet_file(&self, searcher: &mut Searcher, t: &Target) {
          let mut sink = CollectSink::new(&self.matcher, self.args.invert_match, true);
          match self.search_raw(searcher, t, &mut sink) {
-@@ -1174,19 +1391,19 @@ impl<'a> Ctx<'a> {
+@@ -1178,19 +1399,19 @@ impl<'a> Ctx<'a> {
          self.count_quiet_json(&sink.stats, sink.lines > 0);
      }
  
@@ -10980,7 +11888,7 @@ index 4ef4ba9..daf5321 100644
          let max = search::max_count(self.args);
          if let Some(mode) = self.summary {
              let kind = match mode {
-@@ -1195,16 +1412,13 @@ impl<'a> Ctx<'a> {
+@@ -1199,16 +1420,13 @@ impl<'a> Ctx<'a> {
                  summary::Mode::FilesWithMatches => SummaryKind::PathWithMatch,
                  summary::Mode::FilesWithoutMatch => SummaryKind::PathWithoutMatch,
              };
@@ -11004,7 +11912,7 @@ index 4ef4ba9..daf5321 100644
          }
          if self.args.json {
              return Printer::Json(
-@@ -1213,16 +1427,14 @@ impl<'a> Ctx<'a> {
+@@ -1217,16 +1435,14 @@ impl<'a> Ctx<'a> {
                      .build(self.spill_lines()),
              );
          }
@@ -11029,7 +11937,7 @@ index 4ef4ba9..daf5321 100644
      }
  
      /// The writer of grep-printer's printers: one file's output, printed as it grows where
-@@ -1244,6 +1456,7 @@ impl<'a> Ctx<'a> {
+@@ -1248,6 +1464,7 @@ impl<'a> Ctx<'a> {
                  let mut sink = p.sink_with_path(&self.matcher, path);
                  let r = self.search_raw(searcher, t, &mut sink);
                  let m = sink.has_match();
@@ -11037,7 +11945,7 @@ index 4ef4ba9..daf5321 100644
                  (r, m, &p.get_mut().buf)
              }
              Printer::Summary(p) => {
-@@ -1251,6 +1464,7 @@ impl<'a> Ctx<'a> {
+@@ -1255,6 +1472,7 @@ impl<'a> Ctx<'a> {
                  let mut sink = p.sink_with_path(&self.matcher, path);
                  let r = self.search_raw(searcher, t, &mut sink);
                  let m = sink.has_match();
@@ -11045,7 +11953,7 @@ index 4ef4ba9..daf5321 100644
                  (r, m, &p.get_mut().buf)
              }
              Printer::Json(p) => {
-@@ -1258,7 +1472,9 @@ impl<'a> Ctx<'a> {
+@@ -1262,7 +1480,9 @@ impl<'a> Ctx<'a> {
                  let mut sink = p.sink_with_path(&self.matcher, path);
                  let r = self.search_raw(searcher, t, &mut sink);
                  let m = sink.has_match();
@@ -11056,7 +11964,7 @@ index 4ef4ba9..daf5321 100644
                      *self.stats.lock().expect("stats") += &run_stats(sink.stats());
                  }
                  (r, m, &p.get_mut().buf)
-@@ -1289,6 +1505,14 @@ impl<'a> Ctx<'a> {
+@@ -1293,6 +1513,14 @@ impl<'a> Ctx<'a> {
          self.print(buf);
      }
  
@@ -11071,7 +11979,7 @@ index 4ef4ba9..daf5321 100644
      fn trail_file(&self, st: &mut TrailState, t: &Target, detector: &Detector, ro: &RenderOptions) {
          self.trail_file_printed(st, t, detector, ro);
          // A search that failed after its Matches: the error comes after them (`Failure`).
-@@ -1313,6 +1537,7 @@ impl<'a> Ctx<'a> {
+@@ -1317,6 +1545,7 @@ impl<'a> Ctx<'a> {
              && self.summary.is_none()
              && !self.args.quiet
              && t.through.is_none()
@@ -11079,7 +11987,7 @@ index 4ef4ba9..daf5321 100644
          {
              match detector.detect_by_path(&t.path) {
                  Some(None) if self.plain_file(st, t, ro, detector) => return,
-@@ -1383,14 +1608,19 @@ impl<'a> Ctx<'a> {
+@@ -1387,14 +1616,19 @@ impl<'a> Ctx<'a> {
              return;
          }
          let Some((src, d)) = found else { return };
@@ -11101,7 +12009,7 @@ index 4ef4ba9..daf5321 100644
          let written = match ro.layout {
              Layout::Tree => output::tree::render(&d, src.bytes(), ro, buf),
              Layout::Flat => output::flat::render(&d, src.bytes(), ro, self.lead(), buf),
-@@ -2884,12 +3114,32 @@ fn rewindable(p: &Path) -> bool {
+@@ -2888,12 +3122,32 @@ fn rewindable(p: &Path) -> bool {
  /// What `Spill` holds before it prints: a file's output is printed in pieces of about this size.
  const SPILL: usize = 64 * 1024;
  
@@ -11135,7 +12043,7 @@ index 4ef4ba9..daf5321 100644
      printed: &'a AtomicBool,
  }
  
-@@ -2897,7 +3147,7 @@ impl Write for Spill<'_> {
+@@ -2901,7 +3155,7 @@ impl Write for Spill<'_> {
      fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
          let n = self.buf.write(bytes)?;
          if let Some(out) = self.out
@@ -11144,7 +12052,7 @@ index 4ef4ba9..daf5321 100644
          {
              if stopped() {
                  self.buf.clear();
-@@ -2920,6 +3170,14 @@ impl WriteColor for Spill<'_> {
+@@ -2924,6 +3178,14 @@ impl WriteColor for Spill<'_> {
          self.buf.supports_color()
      }
  
@@ -11159,7 +12067,7 @@ index 4ef4ba9..daf5321 100644
      fn set_color(&mut self, spec: &termcolor::ColorSpec) -> std::io::Result<()> {
          self.buf.set_color(spec)
      }
-@@ -2935,7 +3193,7 @@ impl WriteColor for Spill<'_> {
+@@ -2939,7 +3201,7 @@ impl WriteColor for Spill<'_> {
  /// (`Ctx::spill`).
  struct SpillLines<'a> {
      buf: Buffer,
@@ -11168,7 +12076,7 @@ index 4ef4ba9..daf5321 100644
      /// The end of the last complete line found in `buf[..scanned]`. The line breaks are looked
      /// for only once `buf` holds `SPILL` bytes: grep-printer's JSON printer writes a message in
      /// many pieces (code review r4, Fable #1).
-@@ -2960,14 +3218,20 @@ impl Write for SpillLines<'_> {
+@@ -2964,14 +3226,20 @@ impl Write for SpillLines<'_> {
          let Some(out) = self.out else {
              return Ok(n);
          };
@@ -11193,7 +12101,7 @@ index 4ef4ba9..daf5321 100644
          let flushable = self.line_end;
          if flushable > 0 && stopped() {
              self.clear();
-@@ -2995,6 +3259,14 @@ impl WriteColor for SpillLines<'_> {
+@@ -2999,6 +3267,14 @@ impl WriteColor for SpillLines<'_> {
          self.buf.supports_color()
      }
  
@@ -11834,16 +12742,42 @@ SEARCHFOR_BASE_BIN=/tmp/s4-m4-target/release/s4 scripts/bench-m5.sh
 
 - [ ] **Step 1:** the test `m5_deviations_are_known` (the diff's `mod tests` part): it FAILS,
   the sections are missing: RED.
-- [ ] **Step 2:** the sections (D3, D4, D6, D13–D16, D7's PCRE2) in `DEVIATIONS`, so
+- [ ] **Step 2:** the sections (D3, D4, D6, D13–D16, D7's PCRE2; an object file's `-r`, `-o`'s
+  rows and the document reader's map under `--no-mmap`, review r2) in `DEVIATIONS`, so
   `docs/rg-compat.md` says what each M5a flag prints in the Trail layouts and where s4's differ
   from rg's:
 
 ````diff
 diff --git a/src/cli/rg_flags.rs b/src/cli/rg_flags.rs
-index 6360a17..a309337 100644
+index 6360a17..b24b963 100644
 --- a/src/cli/rg_flags.rs
 +++ b/src/cli/rg_flags.rs
-@@ -345,6 +345,83 @@ s4 --no-trail needle report.docx            # the lines of the document's text w
+@@ -316,8 +316,11 @@ Mach-O file that it searches with a Match (a file named on the command line, or
+ Matches instead, at the hex offset of its first Match and with its Trail (spec §5.7), and so
+ searches the whole file: in `--json`, `bytes_searched` is the file's size, `matched_lines` the
+ rows and `matches` the Matches, and `binary_offset` is null. `-c`, `-l`, `-q` and `--no-trail`
+-print what rg prints. With `-v` the file is printed as rg prints it. A walked object file
+-without `--binary` stops at its first NUL, as in rg, and prints nothing (M4 plan, D4):
++print what rg prints. With `-v` the file is printed as rg prints it. `-r` replaces each Match
++where the search found it in the file's bytes, so its anchors and groups read the bytes around
++it, and shows the control bytes of the replacement as `.`, as those of a Match (review r2 of
++the M5a plan, Codex #2). A walked object file without `--binary` stops at its first NUL, as in
++rg, and prints nothing (M4 plan, D4):
+ 
+ ```sh
+ s4 --flat version /usr/bin/ls      # rows; rg: binary file matches
+@@ -333,7 +336,9 @@ it (spec §5.8), in a terminal and in a pipe alike (the Hilo, 18/10/2026, 8750).
+ so where the search finds a document `--no-trail` prints more than rg, and `bytes_searched`
+ counts the text. The cost differs too: every document of the search is extracted, a Match in
+ it or not, in a child process with its own time and memory limits, so a tree with many
+-documents takes longer than rg over it. The search finds a document by its name, and a file
++documents takes longer than rg over it. That child maps a document of 1 MiB or more even with
++`--no-mmap`, which keeps every other file unmapped: a document truncated while it is read can
++end the child, never s4. The search finds a document by its name, and a file
+ without an extension by its first bytes.
+ 
+ `--no-docs` turns that off: the documents are searched as rg searches them, at rg's cost, and
+@@ -345,6 +350,86 @@ s4 --no-trail needle report.docx            # the lines of the document's text w
  s4 --no-docs --no-trail needle report.docx  # what rg prints for the bytes of the zip
  s4 --no-docs --docs needle report.docx      # the document's text again
  ```
@@ -11888,7 +12822,10 @@ index 6360a17..a309337 100644
 +the record's line breaks inside the printed line. In `--flat` and `--tree` each line of them is a
 +row: a `-U` Match's lines with their own numbers, as rg numbers them, a record's lines with the
 +record's number (M5a plan, D6). `-o` prints each line of a Match's text that is not empty, as
-+rg's `-o` does.
++rg's `-o` does with `-U`. Without `-U`, or with a pattern that cannot match a line break, it
++prints a row for every Match, as rg's `-o` prints a line's: an empty Match or an empty
++replacement is an empty row, and a `\\r` without `--crlf` is part of the text (review r2 of the
++M5a plan, Codex #4).
 +
 +```sh
 +s4 --flat -U 'Linux\\n\\nRun' block.md    # 5: Install │ ## Linux / 6: Install │ / 7: Install │ Run…
@@ -11927,7 +12864,7 @@ index 6360a17..a309337 100644
  ";
  
  #[cfg(test)]
-@@ -510,6 +587,25 @@ mod tests {
+@@ -510,6 +595,25 @@ mod tests {
          assert!(!md.contains("Without `--docs`"));
      }
  
@@ -11962,10 +12899,35 @@ index 6360a17..a309337 100644
 
 ````diff
 diff --git a/docs/rg-compat.md b/docs/rg-compat.md
-index f33e906..c3f2032 100644
+index f33e906..6952e15 100644
 --- a/docs/rg-compat.md
 +++ b/docs/rg-compat.md
-@@ -296,3 +296,80 @@ s4 --no-trail needle report.docx            # the lines of the document's text w
+@@ -267,8 +267,11 @@ Mach-O file that it searches with a Match (a file named on the command line, or
+ Matches instead, at the hex offset of its first Match and with its Trail (spec §5.7), and so
+ searches the whole file: in `--json`, `bytes_searched` is the file's size, `matched_lines` the
+ rows and `matches` the Matches, and `binary_offset` is null. `-c`, `-l`, `-q` and `--no-trail`
+-print what rg prints. With `-v` the file is printed as rg prints it. A walked object file
+-without `--binary` stops at its first NUL, as in rg, and prints nothing (M4 plan, D4):
++print what rg prints. With `-v` the file is printed as rg prints it. `-r` replaces each Match
++where the search found it in the file's bytes, so its anchors and groups read the bytes around
++it, and shows the control bytes of the replacement as `.`, as those of a Match (review r2 of
++the M5a plan, Codex #2). A walked object file without `--binary` stops at its first NUL, as in
++rg, and prints nothing (M4 plan, D4):
+ 
+ ```sh
+ s4 --flat version /usr/bin/ls      # rows; rg: binary file matches
+@@ -284,7 +287,9 @@ it (spec §5.8), in a terminal and in a pipe alike (the Hilo, 18/10/2026, 8750).
+ so where the search finds a document `--no-trail` prints more than rg, and `bytes_searched`
+ counts the text. The cost differs too: every document of the search is extracted, a Match in
+ it or not, in a child process with its own time and memory limits, so a tree with many
+-documents takes longer than rg over it. The search finds a document by its name, and a file
++documents takes longer than rg over it. That child maps a document of 1 MiB or more even with
++`--no-mmap`, which keeps every other file unmapped: a document truncated while it is read can
++end the child, never s4. The search finds a document by its name, and a file
+ without an extension by its first bytes.
+ 
+ `--no-docs` turns that off: the documents are searched as rg searches them, at rg's cost, and
+@@ -296,3 +301,83 @@ s4 --no-trail needle report.docx            # the lines of the document's text w
  s4 --no-docs --no-trail needle report.docx  # what rg prints for the bytes of the zip
  s4 --no-docs --docs needle report.docx      # the document's text again
  ```
@@ -12010,7 +12972,10 @@ index f33e906..c3f2032 100644
 +the record's line breaks inside the printed line. In `--flat` and `--tree` each line of them is a
 +row: a `-U` Match's lines with their own numbers, as rg numbers them, a record's lines with the
 +record's number (M5a plan, D6). `-o` prints each line of a Match's text that is not empty, as
-+rg's `-o` does.
++rg's `-o` does with `-U`. Without `-U`, or with a pattern that cannot match a line break, it
++prints a row for every Match, as rg's `-o` prints a line's: an empty Match or an empty
++replacement is an empty row, and a `\r` without `--crlf` is part of the text (review r2 of the
++M5a plan, Codex #4).
 +
 +```sh
 +s4 --flat -U 'Linux\n\nRun' block.md    # 5: Install │ ## Linux / 6: Install │ / 7: Install │ Run…
@@ -12052,12 +13017,12 @@ index f33e906..c3f2032 100644
 
 **Files:** `README.md`, `README.es.md`, `skills/searchfor/SKILL.md`.
 
-- [ ] **Step 1:** README: every rg flag implemented, the MCP server and how to add it to an
-  agent, PCRE2, the configuration file, `--generate`:
+- [ ] **Step 1:** README: every rg flag implemented, the MCP server (a Match per Trail,
+  `truncated_by`) and how to add it to an agent, PCRE2, the configuration file, `--generate`:
 
 ````diff
 diff --git a/README.md b/README.md
-index 2b46ce4..5af118a 100644
+index 2b46ce4..5ddc988 100644
 --- a/README.md
 +++ b/README.md
 @@ -33,15 +33,16 @@ and `searchfor::docs::fixture`), with the same contents. The examples over `/bin
@@ -12156,7 +13121,7 @@ index 2b46ce4..5af118a 100644
  
  ## Helper Processors
  
-@@ -547,6 +575,30 @@ An agent that finds a match with `rg` usually opens the whole file to learn whic
+@@ -547,6 +575,32 @@ An agent that finds a match with `rg` usually opens the whole file to learn whic
  line belongs to. `s4` prints that section in the Trail, and `--expand` prints the section
  itself, so the agent reads the part of the file that matters and nothing else.
  
@@ -12165,9 +13130,11 @@ index 2b46ce4..5af118a 100644
 +`s4 --mcp` speaks the Model Context Protocol over stdin and stdout and offers one tool,
 +`search`, with `pattern`, `paths`, `within`, `expand`, `glob`, `case_insensitive` and
 +`max_results` (100 when not given, at most 1 000). It answers with each match's path, line,
-+Trail and text, and with `expand` its Section, in at most 256 KiB: a long line comes as its
-+Fragment, a long Section cut, a Section shared by several matches once, and `truncated` says
-+the search found more than the answer holds. Its searches read no configuration file, so a
++Trail and text, and with `expand` its Section, in at most 256 KiB: a line with matches under
++two Trails comes once per Trail, a long line as its Fragment, a long Section cut, a Section
++shared by several matches once, and `truncated` says the search found more than the answer
++holds, `truncated_by` why (`max_results`, `bytes`, or `long_line` for a line longer than 4 MiB,
++whose file `errors` names). Its searches read no configuration file, so a
 +`--pre` in `SEARCHFOR_CONFIG_PATH` never runs for a client. To add it to Claude Code:
 +
 +```
@@ -12187,7 +13154,7 @@ index 2b46ce4..5af118a 100644
  Which section is each match in:
  
  ```
-@@ -663,7 +715,8 @@ copy that directory to `~/.claude/skills/` to install it.
+@@ -663,7 +717,8 @@ copy that directory to `~/.claude/skills/` to install it.
  | M2 | v0.2 | YAML, JSON and TOML key paths (`server › ports[2] › host`); code (PHP, JavaScript, TypeScript, TSX, Bash, Go, Rust, Python) as `Cart › addItem`, with tree-sitter Grammars compiled in; Helper Processors (`processor = "external"`); `--install-grammar` and `--list-grammars` |
  | M3 (done, 2026-10-17) | v0.3 | HTML and XML element paths (`section#pricing › table › tr[3] › td[2]`); CSV and TSV rows and columns (`row 2 › Plan`); SubRip and WebVTT cues (`cue 2 00:00:04,000`); control characters in printed names shown as escapes |
  | M4 (done, 2026-10-19) | v0.4 | object files (ELF, PE, Mach-O, fat Mach-O) as `ELF x86-64 › .rodata › main.version+0xe`; documents searched by default (`--no-docs` turns it off), with Extractors for PDF, Word, Excel, PowerPoint, OpenDocument text, spreadsheet and presentation, EPUB and SQLite, each document read in a worker process that counts its own memory; ripgrep's `--pre`, `--pre-glob`, `--no-pre`, `-z` and `--no-search-zip`; the M4 benchmark, performance ceilings and fuzz targets |
@@ -12203,7 +13170,7 @@ index 2b46ce4..5af118a 100644
 
 ````diff
 diff --git a/README.es.md b/README.es.md
-index bb4b502..67a3251 100644
+index bb4b502..135ac62 100644
 --- a/README.es.md
 +++ b/README.es.md
 @@ -35,15 +35,16 @@ Los ejemplos sobre `/bin/ls`, sobre el script de `--pre` de
@@ -12301,7 +13268,7 @@ index bb4b502..67a3251 100644
  
  ## Helper Processors
  
-@@ -566,6 +595,31 @@ Un agente que encuentra un resultado con `rg` suele abrir el archivo entero para
+@@ -566,6 +595,34 @@ Un agente que encuentra un resultado con `rg` suele abrir el archivo entero para
  sección cae la línea. `s4` imprime esa sección en el Trail, y `--expand` imprime la sección
  misma, así que el agente lee la parte del archivo que importa y nada más.
  
@@ -12310,9 +13277,12 @@ index bb4b502..67a3251 100644
 +`s4 --mcp` habla el Model Context Protocol por stdin y stdout y ofrece una herramienta,
 +`search`, con `pattern`, `paths`, `within`, `expand`, `glob`, `case_insensitive` y
 +`max_results` (100 si no se pasa, 1 000 como máximo). Responde con la ruta, la línea, el Trail
-+y el texto de cada resultado, y con `expand` su Sección, en 256 KiB como máximo: una línea larga
-+llega como su Fragmento, una Sección larga cortada, una Sección que comparten varios resultados
-+una sola vez, y `truncated` avisa que la búsqueda encontró más de lo que entra en la respuesta.
++y el texto de cada resultado, y con `expand` su Sección, en 256 KiB como máximo: una línea con
++resultados bajo dos Trails llega una vez por Trail, una línea larga como su Fragmento, una
++Sección larga cortada, una Sección que comparten varios resultados una sola vez, y `truncated`
++avisa que la búsqueda encontró más de lo que entra en la respuesta, y `truncated_by` por qué
++(`max_results`, `bytes`, o `long_line` por una línea de más de 4 MiB, cuyo archivo nombra
++`errors`).
 +Sus búsquedas no leen ningún archivo de configuración, así que un `--pre` en
 +`SEARCHFOR_CONFIG_PATH` nunca corre para un cliente. Para sumarlo a Claude Code:
 +
@@ -12333,7 +13303,7 @@ index bb4b502..67a3251 100644
  En qué sección cae cada resultado:
  
  ```
-@@ -684,7 +738,8 @@ recetas; para instalarlo, copiá ese directorio a `~/.claude/skills/`.
+@@ -684,7 +741,8 @@ recetas; para instalarlo, copiá ese directorio a `~/.claude/skills/`.
  | M2 | v0.2 | rutas de claves en YAML, JSON y TOML (`server › ports[2] › host`); código (PHP, JavaScript, TypeScript, TSX, Bash, Go, Rust, Python) como `Cart › addItem`, con las Grammars de tree-sitter compiladas adentro; Helper Processors (`processor = "external"`); `--install-grammar` y `--list-grammars` |
  | M3 (terminado, 2026-10-17) | v0.3 | rutas de elementos en HTML y XML (`section#pricing › table › tr[3] › td[2]`); filas y columnas en CSV y TSV (`row 2 › Plan`); cues de SubRip y WebVTT (`cue 2 00:00:04,000`); los caracteres de control de los nombres impresos como escapes |
  | M4 (terminado, 2026-10-19) | v0.4 | archivos objeto (ELF, PE, Mach-O, Mach-O fat) como `ELF x86-64 › .rodata › main.version+0xe`; documentos buscados por defecto (`--no-docs` lo apaga), con Extractores para PDF, Word, Excel, PowerPoint, texto, planilla y presentación de OpenDocument, EPUB y SQLite, cada documento leído en un proceso aparte que cuenta su propia memoria; los flags `--pre`, `--pre-glob`, `--no-pre`, `-z` y `--no-search-zip` de ripgrep; el benchmark de M4, los techos de rendimiento y los fuzz targets |
@@ -12345,15 +13315,16 @@ index bb4b502..67a3251 100644
  Los Formatos de empaquetado (zip, tar, 7z, rar, deb, rpm, jar) quedan afuera: searchfor busca
 ````
 
-- [ ] **Step 3:** the skill: the MCP tool, `-o`/`--column`/`--vimgrep` with Trails, `-P` and
-  `-U`; the line saying some rg flags fail goes:
+- [ ] **Step 3:** the skill: the MCP tool (what to do for each `truncated_by`),
+  `-o`/`--column`/`--vimgrep` with Trails, `-P` and `-U`; the line saying some rg flags fail
+  goes:
 
 ````diff
 diff --git a/skills/searchfor/SKILL.md b/skills/searchfor/SKILL.md
-index e19a223..85ece20 100644
+index e19a223..c4c5728 100644
 --- a/skills/searchfor/SKILL.md
 +++ b/skills/searchfor/SKILL.md
-@@ -19,6 +19,14 @@ chapter and page, heading and table, sheet and cell, slide, or table, row and co
+@@ -19,6 +19,16 @@ chapter and page, heading and table, sheet and cell, slide, or table, row and co
  `--expand` it prints the whole Section that holds the match, so you read that part of the
  file and nothing else.
  
@@ -12362,13 +13333,15 @@ index e19a223..85ece20 100644
 +`s4 --mcp` is an MCP server (`claude mcp add searchfor -- s4 --mcp`). Its tool `search` takes
 +`pattern`, `paths`, `within`, `expand`, `glob`, `case_insensitive` and `max_results` (100 by
 +default, at most 1 000) and returns each match's path, line, Trail and text, in at most 256 KiB
-+(`truncated: true` when the search found more: narrow `paths`, `glob` or `within`). Prefer it
++(`truncated: true` when the search found more, and `truncated_by` why: for `max_results` raise
++it or narrow `paths`, `glob` or `within`; for `bytes` narrow the search or leave out `expand`;
++for `long_line` search the file `errors` names with `s4` in a shell). Prefer it
 +to running `s4` in a shell when the tool is there: the answer is structured and bounded.
 +
  ## When to prefer `s4` over `rg`
  
  - You would otherwise open the whole file to learn which section, function or key a line
-@@ -131,6 +139,28 @@ m4/bin/app-stripped:0x5a: ELF x86-64 › .rodata │ version=1.2.3-needle
+@@ -131,6 +141,28 @@ m4/bin/app-stripped:0x5a: ELF x86-64 › .rodata │ version=1.2.3-needle
  m4/bin/app.exe:0x402: PE x86-64 › .rdata › version_string │ version=1.2.3-needle
  ```
  
@@ -12397,7 +13370,7 @@ index e19a223..85ece20 100644
  Where something is defined, not used: `--in-headings` matches only Segment names (headings,
  keys, function and class names, elements, CSV header cells, cues):
  
-@@ -162,8 +192,13 @@ or `--within addItem` is enough when the name is unique.
+@@ -162,8 +194,13 @@ or `--within addItem` is enough when the name is unique.
  - Page, sheet, slide, table, row, column, cell and chapter names are not in a document's text,
    so `--in-headings` finds only headings there; use `--within` to keep the matches under them
    (`--within 'slide 3'`, `--within 'Budget'`).
