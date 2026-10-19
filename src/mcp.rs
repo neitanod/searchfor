@@ -29,6 +29,13 @@ pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 /// The bytes of a response's line besides its result and its id:
 /// `{"jsonrpc":"2.0","id":` `,"result":` `}`.
 pub const ENVELOPE_BYTES: usize = 33;
+/// What the answer keeps out of the Matches' share: its fields besides the Matches, s4's
+/// stderr (`MAX_STDERR_BYTES`, a control character 13 bytes in both copies) and the count of
+/// the `match` messages too long to read that `errors` does not name. A message `errors` names
+/// is paid for from the Matches' share.
+const RESERVED_BYTES: usize = 64 * 1024;
+/// The Matches' share of an answer: the most a Match may cost, cut until it fits.
+const ROOM_BYTES: usize = MAX_RESPONSE_BYTES - RESERVED_BYTES;
 /// The most bytes of a Match's `text`.
 pub const MAX_TEXT_BYTES: usize = 2 * 1024;
 /// The most bytes of a Section's `text`.
@@ -629,6 +636,56 @@ fn cut_to(s: &str, max: usize) -> (String, bool) {
     (s[..end].to_string(), true)
 }
 
+/// Cuts a Match's Section and then its text by halves until the Match costs at most `room`:
+/// a Match is never left out for its size alone, which counts its escapes (a control
+/// character is six bytes in JSON and twelve in `content`; review r2 of the M5a plan, Fable
+/// #1; review r3, Fable #1).
+fn shrink(m: &mut Value, room: usize) {
+    for section in [true, false] {
+        while cost(m) > room {
+            let text = if section {
+                m.get_mut("section").and_then(|s| s.get_mut("text"))
+            } else {
+                m.get_mut("text")
+            };
+            let Some(Value::String(t)) = text else { break };
+            if t.is_empty() {
+                break;
+            }
+            *t = cut_to(t, t.len() / 2).0;
+            m["cut"] = Value::Bool(true);
+        }
+    }
+}
+
+/// The file a `match` message longer than `MAX_MESSAGE_BYTES` is about, read from the part of
+/// it read (s4 writes `path` first), cut to `MAX_NAME_BYTES`.
+fn path_of_prefix(prefix: &[u8]) -> String {
+    const HEAD: &[u8] = br#"{"type":"match","data":{"path":"#;
+    prefix
+        .strip_prefix(HEAD)
+        .and_then(|_| value_at(prefix, HEAD.len()))
+        .map_or_else(
+            || "a file".to_string(),
+            |(p, _)| format!("`{}`", cut_to(&decoded(&p).0, MAX_NAME_BYTES).0),
+        )
+}
+
+/// The bytes a Match adds to the answer: its JSON in `structuredContent`, the same again
+/// escaped in the text of `content`, and a comma in each.
+fn cost(m: &Value) -> usize {
+    let json = m.to_string();
+    let escaped = Value::String(json.clone()).to_string().len() - 2;
+    json.len() + escaped + 2
+}
+
+/// The bytes a message adds to `errors`: escaped in `structuredContent`, escaped again in the
+/// text of `content`, and the line break that joins it to the next in each.
+fn message_cost(message: &str) -> usize {
+    let json = Value::String(format!("{message}\n")).to_string();
+    json.len() + Value::String(json).to_string().len()
+}
+
 fn call(params: &Value, s: &dyn Searcher) -> Result<Value, String> {
     let name = params
         .get("name")
@@ -642,11 +699,13 @@ fn call(params: &Value, s: &dyn Searcher) -> Result<Value, String> {
     Ok(run(s, &args, max))
 }
 
-/// Runs a search and answers with what it found (D17): at most `max` Matches (the search is
-/// ended at the first Match past it: `truncated`, and `truncated_by` says so), and s4's
-/// messages, if any, as `errors`. A search that exits 2 with no Match, ends with any other
-/// code, or does not exit (a signal) is a tool error with what s4 printed, which the model can
-/// read.
+/// Runs a search and answers with what it found (D17): at most `max` Matches and
+/// `MAX_RESPONSE_BYTES` (the search is ended at the first Match past either: `truncated`, and
+/// `truncated_by` says which), a `match` message longer than `MAX_MESSAGE_BYTES` left out and
+/// its file named while `MAX_LONG_LINES_NAMED` and the answer's bytes allow, the rest counted
+/// (`truncated_by: "long_line"` when nothing else ended the answer), and s4's messages, if
+/// any, as `errors`. A search that exits 2 with no Match, ends with any other code, or
+/// does not exit (a signal) is a tool error with what s4 printed, which the model can read.
 fn run(s: &dyn Searcher, args: &[OsString], max: u64) -> Value {
     let mut search = match s.start(args) {
         Ok(search) => search,
@@ -654,7 +713,10 @@ fn run(s: &dyn Searcher, args: &[OsString], max: u64) -> Value {
     };
     let mut matches = Vec::new();
     let mut sections = HashMap::new();
+    let mut room = ROOM_BYTES;
     let mut truncated_by = None;
+    let mut left_out = Vec::new();
+    let mut unnamed = 0;
     let mut stop = false;
     let mut line = Vec::new();
     // A failed read ends the loop like the end of the output; how the search ended says why.
@@ -662,6 +724,22 @@ fn run(s: &dyn Searcher, args: &[OsString], max: u64) -> Value {
         read_line_capped(search.output(), MAX_MESSAGE_BYTES, &mut line)
     {
         if !whole {
+            if line.starts_with(br#"{"type":"match""#) {
+                truncated_by = truncated_by.or(Some("long_line"));
+                let message = format!(
+                    "a Match in {} was left out: its line is longer than {} MiB; search that \
+                     file with s4 from a shell",
+                    path_of_prefix(&line),
+                    MAX_MESSAGE_BYTES >> 20
+                );
+                let size = message_cost(&message);
+                if left_out.len() < MAX_LONG_LINES_NAMED && size <= room {
+                    room -= size;
+                    left_out.push(message);
+                } else {
+                    unnamed += 1;
+                }
+            }
             continue;
         }
         let Ok(v) = serde_json::from_slice::<Value>(&line) else {
@@ -673,12 +751,21 @@ fn run(s: &dyn Searcher, args: &[OsString], max: u64) -> Value {
         let d = &v["data"];
         let shared = Shared::of(d);
         for (trail, section) in by_trail(d) {
-            if matches.len() as u64 == max {
-                truncated_by = Some("max_results");
+            let (mut m, holds) = compact(d, &shared, trail, section, &sections);
+            let mut size = cost(&m);
+            // A Match that fits in no answer is cut until it fits, the first in what is left.
+            let fits = if matches.is_empty() { room } else { ROOM_BYTES };
+            if size > fits {
+                shrink(&mut m, fits);
+                size = cost(&m);
+            }
+            if matches.len() as u64 == max || size > room {
+                let full = matches.len() as u64 == max;
+                truncated_by = Some(if full { "max_results" } else { "bytes" });
                 stop = true;
                 break 'read;
             }
-            let (m, holds) = compact(d, &shared, trail, section, &sections);
+            room -= size;
             if let Some(key) = holds {
                 sections.insert(key, matches.len());
             }
@@ -686,7 +773,16 @@ fn run(s: &dyn Searcher, args: &[OsString], max: u64) -> Value {
         }
     }
     let (ended, stderr) = search.end(stop);
-    let messages = stderr.trim_end();
+    if unnamed > 0 {
+        left_out.push(format!(
+            "{unnamed} more Matches were left out: their lines are longer than {} MiB",
+            MAX_MESSAGE_BYTES >> 20
+        ));
+    }
+    left_out.push(stderr.trim_end().to_string());
+    left_out.retain(|m| !m.is_empty());
+    let messages = left_out.join("\n");
+    let messages = messages.as_str();
     let says = |what: String| {
         if messages.is_empty() {
             what
@@ -842,6 +938,72 @@ mod tests {
                 self.c.ended.clone()
             };
             (ended, self.c.stderr.clone())
+        }
+    }
+
+    /// A searcher whose output is `line` `times` times and then `rest`, made as it is read:
+    /// more output than a test could hold.
+    struct Repeated {
+        line: Vec<u8>,
+        times: usize,
+        rest: Vec<u8>,
+        stderr: String,
+    }
+
+    struct RepeatedSearch<'a> {
+        r: &'a Repeated,
+        left: usize,
+        at: usize,
+    }
+
+    impl Searcher for Repeated {
+        fn start(&self, _: &[OsString]) -> Result<Box<dyn Search + '_>, String> {
+            Ok(Box::new(RepeatedSearch {
+                r: self,
+                left: self.times,
+                at: 0,
+            }))
+        }
+    }
+
+    impl Read for RepeatedSearch<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = {
+                let b = self.fill_buf()?;
+                let n = b.len().min(buf.len());
+                buf[..n].copy_from_slice(&b[..n]);
+                n
+            };
+            self.consume(n);
+            Ok(n)
+        }
+    }
+
+    impl BufRead for RepeatedSearch<'_> {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            let bytes = if self.left > 0 {
+                &self.r.line
+            } else {
+                &self.r.rest
+            };
+            Ok(&bytes[self.at.min(bytes.len())..])
+        }
+        fn consume(&mut self, n: usize) {
+            self.at += n;
+            if self.left > 0 && self.at == self.r.line.len() {
+                self.left -= 1;
+                self.at = 0;
+            }
+        }
+    }
+
+    impl Search for RepeatedSearch<'_> {
+        fn output(&mut self) -> &mut dyn BufRead {
+            self
+        }
+        fn end(self: Box<Self>, stop: bool) -> (Ended, String) {
+            let ended = if stop { Ended::Stopped } else { Ended::Code(0) };
+            (ended, self.r.stderr.clone())
         }
     }
 
@@ -1205,6 +1367,157 @@ mod tests {
             json!({"start_line":9,"end_line":18,"same_as":3})
         );
         assert_eq!(r["structuredContent"]["truncated"], false);
+    }
+
+    /// Codex r1 #2, Fable r1 #2: the answer stays within `MAX_RESPONSE_BYTES`, the search
+    /// ended where it fills; a message past `MAX_MESSAGE_BYTES` is left out unread.
+    #[test]
+    fn the_answer_has_a_size_limit() {
+        let mut big = guide();
+        big["data"]["lines"]["text"] = json!(format!("{}\n", "\"x".repeat(MAX_TEXT_BYTES / 2)));
+        let s = with(&vec![big.clone(); 400], Ended::Code(0), "");
+        let out = session(
+            &[json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":"search","arguments":{"pattern":"x","max_results":MAX_RESULTS}}})],
+            &s,
+        );
+        let line = out[0].to_string();
+        assert!(
+            line.len() <= MAX_RESPONSE_BYTES + ENVELOPE_BYTES + 1,
+            "{}",
+            line.len()
+        );
+        let r = &out[0]["result"]["structuredContent"];
+        assert_eq!(r["truncated"], true);
+        assert_eq!(r["truncated_by"], "bytes");
+        // The limit is the result's; the envelope adds `ENVELOPE_BYTES` and the client's id as
+        // it sent it (review r2 of the M5a plan, Codex #6).
+        let id = "i".repeat(300_000);
+        let s = with(&vec![big; 400], Ended::Code(0), "");
+        let out = session(
+            &[json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":"search","arguments":{"pattern":"x","max_results":MAX_RESULTS}}})],
+            &s,
+        );
+        let result = out[0]["result"].to_string().len();
+        assert!(result <= MAX_RESPONSE_BYTES, "{result}");
+        assert_eq!(
+            out[0].to_string().len(),
+            result + ENVELOPE_BYTES + json!(id).to_string().len()
+        );
+        assert!(!r["matches"].as_array().unwrap().is_empty());
+        assert_eq!(s.stopped.get(), Some(true));
+        let mut huge = br#"{"type":"match","data":{"lines":{"text":""#.to_vec();
+        huge.extend(std::iter::repeat_n(b'x', MAX_MESSAGE_BYTES));
+        huge.extend_from_slice(b"\"}}}\n");
+        huge.extend_from_slice(format!("{}\n", guide()).as_bytes());
+        let s = Canned {
+            out: huge,
+            ..with(&[], Ended::Code(0), "")
+        };
+        let r = call_with(json!({"pattern":"x"}), &s);
+        let r = &r["structuredContent"];
+        assert_eq!(
+            (
+                r["truncated"].clone(),
+                r["matches"].as_array().unwrap().len()
+            ),
+            (json!(true), 1)
+        );
+    }
+
+    /// Review r2 of the M5a plan, Fable #1: a Match left out says why. A `match` longer than
+    /// `MAX_MESSAGE_BYTES` names its file in `errors`; the first Match is never left out for
+    /// its size, its texts cut until it fits; and `truncated_by` says which limit ended the
+    /// answer.
+    #[test]
+    fn left_out_matches_say_why() {
+        let mut huge =
+            br#"{"type":"match","data":{"path":{"text":"x/huge.txt"},"lines":{"text":""#.to_vec();
+        huge.extend(std::iter::repeat_n(b'x', MAX_MESSAGE_BYTES));
+        huge.extend_from_slice(b"\"}}}\n");
+        huge.extend_from_slice(format!("{}\n", guide()).as_bytes());
+        let s = Canned {
+            out: huge,
+            ..with(&[], Ended::Code(0), "")
+        };
+        let r = call_with(json!({"pattern":"x"}), &s);
+        let r = &r["structuredContent"];
+        assert_eq!(r["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            (&r["truncated"], &r["truncated_by"]),
+            (&json!(true), &json!("long_line"))
+        );
+        let errors = r["errors"].as_str().unwrap();
+        assert!(
+            errors.contains("x/huge.txt") && errors.contains("4 MiB"),
+            "{errors}"
+        );
+        // A Section of control characters, each six bytes escaped and twelve in `content`.
+        let mut ctrl = guide();
+        ctrl["data"]["section"] =
+            json!({"start_line":9,"end_line":18,"text":"\u{1}".repeat(MAX_SECTION_BYTES)});
+        let s = with(&[ctrl.clone()], Ended::Code(0), "");
+        let r = call_with(json!({"pattern":"needle","expand":true}), &s);
+        let r = &r["structuredContent"];
+        let m = r["matches"].as_array().unwrap();
+        assert_eq!((m.len(), &m[0]["cut"]), (1, &json!(true)));
+        assert!(!m[0]["section"]["text"].as_str().unwrap().is_empty());
+        assert_eq!(
+            (&r["truncated"], &r["truncated_by"]),
+            (&json!(false), &Value::Null)
+        );
+        // Review r3 of the plan, Fable #1: a Match that fits in no answer is cut wherever it
+        // comes, so it does not end an answer that has room for it cut.
+        let s = with(&[guide(), ctrl], Ended::Code(0), "");
+        let r = call_with(json!({"pattern":"needle","expand":true}), &s);
+        let r = &r["structuredContent"];
+        let m = r["matches"].as_array().unwrap();
+        assert_eq!((m.len(), &m[1]["cut"]), (2, &json!(true)));
+        assert_eq!(
+            (&r["truncated"], &r["truncated_by"]),
+            (&json!(false), &Value::Null)
+        );
+        let s = with(&[guide(), guide()], Ended::Code(0), "");
+        let r = call_with(json!({"pattern":"needle","max_results":1}), &s);
+        assert_eq!(r["structuredContent"]["truncated_by"], "max_results");
+    }
+
+    /// Review r3 of the M5a plan, Codex #2, Fable #2: the `match` messages too long to read are
+    /// named in `errors` up to `MAX_LONG_LINES_NAMED`, each paid for in both copies of it, and
+    /// the rest counted. Many of them, with names that are all escapes, s4's longest stderr and
+    /// Matches to fill the answer keep the whole result within `MAX_RESPONSE_BYTES`.
+    #[test]
+    fn many_long_lines_keep_the_answer_bounded() {
+        let mut line = br#"{"type":"match","data":{"path":{"text":""#.to_vec();
+        line.extend("\\u0001".repeat(MAX_NAME_BYTES).bytes());
+        line.extend_from_slice(br#""},"lines":{"text":""#);
+        line.extend(std::iter::repeat_n(b'x', MAX_MESSAGE_BYTES));
+        line.extend_from_slice(b"\"}}}\n");
+        let times = 2 * MAX_LONG_LINES_NAMED;
+        let s = Repeated {
+            line,
+            times,
+            rest: format!("{}\n", guide()).repeat(1000).into_bytes(),
+            stderr: format!("{} […]", "\u{1}".repeat(MAX_STDERR_BYTES)),
+        };
+        let r = call_with(json!({"pattern":"x","max_results":MAX_RESULTS}), &s);
+        let size = r.to_string().len();
+        assert!(size <= MAX_RESPONSE_BYTES, "{size}");
+        let r = &r["structuredContent"];
+        assert!(!r["matches"].as_array().unwrap().is_empty());
+        assert_eq!(r["truncated_by"], "bytes");
+        let errors = r["errors"].as_str().unwrap();
+        assert_eq!(
+            errors.matches("a Match in `").count(),
+            MAX_LONG_LINES_NAMED,
+            "{errors}"
+        );
+        let more = format!(
+            "{} more Matches were left out",
+            times - MAX_LONG_LINES_NAMED
+        );
+        assert!(errors.contains(&more), "{errors}");
     }
 
     /// Review r2 of the M5a plan, Fable #2: a line whose submatches lie under different
