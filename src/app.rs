@@ -86,6 +86,26 @@ fn stopped() -> bool {
     crate::helper::host::cancel::stopped()
 }
 
+/// The message of a pattern that does not compile, with ripgrep 14.1.1's suggestion when it has
+/// one (hiargs.rs, `suggest_pcre2` and `suggest_multiline`): PCRE2 for a look-around or a
+/// backreference, multiline mode for a literal `\n`. s4 has neither yet, as rg-compat.md says,
+/// and prints rg's message whole (Fable M4 code r8 #4).
+fn suggestion(msg: String) -> String {
+    if msg.contains("backreferences") || msg.contains("look-around") {
+        format!(
+            "{msg}\n\nConsider enabling PCRE2 with the --pcre2 flag, which can handle \
+             backreferences\nand look-around."
+        )
+    } else if msg.contains("the literal") && msg.contains("not allowed") {
+        format!(
+            "{msg}\n\nConsider enabling multiline mode with the --multiline flag (or -U for \
+             short).\nWhen multiline mode is enabled, new line characters can be matched."
+        )
+    } else {
+        msg
+    }
+}
+
 /// The built-in Definitions, those of the installed Grammar Helpers and the user's (D26).
 fn load_registry(msgs: &Messages, user_dir: Option<&Path>) -> Registry {
     let (registry, warnings) = Registry::load_all(
@@ -232,7 +252,8 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         }
         return Ok(1);
     }
-    let matcher = search::matcher(args, &pats.patterns)?;
+    let matcher = search::matcher(args, &pats.patterns)
+        .map_err(|e| anyhow::anyhow!(suggestion(e.to_string())))?;
     let one_file = paths.len() == 1 && (paths[0] == Path::new("-") || !paths[0].is_dir());
     let with_filename = if args.with_filename {
         true

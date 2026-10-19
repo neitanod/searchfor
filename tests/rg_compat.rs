@@ -1458,6 +1458,46 @@ fn usage_errors_come_in_ripgreps_order() {
     r.assert_empty();
 }
 
+/// Fable M4 code r8 #4: a pattern that does not compile prints ripgrep 14.1.1's message, and
+/// its suggestion when rg has one (hiargs.rs, `suggest_multiline` and `suggest_pcre2`): a
+/// literal `\n` suggests multiline mode, a look-around or a backreference PCRE2. Exit 2, in
+/// every layout, with `-w`, `-x`, `-i` and from a pattern file too.
+#[test]
+fn a_pattern_error_suggests_what_ripgrep_suggests() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "needle\\nline\n").unwrap();
+    let file = file.path().to_str().unwrap().to_string();
+    let mut r = Report(Vec::new());
+    let mut cases: Vec<Vec<&str>> = Vec::new();
+    for p in ["needle\\nline", "[\\n]", "(?=a)", "a(?<!b)", "(a)\\1", "("] {
+        for flags in [&[][..], &["-w"], &["-x"], &["-i"], &["-e", "ok"]] {
+            let mut c = flags.to_vec();
+            c.extend(["-e", p, "md"]);
+            cases.push(c);
+        }
+    }
+    cases.push(vec!["-f", &file, "md"]);
+    for c in &cases {
+        let want = rg(&fx, c, In::Null);
+        let want = (code(&want), common::stderr(&want).replacen("rg:", "s4:", 1));
+        for mode in [&["--no-trail"][..], &[], &["--json"]] {
+            let mut s = mode.to_vec();
+            s.extend_from_slice(c);
+            let got = s4(&fx, &s, In::Null);
+            r.check(
+                format!("{s:?}"),
+                want.clone(),
+                (code(&got), common::stderr(&got)),
+            );
+        }
+    }
+    r.assert_empty();
+}
+
 /// The deviation «A binary file or stdin with a context» of docs/rg-compat.md (code review r5,
 /// Fable #3): when the first line after the NUL is a context line, rg 14.1.1 and `--no-trail`
 /// print nothing and exit 1, and the Trail layouts print the binary message, as `rg --json`
