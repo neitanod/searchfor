@@ -707,8 +707,9 @@ binaries are often named without a telling extension (`libc.so.6`, `ls`; §4.1, 
   Trail, and `-r` replaces the Matches of the string, which stays one row (M5a plan, review r1):
   each Match where the search found it in the file's bytes, so its anchors and groups read the
   bytes around it, and the string made printable after, a control byte of a replacement shown
-  as `.` (M5a plan, review r2); each Match found again from the start of its line in those
-  bytes, as `rg -a` finds it, so a `-P` Match after `\K` too (M5a plan, review r3).
+  as `.` (M5a plan, review r2); the replacements made by the search of the file in one pass
+  over each line of those bytes, as `rg -a` makes them, so a `-P` Match after `\K` too, with the
+  groups the search found (M5a plan, reviews r3 and r4).
 - **Trail (D7).** `ELF x86-64 › .rodata › main.version+0x10`:
   - the image (`kind = "object"`): the Format and the architecture, `ELF x86-64`, `ELF aarch64`,
     `PE x86-64`, `PE i386`, `Mach-O arm64`, `Mach-O x86-64`; a machine without a name shows its
@@ -1180,7 +1181,9 @@ v0.3 release binary, which adds `markup`, `csv` (with `csv-core`) and `subtitles
     not empty, as rg's; `--vimgrep` the first line of each Match, none for an empty Match at
     the start of a line, as rg's printer of several lines (M5a plan, review r3). A `-U` search
     whose pattern cannot match a line break prints as one without `-U`, as grep-printer's
-    printers choose (`multi_line_with_matcher`).
+    printers choose (`multi_line_with_matcher`). Every row ends with `\n`, with `--crlf` and
+    `--null-data` too, a record's NUL left out (M5a plan, review r4); `--no-trail` prints rg's
+    terminator.
   - `--passthru` prints every line of every file searched, a file without a Match too, whose
     exit code stays 1.
   - `--stats` prints rg's block after the output: every file searched is counted, the bytes
