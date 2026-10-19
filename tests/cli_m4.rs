@@ -2387,3 +2387,25 @@ fn m4_37_a_repeated_row_of_a_text_table_counts_as_every_row() {
     );
     assert_eq!((stdout(&s), code(&s)), (stdout(&r), code(&r)));
 }
+
+/// Codex M4 code r9 #3, Fable M4 code r9 #2 and #3: columns added after a row was written, with
+/// a DEFAULT that CASTs, as SQLite 3.46.1 gives them to that row (scripts/gen-sqlite-fixtures.py
+/// reads them back): a blob made text keeps its bytes through the next CAST, and is shown with
+/// U+FFFD only at the end; a CAST to no type is one to NUMERIC; a vertical tab is white space
+/// around a number. In UTF-8 and in UTF-16, where a text made a blob is its UTF-16 bytes.
+#[test]
+fn m4_38_a_cast_default_keeps_its_bytes_until_shown() {
+    let fx = fixture();
+    for (f, blobs) in [
+        ("casts.sqlite", "[blob 2 bytes]\t[blob 3 bytes]"),
+        ("casts16.sqlite", "[blob 4 bytes]\t[blob 2 bytes]"),
+    ] {
+        assert_eq!(
+            ok(&fx, &["--flat", "needle", &format!("docs/{f}")]),
+            format!(
+                "1: cast › row 1 › a │ needle\t{blobs}\t\u{fffd}A\t21\t5\u{fffd}\t1\t5\t1.5\t0\t42\t42.0\t4.5\t42\t-5\n"
+            ),
+            "{f}"
+        );
+    }
+}

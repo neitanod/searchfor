@@ -897,6 +897,10 @@ enum Lit {
     /// A text made a blob in a UTF-16 database: the text's UTF-16 bytes, which made text again
     /// are the same text.
     Wide(String),
+    /// A blob made text in a UTF-8 database, whose bytes are not all UTF-8: SQLite keeps them,
+    /// and a CAST back to a blob gives them back (Codex M4 code r9 #3); they are U+FFFD only
+    /// when shown.
+    Bytes(Vec<u8>),
 }
 
 impl Lit {
@@ -907,6 +911,7 @@ impl Lit {
             Lit::Num(v, _) | Lit::Other(v) => v.shown(),
             Lit::Blob(b) => Value::Blob(b.len()).shown(),
             Lit::Wide(t) => Value::Blob(2 * t.encode_utf16().count()).shown(),
+            Lit::Bytes(b) => String::from_utf8_lossy(b).into_owned(),
         }
     }
 
@@ -918,6 +923,7 @@ impl Lit {
             Lit::Num(v, _) | Lit::Other(v) => v,
             Lit::Blob(b) => Value::Blob(b.len()),
             Lit::Wide(t) => Value::Blob(2 * t.encode_utf16().count()),
+            Lit::Bytes(b) => Value::Text(String::from_utf8_lossy(&b).into_owned()),
         }
     }
 
@@ -931,7 +937,8 @@ impl Lit {
         };
         match (self, a) {
             (Lit::Num(_, t), Affinity::Text) => Lit::Text(t),
-            (lit @ (Lit::Other(_) | Lit::Blob(_) | Lit::Wide(_)), _)
+            // Bytes that are not UTF-8 are no number either.
+            (lit @ (Lit::Other(_) | Lit::Blob(_) | Lit::Wide(_) | Lit::Bytes(_)), _)
             | (lit @ Lit::Num(..), Affinity::Blob)
             | (lit @ Lit::Text(_), Affinity::Text | Affinity::Blob) => lit,
             (Lit::Num(v, _), _) => num(v),
@@ -954,9 +961,10 @@ impl Lit {
             let t = v.shown();
             Lit::Num(v, t)
         };
+        // The text a number is read from: a byte that is not UTF-8 ends it, as U+FFFD does.
         let text = |lit: Lit| match lit {
             Lit::Text(t) | Lit::Wide(t) => Some(t),
-            Lit::Blob(b) => Some(String::from_utf8_lossy(&b).into_owned()),
+            Lit::Blob(b) | Lit::Bytes(b) => Some(String::from_utf8_lossy(&b).into_owned()),
             _ => None,
         };
         let blob = |t: String| {
@@ -972,10 +980,16 @@ impl Lit {
             (Lit::Text(t), Affinity::Blob) => blob(t),
             (Lit::Num(_, t), Affinity::Text) => Lit::Text(t),
             (lit @ (Lit::Blob(_) | Lit::Wide(_)), Affinity::Blob) => lit,
+            (Lit::Bytes(b), Affinity::Blob) => Lit::Blob(b),
+            (lit @ Lit::Bytes(_), Affinity::Text) => lit,
             (Lit::Blob(mut b), Affinity::Text) if wide => {
                 b.truncate(b.len() & !1);
                 Lit::Text(String::from_utf8_lossy(&b).into_owned())
             }
+            (Lit::Blob(b), Affinity::Text) => match String::from_utf8(b) {
+                Ok(t) => Lit::Text(t),
+                Err(e) => Lit::Bytes(e.into_bytes()),
+            },
             (lit, Affinity::Text) => Lit::Text(text(lit).unwrap_or_default()),
             (Lit::Num(Value::Float(f), _), Affinity::Integer) => num(Value::Int(f as i64)),
             (Lit::Num(Value::Int(n), _), Affinity::Real) => num(Value::Float(n as f64)),
@@ -992,11 +1006,17 @@ impl Lit {
     }
 }
 
+/// White space before and after a number, as SQLite's `sqlite3Isspace` reads it: ASCII's, and
+/// the vertical tab, which Rust's leaves out (Fable M4 code r9 #3).
+fn space(c: char) -> bool {
+    c == '\u{0b}' || c.is_ascii_whitespace()
+}
+
 /// The integer at the start of a text, as SQLite's `sqlite3Atoi64` reads one for a cast: after
 /// white space, a sign and digits, the largest or the smallest integer past 64 bits, and 0 for
 /// a text that starts with none.
 fn integer_prefix(t: &str) -> i64 {
-    let t = t.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    let t = t.trim_start_matches(space);
     let (neg, digits) = match t.as_bytes().first() {
         Some(b'-') => (true, &t[1..]),
         Some(b'+') => (false, &t[1..]),
@@ -1029,7 +1049,7 @@ fn numeric(v: Value, a: Affinity) -> Value {
 /// affinity: white space around it, a sign, digits with a point or an exponent; never
 /// hexadecimal.
 fn decimal(s: &str) -> Option<Value> {
-    let t = s.trim_matches(|c: char| c.is_ascii_whitespace());
+    let t = s.trim_matches(space);
     let digits = t.strip_prefix(['+', '-']).unwrap_or(t);
     let ok = digits.starts_with(|c: char| c.is_ascii_digit() || c == '.')
         && digits
@@ -1069,9 +1089,7 @@ fn number(w: &str) -> Option<Lit> {
 /// number at the start of a text (after white space), an integer when it has no fraction, and
 /// 0 for a text that starts with none.
 fn numerify(t: &str) -> Value {
-    let b = t
-        .trim_start_matches(|c: char| c.is_ascii_whitespace())
-        .as_bytes();
+    let b = t.trim_start_matches(space).as_bytes();
     let digits = |from: usize| from + b[from..].iter().take_while(|c| c.is_ascii_digit()).count();
     let mut end = usize::from(matches!(b.first(), Some(b'+' | b'-')));
     let start = end;
@@ -1115,7 +1133,7 @@ fn negative(lit: Lit, written: bool) -> Option<Lit> {
         }
         Lit::Num(v, _) => v,
         Lit::Text(t) => numerify(&t),
-        Lit::Blob(b) => numerify(&String::from_utf8_lossy(&b)),
+        Lit::Blob(b) | Lit::Bytes(b) => numerify(&String::from_utf8_lossy(&b)),
         Lit::Wide(t) => numerify(&t),
         Lit::Other(v) => return Some(Lit::Other(v)),
     };
@@ -1157,12 +1175,21 @@ fn constant(toks: &[Tok], wide: bool) -> Option<(Lit, usize)> {
         [Tok::Word(w), Tok::Punct('('), rest @ ..] if w.eq_ignore_ascii_case("CAST") => {
             let close = closing(rest)?;
             let (lit, n) = constant(&rest[..close], wide)?;
-            let ty = rest[..close].get(n + 1..).filter(|ty| !ty.is_empty())?;
+            let ty = rest[..close].get(n + 1..)?;
             if !rest[n].is("AS") {
                 return None;
             }
             let ty: Vec<String> = ty.iter().filter_map(Tok::name).collect();
-            Some((lit.cast(affinity(&ty.join(" ")), wide), close + 3))
+            let ty = ty.join(" ");
+            // A CAST to no type, `AS` alone or `AS ""`, is one to NUMERIC, as SQLite's
+            // `sqlite3AffinityType` reads it; no type is BLOB only in a column (Fable M4 code
+            // r9 #2).
+            let a = if ty.trim().is_empty() {
+                Affinity::Numeric
+            } else {
+                affinity(&ty)
+            };
+            Some((lit.cast(a, wide), close + 3))
         }
         [Tok::Quoted(s), ..] => Some((Lit::Text(s.clone()), 1)),
         [Tok::Word(x), Tok::Quoted(h), ..] if x.eq_ignore_ascii_case("X") => {
@@ -1759,6 +1786,44 @@ mod tests {
             ("b REAL DEFAULT '-0.0'", f(0.0)),
             ("b JSON DEFAULT '{}'", t("{}")),
             ("b TEXT DEFAULT 'null'", t("null")),
+            // Codex M4 code r9 #3: a blob made text keeps its bytes, and is shown with U+FFFD
+            // only at the end.
+            ("b DEFAULT (CAST(CAST(x'FFFE' AS TEXT) AS BLOB))", blob(2)),
+            ("b DEFAULT (CAST(CAST(x'C3A9FF' AS TEXT) AS BLOB))", blob(3)),
+            ("b DEFAULT (CAST(x'41FF42' AS TEXT))", t("A\u{fffd}B")),
+            (
+                "b DEFAULT (CAST(CAST(CAST(x'FF41' AS TEXT) AS BLOB) AS TEXT))",
+                t("\u{fffd}A"),
+            ),
+            ("b DEFAULT (CAST(CAST(x'FF31' AS TEXT) AS INTEGER))", i(0)),
+            (
+                "b DEFAULT (CAST(CAST(x'3231FF' AS TEXT) AS INTEGER))",
+                i(21),
+            ),
+            ("b DEFAULT (-CAST(x'FF' AS TEXT))", i(0)),
+            ("b INTEGER DEFAULT (CAST(x'35FF' AS TEXT))", t("5\u{fffd}")),
+            (
+                "b BLOB DEFAULT (CAST(x'FFFE' AS TEXT))",
+                t("\u{fffd}\u{fffd}"),
+            ),
+            // Fable M4 code r9 #2: a CAST to no type is one to NUMERIC.
+            ("b DEFAULT (CAST(1 AS))", i(1)),
+            ("b DEFAULT (CAST('5' AS \"\"))", i(5)),
+            ("b DEFAULT (CAST('5' AS ''))", i(5)),
+            ("b DEFAULT (CAST('5x' AS))", i(5)),
+            ("b DEFAULT (CAST(x'35' AS))", i(5)),
+            ("b DEFAULT (CAST(1.5 AS))", f(1.5)),
+            ("b TEXT DEFAULT (CAST(1 AS))", t("1")),
+            ("b DEFAULT (CAST('abc' AS))", i(0)),
+            // Fable M4 code r9 #3: a vertical tab is white space around a number.
+            ("b DEFAULT (CAST('\x0b42' AS INTEGER))", i(42)),
+            ("b DEFAULT (CAST('\x0b42' AS REAL))", f(42.0)),
+            ("b DEFAULT (CAST('\x0b42' AS NUMERIC))", i(42)),
+            ("b DEFAULT (CAST('\x0b4.5\x0b' AS NUMERIC))", f(4.5)),
+            ("b INTEGER DEFAULT '\x0b42'", i(42)),
+            ("b INTEGER DEFAULT '\x0b42\x0b'", i(42)),
+            ("b REAL DEFAULT '42\x0b'", f(42.0)),
+            ("b DEFAULT (-'\x0b5')", i(-5)),
         ] {
             assert_eq!(added(def), Ok(vec![t("1"), want.clone()]), "{def}");
             // The value as the Extractor prints it, which a -0.0 would else hide from the
@@ -1785,6 +1850,19 @@ mod tests {
             ("b DEFAULT (CAST(CAST('abc' AS BLOB) AS TEXT))", t("abc")),
             ("b DEFAULT (-CAST('5' AS BLOB))", i(-5)),
             ("b DEFAULT x'0041'", blob(2)),
+            // Codex M4 code r9 #3: read as UTF-8, a blob's bytes that are not are U+FFFD.
+            ("b DEFAULT (CAST(CAST(x'FFFE' AS TEXT) AS BLOB))", blob(4)),
+            ("b DEFAULT (CAST(CAST(x'FF' AS TEXT) AS BLOB))", blob(0)),
+            ("b DEFAULT (CAST(CAST(x'C3A9FF' AS TEXT) AS BLOB))", blob(2)),
+            ("b DEFAULT (CAST(CAST(x'FFFE41' AS TEXT) AS BLOB))", blob(4)),
+            ("b DEFAULT (CAST(x'41FF42' AS TEXT))", t("A\u{fffd}")),
+            ("b INTEGER DEFAULT (CAST(x'35' AS TEXT))", t("")),
+            (
+                "b DEFAULT (CAST(CAST(x'3231FF' AS TEXT) AS INTEGER))",
+                i(21),
+            ),
+            ("b DEFAULT (CAST(1 AS))", i(1)),
+            ("b DEFAULT (CAST('\x0b42' AS INTEGER))", i(42)),
         ] {
             let got = rebuild(
                 &super::columns(&format!("CREATE TABLE t(a TEXT, {def})"), true),

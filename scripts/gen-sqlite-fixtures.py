@@ -136,3 +136,32 @@ for column in ["b CHECK(a IS NOT NULL)", "c REFERENCES p(id) ON DELETE SET DEFAU
 db.execute("INSERT INTO checked VALUES ('later', 'b', NULL, 2, 'later check')")
 db.commit()
 db.close()
+
+# casts.sqlite and casts16.sqlite (UTF-16le): columns added with a DEFAULT that CASTs, in the
+# row written before them: a blob made text keeps its bytes until it is shown (Codex M4 code r9
+# #3), a CAST to no type is one to NUMERIC (Fable M4 code r9 #2), and a vertical tab is white
+# space before and after a number (Fable M4 code r9 #3).
+for name, encoding in [("casts.sqlite", None), ("casts16.sqlite", "UTF-16le")]:
+    db = fresh(name, encoding=encoding)
+    db.execute("CREATE TABLE cast (a TEXT)")
+    db.execute("INSERT INTO cast VALUES ('needle')")
+    db.commit()
+    for i, column in enumerate([
+        "DEFAULT (CAST(CAST(x'FFFE' AS TEXT) AS BLOB))",
+        "DEFAULT (CAST(CAST(x'C3A9FF' AS TEXT) AS BLOB))",
+        "DEFAULT (CAST(CAST(CAST(x'FF41' AS TEXT) AS BLOB) AS TEXT))",
+        "DEFAULT (CAST(CAST(x'3231FF' AS TEXT) AS INTEGER))",
+        "INTEGER DEFAULT (CAST(x'35FF' AS TEXT))",
+        "DEFAULT (CAST(1 AS))",
+        "DEFAULT (CAST('5' AS \"\"))",
+        "DEFAULT (CAST(1.5 AS))",
+        "DEFAULT (CAST('abc' AS))",
+        "DEFAULT (CAST('\v42' AS INTEGER))",
+        "DEFAULT (CAST('\v42' AS REAL))",
+        "DEFAULT (CAST('\v4.5\v' AS NUMERIC))",
+        "INTEGER DEFAULT '\v42\v'",
+        "DEFAULT (-'\v5')",
+    ]):
+        db.execute(f"ALTER TABLE cast ADD COLUMN c{i + 1} {column}")
+    db.commit()
+    db.close()
