@@ -602,6 +602,19 @@ mod tests {
         parse(os(v)).unwrap()
     }
 
+    /// D3: the configuration file's arguments go before the command line's, and `--no-config`
+    /// and `--mcp` read no file (review r1 of the M5a plan, Fable #1).
+    #[test]
+    fn the_configuration_file_is_not_read_for_mcp() {
+        let file = || (os(&["--generate=man", "--pre=cat"]), Vec::new());
+        let a = parse_with_config(os(&["s4", "x"]), file).unwrap();
+        assert!(a.generate.is_some() && a.pre.is_some());
+        for argv in [&["s4", "--mcp"][..], &["s4", "--no-config", "x"]] {
+            let a = parse_with_config(os(argv), file).unwrap();
+            assert!(a.generate.is_none() && a.pre.is_none(), "{argv:?}");
+        }
+    }
+
     /// M4: ripgrep's -z and --pre override each other, the last one given winning, and an
     /// empty --pre is none (rg 14.1.1).
     #[test]
@@ -717,36 +730,143 @@ mod tests {
         }
     }
 
+    /// M5: the flags that were «not supported yet» parse, with their values (M5a plan, D1).
     #[test]
-    fn not_yet_flags_are_reported_by_name() {
+    fn every_ripgrep_flag_parses() {
+        let a = p(&["s4", "--pcre2", "x"]);
+        assert_eq!(a.engine, Engine::Pcre2);
+        assert_eq!(p(&["s4", "-nP", "x"]).engine, Engine::Pcre2);
         assert_eq!(
-            parse(os(&["s4", "--pcre2", "x"])).unwrap_err().to_string(),
-            "s4: --pcre2 is not supported yet (see docs/rg-compat.md)"
+            p(&["s4", "--max-filesize", "10K", "x"]).max_filesize,
+            Some(10 << 10)
         );
-        assert!(matches!(parse(os(&["s4", "-nP", "x"])), Err(CliError::NotYet(f)) if f == "pcre2"));
-        assert!(matches!(
-            parse(os(&["s4", "--sort", "modified", "x"])),
-            Err(CliError::NotYet(_))
-        ));
-        assert!(
-            matches!(parse(os(&["s4", "--no-pcre2", "x"])), Err(CliError::NotYet(f)) if f == "no-pcre2")
+        let a = p(&["s4", "-r", "--json", "x"]);
+        assert_eq!(a.replace.as_deref(), Some("--json"));
+        assert!(!a.json);
+        assert_eq!(
+            p(&["s4", "-E=utf-16le", "x"]).encoding,
+            EncodingMode::Label("utf-16le".into())
         );
-        assert!(
-            matches!(parse(os(&["s4", "--unicode", "x"])), Err(CliError::NotYet(f)) if f == "unicode")
-        );
+        assert!(!p(&["s4", "--no-unicode", "--unicode", "x"]).no_unicode);
+        assert!(p(&["s4", "--unicode", "--no-pcre2-unicode", "x"]).no_unicode);
+        assert!(p(&["s4", "--maxdepth", "2", "x"]).max_depth == Some(2));
+        assert!(p(&["s4", "--passthrough", "x"]).passthru);
+        for argv in [
+            &["s4", "--max-filesize", "1k", "x"][..],
+            &["s4", "-E", "klingon", "x"],
+            &["s4", "--colors", "nope:fg:red", "x"],
+            &["s4", "--path-separator", "ab", "x"],
+            &["s4", "--engine", "fast", "x"],
+            &["s4", "--sort", "size", "x"],
+            &["s4", "--hyperlink-format", "{nope}", "x"],
+        ] {
+            assert!(
+                matches!(parse(os(argv)), Err(CliError::Clap(_))),
+                "{argv:?}"
+            );
+        }
     }
 
+    /// rg 14.1.1 applies each flag in order (defs.rs `update`): a later flag undoes the part of
+    /// an earlier one it shares with it.
     #[test]
-    fn not_yet_flags_consume_their_value() {
-        assert!(
-            matches!(parse(os(&["s4", "--max-filesize", "10", "x"])), Err(CliError::NotYet(f)) if f == "max-filesize")
+    fn order_dependent_flags_resolve_as_ripgrep() {
+        let r = p(&["s4", "--no-ignore", "--ignore-vcs", "x"]).ignores;
+        assert!(r.no_dot && r.no_parent && r.no_global && r.no_exclude && !r.no_vcs);
+        let r = p(&["s4", "--no-ignore-vcs", "--ignore", "x"]).ignores;
+        assert_eq!(r, IgnoreRules::default());
+        let r = p(&["s4", "--no-ignore-dot", "-u", "--ignore-parent", "x"]).ignores;
+        assert!(r.no_dot && r.no_vcs && !r.no_parent);
+        assert_eq!(p(&["s4", "-u", "x"]).ignores, IgnoreRules::all(true));
+        let sort = |v: &[&str]| p(v).sort;
+        assert_eq!(sort(&["s4", "x"]), None);
+        let path = Some(SortMode {
+            kind: SortKind::Path,
+            reverse: false,
+        });
+        assert_eq!(sort(&["s4", "--sort-files", "x"]), path);
+        assert_eq!(
+            sort(&["s4", "--sortr", "modified", "--sort", "path", "x"]),
+            path
         );
-        assert!(
-            matches!(parse(os(&["s4", "-r", "--json", "x"])), Err(CliError::NotYet(f)) if f == "replace")
+        assert_eq!(
+            sort(&["s4", "--sort", "path", "--sortr", "created", "x"]),
+            Some(SortMode {
+                kind: SortKind::Created,
+                reverse: true
+            })
         );
-        assert!(
-            matches!(parse(os(&["s4", "-E=utf-8", "x"])), Err(CliError::NotYet(f)) if f == "encoding")
+        assert_eq!(
+            sort(&["s4", "--sort", "path", "--no-sort-files", "x"]),
+            None
         );
+        assert_eq!(sort(&["s4", "--sort-files", "--sort", "none", "x"]), None);
+        assert_eq!(
+            p(&["s4", "-P", "--engine", "auto", "x"]).engine,
+            Engine::Auto
+        );
+        assert_eq!(
+            p(&["s4", "--engine", "pcre2", "--no-pcre2", "x"]).engine,
+            Engine::Default
+        );
+        assert_eq!(
+            p(&["s4", "-P", "--no-auto-hybrid-regex", "x"]).engine,
+            Engine::Default
+        );
+        assert_eq!(
+            p(&["s4", "-E", "latin1", "--no-encoding", "x"]).encoding,
+            EncodingMode::Auto
+        );
+        assert_eq!(
+            p(&["s4", "-E", "none", "x"]).encoding,
+            EncodingMode::Disabled
+        );
+        let a = p(&["s4", "--crlf", "--null-data", "x"]);
+        assert!(!a.crlf && a.null_data);
+        let a = p(&["s4", "--null-data", "--crlf", "x"]);
+        assert!(a.crlf && !a.null_data);
+        let a = p(&["s4", "-U", "--stop-on-nonmatch", "x"]);
+        assert!(!a.multiline && a.stop_on_nonmatch);
+        let a = p(&["s4", "--stop-on-nonmatch", "-U", "x"]);
+        assert!(a.multiline && !a.stop_on_nonmatch);
+        let a = p(&["s4", "--line-buffered", "--block-buffered", "x"]);
+        assert_eq!(a.buffer, BufferMode::Block);
+        let a = p(&["s4", "--block-buffered", "--no-block-buffered", "x"]);
+        assert_eq!(a.buffer, BufferMode::Auto);
+        assert_eq!(
+            p(&["s4", "--trace", "--debug", "x"]).logging,
+            Some(Logging::Debug)
+        );
+        assert_eq!(
+            p(&["s4", "--debug", "--trace", "x"]).logging,
+            Some(Logging::Trace)
+        );
+        assert_eq!(
+            p(&["s4", "x"]).context_separator.as_deref(),
+            Some(&b"--"[..])
+        );
+        let a = p(&[
+            "s4",
+            "--context-separator",
+            "##",
+            "--no-context-separator",
+            "x",
+        ]);
+        assert_eq!(a.context_separator, None);
+        let a = p(&[
+            "s4",
+            "--no-context-separator",
+            "--context-separator",
+            r"\t",
+            "x",
+        ]);
+        assert_eq!(a.context_separator.as_deref(), Some(&b"\t"[..]));
+        assert_eq!(p(&["s4", "--mmap", "x"]).mmap_mode, MmapMode::Always);
+        assert_eq!(
+            p(&["s4", "--mmap", "--no-mmap", "x"]).mmap_mode,
+            MmapMode::Never
+        );
+        assert_eq!(p(&["s4", "x"]).mmap_mode, MmapMode::Auto);
     }
 
     #[test]
@@ -950,18 +1070,17 @@ mod tests {
     }
 
     #[test]
-    fn sort_path_and_none_are_accepted() {
-        assert_eq!(
-            p(&["s4", "--sort", "path", "x"]).sort.as_deref(),
-            Some("path")
-        );
-        assert_eq!(p(&["s4", "--sort=none", "x"]).sort.as_deref(), Some("none"));
-        assert_eq!(
-            parse(os(&["s4", "--sort", "modified", "x"]))
-                .unwrap_err()
-                .to_string(),
-            "s4: --sort=modified is not supported yet (see docs/rg-compat.md)"
-        );
+    fn every_sort_is_accepted() {
+        for k in ["path", "modified", "accessed", "created"] {
+            assert!(p(&["s4", "--sort", k, "x"]).sort.is_some(), "{k}");
+            assert!(
+                p(&["s4", "--sortr", k, "x"])
+                    .sort
+                    .is_some_and(|s| s.reverse),
+                "{k}"
+            );
+        }
+        assert_eq!(p(&["s4", "--sort=none", "x"]).sort, None);
     }
 
     #[test]
@@ -995,7 +1114,7 @@ mod tests {
     }
 
     #[test]
-    fn help_shows_unrestricted_without_a_placeholder_and_hides_not_yet_flags() {
+    fn help_shows_unrestricted_without_a_placeholder_and_hides_negations() {
         let help = command().render_help().to_string();
         assert!(help.contains("-u, --unrestricted"), "{help}");
         assert!(!help.contains("--unrestricted <"), "{help}");
@@ -1003,7 +1122,11 @@ mod tests {
             help.contains("Reduce the level of \"smart\" filtering."),
             "{help}"
         );
-        assert!(!help.contains("--pcre2"), "{help}");
+        assert!(help.contains("-P, --pcre2"), "{help}");
+        assert!(
+            !help.contains("--no-pcre2 ") && !help.contains("--no-pcre2\n"),
+            "{help}"
+        );
         assert!(!help.contains("--no-hidden"), "{help}");
     }
 

@@ -198,16 +198,13 @@ fn t10_export_writes_the_templates() {
     assert!(target.join("markdown.toml").is_file());
 }
 
+/// M5: no ripgrep flag is «not supported yet» any more (M5a plan, D1).
 #[test]
-fn t11_not_yet_flags_fail_loudly() {
-    for argv in [&["--pcre2", "x"][..], &["-nP", "x"]] {
+fn t11_every_ripgrep_flag_is_accepted() {
+    for argv in [&["--pcre2", "needle", "md"][..], &["-nP", "needle", "md"]] {
         let o = s4(argv);
-        assert_eq!(code(&o), 2, "{argv:?}");
-        assert!(
-            stderr(&o).contains("not supported yet"),
-            "{argv:?}: {}",
-            stderr(&o)
-        );
+        assert_eq!(code(&o), 0, "{argv:?}: {}", stderr(&o));
+        assert!(!stderr(&o).contains("not supported yet"), "{argv:?}");
     }
 }
 

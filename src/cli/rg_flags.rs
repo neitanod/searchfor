@@ -453,75 +453,16 @@ mod tests {
         }
     }
 
+    /// M5: every flag of ripgrep 14.1.1 is implemented (grill, 8375; M5a plan, D1).
     #[test]
-    fn implemented_flags_are_the_m1_set() {
-        let mut implemented: Vec<_> = RG_FLAGS
+    fn every_ripgrep_flag_is_implemented() {
+        let not_yet: Vec<_> = RG_FLAGS
             .iter()
-            .filter(|f| f.status == Status::Implemented)
+            .filter(|f| f.status != Status::Implemented)
             .map(|f| f.long)
             .collect();
-        implemented.sort();
-        let mut expected = vec![
-            "after-context",
-            "before-context",
-            "binary",
-            "case-sensitive",
-            "color",
-            "context",
-            "count",
-            "count-matches",
-            "file",
-            "files-with-matches",
-            "files-without-match",
-            "fixed-strings",
-            "follow",
-            "glob",
-            "help",
-            "hidden",
-            "iglob",
-            "ignore",
-            "ignore-case",
-            "invert-match",
-            "json",
-            "line-number",
-            "line-regexp",
-            "max-columns",
-            "max-count",
-            "max-depth",
-            "messages",
-            "no-binary",
-            "no-filename",
-            "no-fixed-strings",
-            "no-follow",
-            "no-hidden",
-            "no-ignore",
-            "no-invert-match",
-            "no-json",
-            "no-line-number",
-            "no-messages",
-            "no-text",
-            "quiet",
-            "regexp",
-            "smart-case",
-            "sort",
-            "text",
-            "threads",
-            "type",
-            "type-list",
-            "type-not",
-            "unrestricted",
-            "version",
-            "with-filename",
-            "word-regexp",
-            // M4: ripgrep's input transforms (spec §8).
-            "pre",
-            "no-pre",
-            "pre-glob",
-            "search-zip",
-            "no-search-zip",
-        ];
-        expected.sort();
-        assert_eq!(implemented, expected);
+        assert!(not_yet.is_empty(), "{not_yet:?}");
+        assert_eq!(RG_FLAGS.len(), 146);
     }
 
     #[test]
@@ -553,7 +494,8 @@ mod tests {
         assert!(md.contains("cargo test rg_compat_doc -- --ignored"));
         assert!(md.contains("| Flag | Short | Takes a value | searchfor |"));
         assert!(md.contains("| `--glob` | `-g` | yes | yes |"));
-        assert!(md.contains("| `--pcre2` | `-P` | no | not yet |"));
+        assert!(md.contains("| `--pcre2` | `-P` | no | yes |"));
+        assert!(!md.contains("| not yet |"));
         let rows = md.lines().filter(|l| l.starts_with("| `--")).count();
         assert_eq!(rows, RG_FLAGS.len());
     }
