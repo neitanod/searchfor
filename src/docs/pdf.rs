@@ -567,9 +567,12 @@ impl Matrix {
         (v.len() == 6).then(|| Matrix([v[0], v[1], v[2], v[3], v[4], v[5]]))
     }
 
+    /// A matrix written in a dictionary, None when a value is no finite number: lopdf reads a
+    /// real as an `f32`, which 39 digits overflow (Fable M4 code r8 #5).
     fn from(ops: &[Object]) -> Option<Matrix> {
         let v: Vec<f64> = ops.iter().filter_map(num).collect();
-        (v.len() == 6).then(|| Matrix([v[0], v[1], v[2], v[3], v[4], v[5]]))
+        (v.len() == 6 && v.iter().all(|x| x.is_finite()))
+            .then(|| Matrix([v[0], v[1], v[2], v[3], v[4], v[5]]))
     }
 }
 
@@ -2995,6 +2998,51 @@ mod tests {
             &[(b"BT 72 650 Td (twice) Tj ET", false)],
         );
         reads_as_pdftotext(&pdf, "page\ntwice\ntwice\n");
+    }
+
+    /// Fable M4 code r8 #5: lopdf reads a real as an `f32`, so a /Matrix of 39 digits is
+    /// infinite, and its products NaN, which glued every line of the page into one. A matrix
+    /// with a value that is no number is no matrix, and the Form draws with the identity.
+    /// `pdftotext`, which reads the real as a double, leaves out `big`, drawn off the page.
+    #[test]
+    fn a_form_matrix_past_f32_draws_with_the_identity() {
+        let pdf = pdf_with(
+            simple_font(|_| {}),
+            b"BT /F1 12 Tf 72 700 Td (page) Tj ET /Fm0 Do BT 72 100 Td (after) Tj ET",
+            &[
+                (b"BT 72 650 Td (big) Tj ET 0 0 0 0 0 0 cm /Fm1 Do", false),
+                (b"BT 72 600 Td (zero) Tj ET", false),
+            ],
+        );
+        // A name as long as the real and a space before it, which replace it where lopdf wrote
+        // it, without a space after the value before.
+        let huge = format!(" {}.0", "9".repeat(39));
+        let name = format!("P{}", "x".repeat(huge.len() - 2));
+        let mut doc = Document::load_mem(&pdf).unwrap();
+        let form = doc
+            .objects
+            .values_mut()
+            .find_map(|o| match o {
+                Object::Stream(st) if st.content.starts_with(b"BT 72 650") => Some(st),
+                _ => None,
+            })
+            .unwrap();
+        let n = || Object::Name(name.clone().into_bytes());
+        let matrix = vec![n(), 0.into(), 0.into(), n(), 0.into(), 0.into()];
+        form.dict.set("Matrix", Object::Array(matrix));
+        let mut pdf = Vec::new();
+        doc.save_to(&mut pdf).unwrap();
+        let from = format!("/{name}");
+        let mut at = 0;
+        while let Some(i) = memchr::memmem::find(&pdf[at..], from.as_bytes()) {
+            pdf[at + i..at + i + huge.len()].copy_from_slice(huge.as_bytes());
+            at += i + huge.len();
+        }
+        assert!(memchr::memmem::find(&pdf, huge.as_bytes()).is_some());
+        assert_eq!(text_of(&pdf), "page\nbig\nzero\nafter\n");
+        if let Some(words) = pdftotext_words(&pdf) {
+            assert_eq!(words, ["page", "zero", "after"]);
+        }
     }
 
     #[test]
