@@ -223,8 +223,10 @@ fn fat<'a>(f: &goblin::mach::MultiArch<'a>, bytes: &'a [u8]) -> Option<Vec<Image
     let mut v = Vec::new();
     for (i, r) in ranges.iter().enumerate() {
         let (start, end) = (r.start, r.end.min(bytes.len()));
-        if let Ok(goblin::mach::SingleArch::MachO(m)) = f.get(i) {
-            let mut img = macho(&m, &bytes[start..end], start..end);
+        if let (Ok(goblin::mach::SingleArch::MachO(m)), Some(slice)) =
+            (f.get(i), bytes.get(start..end))
+        {
+            let mut img = macho(&m, slice, start..end);
             for s in &mut img.sections {
                 s.file = s.file.start + start..s.file.end + start;
                 for sym in &mut s.symbols {
@@ -515,7 +517,8 @@ fn macho_symbols<'a>(
     m: &goblin::mach::MachO<'a>,
     bytes: &'a [u8],
 ) -> impl Iterator<Item = (&'a str, u8, u8, u64)> + 'a {
-    let symtab = m.load_commands.iter().find_map(|c| match c.command {
+    // The last `LC_SYMTAB`, as goblin keeps it.
+    let symtab = m.load_commands.iter().rev().find_map(|c| match c.command {
         goblin::mach::load_command::CommandVariant::Symtab(t) => Some(t),
         _ => None,
     });
