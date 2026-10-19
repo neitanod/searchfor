@@ -201,13 +201,20 @@ impl<'a> Db<'a> {
         }
     }
 
+    /// The values of record `p`, read as strictly as SQLite reads them (Codex M4 code r6 #2):
+    /// None for a header shorter than its own length's varint or longer than the payload, a
+    /// serial type whose varint ends past the header, a reserved serial type, or values that do
+    /// not take exactly the payload's bytes after the header.
     fn record(&self, p: &[u8]) -> Option<Vec<Value>> {
         let (hlen, mut at) = varint(p, 0)?;
-        let hlen = hlen as usize;
+        let hlen = usize::try_from(hlen).ok()?;
+        if hlen < at || hlen > p.len() {
+            return None;
+        }
         let mut body = hlen;
         let mut out = Vec::new();
         while at < hlen {
-            let (t, n) = varint(p, at)?;
+            let (t, n) = varint(&p[..hlen], at)?;
             at += n;
             let (v, len) = match t {
                 0 => (Value::Null, 0),
@@ -236,7 +243,7 @@ impl<'a> Db<'a> {
             body += len;
             out.push(v);
         }
-        Some(out)
+        (body == p.len()).then_some(out)
     }
 
     /// Calls `row` with (rowid, values) for every row of the table b-tree rooted at `root`, in
@@ -509,20 +516,24 @@ fn generated_virtual(part: &[Tok]) -> bool {
 }
 
 /// The collation a column definition or a key's term names (`COLLATE nocase`), in lower case,
-/// outside parentheses.
+/// outside parentheses: of several clauses, the last, which SQLite applies over the ones before
+/// (Codex M4 code r6 #1).
 fn collation(part: &[Tok]) -> Option<String> {
     let mut depth = 0usize;
+    let mut last = None;
     for (i, t) in part.iter().enumerate() {
         match t {
             Tok::Punct('(') => depth += 1,
             Tok::Punct(')') => depth = depth.saturating_sub(1),
             t if depth == 0 && t.is("COLLATE") => {
-                return part.get(i + 1)?.name().map(|c| c.to_ascii_lowercase());
+                if let Some(c) = part.get(i + 1).and_then(Tok::name) {
+                    last = Some(c.to_ascii_lowercase());
+                }
             }
             _ => {}
         }
     }
-    None
+    last
 }
 
 /// The index of the token after `PRIMARY KEY` in `toks`, if it holds one.
@@ -1071,7 +1082,8 @@ mod tests {
         assert_eq!(
             text,
             "one1\tneedle1\none2\tneedle2\none3\tneedle3\tthree3\n\
-             one4\tneedle4\tthree4\none5\tneedle5\none6\tneedle6\n"
+             one4\tneedle4\tthree4\none5\tneedle5\none6\tneedle6\n\
+             one7\tneedle7\none8\tneedle8\n"
         );
         assert_eq!(trail(&e, "needle1"), ["k1", "row 1", "b"]);
         assert_eq!(trail(&e, "three3"), ["k3", "row 1", "c"]);
@@ -1102,6 +1114,73 @@ mod tests {
             columns("CREATE TABLE t(id INTEGER, x, PRIMARY KEY(id, id))").ipk,
             None
         );
+    }
+
+    /// Codex M4 code r6 #1: of several COLLATE clauses, in a column's definition or in a
+    /// term of the key, the last is the collation, as SQLite 3.46.1 reads them (`keys.sqlite`'s
+    /// k7 and k8 above).
+    #[test]
+    fn the_last_collate_clause_is_the_collation() {
+        let stored = |sql: &str| columns(sql).stored;
+        assert_eq!(
+            stored(
+                "CREATE TABLE t(a TEXT, b TEXT COLLATE NOCASE COLLATE RTRIM, \
+                 PRIMARY KEY(b, b COLLATE RTRIM)) WITHOUT ROWID"
+            ),
+            [1, 0]
+        );
+        assert_eq!(
+            stored(
+                "CREATE TABLE t(a TEXT, b TEXT, PRIMARY KEY(b COLLATE NOCASE COLLATE BINARY, b)) \
+                 WITHOUT ROWID"
+            ),
+            [1, 0]
+        );
+        assert_eq!(
+            stored(
+                "CREATE TABLE t(a, b COLLATE RTRIM COLLATE NOCASE, \
+                 PRIMARY KEY(b COLLATE BINARY COLLATE NOCASE, b)) WITHOUT ROWID"
+            ),
+            [1, 0]
+        );
+        assert_eq!(
+            stored(
+                "CREATE TABLE t(a, b COLLATE NOCASE COLLATE BINARY, \
+                 PRIMARY KEY(b, b COLLATE NOCASE)) WITHOUT ROWID"
+            ),
+            [1, 1, 0]
+        );
+    }
+
+    /// Codex M4 code r6 #2: a record is read strictly, as SQLite reads it: its header's
+    /// length within the payload and at least its own varint, every serial type's varint
+    /// ending within the header, and the values taking exactly the rest of the payload.
+    #[test]
+    fn a_record_is_read_strictly() {
+        let db = Db {
+            bytes: &[],
+            page_size: 512,
+            usable: 512,
+            pages: 0,
+            encoding: 1,
+        };
+        assert_eq!(
+            db.record(&[2, 15, b'x']),
+            Some(vec![Value::Text("x".into())])
+        );
+        // Bytes past the last value.
+        assert_eq!(db.record(&[2, 15, b'x', b'y']), None);
+        assert_eq!(db.record(&[1, b'x']), None);
+        // A header shorter than its own length's varint, or longer than the payload.
+        assert_eq!(db.record(&[0]), None);
+        assert_eq!(db.record(&[5, 15, b'x']), None);
+        // A serial type whose varint goes on past the header: 0x81 0x00 is 128, a blob of 58
+        // bytes, which the rest of the payload holds.
+        let mut p = vec![2, 0x81, 0x00];
+        p.resize(60, 0);
+        assert_eq!(db.record(&p), None);
+        // A value past the payload.
+        assert_eq!(db.record(&[2, 17, b'x']), None);
     }
 
     /// Codex r1 #6: SQLite's quirk: a column's `INTEGER PRIMARY KEY DESC` is no alias of the
@@ -1451,6 +1530,16 @@ mod tests {
         // The record's header says serial type 10, which SQLite reserves.
         assert_eq!(
             broken("utf16.sqlite", &|f| f[page + 488 + 3] = 10),
+            "page 2 has a cell that cannot be read"
+        );
+        // The record's header says it is one byte long, with no value, before the bytes of
+        // its value: SQLite says `database disk image is malformed` (Codex M4 code r6 #2).
+        assert_eq!(
+            broken("utf16.sqlite", &|f| f[page + 488 + 2] = 1),
+            "page 2 has a cell that cannot be read"
+        );
+        assert_eq!(
+            broken("utf16.sqlite", &|f| f[page + 488 + 2] = 0),
             "page 2 has a cell that cannot be read"
         );
         // keys.sqlite: k1, a WITHOUT ROWID table (an index b-tree), on page 2.

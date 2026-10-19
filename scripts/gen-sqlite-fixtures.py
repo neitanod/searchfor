@@ -100,7 +100,7 @@ db.close()
 # keys.sqlite: WITHOUT ROWID tables whose primary key names a column twice. SQLite stores a
 # column of the key once per collation it has there, the column's own (BINARY when it declares
 # none) unless the key says another, and every other column once after the key (Codex M4 code
-# r5 #2).
+# r5 #2). Of several COLLATE clauses, the last counts.
 db = fresh("keys.sqlite")
 for i, (cols, key) in enumerate([
     ("a TEXT, b TEXT", "b, b"),
@@ -109,6 +109,10 @@ for i, (cols, key) in enumerate([
     ("a TEXT, b TEXT, c TEXT", "c DESC, b, c ASC"),
     ("a TEXT, b TEXT COLLATE NOCASE", "b COLLATE BINARY, b, b COLLATE rtrim"),
     ('"x y" TEXT, b TEXT', '"x y", [x y], b, `X Y` COLLATE nocase'),
+    # The last of a column's or a term's COLLATE clauses is its collation (Codex M4 code r6
+    # #1): b is RTRIM in both terms of k7, and BINARY in both of k8.
+    ("a TEXT, b TEXT COLLATE NOCASE COLLATE RTRIM", "b, b COLLATE RTRIM"),
+    ("a TEXT, b TEXT", "b COLLATE NOCASE COLLATE BINARY, b"),
 ]):
     db.execute(f"CREATE TABLE k{i + 1} ({cols}, PRIMARY KEY ({key})) WITHOUT ROWID")
     n = cols.count(",") + 1
