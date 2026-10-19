@@ -707,7 +707,8 @@ binaries are often named without a telling extension (`libc.so.6`, `ls`; §4.1, 
   Trail, and `-r` replaces the Matches of the string, which stays one row (M5a plan, review r1):
   each Match where the search found it in the file's bytes, so its anchors and groups read the
   bytes around it, and the string made printable after, a control byte of a replacement shown
-  as `.` (M5a plan, review r2).
+  as `.` (M5a plan, review r2); each Match found again from the start of its line in those
+  bytes, as `rg -a` finds it, so a `-P` Match after `\K` too (M5a plan, review r3).
 - **Trail (D7).** `ELF x86-64 › .rodata › main.version+0x10`:
   - the image (`kind = "object"`): the Format and the architecture, `ELF x86-64`, `ELF aarch64`,
     `PE x86-64`, `PE i386`, `Mach-O arm64`, `Mach-O x86-64`; a machine without a name shows its
@@ -1176,8 +1177,10 @@ v0.3 release binary, which adds `markup`, `csv` (with `csv-core`) and `subtitles
   - A `-U` Match that spans lines, and a `--null-data` record that holds line breaks, print a
     row per line: a Match's lines numbered as rg numbers them, under the Trail of the Match; a
     record's lines with the record's number (D6). `-o` prints each line of a Match's text that is
-    not empty, as rg's. A `-U` search whose pattern cannot match a line break prints as one
-    without `-U`, as grep-printer's printers choose (`multi_line_with_matcher`).
+    not empty, as rg's; `--vimgrep` the first line of each Match, none for an empty Match at
+    the start of a line, as rg's printer of several lines (M5a plan, review r3). A `-U` search
+    whose pattern cannot match a line break prints as one without `-U`, as grep-printer's
+    printers choose (`multi_line_with_matcher`).
   - `--passthru` prints every line of every file searched, a file without a Match too, whose
     exit code stays 1.
   - `--stats` prints rg's block after the output: every file searched is counted, the bytes
@@ -1253,11 +1256,12 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
   (`omitted_before`, `omitted_after`), at most 2 KiB; a Section at most 16 KiB and once per
   answer and file (`same_as` names the Match that holds it; a file is told by its exact path);
   a name at most 256 bytes and the 32 innermost names of a Trail (`trail_omitted`); `cut: true`
-  on a Match something of which was cut, the first Match cut until it fits rather than left
-  out; text that is not UTF-8 decoded with U+FFFD (`lossy: true`), a path also exact in base64
+  on a Match something of which was cut, the first Match, and any that would not fit in an
+  empty answer, cut until it fits rather than left out; text that is not UTF-8 decoded with U+FFFD (`lossy: true`), a path also exact in base64
   (`path_base64`). `truncated` is true when the search found Matches the answer does not hold,
   and `truncated_by` says why: `max_results`, `bytes` (the 256 KiB), or `long_line` (a line
-  longer than the 4 MiB the server reads of a message, its file named in `errors`). A request
+  longer than the 4 MiB the server reads of a message, its file named in `errors`: the first 20
+  such files, each within the 256 KiB, and the rest counted). A request
   longer than 1 MiB is refused with -32600 and the id its first MiB holds, if any.
   s4's messages are `errors`; a search s4 refuses (a pattern that does not compile, every path
   missing), or that ends with another code or a signal, is a tool result with `isError` and
