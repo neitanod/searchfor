@@ -1911,8 +1911,9 @@ fn system_calls(fx: &Fixture, args: &[&str], code: i32) -> Option<u64> {
 /// no walk of its name through the process's descriptors. Over 20 000 files of 96 bytes without
 /// an extension, seven levels deep (as `.git/objects` or `bin/`), with one thread, the default
 /// makes at most 1.05 × the system calls of --no-docs, counted by strace when it can trace, and
-/// takes at most 1.1 × its CPU time, the medians of nine alternated runs (the margin is the
-/// noise of a loaded machine), with and without the Trail. With `-L` too, through a tree that
+/// takes at most 1.1 × its CPU time, the median ratio of 15 pairs of runs back to back
+/// (`paired_cpu_ratio`; the margin is the noise of a loaded machine), with and without the
+/// Trail. With `-L` too, through a tree that
 /// has a link to one of its directories (code review r7, Fable #2): a name below a root is
 /// resolved only where the walker followed a link.
 #[cfg(unix)]
@@ -1959,25 +1960,48 @@ fn files_without_an_extension_cost_by_default_what_they_cost_without_documents()
             }
             _ => eprintln!("{trail:?}: strace cannot trace here: system calls not counted"),
         }
-        let (mut d, mut o) = (Vec::new(), Vec::new());
-        for i in 0..9 {
-            if i % 2 == 0 {
-                d.push(cpu_time(&fx, &default, 1));
-                o.push(cpu_time(&fx, &off, 1));
-            } else {
-                o.push(cpu_time(&fx, &off, 1));
-                d.push(cpu_time(&fx, &default, 1));
-            }
-        }
-        d.sort();
-        o.sort();
-        let (d, o) = (d[4], o[4]);
-        eprintln!("{trail:?}: CPU {d:?} by default, {o:?} with --no-docs");
-        assert!(
-            d.as_secs_f64() <= 1.1 * o.as_secs_f64(),
-            "{d:?} > 1.1 × {o:?}"
-        );
+        let ratio = paired_cpu_ratio(&fx, &default, &off, 1, 15);
+        eprintln!("{trail:?}: CPU {ratio:.3} × by default that of --no-docs");
+        assert!(ratio <= 1.1, "{trail:?}: CPU {ratio:.3} × > 1.1 ×");
     }
+}
+
+/// The CPU time of s4 with `a` over its CPU time with `b`, both exiting with `code`: the median
+/// of the ratios of `pairs` pairs of runs, the two runs of a pair one right after the other and
+/// in alternated order. The load of the machine weighs on both runs of a pair alike, and a
+/// burst of it in one run moves one ratio, which the median leaves out (code review m4-code r8,
+/// Fable #6: the medians of each side, nine runs apart, gave 1.117 × on a loaded machine where
+/// the system calls gave 0.81 ×).
+#[cfg(unix)]
+fn paired_cpu_ratio(fx: &Fixture, a: &[&str], b: &[&str], code: i32, pairs: usize) -> f64 {
+    let mut ratios = Vec::new();
+    let (mut ta, mut tb) = (Vec::new(), Vec::new());
+    for i in 0..pairs {
+        let (x, y) = if i % 2 == 0 {
+            let x = cpu_time(fx, a, code);
+            (x, cpu_time(fx, b, code))
+        } else {
+            let y = cpu_time(fx, b, code);
+            (cpu_time(fx, a, code), y)
+        };
+        ratios.push(x.as_secs_f64() / y.as_secs_f64().max(1e-6));
+        ta.push(x);
+        tb.push(y);
+    }
+    ratios.sort_by(f64::total_cmp);
+    ta.sort();
+    tb.sort();
+    let m = pairs / 2;
+    eprintln!(
+        "  medians {:?} and {:?} ({:.3} ×), minimums {:?} and {:?} ({:.3} ×)",
+        ta[m],
+        tb[m],
+        ta[m].as_secs_f64() / tb[m].as_secs_f64(),
+        ta[0],
+        tb[0],
+        ta[0].as_secs_f64() / tb[0].as_secs_f64()
+    );
+    ratios[m]
 }
 
 /// The system calls s4 with `args` makes, as `strace -f -e trace=…` writes them, one per line;
