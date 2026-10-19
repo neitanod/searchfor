@@ -2409,3 +2409,94 @@ fn m4_38_a_cast_default_keeps_its_bytes_until_shown() {
         );
     }
 }
+
+/// A PDF of `objects`, numbered from 1 (the first the catalog), with its cross-reference
+/// table.
+fn raw_pdf(objects: &[Vec<u8>]) -> Vec<u8> {
+    let mut b = b"%PDF-1.4\n".to_vec();
+    let mut at = Vec::new();
+    for (i, o) in objects.iter().enumerate() {
+        at.push(b.len());
+        b.extend(format!("{} 0 obj\n", i + 1).as_bytes());
+        b.extend(o);
+        b.extend(b"\nendobj\n");
+    }
+    let xref = b.len();
+    b.extend(format!("xref\n0 {}\n0000000000 65535 f \n", at.len() + 1).as_bytes());
+    for a in at {
+        b.extend(format!("{a:010} 00000 n \n").as_bytes());
+    }
+    b.extend(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    b
+}
+
+/// Codex M4 code r9 #5: a font's width of 40 digits, which lopdf reads as an infinite `f32`,
+/// made the advance of the text NaN, and the next line joined the line before: `A` and
+/// `needle` are one line, `after` 30 points below is another. A `/Widths` and a `/DW` that
+/// are no finite number are left out, and the glyphs have the default width.
+#[test]
+fn m4_39_a_font_width_past_f32_keeps_the_lines_apart() {
+    let fx = fixture();
+    let stream = |s: &str| format!("<< /Length {} >>\nstream\n{s}\nendstream", s.len());
+    let page = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+                /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>";
+    let huge = format!("{}.0", "9".repeat(40));
+    let simple = |w: &str| {
+        raw_pdf(&[
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            page.into(),
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding \
+                 /FirstChar 65 /LastChar 65 /Widths [{w}] >>"
+            )
+            .into_bytes(),
+            stream("BT /F1 12 Tf 72 700 Td (A) Tj (needle) Tj 0 -30 Td (after) Tj ET").into_bytes(),
+        ])
+    };
+    let cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
+                /CMapName /T def /CMapType 2 def\n\
+                1 begincodespacerange <0000> <FFFF> endcodespacerange\n\
+                1 beginbfrange <0000> <00FF> <0000> endbfrange\n\
+                endcmap CMapName currentdict /CMap defineresource pop end end";
+    let composite = |dw: &str| {
+        raw_pdf(&[
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            page.into(),
+            b"<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H \
+              /DescendantFonts [6 0 R] /ToUnicode 7 0 R >>"
+                .to_vec(),
+            stream(
+                "BT /F1 12 Tf 72 700 Td <0041> Tj <006E006500650064006C0065> Tj \
+                 0 -30 Td <00610066007400650072> Tj ET",
+            )
+            .into_bytes(),
+            format!("<< /Type /Font /Subtype /CIDFontType2 /BaseFont /X /DW {dw} >>").into_bytes(),
+            stream(cmap).into_bytes(),
+        ])
+    };
+    for (f, normal, past) in [
+        ("widths", simple("600"), simple(&huge)),
+        ("dw", composite("1000"), composite(&huge)),
+    ] {
+        for (name, pdf) in [
+            (format!("{f}.pdf"), normal),
+            (format!("{f}-huge.pdf"), past),
+        ] {
+            std::fs::write(fx.path().join("m4").join(&name), pdf).unwrap();
+            let path = format!("m4/{name}");
+            assert_eq!(
+                ok(&fx, &["--flat", "needle|after", &path]),
+                "1: page 1 │ Aneedle\n2: page 1 │ after\n",
+                "{name}"
+            );
+        }
+    }
+}

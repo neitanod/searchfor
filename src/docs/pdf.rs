@@ -558,13 +558,24 @@ impl Matrix {
         ])
     }
 
+    /// This matrix, or `old` when a value of it is no finite number: a NaN in a text matrix
+    /// puts every string after it on the line before (Codex M4 code r9 #5).
+    fn or(self, old: Matrix) -> Matrix {
+        if self.0.iter().all(|v| v.is_finite()) {
+            self
+        } else {
+            old
+        }
+    }
+
     fn translate(x: f64, y: f64) -> Matrix {
         Matrix([1.0, 0.0, 0.0, 1.0, x, y])
     }
 
     fn of(ops: &[Operand]) -> Option<Matrix> {
         let v: Vec<f64> = ops.iter().filter_map(Operand::num).collect();
-        (v.len() == 6).then(|| Matrix([v[0], v[1], v[2], v[3], v[4], v[5]]))
+        (v.len() == 6 && v.iter().all(|x| x.is_finite()))
+            .then(|| Matrix([v[0], v[1], v[2], v[3], v[4], v[5]]))
     }
 
     /// A matrix written in a dictionary, None when a value is no finite number: lopdf reads a
@@ -582,6 +593,12 @@ fn num(o: &Object) -> Option<f64> {
         Object::Real(r) => Some(*r as f64),
         _ => None,
     }
+}
+
+/// A font's metric: a number, None when it is not finite, as lopdf reads a real that
+/// overflows its `f32` (Codex M4 code r9 #5).
+fn metric(o: &Object) -> Option<f64> {
+    num(o).filter(|v| v.is_finite())
 }
 
 /// What a document's pages share as they are read: its fonts and Forms, read once each, and
@@ -891,7 +908,7 @@ fn font<'a>(r: &Reader<'a>, d: &'a Dictionary) -> Result<Font<'a>, DocError> {
             .and_then(|f| doc.dereference(f).ok())
             .and_then(|(_, f)| f.as_dict().ok());
         if let Some(cid) = cid {
-            default = cid.get(b"DW").ok().and_then(num).unwrap_or(1000.0);
+            default = cid.get(b"DW").ok().and_then(metric).unwrap_or(1000.0);
             if let Ok(w) = cid.get_deref(b"W", doc).and_then(Object::as_array) {
                 let mut i = 0;
                 while i + 1 < w.len() && widths.len() < 100_000 {
@@ -901,7 +918,8 @@ fn font<'a>(r: &Reader<'a>, d: &'a Dictionary) -> Result<Font<'a>, DocError> {
                         Ok(Object::Array(list)) => {
                             // Codes past the last one there is are none (Fable r1 #3).
                             for (k, v) in list.iter().enumerate() {
-                                if let (Some(v), Some(c)) = (num(v), first.checked_add(k as u32)) {
+                                if let (Some(v), Some(c)) = (metric(v), first.checked_add(k as u32))
+                                {
                                     widths.insert(c, v);
                                 }
                             }
@@ -909,7 +927,7 @@ fn font<'a>(r: &Reader<'a>, d: &'a Dictionary) -> Result<Font<'a>, DocError> {
                         }
                         _ => {
                             let (Some(last), Some(v)) =
-                                (num(&w[i + 1]), w.get(i + 2).and_then(num))
+                                (num(&w[i + 1]), w.get(i + 2).and_then(metric))
                             else {
                                 break;
                             };
@@ -927,8 +945,10 @@ fn font<'a>(r: &Reader<'a>, d: &'a Dictionary) -> Result<Font<'a>, DocError> {
             d.get_deref(b"FontMatrix", doc)
                 .and_then(Object::as_array)
                 .ok()
-                .and_then(|m| m.first().and_then(num))
-                .map_or(1.0, |s| s * 1000.0)
+                .and_then(|m| m.first().and_then(metric))
+                .map(|s| s * 1000.0)
+                .filter(|s| s.is_finite())
+                .unwrap_or(1.0)
         } else {
             1.0
         };
@@ -936,10 +956,14 @@ fn font<'a>(r: &Reader<'a>, d: &'a Dictionary) -> Result<Font<'a>, DocError> {
         if let Ok(w) = d.get_deref(b"Widths", doc).and_then(Object::as_array) {
             for (k, v) in w.iter().enumerate().take(256) {
                 if let (Some(v), Some(c)) = (
-                    doc.dereference(v).ok().and_then(|(_, o)| num(o)),
+                    doc.dereference(v)
+                        .ok()
+                        .and_then(|(_, o)| metric(o))
+                        .map(|v| v * scale)
+                        .filter(|v| v.is_finite()),
                     first.checked_add(k as u32),
                 ) {
-                    widths.insert(c, v * scale);
+                    widths.insert(c, v);
                 }
             }
         }
@@ -948,10 +972,11 @@ fn font<'a>(r: &Reader<'a>, d: &'a Dictionary) -> Result<Font<'a>, DocError> {
             .and_then(Object::as_dict)
             .ok()
             .and_then(|fd| fd.get(b"MissingWidth").ok())
-            .and_then(num)
-            .filter(|w| *w > 0.0)
+            .and_then(metric)
+            .map(|w| w * scale)
+            .filter(|w| *w > 0.0 && w.is_finite())
         {
-            default = missing * scale;
+            default = missing;
         }
     }
     Ok(Font {
@@ -1106,7 +1131,13 @@ fn run<'a>(
             break;
         }
         r.work(1)?;
-        let n = |i: usize| o.get(i).and_then(Operand::num).unwrap_or(0.0);
+        // A number past an `f64` is none (Codex M4 code r9 #5).
+        let n = |i: usize| {
+            o.get(i)
+                .and_then(Operand::num)
+                .filter(|v| v.is_finite())
+                .unwrap_or(0.0)
+        };
         match op {
             b"q" if stack.len() < MAX_SAVES => stack.push(gs.clone()),
             b"q" => lost += 1,
@@ -1118,7 +1149,7 @@ fn run<'a>(
             }
             b"cm" => {
                 if let Some(m) = Matrix::of(&o) {
-                    gs.ctm = m.then(gs.ctm);
+                    gs.ctm = m.then(gs.ctm).or(gs.ctm);
                 }
             }
             b"BT" => {
@@ -1138,12 +1169,12 @@ fn run<'a>(
             b"TL" => gs.tl = n(0),
             b"Ts" => gs.rise = n(0),
             b"Td" => {
-                tlm = Matrix::translate(n(0), n(1)).then(tlm);
+                tlm = Matrix::translate(n(0), n(1)).then(tlm).or(tlm);
                 tm = tlm;
             }
             b"TD" => {
                 gs.tl = -n(1);
-                tlm = Matrix::translate(n(0), n(1)).then(tlm);
+                tlm = Matrix::translate(n(0), n(1)).then(tlm).or(tlm);
                 tm = tlm;
             }
             b"Tm" => {
@@ -1153,7 +1184,7 @@ fn run<'a>(
                 }
             }
             b"T*" => {
-                tlm = Matrix::translate(0.0, -gs.tl).then(tlm);
+                tlm = Matrix::translate(0.0, -gs.tl).then(tlm).or(tlm);
                 tm = tlm;
             }
             b"Tj" | b"'" | b"\"" | b"TJ" => {
@@ -1162,7 +1193,7 @@ fn run<'a>(
                         gs.tw = n(0);
                         gs.tc = n(1);
                     }
-                    tlm = Matrix::translate(0.0, -gs.tl).then(tlm);
+                    tlm = Matrix::translate(0.0, -gs.tl).then(tlm).or(tlm);
                     tm = tlm;
                 }
                 let items: &[Operand] = match (op, o.last()) {
@@ -1177,7 +1208,9 @@ fn run<'a>(
                         kern_space = false;
                     } else {
                         let k = item.num().unwrap_or(0.0);
-                        tm = Matrix::translate(-k / 1000.0 * gs.size * gs.th, 0.0).then(tm);
+                        tm = Matrix::translate(-k / 1000.0 * gs.size * gs.th, 0.0)
+                            .then(tm)
+                            .or(tm);
                         if k < -100.0 {
                             kern_space = true;
                         }
@@ -1200,7 +1233,7 @@ fn run<'a>(
                 r.work(FORM_DRAW)?;
                 let inner = form.res.as_ref().unwrap_or(res);
                 let mut drawn = gs.clone();
-                drawn.ctm = form.matrix.then(gs.ctm);
+                drawn.ctm = form.matrix.then(gs.ctm).or(gs.ctm);
                 r.drawing.borrow_mut().extend(id);
                 let ran = run(r, &form.data, inner, drawn, out, depth + 1);
                 if id.is_some() {
@@ -1250,9 +1283,14 @@ fn show(s: &[u8], font: Option<&Font>, gs: &State, tm: &mut Matrix, out: &mut La
         let c = code(&s[at..at + len]);
         let w = widths.and_then(|w| w.get(&c)).copied().unwrap_or(default);
         let word = if len == 1 && c == 32 { gs.tw } else { 0.0 };
-        advance += (w / 1000.0 * gs.size + gs.tc + word) * gs.th;
+        let step = |w: f64| (w / 1000.0 * gs.size + gs.tc + word) * gs.th;
+        // A glyph whose advance is no finite number has the default width, or none.
+        advance += [step(w), step(default)]
+            .into_iter()
+            .find(|a| a.is_finite())
+            .unwrap_or(0.0);
     }
-    *tm = Matrix::translate(advance, 0.0).then(*tm);
+    *tm = Matrix::translate(advance, 0.0).then(*tm).or(*tm);
     let end = Matrix::translate(0.0, gs.rise).then(*tm).then(gs.ctm).0[4];
     let last = Last {
         x: end,
@@ -3042,6 +3080,117 @@ mod tests {
         assert_eq!(text_of(&pdf), "page\nbig\nzero\nafter\n");
         if let Some(words) = pdftotext_words(&pdf) {
             assert_eq!(words, ["page", "zero", "after"]);
+        }
+    }
+
+    /// `pdf` with each name `/P…` lopdf wrote for `huge` replaced by it: lopdf writes no real
+    /// that overflows its `f32`, and reads one as infinite. `huge` starts with a space, which
+    /// stands for the name's `/` without a space after the value before.
+    fn with_real(pdf: &[u8], huge: &str) -> Vec<u8> {
+        let from = format!("/P{}", "x".repeat(huge.len() - 2));
+        let mut pdf = pdf.to_vec();
+        let mut at = 0;
+        while let Some(i) = memchr::memmem::find(&pdf[at..], from.as_bytes()) {
+            pdf[at + i..at + i + huge.len()].copy_from_slice(huge.as_bytes());
+            at += i + huge.len();
+        }
+        assert!(
+            memchr::memmem::find(&pdf, huge.as_bytes()).is_some(),
+            "{}",
+            String::from_utf8_lossy(&pdf)
+        );
+        pdf
+    }
+
+    /// Codex M4 code r9 #5: a font metric lopdf reads as infinite (a real of 40 digits) made
+    /// the text's advance NaN, which glued the lines of the page into one. A metric that is
+    /// no finite number, or that scaled is none, is left out: the glyph has the default
+    /// width. In `/Widths`, `/DW`, `/W`, `/MissingWidth` and a Type3 font's `/FontMatrix`, and in
+    /// the operands of the content stream.
+    #[test]
+    fn a_font_metric_past_f32_has_the_default_width() {
+        // The NaN of the advance after `A` was the y of `needle`, which no line is apart from.
+        let lines = b"BT /F1 12 Tf 72 700 Td (A) Tj (needle) Tj 0 -30 Td (after) Tj ET";
+        for huge in [
+            format!(" {}.0", "9".repeat(40)),
+            format!(" -{}.0", "9".repeat(40)),
+        ] {
+            let name = || Object::Name(format!("P{}", "x".repeat(huge.len() - 2)).into_bytes());
+            // `Z` has a width, `A` the one of a code without.
+            let simple = |key: &'static str, value: Object| {
+                simple_font(move |f| {
+                    f.set("FirstChar", 90);
+                    f.set("Widths", Object::Array(vec![600.into()]));
+                    f.set(key, value);
+                })
+            };
+            let mut fd = Dictionary::new();
+            fd.set("MissingWidth", name());
+            let mut type3 = simple(
+                "FontMatrix",
+                Object::Array(vec![name(), 0.into(), 0.into()]),
+            );
+            type3.set("Subtype", Object::Name(b"Type3".to_vec()));
+            type3.set("FirstChar", 65);
+            let mut widths = simple("Widths", Object::Array(vec![name()]));
+            widths.set("FirstChar", 65);
+            for font in [
+                widths,
+                simple("FontDescriptor", Object::Dictionary(fd)),
+                type3,
+            ] {
+                let pdf = with_real(&pdf_with(font, lines, &[]), &huge);
+                assert_eq!(text_of(&pdf), "Aneedle\nafter\n", "{huge}");
+            }
+            let map = cmap(2, &[(0x41, "A"), (0x6e, "n")]);
+            let mut pdf = type0(
+                map,
+                b"BT /F1 12 Tf 72 700 Td <0041> Tj <006e> Tj 0 -30 Td <006e> Tj ET",
+            );
+            let mut doc = Document::load_mem(&pdf).unwrap();
+            for o in doc.objects.values_mut() {
+                if let Object::Dictionary(d) = o
+                    && let Ok(Object::Array(fonts)) = d.get_mut(b"DescendantFonts")
+                    && let Some(Object::Dictionary(cid)) = fonts.first_mut()
+                {
+                    cid.set("DW", name());
+                    cid.set(
+                        "W",
+                        Object::Array(vec![65.into(), Object::Array(vec![name()])]),
+                    );
+                }
+            }
+            pdf.clear();
+            doc.save_to(&mut pdf).unwrap();
+            assert_eq!(text_of(&with_real(&pdf, &huge)), "An\nn\n", "{huge}");
+        }
+        let huge = "9".repeat(400);
+        // A kerning past an `f64`, wide enough for a space, and a finite scale whose products
+        // are not.
+        for (content, want) in [
+            (
+                format!("BT /F1 12 Tf 72 700 Td [(A) -{huge} (needle)] TJ 0 -30 Td (after) Tj ET"),
+                "A needle\nafter\n",
+            ),
+            (
+                "BT /F1 12 Tf 1e200 Tz 72 700 Td (A) Tj (needle) Tj 0 -30 Td (after) Tj ET".into(),
+                "Aneedle\nafter\n",
+            ),
+        ] {
+            let pdf = pdf_with(simple_font(|_| {}), content.as_bytes(), &[]);
+            assert_eq!(text_of(&pdf), want, "{content}");
+        }
+        for op in ["Tf", "Tc", "Tz"] {
+            let content = match op {
+                "Tf" => {
+                    format!("BT /F1 {huge} Tf 72 700 Td (A) Tj (needle) Tj 0 -30 Td (after) Tj ET")
+                }
+                _ => format!(
+                    "BT /F1 12 Tf {huge} {op} 72 700 Td (A) Tj (needle) Tj 0 -30 Td (after) Tj ET"
+                ),
+            };
+            let pdf = pdf_with(simple_font(|_| {}), content.as_bytes(), &[]);
+            assert_eq!(text_of(&pdf), "Aneedle\nafter\n", "{op}");
         }
     }
 
