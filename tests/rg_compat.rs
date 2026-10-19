@@ -2668,13 +2668,21 @@ fn a_root_linked_to_a_directory_is_walked_as_ripgrep() {
                 let mut a = walk.to_vec();
                 a.push(pattern);
                 a.extend_from_slice(roots);
+                // The parallel walker prints the roots' files in any order.
+                let lines = |o: &Output| {
+                    let mut l: Vec<String> = stdout(o).lines().map(str::to_string).collect();
+                    if walk.is_empty() {
+                        l.sort();
+                    }
+                    l.join("\n")
+                };
                 let want = rg(&fx, &a, In::Null);
-                let want = (code(&want), stdout(&want), common::stderr(&want));
+                let want = (code(&want), lines(&want), common::stderr(&want));
                 for mode in [&["--no-docs", "--no-trail"][..], &["--no-trail"], &[]] {
                     let mut s = mode.to_vec();
                     s.extend_from_slice(&a);
                     let got = s4(&fx, &s, In::Null);
-                    let mut got = (code(&got), stdout(&got), common::stderr(&got));
+                    let mut got = (code(&got), lines(&got), common::stderr(&got));
                     // The Trail adds to each line: only its exit code and stderr are rg's.
                     if mode.is_empty() {
                         got.1 = want.1.clone();
