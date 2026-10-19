@@ -76,6 +76,17 @@ rustc-demangle = "0.1"
 # PDF's objects, fonts, streams and encryption. Their XML and SQLite are read by our own code.
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 lopdf = { version = "0.45", default-features = false }
+# PCRE2 (`-P`, `--engine`; M5a plan, D7): ripgrep 14.1.1's `pcre2` feature, at the versions of
+# its Cargo.lock. PCRE2's C is built into s4 (`PCRE2_SYS_STATIC`, .cargo/config.toml), so the
+# binary depends on no system library.
+grep-pcre2 = "=0.1.8"
+pcre2 = "=0.2.9"
+pcre2-sys = "=0.2.9"
+# `--generate`: the shell completions and the man page, from s4's own command line (D16).
+clap_complete = "4.5"
+clap_mangen = "0.2"
+# `--debug` and `--trace`: the messages of ripgrep's crates, which log through `log` (D15).
+log = "0.4"
 
 # Ctrl-C with Helper Processors running (spec §4.4, Lifetime; M2 plan, D42).
 [target.'cfg(unix)'.dependencies]

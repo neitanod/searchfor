@@ -252,6 +252,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6651c9ed80effdc7db0ff72512157f901af5e3549e341e24b1dd4887d836d838"
 dependencies = [
  "find-msvc-tools",
+ "jobserver",
+ "libc",
  "shlex",
 ]
 
@@ -312,6 +314,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.6.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "037e2a1a92236d0aff7e845093f64661d6df4c02c9fcc61a60e9e1d736fa392f"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -328,6 +339,16 @@ name = "clap_lex"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
+
+[[package]]
+name = "clap_mangen"
+version = "0.2.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e30ffc187e2e3aeafcd1c6e2aa416e29739454c0ccaa419226d5ecd181f2d78"
+dependencies = [
+ "clap",
+ "roff",
+]
 
 [[package]]
 name = "colorchoice"
@@ -702,6 +723,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "grep-pcre2"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d86f866e035f876ea632e08a128a134526bdd2ed0f0c8e89b2fcee94dd5dbe46"
+dependencies = [
+ "grep-matcher",
+ "log",
+ "pcre2",
+]
+
+[[package]]
 name = "grep-printer"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -954,6 +986,16 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "jobserver"
+version = "0.1.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
+dependencies = [
+ "getrandom 0.4.3",
+ "libc",
+]
 
 [[package]]
 name = "js-sys"
@@ -1224,6 +1266,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
 
 [[package]]
+name = "pcre2"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3be55c43ac18044541d58d897e8f4c55157218428953ebd39d86df3ba0286b2b"
+dependencies = [
+ "libc",
+ "log",
+ "pcre2-sys",
+]
+
+[[package]]
+name = "pcre2-sys"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "550f5d18fb1b90c20b87e161852c10cde77858c3900c5059b5ad2a1449f11d8a"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1234,6 +1298,12 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "pkg-config"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "plain"
@@ -1440,6 +1510,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "roff"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1547,6 +1623,8 @@ dependencies = [
  "assert_cmd",
  "bstr",
  "clap",
+ "clap_complete",
+ "clap_mangen",
  "csv-core",
  "dirs",
  "encoding_rs",
@@ -1555,6 +1633,7 @@ dependencies = [
  "goblin",
  "grep-cli",
  "grep-matcher",
+ "grep-pcre2",
  "grep-printer",
  "grep-regex",
  "grep-searcher",
@@ -1562,9 +1641,12 @@ dependencies = [
  "insta",
  "jsonschema",
  "libc",
+ "log",
  "lopdf",
  "memchr",
  "memmap2",
+ "pcre2",
+ "pcre2-sys",
  "pulldown-cmark",
  "regex-automata",
  "regex-lite",

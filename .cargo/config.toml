@@ -1,0 +1,6 @@
+# PCRE2 is built from the C that pcre2-sys bundles, never linked from the system (M5a plan,
+# D7): every build of the repository, its tests and its releases search with the same PCRE2.
+# A `cargo install searchfor` does not read this file, and links the system's libpcre2-8 when
+# pkg-config finds one, as ripgrep's does.
+[env]
+PCRE2_SYS_STATIC = "1"
