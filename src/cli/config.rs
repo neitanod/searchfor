@@ -4,6 +4,7 @@
 //! put before the command line's, so the command line wins. `--no-config` skips it. There is
 //! no default location: without the variable nothing is read, so a run never reads a file the
 //! user did not name.
+use bstr::ByteSlice;
 use std::ffi::OsString;
 use std::io::BufRead;
 use std::path::Path;
@@ -38,8 +39,8 @@ pub fn args() -> (Vec<OsString>, Vec<String>) {
     }
 }
 
-/// One argument per line: trimmed, with blank lines and `#` comments skipped. Errors are
-/// `line: reason`.
+/// One argument per line: trimmed of Unicode white space as rg trims it (bstr's `trim`, so
+/// U+00A0 and U+2003 too), with blank lines and `#` comments skipped. Errors are `line: reason`.
 pub fn parse_reader(mut r: impl BufRead) -> (Vec<OsString>, Vec<String>) {
     let (mut args, mut errs) = (Vec::new(), Vec::new());
     let mut line = Vec::new();
@@ -55,7 +56,7 @@ pub fn parse_reader(mut r: impl BufRead) -> (Vec<OsString>, Vec<String>) {
             }
         }
         n += 1;
-        let t = line.trim_ascii();
+        let t = line.trim();
         if t.is_empty() || t[0] == b'#' {
             continue;
         }

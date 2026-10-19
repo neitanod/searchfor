@@ -1096,3 +1096,44 @@ fn t38_a_heading_match_across_decoded_pieces_is_one_match() {
     );
     assert!(out.contains(r#""matches":1,"#), "{out}");
 }
+
+#[test]
+fn t39_the_configuration_file_is_trimmed_as_ripgreps() {
+    // rg 14.1.1 trims each line of its configuration file with bstr's Unicode trim, so U+00A0
+    // and U+2003 around an argument, a comment or a blank line are white space too (M5a plan,
+    // D3).
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let config = fx.file("s4rc");
+    std::fs::write(
+        &config,
+        "\u{a0}--ignore-case\u{a0}\n\u{2003}# a comment\u{2003}\n\u{a0}\u{2003}\n\u{2003}--line-number\u{a0}\n",
+    )
+    .unwrap();
+    let fed = |mut c: std::process::Command| {
+        c.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = c.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"NEEDLE\nhay\n")
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let mut rg = fx.rg(["needle"]);
+    rg.env("RIPGREP_CONFIG_PATH", &config);
+    let want = fed(rg);
+    assert_eq!((code(&want), stdout(&want).as_str()), (0, "1:NEEDLE\n"));
+    let mut s4 = fx.s4(["--no-trail", "needle"]);
+    s4.env("SEARCHFOR_CONFIG_PATH", &config);
+    let got = fed(s4);
+    assert_eq!(
+        (code(&got), stdout(&got), stderr(&got)),
+        (code(&want), stdout(&want), stderr(&want))
+    );
+}
