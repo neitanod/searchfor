@@ -189,7 +189,7 @@ fn ceiling(name: &str, args: &[&str]) {
         eprintln!("skipping: /usr/bin/time not found");
         return;
     };
-    let mut plain = vec!["--no-trail"];
+    let mut plain = vec!["--no-docs", "--no-trail"];
     plain.extend(args.iter().filter(|a| **a != "--flat"));
     plain.push(file);
     let (base, base_rss) = best_of_three(&fx, &plain, 0).unwrap();
@@ -235,7 +235,7 @@ fn markdown_ceiling(args: &[&str]) {
         return;
     };
     let (parse, parse_rss) = best_of_three(&fx, &["--in-headings", "zzz", file], 1).unwrap();
-    let (base, _) = best_of_three(&fx, &["--no-trail", "-v", "zzz", file], 0).unwrap();
+    let (base, _) = best_of_three(&fx, &["--no-docs", "--no-trail", "-v", "zzz", file], 0).unwrap();
     eprintln!(
         "{trail:?}: {t:?}, RSS {} MB; Processor alone: {parse:?}, RSS {} MB; --no-trail: {base:?}",
         rss / 1_048_576,
@@ -283,7 +283,7 @@ fn walked_binary_files_are_not_read_before_the_search() {
         eprintln!("skipping: /usr/bin/time not found");
         return;
     };
-    let (base, _) = best_of_three(&fx, &["--no-trail", "zzqq", "bin"], 1).unwrap();
+    let (base, _) = best_of_three(&fx, &["--no-docs", "--no-trail", "zzqq", "bin"], 1).unwrap();
     eprintln!("40 walked binaries of 7 MiB: --flat {t:?}, --no-trail {base:?}");
     assert!(
         t.as_secs_f64() <= base.as_secs_f64() * 1.5,
@@ -310,7 +310,7 @@ fn an_explicit_markdown_file_without_matches_skips_the_processor() {
         eprintln!("skipping: /usr/bin/time not found");
         return;
     };
-    let (base, _) = best_of_three(&fx, &["--no-trail", "zzqq", &file], 1).unwrap();
+    let (base, _) = best_of_three(&fx, &["--no-docs", "--no-trail", "zzqq", &file], 1).unwrap();
     eprintln!("20 MB explicit Markdown, no Match: --flat {t:?}, --no-trail {base:?}");
     assert!(
         t <= base * 3,
@@ -336,7 +336,7 @@ fn headings_inside_items_stay_under_the_ceiling() {
         return;
     };
     let (base, _) = best_of_three(&fx, &["--flat", "text", &reference], 0).unwrap();
-    let (raw, _) = best_of_three(&fx, &["--no-trail", "text", &file], 0).unwrap();
+    let (raw, _) = best_of_three(&fx, &["--no-docs", "--no-trail", "text", &file], 0).unwrap();
     eprintln!(
         "2 MB of headings in items: {t:?}; items without headings: {base:?}; --no-trail: {raw:?}"
     );
@@ -370,7 +370,8 @@ fn json_of_a_big_markdown_file_stays_under_the_ceilings() {
         return;
     };
     let (parse, parse_rss) = best_of_three(&fx, &["--in-headings", "zzz", file], 1).unwrap();
-    let (raw, _) = best_of_three(&fx, &["--no-trail", "--json", "text", file], 0).unwrap();
+    let (raw, _) =
+        best_of_three(&fx, &["--no-docs", "--no-trail", "--json", "text", file], 0).unwrap();
     eprintln!(
         "--json text: {t:?}, RSS {} MB; Processor alone: {parse:?}; --no-trail --json: {raw:?}",
         rss / 1_048_576
@@ -408,7 +409,7 @@ fn json_without_trails_of_a_big_file_is_as_fast_as_ripgrep() {
             eprintln!("skipping: /usr/bin/time not found");
             return;
         };
-        args.insert(1, "--no-trail");
+        args.splice(1..1, ["--no-docs", "--no-trail"]);
         let (t, _) = best_of_three(&fx, &args, 0).unwrap();
         eprintln!("10 MB {pattern:?}: --json --no-trail {t:?}, rg --json {base:?}");
         // It runs in about rg's time; the margin is for a loaded machine, and the bug it
@@ -1063,7 +1064,12 @@ fn a_huge_header_cell_costs_no_memory_per_escape() {
     ];
     for (file, body, unit) in &cells {
         std::fs::write(fx.file(file), body).unwrap();
-        let Some((_, base)) = measure(&sfor_bin(), &fx, &["--no-trail", "needle", file], 0) else {
+        let Some((_, base)) = measure(
+            &sfor_bin(),
+            &fx,
+            &["--no-docs", "--no-trail", "needle", file],
+            0,
+        ) else {
             eprintln!("skipping: /usr/bin/time not found");
             return;
         };
@@ -1102,7 +1108,12 @@ fn a_million_nested_elements_cost_little_each() {
     let body = ["<a>".repeat(n), "needle".into(), "</a>".repeat(n)].concat();
     for file in ["nest.xml", "nest.html"] {
         std::fs::write(fx.file(file), &body).unwrap();
-        let Some((_, base)) = measure(&sfor_bin(), &fx, &["--no-trail", "needle", file], 0) else {
+        let Some((_, base)) = measure(
+            &sfor_bin(),
+            &fx,
+            &["--no-docs", "--no-trail", "needle", file],
+            0,
+        ) else {
             eprintln!("skipping: /usr/bin/time not found");
             return;
         };
@@ -1155,7 +1166,12 @@ fn a_huge_name_costs_no_memory_per_piece() {
     ];
     for (file, body, row) in &files {
         std::fs::write(fx.file(file), body).unwrap();
-        let Some((_, base)) = measure(&sfor_bin(), &fx, &["--no-trail", "needle", file], 0) else {
+        let Some((_, base)) = measure(
+            &sfor_bin(),
+            &fx,
+            &["--no-docs", "--no-trail", "needle", file],
+            0,
+        ) else {
             eprintln!("skipping: /usr/bin/time not found");
             return;
         };
@@ -1190,8 +1206,12 @@ fn a_header_of_a_million_columns_names_only_the_columns_matched() {
         .join(",");
     body.push_str("\nneedle,x\n");
     std::fs::write(fx.file("wide.csv"), &body).unwrap();
-    let Some((_, base)) = measure(&sfor_bin(), &fx, &["--no-trail", "needle", "wide.csv"], 0)
-    else {
+    let Some((_, base)) = measure(
+        &sfor_bin(),
+        &fx,
+        &["--no-docs", "--no-trail", "needle", "wide.csv"],
+        0,
+    ) else {
         eprintln!("skipping: /usr/bin/time not found");
         return;
     };
@@ -1408,11 +1428,12 @@ fn big_document(fx: &Fixture, kind: &str, units: usize) -> (String, usize) {
 
 /// D23: an Extractor reads its document at `rate` MB/s of text or faster, on top of rg's search
 /// of that text and 1 s; its memory stays under rg's plus six times the text, plus 400 bytes
-/// per cell Segment (`cells`: a spreadsheet's), plus 64 MiB.
+/// per cell Segment (`cells`: a spreadsheet's), plus 64 MiB. It is searched with no flag,
+/// which extracts it (grill, 8750).
 fn document_ceiling(kind: &str, units: usize, rate: f64, cells: usize) {
     let fx = Fixture::new();
     let (name, text) = big_document(&fx, kind, units);
-    let args = ["--docs", "--flat", "needle", name.as_str()];
+    let args = ["--flat", "needle", name.as_str()];
     let (out, err) = sfor_output(&fx, &args);
     assert_eq!(err, "", "{kind}");
     assert_eq!(out.lines().count(), 3, "{kind}: {out:.400}");

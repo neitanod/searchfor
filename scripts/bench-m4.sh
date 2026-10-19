@@ -1,27 +1,30 @@
 #!/usr/bin/env bash
 # M4 acceptance (spec §11 #13, M4 plan D23), on a corpus that scripts/gen-m4-corpus.py writes:
-# 1 080 documents of the nine --docs Formats, 300 object files copied from the system, and
+# 1 080 documents of the nine document Formats, 300 object files copied from the system, and
 # 20 000 text files (enough files that s4's start, about 2.5 ms more than rg's, decides at
-# most a few hundredths of a ratio: M3 plan, «Verified»; M4 plan r6), against ripgrep 14.1.1:
-#   - without --docs and --binary, a pattern no file matches, a sparse one and --no-trail:
-#     s4 ≤ 1.1 × rg (a document or a walked object costs what it costs rg: 8385);
-#   - --docs over the text files and the object files, a pattern no file matches: s4 --docs ≤
-#     1.05 × s4 without it (no document, no cost; the object files have no extension, so
-#     --docs reads their first bytes: M4 plan r1, Fable #5). Its ratio to rg is printed: over
-#     these small files it is s4's own, M1–M3's, 1.04–1.10 × with or without --docs, which
+# most a few hundredths of a ratio: M3 plan, «Verified»; M4 plan r6), against ripgrep 14.1.1.
+# Documents are searched by default; --no-docs turns that off (grill, 8750):
+#   - with --no-docs and without --binary, a pattern no file matches, a sparse one and
+#     --no-trail: s4 ≤ 1.1 × rg (a document or a walked object costs what it costs rg: 8385);
+#   - the default over the text files and the object files, a pattern no file matches: s4 ≤
+#     1.05 × s4 --no-docs (no document, no cost; the object files have no extension, so the
+#     default reads their first bytes: M4 plan r1, Fable #5). Its ratio to rg is printed: over
+#     these small files it is s4's own, M1–M3's, 1.04–1.10 × with or without documents, which
 #     put a ceiling of 1.1 × rg here at the mercy of the noise (M4 plan r6, Fable #5);
-#   - without --docs, s4 against M3's (SEARCHFOR_BASE_BIN, the sfor of 191dbaf), the sparse
-#     pattern over the whole corpus: ≤ 1.03 ×, the median of three series (what M4 adds without
-#     --docs, the readers' memory counter of D31 included; M4 plan r7, Fable #2); skipped
+#   - with --no-docs, s4 against M3's (SEARCHFOR_BASE_BIN, the sfor of 191dbaf), the sparse
+#     pattern over the whole corpus: ≤ 1.03 ×, the median of three series (what M4 adds with
+#     --no-docs, the readers' memory counter of D31 included; M4 plan r7, Fable #2); skipped
 #     without SEARCHFOR_BASE_BIN;
 #   - --binary with the sparse pattern over the object files: s4 − rg ≤ the largest matching
 #     object ÷ 100 MB/s + the matching objects ÷ (100 MB/s × threads) + 0.05 s;
-#   - --docs with the sparse pattern over the documents: s4 ≤ rg over their texts (texts/)
-#     + the texts' bytes ÷ (2 MB/s × threads) + 0.1 s, and s4 finds the lines rg finds.
+#   - the default with the sparse pattern over the documents: s4 ≤ rg over their texts
+#     (texts/) + the texts' bytes ÷ (2 MB/s × threads) + 0.1 s, and s4 finds the lines rg finds;
+#   - the default with a pattern no file matches over the whole corpus, where every document
+#     is extracted: s4 ≤ 1.1 × rg + the texts' bytes ÷ (2 MB/s × threads) + 0.1 s.
 # Usage: scripts/bench-m4.sh [CORPUS_DIR]  (generated there when missing; a temporary one by
 # default). Needs python3, hyperfine, jq, awk and GNU stat. SEARCHFOR_BIN replaces the s4 under
 # test; SEARCHFOR_RG, else /usr/bin/rg, is the reference and must be ripgrep 14.1.1;
-# SEARCHFOR_BASE_BIN is M3's sfor, for the docs-off case.
+# SEARCHFOR_BASE_BIN is M3's sfor, for the docs-off case (s4 --no-docs against it).
 set -euo pipefail
 export LC_ALL=C
 cargo build --release --quiet
@@ -75,33 +78,33 @@ docs=$(find "$dir/docs" -type f | wc -l); objs=$(find "$dir/bin" -type f | wc -l
 echo "== $dir: $docs documents, $objs object files, threads $threads"
 [ "$objs" -gt 0 ] || { echo "FAIL: no object file was copied"; exit 1; }
 
-# 1. Without --docs and --binary: rg's cost.
+# 1. With --no-docs and without --binary: rg's cost.
 for q in "$none" "$sparse"; do
-  rc=0; "$s4" --color never --no-trail -e "$q" -- "$dir" >"$iso/s.out" 2>"$iso/s.err" || rc=$?
+  rc=0; "$s4" --color never --no-docs --no-trail -e "$q" -- "$dir" >"$iso/s.out" 2>"$iso/s.err" || rc=$?
   rrc=0; "$rg" --color never -e "$q" -- "$dir" >"$iso/r.out" 2>"$iso/r.err" || rrc=$?
   [ "$rc" = "$rrc" ] && cmp -s <(sort "$iso/s.out") <(sort "$iso/r.out") && [ ! -s "$iso/s.err" ] \
     || { echo "  FAIL --no-trail $q: not rg's output"; fail=1; }
 done
 median none '"$SEARCHFOR_RG_PATH" --color never -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR"' \
-  '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR"'; within
+  '"$SEARCHFOR_BIN_PATH" --color never --flat --no-docs -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR"'; within
 median sparse '"$SEARCHFOR_RG_PATH" --color never -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"' \
-  '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"'; within
+  '"$SEARCHFOR_BIN_PATH" --color never --flat --no-docs -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"'; within
 median no-trail '"$SEARCHFOR_RG_PATH" --color never -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"' \
-  '"$SEARCHFOR_BIN_PATH" --color never --no-trail -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"'; within
+  '"$SEARCHFOR_BIN_PATH" --color never --no-docs --no-trail -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"'; within
 
-# 2. --docs where there is no document: text files, and object files without an extension.
-# What M4 adds is --docs against s4 without it; the ratio to rg is printed only.
+# 2. The default where there is no document: text files, and object files without an
+# extension. What M4 adds is the default against s4 --no-docs; the ratio to rg is printed only.
 median docs-none '"$SEARCHFOR_RG_PATH" --color never -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR/text" "$SEARCHFOR_BENCH_DIR/bin"' \
-  '"$SEARCHFOR_BIN_PATH" --color never --flat --docs -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR/text" "$SEARCHFOR_BENCH_DIR/bin"'
-median docs-added '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR/text" "$SEARCHFOR_BENCH_DIR/bin"' \
-  '"$SEARCHFOR_BIN_PATH" --color never --flat --docs -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR/text" "$SEARCHFOR_BENCH_DIR/bin"' \
-  s4 's4 --docs'; within 1.05
+  '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR/text" "$SEARCHFOR_BENCH_DIR/bin"'
+median docs-added '"$SEARCHFOR_BIN_PATH" --color never --flat --no-docs -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR/text" "$SEARCHFOR_BENCH_DIR/bin"' \
+  '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR/text" "$SEARCHFOR_BENCH_DIR/bin"' \
+  's4 --no-docs' s4; within 1.05
 if [ -n "${SEARCHFOR_BASE_BIN:-}" ]; then
   # Three series in alternating order, and the median of their ratios: one series of the same
   # code with and without D31's counter gave 0.98–1.04 here (M4 plan r7).
   export SEARCHFOR_BASE_PATH="$SEARCHFOR_BASE_BIN"
   m3='"$SEARCHFOR_BASE_PATH" --color never --flat -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"'
-  m4='"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"'
+  m4='"$SEARCHFOR_BIN_PATH" --color never --flat --no-docs -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"'
   ratios=""
   for s in 1 2 3; do
     if [ "$s" = 2 ]; then
@@ -132,15 +135,23 @@ awk -v a="$S4_S" -v b="$RG_S" -v by="$bytes" -v big="$largest" -v t="$threads" \
   'BEGIN { budget = big / 100e6 + by / (100e6 * t) + 0.05; printf "  extra %.3f s, budget %.3f s\n", a - b, budget; exit !(a - b <= budget) }' \
   || { echo "  FAIL: over the budget"; fail=1; }
 
-# 4. --docs over the documents, against rg over their texts.
-"$s4" --color never --no-trail --docs -e "$sparse" -- "$dir/docs" >"$iso/s.out" 2>"$iso/s.err" || true
+# 4. The default over the documents, against rg over their texts.
+"$s4" --color never --no-trail -e "$sparse" -- "$dir/docs" >"$iso/s.out" 2>"$iso/s.err" || true
 "$rg" --color never -e "$sparse" -- "$dir/texts" >"$iso/r.out" || true
-[ ! -s "$iso/s.err" ] || { echo "  FAIL --docs: stderr: $(head -3 "$iso/s.err")"; fail=1; }
+[ ! -s "$iso/s.err" ] || { echo "  FAIL documents: stderr: $(head -3 "$iso/s.err")"; fail=1; }
 lines docs "$iso/s.out" "$iso/r.out"
 text=$(find "$dir/texts" -type f -printf '%s\n' | awk '{ s += $1 } END { print s + 0 }')
 median docs '"$SEARCHFOR_RG_PATH" --color never -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR/texts"' \
-  '"$SEARCHFOR_BIN_PATH" --color never --flat --docs -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR/docs"'
+  '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR/docs"'
 awk -v a="$S4_S" -v b="$RG_S" -v by="$text" -v t="$threads" \
   'BEGIN { budget = by / (2e6 * t) + 0.1; printf "  extra %.3f s, budget %.3f s (%d MB of text)\n", a - b, budget, by / 1e6; exit !(a - b <= budget) }' \
+  || { echo "  FAIL: over the budget"; fail=1; }
+
+# 5. The default over the whole corpus, where every document is extracted although none holds
+# the pattern: what a search with no flag costs (grill, 8750).
+median default '"$SEARCHFOR_RG_PATH" --color never -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR"' \
+  '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR"'
+awk -v a="$S4_S" -v b="$RG_S" -v by="$text" -v t="$threads" \
+  'BEGIN { budget = 0.1 * b + by / (2e6 * t) + 0.1; printf "  extra %.3f s over rg, budget %.3f s\n", a - b, budget; exit !(a - b <= budget) }' \
   || { echo "  FAIL: over the budget"; fail=1; }
 exit "$fail"
