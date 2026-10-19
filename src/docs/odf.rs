@@ -579,6 +579,35 @@ mod tests {
         );
     }
 
+    /// Codex r8 #2: as in Word, an empty row counts and the first physical row names the
+    /// columns, and an empty row writes no line.
+    #[test]
+    fn odt_empty_rows_count_and_the_first_row_names_the_columns() {
+        let d = fixture::odt(&[table(&[
+            &["Name", "Value"],
+            &["", ""],
+            &["needle", "value"],
+        ])]);
+        assert_eq!(trail(Kind::Odt, &d, "needle"), ["table 1", "row 3", "Name"]);
+        let e = extract(Kind::Odt, &d).unwrap();
+        assert_eq!(e.text, b"Name\tValue\nneedle\tvalue\n");
+        let d = fixture::odt(&[table(&[
+            &["", ""],
+            &["Name", "Value"],
+            &["needle", "value"],
+        ])]);
+        assert_eq!(
+            trail(Kind::Odt, &d, "Name"),
+            ["table 1", "row 2", "column 1"]
+        );
+        assert_eq!(
+            trail(Kind::Odt, &d, "value"),
+            ["table 1", "row 3", "column 2"]
+        );
+        let e = extract(Kind::Odt, &d).unwrap();
+        assert_eq!(e.text, b"Name\tValue\nneedle\tvalue\n");
+    }
+
     #[test]
     fn ods_counts_repeated_rows_and_cells_without_writing_them() {
         let d = fixture::ods(&[(

@@ -624,6 +624,39 @@ mod extract_tests {
         );
     }
 
+    /// Codex r8 #2: an empty row counts (spec §5.8 counts from the table's first row), the
+    /// first physical row names the columns even when it is empty, and an empty row still
+    /// writes no line.
+    #[test]
+    fn docx_empty_rows_count_and_the_first_row_names_the_columns() {
+        let d = fixture::docx(&[table(&[
+            &["Name", "Value"],
+            &["", ""],
+            &["needle", "value"],
+        ])]);
+        assert_eq!(
+            trail(Kind::Docx, &d, "needle"),
+            ["table 1", "row 3", "Name"]
+        );
+        let e = extract(Kind::Docx, &d).unwrap();
+        assert_eq!(e.text, b"Name\tValue\nneedle\tvalue\n");
+        let d = fixture::docx(&[table(&[
+            &["", ""],
+            &["Name", "Value"],
+            &["needle", "value"],
+        ])]);
+        assert_eq!(
+            trail(Kind::Docx, &d, "Name"),
+            ["table 1", "row 2", "column 1"]
+        );
+        assert_eq!(
+            trail(Kind::Docx, &d, "value"),
+            ["table 1", "row 3", "column 2"]
+        );
+        let e = extract(Kind::Docx, &d).unwrap();
+        assert_eq!(e.text, b"Name\tValue\nneedle\tvalue\n");
+    }
+
     #[test]
     fn xlsx_cells_are_named_by_their_reference() {
         let d = fixture::xlsx(&[

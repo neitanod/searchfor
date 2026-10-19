@@ -45,16 +45,20 @@ impl Table {
 
     /// Writes the row just read: in the first row the cells name the columns and have no
     /// Segment (they are the columns' names, as a CSV header row); in the others each cell is
-    /// a `column` Segment named by its column, or `column K` when that name is empty.
+    /// a `column` Segment named by its column, or `column K` when that name is empty. An empty
+    /// row writes no line but still counts, so the rows after it keep their numbers, and an
+    /// empty first row still names the columns, every name empty (Codex r8 #2).
     pub fn end_row(&mut self, b: &mut Builder) {
         let cells = std::mem::take(&mut self.cells);
+        self.rows += 1;
+        if self.rows == 1 {
+            self.names = cells.iter().map(|c| cut(c)).collect();
+        }
         if cells.iter().all(|c| c.trim().is_empty()) {
             return;
         }
-        self.rows += 1;
         b.start_row(Some(&format!("row {}", self.rows)));
         if self.rows == 1 {
-            self.names = cells.iter().map(|c| cut(c)).collect();
             for c in &cells {
                 b.cell("column", "", c);
             }
