@@ -312,3 +312,12 @@ is a decision; the agent's measurements are the reasons given at the time.
   off and gives ripgrep's behaviour and cost; `--docs` stays accepted and turns it back on
   after a `--no-docs` (the last one wins, as ripgrep's negations). This supersedes, for
   documents only, the «extra cost only in files with Matches» of 8385; the rest of 8385 holds.
+
+---
+
+# Follow-up decision in the Hilo (19/10/2026): the MCP server is a flag
+
+- **Question** (M5a plan): #19 chose the MCP server as a subcommand (`sfor mcp`); with a
+  subcommand, `s4 mcp FILE` could not search for the word «mcp». Recommendation: a flag.
+- **Decision** (8837): «Usemos `s4 --mcp` o sea flag, no comando.» The MCP server starts with
+  `s4 --mcp`; there is no `mcp` subcommand.
