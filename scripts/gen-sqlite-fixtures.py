@@ -120,3 +120,19 @@ for i, (cols, key) in enumerate([
     db.execute(f"INSERT INTO k{i + 1} VALUES ({', '.join('?' * n)})", [f"{v}{i + 1}" for v in values])
 db.commit()
 db.close()
+
+# constraints.sqlite: columns added with constraints whose expressions hold the words of other
+# constraints. A CHECK's `IS NOT NULL` is no NOT NULL column, a foreign key's `SET DEFAULT` no
+# DEFAULT clause, and the last of two DEFAULT clauses counts: the row written before the
+# columns has their defaults (Codex M4 code r7 #1).
+db = fresh("constraints.sqlite")
+db.execute("CREATE TABLE checked (a TEXT)")
+db.execute("INSERT INTO checked VALUES ('needle')")
+db.commit()
+for column in ["b CHECK(a IS NOT NULL)", "c REFERENCES p(id) ON DELETE SET DEFAULT",
+               "d DEFAULT 1 DEFAULT 'needle last default'",
+               "e TEXT CHECK(e <> 'x' COLLATE rtrim) NOT NULL DEFAULT 'needle check'"]:
+    db.execute(f"ALTER TABLE checked ADD COLUMN {column}")
+db.execute("INSERT INTO checked VALUES ('later', 'b', NULL, 2, 'later check')")
+db.commit()
+db.close()

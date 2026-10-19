@@ -800,6 +800,7 @@ fn document_seeds() -> Vec<(Kind, Vec<u8>)> {
         ),
         (Kind::Sqlite, sqlite("shop.sqlite")),
         (Kind::Sqlite, sqlite("many.sqlite")),
+        (Kind::Sqlite, sqlite("constraints.sqlite")),
     ]
 }
 

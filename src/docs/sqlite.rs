@@ -495,15 +495,57 @@ fn split_commas(toks: &[Tok]) -> Vec<&[Tok]> {
     parts
 }
 
+/// The tokens of a column definition or a table constraint at its own level, with their
+/// index: a parenthesis that opens or closes there is one, what it holds is not. A
+/// constraint is a word at this level, never one of a CHECK's, a DEFAULT's or a generated
+/// column's expression, which `CHECK(a IS NOT NULL)` holds (Codex M4 code r7 #1); a string or
+/// a quoted name is one token, never a keyword.
+fn top(part: &[Tok]) -> Vec<(usize, &Tok)> {
+    let mut depth = 0usize;
+    let mut out = Vec::new();
+    for (i, t) in part.iter().enumerate() {
+        match t {
+            Tok::Punct('(') => {
+                if depth == 0 {
+                    out.push((i, t));
+                }
+                depth += 1;
+            }
+            Tok::Punct(')') => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    out.push((i, t));
+                }
+            }
+            t if depth == 0 => out.push((i, t)),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The index in `part` of the first of two consecutive words `a b` at its own level.
+fn top_pair(part: &[Tok], a: &str, b: &str) -> Option<usize> {
+    top(part)
+        .windows(2)
+        .find(|w| w[0].1.is(a) && w[1].1.is(b))
+        .map(|w| w[0].0)
+}
+
+/// The index of the `(` that opens a generated column's expression, after `AS` at the
+/// definition's level.
+fn generated_open(part: &[Tok]) -> Option<usize> {
+    top(part)
+        .windows(2)
+        .find(|w| w[0].1.is("AS") && *w[1].1 == Tok::Punct('('))
+        .map(|w| w[1].0)
+}
+
 /// Whether a column definition is `[GENERATED ALWAYS] AS (…)` and not `STORED`: the word
 /// right after the expression's closing parenthesis says, never one inside it (a column may
 /// be named `stored`; M4 plan r4, Codex #6).
 fn generated_virtual(part: &[Tok]) -> bool {
-    let Some(open) = part
-        .windows(2)
-        .position(|w| w[0].is("AS") && w[1] == Tok::Punct('('))
-        .map(|i| i + 1)
-    else {
+    let Some(open) = generated_open(part) else {
         return false;
     };
     let mut depth = 0usize;
@@ -523,31 +565,36 @@ fn generated_virtual(part: &[Tok]) -> bool {
 }
 
 /// The collation a column definition or a key's term names (`COLLATE nocase`), in lower case,
-/// outside parentheses: of several clauses, the last, which SQLite applies over the ones before
+/// at its own level: of several clauses, the last, which SQLite applies over the ones before
 /// (Codex M4 code r6 #1).
 fn collation(part: &[Tok]) -> Option<String> {
-    let mut depth = 0usize;
-    let mut last = None;
-    for (i, t) in part.iter().enumerate() {
-        match t {
-            Tok::Punct('(') => depth += 1,
-            Tok::Punct(')') => depth = depth.saturating_sub(1),
-            t if depth == 0 && t.is("COLLATE") => {
-                if let Some(c) = part.get(i + 1).and_then(Tok::name) {
-                    last = Some(c.to_ascii_lowercase());
-                }
-            }
-            _ => {}
-        }
-    }
-    last
+    top(part)
+        .iter()
+        .rev()
+        .filter(|(_, t)| t.is("COLLATE"))
+        .find_map(|(i, _)| part.get(i + 1).and_then(Tok::name))
+        .map(|c| c.to_ascii_lowercase())
 }
 
-/// The index of the token after `PRIMARY KEY` in `toks`, if it holds one.
+/// The index of the token after `PRIMARY KEY` in `toks`, if it holds one at its own level.
 fn primary_key(toks: &[Tok]) -> Option<usize> {
-    toks.windows(2)
-        .position(|w| w[0].is("PRIMARY") && w[1].is("KEY"))
-        .map(|i| i + 2)
+    top_pair(toks, "PRIMARY", "KEY").map(|i| i + 2)
+}
+
+/// Whether `part` holds the word `kw` at its own level.
+fn top_word(part: &[Tok], kw: &str) -> bool {
+    top(part).iter().any(|(_, t)| t.is(kw))
+}
+
+/// The index of a column definition's DEFAULT clause: of several, the last, which SQLite
+/// keeps; never the `SET DEFAULT` of a foreign key's `ON DELETE` or `ON UPDATE` (Codex M4
+/// code r7 #1).
+fn default_clause(part: &[Tok]) -> Option<usize> {
+    top(part)
+        .windows(2)
+        .rev()
+        .find(|w| w[1].1.is("DEFAULT") && !w[0].1.is("SET"))
+        .map(|w| w[1].0)
 }
 
 fn columns(sql: &str) -> Columns {
@@ -597,7 +644,10 @@ fn columns(sql: &str) -> Columns {
             .iter()
             .any(|k| first.is(k))
         {
-            if let Some(at) = part.iter().position(|t| t.is("UNIQUE"))
+            if let Some(at) = top(part)
+                .iter()
+                .find(|(_, t)| t.is("UNIQUE"))
+                .map(|(i, _)| *i)
                 && part.get(at + 1) == Some(&Tok::Punct('('))
             {
                 let end = part
@@ -660,9 +710,7 @@ fn columns(sql: &str) -> Columns {
         if generated_virtual(part) {
             virtuals.push(names.len());
         }
-        let generated = part
-            .windows(2)
-            .any(|w| w[0].is("AS") && w[1] == Tok::Punct('('));
+        let generated = generated_open(part).is_some();
         if let Some(at) = primary_key(part) {
             pk = vec![(name.clone(), None)];
             table_pk = false;
@@ -670,14 +718,14 @@ fn columns(sql: &str) -> Columns {
                 ipk = Some(names.len());
             }
         }
-        let default = part.iter().position(|t| t.is("DEFAULT"));
+        let default = default_clause(part);
         let value = default
             .and_then(|d| constant(&part[d + 1..]))
             .map(|(lit, _)| lit.with_affinity(affinity(&ty)));
-        let not_null = part.windows(2).any(|w| w[0].is("NOT") && w[1].is("NULL"));
+        let not_null = top_pair(part, "NOT", "NULL").is_some();
         fixed.push(
             primary_key(part).is_some()
-                || part.iter().any(|t| t.is("UNIQUE"))
+                || top_word(part, "UNIQUE")
                 || (generated && !generated_virtual(part))
                 || (default.is_some() && value.is_none())
                 || (not_null && value.as_ref().is_none_or(|v| *v == Value::Null)),
@@ -1352,6 +1400,69 @@ mod tests {
         }
     }
 
+    /// Codex M4 code r7 #1: a column's constraints are read at its definition's level, never
+    /// inside a CHECK's or a DEFAULT's expression nor inside a string, so a column added with
+    /// `CHECK(a IS NOT NULL)` is no NOT NULL column. The DEFAULT of a foreign key's
+    /// `ON DELETE SET DEFAULT` is no DEFAULT clause, and of several DEFAULT clauses the last
+    /// counts, as in SQLite. Each case was checked against Python's sqlite3.
+    #[test]
+    fn constraints_are_read_at_the_definitions_level() {
+        let t = |s: &str| Value::Text(s.into());
+        let added = |def: &str| {
+            rebuild(
+                &columns(&format!("CREATE TABLE t(a TEXT, {def})")),
+                vec![t("1")],
+            )
+        };
+        for (def, want) in [
+            ("b CHECK(a IS NOT NULL)", Value::Null),
+            ("b CHECK(a NOT NULL)", Value::Null),
+            ("b CHECK((a) IS NOT NULL) COLLATE nocase", Value::Null),
+            ("b CHECK (b NOT IN ('PRIMARY KEY', 'UNIQUE'))", Value::Null),
+            ("b TEXT CHECK(b <> 'x' COLLATE rtrim)", Value::Null),
+            ("b TEXT CHECK(CAST(a AS TEXT) <> '') DEFAULT 'q'", t("q")),
+            ("b CHECK(a GLOB '*') NOT NULL DEFAULT 'z'", t("z")),
+            ("b CHECK(a NOTNULL) DEFAULT 3", Value::Int(3)),
+            ("b DEFAULT 'NOT NULL'", t("NOT NULL")),
+            ("b REFERENCES p(id) ON DELETE SET DEFAULT", Value::Null),
+            ("b REFERENCES p MATCH full NOT DEFERRABLE", Value::Null),
+            ("b REFERENCES p ON UPDATE SET DEFAULT DEFAULT 'x'", t("x")),
+            ("b DEFAULT 1 DEFAULT 2", Value::Int(2)),
+            ("b DEFAULT 'x' DEFAULT NULL", Value::Null),
+            ("b CONSTRAINT desc CHECK(1)", Value::Null),
+        ] {
+            assert_eq!(added(def), Ok(vec![t("1"), want]), "{def}");
+        }
+        for def in [
+            "b CHECK(a IS NOT NULL) NOT NULL",
+            "b REFERENCES p ON DELETE SET DEFAULT NOT NULL",
+            "b DEFAULT 'x' DEFAULT (1 + 2)",
+        ] {
+            assert!(added(def).is_err(), "{def}");
+        }
+        // The other rules read the definition's level too.
+        let c =
+            columns("CREATE TABLE t(id INTEGER CONSTRAINT desc PRIMARY KEY, b CHECK(b <> 'x'))");
+        assert_eq!(c.ipk, Some(0));
+        let c = columns("CREATE TABLE t(a TEXT CHECK(CAST(a AS TEXT) <> ''), b)");
+        assert_eq!(c.stored, [0, 1]);
+        let c = columns(
+            "CREATE TABLE t(a, b TEXT CHECK(b <> 'x' COLLATE rtrim), PRIMARY KEY(b, b COLLATE rtrim)) \
+             WITHOUT ROWID",
+        );
+        assert_eq!(c.stored, [1, 1, 0]);
+        let e = extracted("constraints.sqlite");
+        let text = String::from_utf8_lossy(&e.text);
+        assert!(
+            text.starts_with("needle\t\t\tneedle last default\tneedle check\n"),
+            "{text}"
+        );
+        assert_eq!(trail(&e, "needle\t"), ["checked", "row 1", "a"]);
+        assert_eq!(trail(&e, "needle last"), ["checked", "row 1", "d"]);
+        assert_eq!(trail(&e, "needle check"), ["checked", "row 1", "e"]);
+        assert!(text.contains("\nlater\tb\t\t2\tlater check\n"), "{text}");
+    }
+
     /// Codex r1 #6: SQLite's quirk: a column's `INTEGER PRIMARY KEY DESC` is no alias of the
     /// rowid, and the row stores its value (NULL when the insert gave none); a table's
     /// `PRIMARY KEY(id DESC)` over an INTEGER column is one.
@@ -1738,7 +1849,27 @@ out, seed, count = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 rng = random.Random(seed)
 COLLS = ["BINARY", "NOCASE", "RTRIM", "binary", "nocase", "rtrim"]
 TYPES = ["INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC", "", "INT", "VARCHAR(10)", "DOUBLE"]
-DEFAULTS = ["'dflt'", "42", "-3", "1.5", "NULL", "x'00ff'", "('par')", "-2.5", "+7", "0x10"]
+DEFAULTS = ["'dflt'", "42", "-3", "1.5", "NULL", "x'00ff'", "('par')", "-2.5", "+7", "0x10",
+            "'NOT NULL'", "('PRIMARY KEY')", "'UNIQUE DESC'", "'x COLLATE nocase'", "'GENERATED AS (a)'"]
+
+# Constraints whose expressions or strings hold the words of other constraints, which are no
+# constraints of the column (Codex M4 code r7 #1). Each holds for any row.
+def checks(c):
+    return rng.choice([
+        f" CHECK(c0 IS NOT NULL OR c0 IS NULL)",
+        f" CHECK({c} IS NULL OR {c} NOT IN ('PRIMARY KEY', 'UNIQUE'))",
+        f" CHECK(CAST({c} AS TEXT) IS NOT NULL OR {c} IS NULL)",
+        f" CHECK(({c} COLLATE {rng.choice(COLLS)}) <> 'DEFAULT' OR 1)",
+        f" CHECK(1 NOTNULL)",
+        f" CHECK ((c0) NOT NULL OR (c0) IS NULL)",
+        f" REFERENCES p(id) ON DELETE SET DEFAULT",
+        f" REFERENCES p ON UPDATE SET NULL NOT DEFERRABLE",
+    ])
+
+def default():
+    d = f" DEFAULT {rng.choice(DEFAULTS)}"
+    # Of two DEFAULT clauses, SQLite keeps the last.
+    return d + f" DEFAULT {rng.choice(DEFAULTS)}" if rng.random() < 0.15 else d
 
 def collates():
     return "".join(f" COLLATE {rng.choice(COLLS)}" for _ in range(rng.choice([0, 0, 1, 1, 2, 3])))
@@ -1785,7 +1916,9 @@ for n in range(count):
                 else f" AS (c0){rng.choice(['', ' STORED', ' VIRTUAL'])}"
         else:
             if rng.random() < 0.2:
-                d += f" DEFAULT {rng.choice(DEFAULTS)}"
+                d += checks(f"c{j}")
+            if rng.random() < 0.2:
+                d += default()
             elif rng.random() < 0.1:
                 d += " NOT NULL DEFAULT 'nn'"
             if rng.random() < 0.1:
@@ -1820,7 +1953,12 @@ for n in range(count):
         if rng.random() < 0.2:
             add = f"{name} AS (c0) VIRTUAL"
         else:
-            add = f"{name} {rng.choice(TYPES)}{collates()}" + (f" DEFAULT {rng.choice(DEFAULTS)}" if rng.random() < 0.7 else "")
+            add = f"{name} {rng.choice(TYPES)}{collates()}"
+            parts = [checks(name) for _ in range(rng.choice([0, 1, 1, 2]))]
+            if rng.random() < 0.7:
+                parts.append(default())
+            rng.shuffle(parts)
+            add += "".join(parts)
             if rng.random() < 0.2:
                 add += " NOT NULL DEFAULT 5" if "DEFAULT" not in add else " NOT NULL"
         try:
@@ -1846,8 +1984,10 @@ json.dump(cases, sys.stdout)
 
     /// Codex M4 code r5 and r6: a row rebuilt wrongly loses values silently. Random tables,
     /// with several COLLATE clauses, keys that repeat a column, WITHOUT ROWID, DESC, generated
-    /// columns and `ALTER TABLE ADD COLUMN`, written by Python's sqlite3, are read as it reads
-    /// them: each table's lines are its `SELECT`'s, and none is broken.
+    /// columns, `ALTER TABLE ADD COLUMN`, and CHECK, REFERENCES and DEFAULT clauses whose
+    /// expressions and strings hold other constraints' words (Codex M4 code r7 #1), written by
+    /// Python's sqlite3, are read as it reads them: each table's lines are its `SELECT`'s, and
+    /// none is broken.
     /// `SEARCHFOR_SQLITE_TABLES` sets how many (400 by default), `SEARCHFOR_SQLITE_SEED` the
     /// seed. Skipped with a note without python3, unless SEARCHFOR_REQUIRE_REFERENCE=1.
     #[test]
