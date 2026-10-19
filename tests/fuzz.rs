@@ -1039,9 +1039,17 @@ fn mutated_objects_do_not_panic_the_object_processor() {
         .sized("v", 1, 7, 15)
         .symbol("_ZN4core3fmt5write17h0123456789abcdefE", 0, 0);
     let mo = spec.clone();
+    // A PE with an export table, which the Processor reads itself (Codex M4 code r9 #1).
+    let exports = [("version", 0x2007), ("hello", 0x2001), ("version", 0x2002)];
+    let pe = obj::pe(
+        &obj::Spec::new()
+            .section(".edata", &vec![0u8; obj::pe_exports_size(&exports)])
+            .section(".rodata", b"\0hello\0version=needle\0"),
+    );
     let seeds = vec![
         obj::elf(&spec).file,
         obj::pe(&spec).file,
+        obj::pe_exports(pe.file.clone(), pe.starts[0], 0x1000, &exports),
         obj::macho(&mo).file,
         obj::fat(&[
             (0x0100_0007, obj::macho(&mo).file),
