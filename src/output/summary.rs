@@ -1,4 +1,5 @@
 //! -c, --count-matches, -l and --files-without-match computed after filters (design note 9).
+use super::Look;
 use crate::model::Described;
 use std::path::Path;
 use termcolor::WriteColor;
@@ -28,30 +29,41 @@ pub fn count(mode: Mode, d: Option<&Described>) -> u64 {
 
 /// Writes the file's line in ripgrep's format, if the mode prints one for it, and returns
 /// whether it did: `path:N` (`N` alone without file names) for the counts of files with a
-/// kept Match, `path` for -l, and for --files-without-match `path` when nothing was kept.
+/// kept Match (with `--include-zero`, of every file), `path` for -l, and for
+/// --files-without-match `path` when nothing was kept. The path is printed as the Trail
+/// layouts print it (`--path-separator`, `--colors`, `--hyperlink-format`), and `-0` ends it
+/// with a NUL, in place of the `:` of a count or the line break of a path alone, as rg's
+/// summary printer (M5a plan, D4).
 pub fn render(
     mode: Mode,
     path: &Path,
     d: Option<&Described>,
     with_filename: bool,
+    look: &Look,
+    include_zero: bool,
     w: &mut dyn WriteColor,
 ) -> std::io::Result<bool> {
     let n = count(mode, d);
+    let write_path = |w: &mut dyn WriteColor| -> std::io::Result<()> {
+        let link = super::link_start(w, look, path, None, None)?;
+        super::style::write_in(w, &look.palette, "path", &super::shown_path(path, look))?;
+        super::link_end(w, link)
+    };
     match mode {
-        Mode::Count | Mode::CountMatches if n > 0 => {
+        Mode::Count | Mode::CountMatches if n > 0 || include_zero => {
             if with_filename {
-                super::write_path(w, path)?;
-                w.write_all(b":")?;
+                write_path(w)?;
+                w.write_all(&[look.path_terminator.unwrap_or(b':')])?;
             }
             w.write_all(format!("{n}\n").as_bytes())?;
         }
         Mode::FilesWithMatches if n > 0 => {
-            super::write_path(w, path)?;
-            w.write_all(b"\n")?;
+            write_path(w)?;
+            w.write_all(&[look.path_terminator.unwrap_or(b'\n')])?;
         }
         Mode::FilesWithoutMatch if n == 0 => {
-            super::write_path(w, path)?;
-            w.write_all(b"\n")?;
+            write_path(w)?;
+            w.write_all(&[look.path_terminator.unwrap_or(b'\n')])?;
         }
         _ => return Ok(false),
     }
@@ -66,7 +78,16 @@ mod tests {
 
     fn out(mode: Mode, d: Option<&Described>, with_filename: bool) -> String {
         let mut w = NoColor::new(Vec::new());
-        let wrote = render(mode, Path::new("docs/a.md"), d, with_filename, &mut w).unwrap();
+        let wrote = render(
+            mode,
+            Path::new("docs/a.md"),
+            d,
+            with_filename,
+            &Look::default(),
+            false,
+            &mut w,
+        )
+        .unwrap();
         let s = String::from_utf8(w.into_inner()).unwrap();
         assert_eq!(wrote, !s.is_empty());
         s
@@ -123,11 +144,39 @@ mod tests {
             Path::new("a.md"),
             Some(&sample()),
             true,
+            &Look::default(),
+            false,
             &mut w,
         )
         .unwrap();
         // rg 14.1.1 --color always -c: reset, magenta, path, reset, `:N`.
         assert_eq!(w.into_inner(), b"\x1b[0m\x1b[35ma.md\x1b[0m:2\n");
+    }
+
+    /// M5a plan, D4: `-0`, `--path-separator` and `--include-zero`, as rg's summary printer.
+    #[test]
+    fn nul_separator_and_zero_counts() {
+        let look = Look {
+            path_terminator: Some(0),
+            path_separator: Some(b'\\'),
+            ..Look::default()
+        };
+        let run = |mode, d: Option<&Described>, zero| {
+            let mut w = NoColor::new(Vec::new());
+            render(mode, Path::new("docs/a.md"), d, true, &look, zero, &mut w).unwrap();
+            w.into_inner()
+        };
+        assert_eq!(
+            run(Mode::Count, Some(&sample()), false),
+            b"docs\\a.md\x002\n"
+        );
+        assert_eq!(
+            run(Mode::FilesWithMatches, Some(&sample()), false),
+            b"docs\\a.md\x00"
+        );
+        assert_eq!(run(Mode::Count, None, false), b"");
+        assert_eq!(run(Mode::Count, None, true), b"docs\\a.md\x000\n");
+        assert_eq!(run(Mode::FilesWithMatches, None, true), b"");
     }
 
     #[test]

@@ -465,11 +465,9 @@ pub(crate) struct Row<'a> {
     /// Context is on and this line does not follow the previous one: print `--` first.
     pub gap_before: bool,
     /// `--column`: the 1-based column of the row's first Match, as rg counts it; None on a
-    /// context row. (Printed by flat and tree from chunks 7 and 8 on.)
-    #[allow(dead_code)]
+    /// context row.
     pub column: Option<u64>,
     /// `-b`: the byte offset of the row in the file, as rg gives it.
-    #[allow(dead_code)]
     pub byte_offset: u64,
 }
 

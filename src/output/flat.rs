@@ -60,7 +60,10 @@ fn fit_trail(trail: &[Segment], room: usize) -> String {
 
 /// The file-name part of a row, computed once per file: present with file names on.
 pub(crate) struct FileHead {
+    /// The path as printed (`shown_path`), with file names on.
     path: Option<Vec<u8>>,
+    /// The path to link to with `--hyperlink-format`.
+    link: std::path::PathBuf,
     /// Width of `path` in characters, plus its separator.
     width: usize,
     /// The last Trail fitted, the room it had and the result: consecutive rows usually share
@@ -70,12 +73,13 @@ pub(crate) struct FileHead {
 
 impl FileHead {
     pub(crate) fn new(path: &std::path::Path, o: &RenderOptions) -> Self {
-        let path = o.with_filename.then(|| super::path_bytes(path));
-        let width = path
+        let shown = o.with_filename.then(|| super::shown_path(path, &o.look));
+        let width = shown
             .as_ref()
             .map_or(0, |p| width(&String::from_utf8_lossy(p)) + 1);
         FileHead {
-            path,
+            path: shown,
+            link: path.to_path_buf(),
             width,
             fitted: Default::default(),
         }
@@ -105,14 +109,20 @@ fn digits(mut n: u64) -> usize {
     d
 }
 
-/// `path:line:` (or `path-line-` for context), each part present when asked for; an object
-/// file's row has `path:0x1f3a:`, its hex offset in place of the line (spec §5.7).
+/// The prelude of a row, as ripgrep's `PreludeWriter` writes it (M5a plan, D4): the path, the
+/// line number, the column (`--column`) and the byte offset (`-b`), each present when asked
+/// for and followed by the field separator, `:` for a Match and `-` for a context line
+/// (`--field-match-separator`, `--field-context-separator`); `-0` puts a NUL after the path in
+/// place of its separator. An object file's row has `path:0x1f3a:`, its hex offset in place of
+/// the line (spec §5.7). With `--hyperlink-format`, the prelude is one link.
 struct Head<'a> {
     file: &'a FileHead,
     line: Option<u64>,
     /// `line` is an object row's offset, printed in hex.
     hex: bool,
-    sep: &'static str,
+    column: Option<u64>,
+    byte_offset: Option<u64>,
+    sep: &'a [u8],
 }
 
 impl<'a> Head<'a> {
@@ -120,14 +130,27 @@ impl<'a> Head<'a> {
         file: &'a FileHead,
         line_number: Option<u64>,
         is_match: bool,
-        o: &RenderOptions,
+        o: &'a RenderOptions,
     ) -> Self {
         Head {
             file,
             line: line_number.filter(|_| o.line_numbers),
             hex: false,
-            sep: if is_match { ":" } else { "-" },
+            column: None,
+            byte_offset: None,
+            sep: if is_match {
+                &o.look.sep_match
+            } else {
+                &o.look.sep_context
+            },
         }
+    }
+
+    /// The column and byte offset of a row, where `--column` and `-b` ask for them.
+    fn of_row(mut self, r: &Row, o: &RenderOptions) -> Self {
+        self.column = r.column.filter(|_| o.look.column);
+        self.byte_offset = o.look.byte_offset.then_some(r.byte_offset);
+        self
     }
 
     fn at_offset(mut self, offset: Option<u64>) -> Self {
@@ -139,10 +162,14 @@ impl<'a> Head<'a> {
     }
 
     fn is_empty(&self) -> bool {
-        self.file.path.is_none() && self.line.is_none()
+        self.file.path.is_none()
+            && self.line.is_none()
+            && self.column.is_none()
+            && self.byte_offset.is_none()
     }
 
     fn width(&self) -> usize {
+        let sep = width(&String::from_utf8_lossy(self.sep));
         let digits = |l: u64| {
             if self.hex {
                 // `0x` and the hex digits.
@@ -151,31 +178,66 @@ impl<'a> Head<'a> {
                 digits(l)
             }
         };
-        self.file.width + self.line.map_or(0, |l| digits(l) + 1)
+        let field = |n: Option<u64>, f: &dyn Fn(u64) -> usize| n.map_or(0, |n| f(n) + sep);
+        let path = if self.file.path.is_some() {
+            self.file.width - 1 + sep
+        } else {
+            0
+        };
+        path + field(self.line, &digits)
+            + field(self.column, &digits)
+            + field(self.byte_offset, &digits)
     }
 
-    fn write(&self, w: &mut dyn WriteColor) -> std::io::Result<()> {
-        if let Some(p) = &self.file.path {
-            w.set_color(&style::spec("path"))?;
-            w.write_all(p)?;
-            w.reset()?;
-            w.write_all(self.sep.as_bytes())?;
+    fn write(&self, w: &mut dyn WriteColor, o: &RenderOptions) -> std::io::Result<()> {
+        let p = &o.look.palette;
+        let link = if self.file.path.is_some() {
+            super::link_start(
+                w,
+                &o.look,
+                &self.file.link,
+                self.line.filter(|_| !self.hex),
+                self.column,
+            )?
+        } else {
+            false
+        };
+        if let Some(path) = &self.file.path {
+            style::write_in(w, p, "path", path)?;
+            match o.look.path_terminator {
+                Some(t) => w.write_all(&[t])?,
+                None => w.write_all(self.sep)?,
+            }
         }
         if let Some(l) = self.line {
-            w.set_color(&style::spec("line"))?;
-            if self.hex {
-                write!(w, "0x{l:x}")?;
+            let n = if self.hex {
+                format!("0x{l:x}")
             } else {
-                write!(w, "{l}")?;
-            }
-            w.reset()?;
-            w.write_all(self.sep.as_bytes())?;
+                l.to_string()
+            };
+            style::write_in(w, p, "line", n.as_bytes())?;
+            w.write_all(self.sep)?;
         }
-        Ok(())
+        for n in [self.column, self.byte_offset].into_iter().flatten() {
+            style::write_in(w, p, "column", n.to_string().as_bytes())?;
+            w.write_all(self.sep)?;
+        }
+        super::link_end(w, link)
     }
 }
 
-/// One row: `--` first when it opens a group after a gap, then `path:line: Trail │ text`.
+/// The separator between groups of context (`--context-separator`), none with
+/// `--no-context-separator`.
+fn write_group_separator(w: &mut dyn WriteColor, o: &RenderOptions) -> std::io::Result<()> {
+    if let Some(sep) = &o.look.sep_group {
+        w.write_all(sep)?;
+        w.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+/// One row: the group separator first when it opens a group after a gap, then
+/// `path:line: Trail │ text`.
 pub(crate) fn write_row(
     w: &mut dyn WriteColor,
     file: &FileHead,
@@ -183,11 +245,13 @@ pub(crate) fn write_row(
     o: &RenderOptions,
 ) -> std::io::Result<()> {
     if r.gap_before {
-        w.write_all(b"--\n")?;
+        write_group_separator(w, o)?;
     }
-    let head = Head::new(file, Some(r.line_number), r.is_match, o).at_offset(r.offset);
+    let head = Head::new(file, Some(r.line_number), r.is_match, o)
+        .at_offset(r.offset)
+        .of_row(r, o);
     if !r.is_match {
-        let prefix = |w: &mut dyn WriteColor| head.write(w);
+        let prefix = |w: &mut dyn WriteColor| head.write(w, o);
         let avail = o.width.saturating_sub(head.width());
         return super::write_line_text(w, &prefix, &r.line, &r.subs, false, avail, o);
     }
@@ -210,14 +274,15 @@ pub(crate) fn write_row(
         Some(file.fit(r.trail, room))
     };
     let used = head.width() + space + trail.as_ref().map_or(0, |t| width(t) + 3);
+    let p = &o.look.palette;
     let prefix = |w: &mut dyn WriteColor| -> std::io::Result<()> {
-        head.write(w)?;
+        head.write(w, o)?;
         if space == 1 {
             w.write_all(b" ")?;
         }
         if let Some(t) = &trail {
-            style::write_styled(w, "trail", t)?;
-            style::write_styled(w, "dim", " │ ")?;
+            style::write_in(w, p, "trail", t.as_bytes())?;
+            style::write_in(w, p, "dim", " │ ".as_bytes())?;
         }
         Ok(())
     };
@@ -233,7 +298,14 @@ pub(crate) fn write_binary_message(
     o: &RenderOptions,
 ) -> std::io::Result<()> {
     if o.with_filename {
-        super::write_path(w, path)?;
+        let link = super::link_start(w, &o.look, path, None, None)?;
+        style::write_in(
+            w,
+            &o.look.palette,
+            "path",
+            &super::shown_path(path, &o.look),
+        )?;
+        super::link_end(w, link)?;
         w.write_all(b": ")?;
     }
     w.write_all(format!("{msg}\n").as_bytes())
@@ -265,18 +337,16 @@ pub fn render(
             Piece::Row(r) => write_row(w, &file, &r, o)?,
             Piece::Section { trail, start, end } => {
                 let head = Head::new(&file, None, true, o);
-                head.write(w)?;
-                let range = format!("{start}-{end}:");
-                style::write_styled(w, "line", &range[..range.len() - 1])?;
-                w.write_all(b":")?;
+                head.write(w, o)?;
+                let range = format!("{start}-{end}");
+                let p = &o.look.palette;
+                style::write_in(w, p, "line", range.as_bytes())?;
+                w.write_all(&o.look.sep_match)?;
                 if !trail.is_empty() {
-                    let fixed = head.width() + range.len() + 1;
+                    let fixed = head.width() + range.len() + o.look.sep_match.len() + 1;
                     w.write_all(b" ")?;
-                    style::write_styled(
-                        w,
-                        "trail",
-                        &fit_trail(trail, o.width.saturating_sub(fixed)),
-                    )?;
+                    let fitted = fit_trail(trail, o.width.saturating_sub(fixed));
+                    style::write_in(w, p, "trail", fitted.as_bytes())?;
                 }
                 w.write_all(b"\n")?;
                 // Each line as any other: whole, as Fragments, or -M's message (spec §6.3).
@@ -327,6 +397,115 @@ mod tests {
         let mut w = NoColor::new(Vec::new());
         render(d, src, o, None, &mut w).unwrap();
         String::from_utf8(w.into_inner()).unwrap()
+    }
+
+    /// The file of the M5 tests: a heading, a Match under it, a context line, a gap, a Match.
+    fn m5_file() -> (Vec<u8>, Described) {
+        let s = src(&["# Install", "  run needle", "after", "x", "y", "z needle"]);
+        let d = described(
+            &s,
+            vec![mat(&s, 2), ctx(&s, 3), mat(&s, 6)],
+            vec![
+                vec![vec![h(1, "Install", 1, 6)]],
+                vec![vec![h(1, "Install", 1, 6)]],
+            ],
+        );
+        (s, d)
+    }
+
+    fn with(look: super::super::Look) -> RenderOptions {
+        RenderOptions {
+            context: true,
+            look,
+            ..flat()
+        }
+    }
+
+    /// M5a plan, D4: `--column` and `-b` after the line number, rg's separators, `-0` after the
+    /// path, `--path-separator`, `--context-separator`.
+    #[test]
+    fn rows_with_ripgreps_prelude_flags() {
+        use super::super::Look;
+        let (s, d) = m5_file();
+        assert_eq!(
+            plain(&d, &s, &with(Look::default())),
+            "docs/a.md:2: Install │   run needle\ndocs/a.md-3-after\n--\ndocs/a.md:6: Install │ z needle\n"
+        );
+        let look = Look {
+            column: true,
+            byte_offset: true,
+            ..Look::default()
+        };
+        assert_eq!(
+            plain(&d, &s, &with(look)),
+            "docs/a.md:2:7:10: Install │   run needle\ndocs/a.md-3-23-after\n--\ndocs/a.md:6:3:33: Install │ z needle\n"
+        );
+        let look = Look {
+            sep_match: b"=".to_vec(),
+            sep_context: b"~".to_vec(),
+            sep_group: Some(b"##".to_vec()),
+            path_terminator: Some(0),
+            path_separator: Some(b'\\'),
+            trim: true,
+            ..Look::default()
+        };
+        assert_eq!(
+            plain(&d, &s, &with(look)),
+            "docs\\a.md\x002= Install │ run needle\ndocs\\a.md\x003~after\n##\ndocs\\a.md\x006= Install │ z needle\n"
+        );
+        let look = Look {
+            sep_group: None,
+            ..Look::default()
+        };
+        assert!(!plain(&d, &s, &with(look)).contains("--"));
+    }
+
+    /// `-o` and `--vimgrep` rows in the one-line layout, each Match with its Trail.
+    #[test]
+    fn only_matching_and_vimgrep_rows() {
+        use super::super::Look;
+        let (s, d) = m5_file();
+        let look = Look {
+            only_matching: true,
+            column: true,
+            ..Look::default()
+        };
+        assert_eq!(
+            plain(&d, &s, &with(look)),
+            "docs/a.md:2:7: Install │ needle\ndocs/a.md-3-after\n--\ndocs/a.md:6:3: Install │ needle\n"
+        );
+    }
+
+    /// `--colors` and `--hyperlink-format` in the prelude: the path's and the numbers' colours,
+    /// the Trail's, and one link over path, line and column.
+    #[test]
+    fn colours_and_links() {
+        use super::super::{Look, hyperlink::Hyperlinks, style::Palette};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.md");
+        std::fs::write(&path, "x").unwrap();
+        let (s, mut d) = m5_file();
+        d.file.path = path.clone();
+        d.file.items.truncate(1);
+        let look = Look {
+            column: true,
+            palette: Palette::new(&["column:fg:blue".into(), "trail:fg:yellow".into()]),
+            hyperlinks: Hyperlinks::new("file://{path}:{line}:{column}", None)
+                .map(std::sync::Arc::new),
+            ..Look::default()
+        };
+        let mut w = Ansi::new(Vec::new());
+        render(&d, &s, &with(look), None, &mut w).unwrap();
+        let out = String::from_utf8(w.into_inner()).unwrap();
+        let link = format!(
+            "\x1b]8;;file://{}:2:7\x1b\\",
+            path.canonicalize().unwrap().display()
+        );
+        assert!(out.starts_with(&link), "{out:?}");
+        assert!(
+            out.contains("\x1b[34m7\x1b[0m:\x1b]8;;\x1b\\ \x1b[0m\x1b[33mInstall"),
+            "{out:?}"
+        );
     }
 
     /// M4 plan, D6 and D8: an object file's row is at the hex offset of its first Match, and
