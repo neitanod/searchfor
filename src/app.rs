@@ -322,9 +322,24 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         Some(r) => Some(Detector::new(r, &args.formats)?.with_docs(args.docs)),
         None => None,
     };
+    let roots = match args.docs {
+        true => paths
+            .iter()
+            .filter(|p| p.as_path() != Path::new("-"))
+            .map(|p| (p.clone(), resolve(p)))
+            .collect(),
+        false => Vec::new(),
+    };
+    let reach = roots.iter().any(|(_, r)| match r {
+        Resolved::At(at) => reaches(at),
+        Resolved::Descriptors | Resolved::Unknown => true,
+    });
     let ctx = Ctx {
         args,
         matcher,
+        roots,
+        reach,
+        follow: args.follow && !args.no_follow,
         msgs,
         pre,
         docs: detector.as_ref().filter(|_| args.docs),
@@ -461,6 +476,18 @@ struct Target {
     through: Option<Through>,
     /// A document's text and Outline, extracted in `Ctx::prepare` (M4 plan, design note 4).
     doc: Option<std::sync::Arc<docs::Extracted>>,
+    /// The first bytes `Ctx::document` read of a file that is no document, which its first
+    /// search reads instead of opening the file again (`Ctx::reader`).
+    held: std::cell::Cell<Option<Held>>,
+}
+
+/// The first bytes of a file without an extension, read to tell whether it is a document,
+/// and the file opened past them; None once they are the whole file. A file that is no
+/// document is searched from them, so it is opened and read as with --no-docs (code review
+/// r6, Fable #1).
+struct Held {
+    head: Vec<u8>,
+    rest: Option<File>,
 }
 
 /// What a Trail-mode thread keeps between files: a searcher for files and stdin (BOM sniffing
@@ -597,6 +624,12 @@ struct Ctx<'a> {
     pre: Preprocess,
     /// With --docs, the Detector that tells documents by their name or magic bytes.
     docs: Option<&'a Detector<'a>>,
+    /// With --docs, each path to search and how its name resolves (`Ctx::through_descriptors`).
+    roots: Vec<(PathBuf, Resolved)>,
+    /// `--follow`: the walker follows links below the roots.
+    follow: bool,
+    /// Some root may have a name of a descriptor below it (`reaches`), or is not resolved.
+    reach: bool,
 }
 
 impl Ctx<'_> {
@@ -662,6 +695,7 @@ impl Ctx<'_> {
                 regular: false,
                 through: None,
                 doc: None,
+                held: Default::default(),
             });
         }
         // A root that is a link to a directory is a directory, as ripgrep 14.1.1's
@@ -685,10 +719,11 @@ impl Ctx<'_> {
         // Only a regular file can be a document: its first bytes are read before the search
         // and the file is opened again, which a FIFO, a descriptor or stdin by name would not
         // survive (code review of the M4 plan r1, Codex #3).
+        let mut held = None;
         let through = self
             .pre
             .through(p)
-            .or_else(|| regular.then(|| self.document(p)).flatten());
+            .or_else(|| regular.then(|| self.document(d, &mut held)).flatten());
         Some(Target {
             path: shown.to_path_buf(),
             fs: Some(p.to_path_buf()),
@@ -696,30 +731,43 @@ impl Ctx<'_> {
             regular: regular && through.is_none(),
             through,
             doc: None,
+            held: std::cell::Cell::new(held),
         })
     }
 
     /// With --docs, `Through::Docs` for a file whose Format is a document Format: by its name,
-    /// or, for a name without an extension, by its first bytes (read only then).
-    fn document(&self, p: &Path) -> Option<Through> {
-        let det = self.docs.filter(|d| d.may_be_document(p))?;
+    /// or, for a name without an extension, by its first bytes (read only then, and kept in
+    /// `held` when the file is no document).
+    fn document(&self, d: &DirEntry, held: &mut Option<Held>) -> Option<Through> {
+        let p = d.path();
+        let det = self.docs.filter(|det| det.may_be_document(p))?;
         // `/dev/stdin` redirected from a file is a regular file, which the reader would open
         // as its own stdin (code review r1, Codex #1), and so is a file under a directory
         // named by a descriptor (code review r2, Codex #2).
-        if through_descriptors(p) {
+        if self.through_descriptors(d) {
             return None;
         }
         let def = match det.detect_by_path(p) {
             Some(d) => d?,
             None => {
                 let mut head = Vec::with_capacity(crate::source::READ_HEAD);
-                File::open(p)
-                    .and_then(|f| {
-                        f.take(crate::source::READ_HEAD as u64)
-                            .read_to_end(&mut head)
-                    })
+                let mut f = File::open(p).ok()?;
+                (&mut f)
+                    .take(crate::source::READ_HEAD as u64)
+                    .read_to_end(&mut head)
                     .ok()?;
-                det.detect(p, &head)?
+                // A document Format's magic bytes, before every Definition's.
+                let def = det
+                    .document_magic(&head)
+                    .then(|| det.detect(p, &head))
+                    .flatten();
+                if def.is_none_or(|def| def.processor != "docs") {
+                    // Shorter than asked for: the file ended within it.
+                    let rest = (head.len() == crate::source::READ_HEAD).then_some(f);
+                    *held = Some(Held { head, rest });
+                    return None;
+                }
+                def?
             }
         };
         if def.processor != "docs" {
@@ -728,6 +776,37 @@ impl Ctx<'_> {
         let extractor = def.params.get("extractor")?.as_str()?;
         docs::Kind::from_name(extractor)?;
         Some(Through::Docs(def.name.clone(), extractor.to_string()))
+    }
+
+    /// Whether the walked `d` names a file through this process's descriptors
+    /// (`through_descriptors`), resolved once per root (`Ctx::roots`): a file the walker found
+    /// below a root without following a link is the root's resolved name and the names after
+    /// it, none of them a link, so only those names are looked at, with no system call. With
+    /// `--follow`, a name below a root may be a link, and is resolved whole (code review r6,
+    /// Fable #1).
+    fn through_descriptors(&self, d: &DirEntry) -> bool {
+        if d.depth() > 0 && !self.follow && !self.reach {
+            return false;
+        }
+        let p = d.path();
+        let root = p.ancestors().nth(d.depth());
+        let resolved = root.and_then(|r| self.roots.iter().find(|(q, _)| q == r));
+        match resolved {
+            Some((_, Resolved::Descriptors)) => true,
+            Some((_, Resolved::Unknown)) if d.depth() == 0 => false,
+            Some((root, Resolved::At(at))) if d.depth() == 0 || !self.follow => {
+                if d.depth() == 0 || !reaches(at) {
+                    return false;
+                }
+                let mut at = at.clone();
+                let below = p.strip_prefix(root).unwrap_or(Path::new(""));
+                below.iter().any(|part| {
+                    at.push(part);
+                    a_descriptor(&at)
+                })
+            }
+            _ => through_descriptors(p),
+        }
     }
 
     /// Extracts a document's text (`Through::Docs`). A file whose bytes are not of its
@@ -794,7 +873,31 @@ impl Ctx<'_> {
             Some(how @ (Through::Pre | Through::Zip)) => {
                 self.pre.open(how, &t.path).map(Opened::Transformed)
             }
-            _ => Ok(Opened::Read(Box::new(File::open(p)?))),
+            _ => Ok(Opened::Read(self.reader(t, p)?)),
+        }
+    }
+
+    /// A reader of the file at `p`: the first time, from the bytes `Ctx::document` read of it
+    /// and on through the file it opened (`Held`), else the file opened by its name.
+    fn reader<'t>(&self, t: &'t Target, p: &Path) -> std::io::Result<Box<dyn Read + 't>> {
+        Ok(match t.held.take() {
+            Some(Held { head, rest: None }) => Box::new(std::io::Cursor::new(head)),
+            Some(Held {
+                head,
+                rest: Some(f),
+            }) => Box::new(std::io::Cursor::new(head).chain(f)),
+            None => Box::new(File::open(p)?),
+        })
+    }
+
+    /// The Source of the file at `p`: from the bytes `Ctx::document` read of it when they are
+    /// the whole file and no search read them yet, else read by its name.
+    fn source(&self, t: &Target, p: &Path) -> std::io::Result<Source> {
+        match t.held.take() {
+            Some(Held { head, rest: None }) => {
+                Ok(Source::from_bytes(p.to_path_buf(), head, t.explicit))
+            }
+            _ => Source::open(p, t.explicit),
         }
     }
 
@@ -1185,7 +1288,8 @@ impl Ctx<'_> {
         let mut probe = CollectSink::new(&self.matcher, self.args.invert_match, true);
         st.unnumbered
             .set_binary_detection(search::binary_detection(self.args, t.explicit));
-        let searched = File::open(path)
+        let searched = self
+            .reader(t, path)
             .and_then(|f| st.unnumbered.search_reader(&self.matcher, f, &mut probe));
         match searched {
             Err(e) => {
@@ -1369,7 +1473,7 @@ impl Ctx<'_> {
         let report = |e: &dyn std::fmt::Display| {
             self.msgs.error(format_args!("{}: {e}", t.path.display()));
         };
-        let open = |p: &Path| match Source::open(p, t.explicit) {
+        let open = |p: &Path| match self.source(t, p) {
             Ok(mut s) => {
                 s.path = t.path.clone();
                 Ok(s)
@@ -1420,9 +1524,9 @@ impl Ctx<'_> {
         // review r2, Codex #1).
         let mut kept = None;
         let r = match &t.fs {
-            Some(p) if t.regular => {
-                File::open(p).and_then(|f| st.unnumbered.search_reader(&self.matcher, f, &mut sink))
-            }
+            Some(p) if t.regular => self
+                .reader(t, p)
+                .and_then(|f| st.unnumbered.search_reader(&self.matcher, f, &mut sink)),
             _ => {
                 let inner = match self.open_input(t) {
                     Ok(r) => r,
@@ -1777,7 +1881,7 @@ impl Ctx<'_> {
         }
         let (mut src, binary) = match &t.fs {
             Some(p) if t.regular => {
-                let src = match Source::open(p, t.explicit) {
+                let src = match self.source(t, p) {
                     Ok(mut s) => {
                         s.path = t.path.clone();
                         s
@@ -2440,8 +2544,28 @@ fn head_of(p: &Path) -> Vec<u8> {
 /// The name is resolved part by part, each part looked at before its link is followed, since
 /// a descriptor's link leads out of /proc to the file it is; true past 40 links, which no open
 /// survives either.
-#[cfg(unix)]
 fn through_descriptors(p: &Path) -> bool {
+    matches!(resolve(p), Resolved::Descriptors)
+}
+
+/// Whether a name of a descriptor (`a_descriptor`) can be below the link-free absolute `at`:
+/// every one is under /dev or /proc.
+fn reaches(at: &Path) -> bool {
+    at == Path::new("/") || at.starts_with("/dev") || at.starts_with("/proc")
+}
+
+/// How a name resolves, part by part (`through_descriptors`).
+enum Resolved {
+    /// Through this process's descriptors.
+    Descriptors,
+    /// Elsewhere: the absolute name without links it resolves to.
+    At(PathBuf),
+    /// Missing or unreadable: opening it fails too, and the search reports it.
+    Unknown,
+}
+
+#[cfg(unix)]
+fn resolve(p: &Path) -> Resolved {
     use std::ffi::OsString;
     // The parts of `q` after its root, last first, to be taken with `pop`.
     let parts = |q: &Path| -> Vec<OsString> {
@@ -2454,7 +2578,7 @@ fn through_descriptors(p: &Path) -> bool {
         v
     };
     let Ok(abs) = std::path::absolute(p) else {
-        return false;
+        return Resolved::Unknown;
     };
     let mut todo = parts(&abs);
     let mut at = PathBuf::from("/");
@@ -2469,13 +2593,13 @@ fn through_descriptors(p: &Path) -> bool {
         }
         at.push(&part);
         if a_descriptor(&at) {
-            return true;
+            return Resolved::Descriptors;
         }
         match std::fs::read_link(&at) {
             Ok(to) => {
                 links += 1;
                 if links > 40 {
-                    return true;
+                    return Resolved::Descriptors;
                 }
                 at.pop();
                 if to.is_absolute() {
@@ -2486,15 +2610,20 @@ fn through_descriptors(p: &Path) -> bool {
             // Not a link.
             Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {}
             // Missing or unreadable: opening it fails too, and the search reports it.
-            Err(_) => return false,
+            Err(_) => return Resolved::Unknown,
         }
     }
-    false
+    Resolved::At(at)
 }
 
 /// No Windows path names a descriptor of its own.
 #[cfg(not(unix))]
-fn through_descriptors(_: &Path) -> bool {
+fn resolve(_: &Path) -> Resolved {
+    Resolved::Unknown
+}
+
+#[cfg(not(unix))]
+fn a_descriptor(_: &Path) -> bool {
     false
 }
 

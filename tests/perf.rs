@@ -1846,3 +1846,127 @@ fn a_pdf_past_the_readers_memory_is_refused_within_its_limit() {
         common::stderr(&o)
     );
 }
+
+/// `bin args` run in the fixture copy as the other measures run it, stdout and stderr
+/// discarded; it must exit with `code`.
+#[cfg(unix)]
+fn command(bin: &Path, fx: &Fixture, args: &[&str]) -> Command {
+    let mut c = Command::new(bin);
+    c.args(args)
+        .current_dir(fx.path())
+        .env("SEARCHFOR_FORMATS_DIR", fx.formats.path())
+        .env("SEARCHFOR_GRAMMARS_DIR", fx.grammars.path())
+        .env("SEARCHFOR_GRAMMAR_INDEX", fx.no_index())
+        .env_remove("RIPGREP_CONFIG_PATH")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    c
+}
+
+/// The CPU time, user and system, of s4 with `args`, from `getrusage` of this process's
+/// children: the perf tests run one at a time (`alone`), so only this run ends meanwhile.
+#[cfg(unix)]
+fn cpu_time(fx: &Fixture, args: &[&str], code: i32) -> Duration {
+    let children = || {
+        // SAFETY: getrusage writes the struct it is given.
+        let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut ru) },
+            0
+        );
+        let us = |t: libc::timeval| t.tv_sec as u64 * 1_000_000 + t.tv_usec as u64;
+        Duration::from_micros(us(ru.ru_utime) + us(ru.ru_stime))
+    };
+    let before = children();
+    let status = command(&sfor_bin(), fx, args).status().unwrap();
+    assert_eq!(status.code(), Some(code), "{args:?}");
+    children() - before
+}
+
+/// The system calls s4 with `args` makes, all its threads and children included, as
+/// `strace -f -c` counts them; None without strace, or where it cannot trace.
+#[cfg(unix)]
+fn system_calls(fx: &Fixture, args: &[&str], code: i32) -> Option<u64> {
+    let out = fx.path().join("strace.txt");
+    let _ = std::fs::remove_file(&out);
+    let mut c = command(Path::new("strace"), fx, &["-f", "-c", "-o"]);
+    c.arg(&out).arg(sfor_bin()).args(args).env("LC_ALL", "C");
+    let status = c.status().ok()?;
+    let counted = std::fs::read_to_string(&out).ok()?;
+    // `% time  seconds  usecs/call  calls  [errors]  total`
+    let calls = counted
+        .lines()
+        .find(|l| l.trim_end().ends_with(" total"))?
+        .split_whitespace()
+        .nth(3)?
+        .parse()
+        .ok()?;
+    assert_eq!(status.code(), Some(code), "strace s4 {args:?}");
+    Some(calls)
+}
+
+/// Code review r6, Fable #1: by default, a file without an extension that is no document costs
+/// what it costs with --no-docs (spec §11 #26: at most 1.05 ×): no second open of the file and
+/// no walk of its name through the process's descriptors. Over 20 000 files of 96 bytes without
+/// an extension, seven levels deep (as `.git/objects` or `bin/`), with one thread, the default
+/// makes at most 1.05 × the system calls of --no-docs, counted by strace when it can trace, and
+/// takes at most 1.1 × its CPU time, the medians of nine alternated runs (the margin is the
+/// noise of a loaded machine), with and without the Trail.
+#[cfg(unix)]
+#[test]
+#[ignore]
+fn files_without_an_extension_cost_by_default_what_they_cost_without_documents() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let mut n = 0;
+    for a in 0..4 {
+        for b in 0..4 {
+            for c in 0..5 {
+                let dir = fx.file(&format!("noext/d{a}/d{b}/d{c}/e/f/g"));
+                std::fs::create_dir_all(&dir).unwrap();
+                for _ in 0..250 {
+                    let line = format!("line {n:05} of a small file without an extension\n");
+                    std::fs::write(dir.join(format!("f{n:05x}")), line.repeat(2)).unwrap();
+                    n += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(n, 20_000);
+    for trail in [&["--no-trail"][..], &[]] {
+        let with = |docs: &[&'static str]| {
+            let mut a = vec!["-j1"];
+            a.extend_from_slice(docs);
+            a.extend_from_slice(trail);
+            a.extend(["zzqq-absent", "noext"]);
+            a
+        };
+        let (default, off) = (with(&[]), with(&["--no-docs"]));
+        match (system_calls(&fx, &default, 1), system_calls(&fx, &off, 1)) {
+            (Some(d), Some(o)) => {
+                eprintln!("{trail:?}: {d} system calls by default, {o} with --no-docs");
+                assert!(d as f64 <= 1.05 * o as f64, "{d} > 1.05 × {o}");
+            }
+            _ => eprintln!("{trail:?}: strace cannot trace here: system calls not counted"),
+        }
+        let (mut d, mut o) = (Vec::new(), Vec::new());
+        for i in 0..9 {
+            if i % 2 == 0 {
+                d.push(cpu_time(&fx, &default, 1));
+                o.push(cpu_time(&fx, &off, 1));
+            } else {
+                o.push(cpu_time(&fx, &off, 1));
+                d.push(cpu_time(&fx, &default, 1));
+            }
+        }
+        d.sort();
+        o.sort();
+        let (d, o) = (d[4], o[4]);
+        eprintln!("{trail:?}: CPU {d:?} by default, {o:?} with --no-docs");
+        assert!(
+            d.as_secs_f64() <= 1.1 * o.as_secs_f64(),
+            "{d:?} > 1.1 × {o:?}"
+        );
+    }
+}
