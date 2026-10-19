@@ -597,7 +597,9 @@ fn default_clause(part: &[Tok]) -> Option<usize> {
         .map(|w| w[1].0)
 }
 
-fn columns(sql: &str) -> Columns {
+/// The columns a `CREATE TABLE` declares. `wide` is whether the database is UTF-16, where a
+/// DEFAULT's `CAST(… AS BLOB)` is the UTF-16 bytes of a text.
+fn columns(sql: &str, wide: bool) -> Columns {
     let toks = tokens(sql);
     let Some(open) = toks.iter().position(|t| *t == Tok::Punct('(')) else {
         return Columns::default();
@@ -720,7 +722,7 @@ fn columns(sql: &str) -> Columns {
         }
         let default = default_clause(part);
         let value = default
-            .and_then(|d| constant(&part[d + 1..]))
+            .and_then(|d| constant(&part[d + 1..], wide))
             .map(|(lit, _)| lit.with_affinity(affinity(&ty)));
         let not_null = top_pair(part, "NOT", "NULL").is_some();
         fixed.push(
@@ -890,8 +892,11 @@ enum Lit {
     Num(Value, String),
     /// NULL, which no affinity changes.
     Other(Value),
-    /// A blob's bytes, which no affinity changes either.
+    /// A blob's bytes, which no affinity changes either, and which made text are UTF-8.
     Blob(Vec<u8>),
+    /// A text made a blob in a UTF-16 database: the text's UTF-16 bytes, which made text again
+    /// are the same text.
+    Wide(String),
 }
 
 impl Lit {
@@ -901,25 +906,108 @@ impl Lit {
             Lit::Text(t) => t.clone(),
             Lit::Num(v, _) | Lit::Other(v) => v.shown(),
             Lit::Blob(b) => Value::Blob(b.len()).shown(),
+            Lit::Wide(t) => Value::Blob(2 * t.encode_utf16().count()).shown(),
         }
     }
 
     /// The value SQLite gives a row whose record lacks the column: the constant with the
     /// column's affinity, as `sqlite3ValueFromExpr` applies it.
     fn with_affinity(self, a: Affinity) -> Value {
+        match self.affined(a) {
+            Lit::Text(t) => Value::Text(t),
+            Lit::Num(v, _) | Lit::Other(v) => v,
+            Lit::Blob(b) => Value::Blob(b.len()),
+            Lit::Wide(t) => Value::Blob(2 * t.encode_utf16().count()),
+        }
+    }
+
+    /// The constant with affinity `a`: a number made text keeps its digits as written, and a
+    /// text or a number made a number is then shown as SQLite shows that number.
+    fn affined(self, a: Affinity) -> Lit {
+        let num = |v: Value| {
+            let v = numeric(v, a);
+            let t = v.shown();
+            Lit::Num(v, t)
+        };
         match (self, a) {
-            (Lit::Other(v), _) => v,
-            (Lit::Blob(b), _) => Value::Blob(b.len()),
-            (Lit::Num(_, t), Affinity::Text) => Value::Text(t),
-            (Lit::Num(v, _), Affinity::Blob) => v,
-            (Lit::Num(v, _), a) => numeric(v, a),
-            (Lit::Text(t), Affinity::Text | Affinity::Blob) => Value::Text(t),
-            (Lit::Text(t), a) => match decimal(&t) {
-                Some(v) => numeric(v, a),
-                None => Value::Text(t),
+            (Lit::Num(_, t), Affinity::Text) => Lit::Text(t),
+            (lit @ (Lit::Other(_) | Lit::Blob(_) | Lit::Wide(_)), _)
+            | (lit @ Lit::Num(..), Affinity::Blob)
+            | (lit @ Lit::Text(_), Affinity::Text | Affinity::Blob) => lit,
+            (Lit::Num(v, _), _) => num(v),
+            (Lit::Text(t), _) => match decimal(&t) {
+                Some(v) => num(v),
+                None => Lit::Text(t),
             },
         }
     }
+
+    /// `CAST(<self> AS <type of affinity a>)`, as `sqlite3ValueFromExpr` evaluates it: the
+    /// constant with the type's affinity, then `sqlite3VdbeMemCast` (Fable M4 code r8 #1). A
+    /// text or a blob made a number reads the number at its start, 0 when none; a real made an
+    /// integer drops its fraction, and one past 64 bits is the largest or the smallest integer.
+    /// In a UTF-16 database (`wide`) a text made a blob is its UTF-16 bytes, and a blob written
+    /// as such made text loses an odd last byte (each case checked against Python's sqlite3).
+    fn cast(self, a: Affinity, wide: bool) -> Lit {
+        let lit = self.affined(a);
+        let num = |v: Value| {
+            let t = v.shown();
+            Lit::Num(v, t)
+        };
+        let text = |lit: Lit| match lit {
+            Lit::Text(t) | Lit::Wide(t) => Some(t),
+            Lit::Blob(b) => Some(String::from_utf8_lossy(&b).into_owned()),
+            _ => None,
+        };
+        let blob = |t: String| {
+            if wide {
+                Lit::Wide(t)
+            } else {
+                Lit::Blob(t.into_bytes())
+            }
+        };
+        match (lit, a) {
+            (lit @ Lit::Other(_), _) => lit,
+            (Lit::Num(v, _), Affinity::Blob) => blob(v.shown()),
+            (Lit::Text(t), Affinity::Blob) => blob(t),
+            (Lit::Num(_, t), Affinity::Text) => Lit::Text(t),
+            (lit @ (Lit::Blob(_) | Lit::Wide(_)), Affinity::Blob) => lit,
+            (Lit::Blob(mut b), Affinity::Text) if wide => {
+                b.truncate(b.len() & !1);
+                Lit::Text(String::from_utf8_lossy(&b).into_owned())
+            }
+            (lit, Affinity::Text) => Lit::Text(text(lit).unwrap_or_default()),
+            (Lit::Num(Value::Float(f), _), Affinity::Integer) => num(Value::Int(f as i64)),
+            (Lit::Num(Value::Int(n), _), Affinity::Real) => num(Value::Float(n as f64)),
+            (lit @ Lit::Num(..), _) => lit,
+            (lit, Affinity::Integer) => {
+                num(Value::Int(integer_prefix(&text(lit).unwrap_or_default())))
+            }
+            (lit, Affinity::Real) => num(match numerify(&text(lit).unwrap_or_default()) {
+                Value::Int(n) => Value::Float(n as f64),
+                v => v,
+            }),
+            (lit, Affinity::Numeric) => num(numerify(&text(lit).unwrap_or_default())),
+        }
+    }
+}
+
+/// The integer at the start of a text, as SQLite's `sqlite3Atoi64` reads one for a cast: after
+/// white space, a sign and digits, the largest or the smallest integer past 64 bits, and 0 for
+/// a text that starts with none.
+fn integer_prefix(t: &str) -> i64 {
+    let t = t.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    let (neg, digits) = match t.as_bytes().first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let mut n: i128 = 0;
+    for d in digits.bytes().take_while(u8::is_ascii_digit) {
+        n = (n * 10 + i128::from(d - b'0')).min(i128::from(u64::MAX));
+    }
+    let n = if neg { -n } else { n };
+    n.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
 }
 
 /// A number as a column of INTEGER, NUMERIC or REAL affinity keeps it: in the first two a real
@@ -1028,6 +1116,7 @@ fn negative(lit: Lit, written: bool) -> Option<Lit> {
         Lit::Num(v, _) => v,
         Lit::Text(t) => numerify(&t),
         Lit::Blob(b) => numerify(&String::from_utf8_lossy(&b)),
+        Lit::Wide(t) => numerify(&t),
         Lit::Other(v) => return Some(Lit::Other(v)),
     };
     let v = match v {
@@ -1042,22 +1131,38 @@ fn negative(lit: Lit, written: bool) -> Option<Lit> {
 
 /// The constant a `DEFAULT` names at the start of `toks`, and how many tokens it takes: a
 /// string, a number, `NULL`, `TRUE` or `FALSE`, a blob, a bare word (which SQLite takes for a
-/// string), a sign before one of these, or one of these in parentheses, nested or not. None for
-/// an expression, and for `CURRENT_DATE`, `CURRENT_TIME` and `CURRENT_TIMESTAMP`.
-fn constant(toks: &[Tok]) -> Option<(Lit, usize)> {
+/// string), a sign before one of these, a `CAST` of one of these, or one of these in
+/// parentheses, nested or not. None for an expression, and for `CURRENT_DATE`, `CURRENT_TIME`
+/// and `CURRENT_TIMESTAMP`.
+fn constant(toks: &[Tok], wide: bool) -> Option<(Lit, usize)> {
+    // Where the parenthesis open before `rest` closes.
+    let closing = |rest: &[Tok]| {
+        let mut depth = 1usize;
+        rest.iter().position(|t| {
+            match t {
+                Tok::Punct('(') => depth += 1,
+                Tok::Punct(')') => depth -= 1,
+                _ => {}
+            }
+            depth == 0
+        })
+    };
     match toks {
         [Tok::Punct('('), rest @ ..] => {
-            let mut depth = 1usize;
-            let close = rest.iter().position(|t| {
-                match t {
-                    Tok::Punct('(') => depth += 1,
-                    Tok::Punct(')') => depth -= 1,
-                    _ => {}
-                }
-                depth == 0
-            })?;
-            let (lit, n) = constant(&rest[..close])?;
+            let close = closing(rest)?;
+            let (lit, n) = constant(&rest[..close], wide)?;
             (n == close).then_some((lit, close + 2))
+        }
+        // `CAST(<constant> AS <type>)`, which SQLite evaluates (Fable M4 code r8 #1).
+        [Tok::Word(w), Tok::Punct('('), rest @ ..] if w.eq_ignore_ascii_case("CAST") => {
+            let close = closing(rest)?;
+            let (lit, n) = constant(&rest[..close], wide)?;
+            let ty = rest[..close].get(n + 1..).filter(|ty| !ty.is_empty())?;
+            if !rest[n].is("AS") {
+                return None;
+            }
+            let ty: Vec<String> = ty.iter().filter_map(Tok::name).collect();
+            Some((lit.cast(affinity(&ty.join(" ")), wide), close + 3))
         }
         [Tok::Quoted(s), ..] => Some((Lit::Text(s.clone()), 1)),
         [Tok::Word(x), Tok::Quoted(h), ..] if x.eq_ignore_ascii_case("X") => {
@@ -1070,9 +1175,9 @@ fn constant(toks: &[Tok]) -> Option<(Lit, usize)> {
         }
         // A unary plus is no operator to SQLite: `+'needle'` is `'needle'` (M4 plan r7, Codex
         // #1).
-        [Tok::Punct('+'), rest @ ..] => constant(rest).map(|(lit, n)| (lit, n + 1)),
+        [Tok::Punct('+'), rest @ ..] => constant(rest, wide).map(|(lit, n)| (lit, n + 1)),
         [Tok::Punct('-'), rest @ ..] => {
-            let (lit, n) = constant(rest)?;
+            let (lit, n) = constant(rest, wide)?;
             // A numeric literal, in parentheses or not.
             let written = rest
                 .iter()
@@ -1133,7 +1238,7 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
         true
     })?;
     for (name, root, sql) in tables {
-        let cols = columns(&sql);
+        let cols = columns(&sql, matches!(db.encoding, 2 | 3));
         let t = b.open("table", &name);
         let mut misfit = None;
         let r = db.walk(root, &mut |rowid, stored| {
@@ -1173,6 +1278,16 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The columns of a table in a UTF-8 database.
+    fn columns(sql: &str) -> Columns {
+        super::columns(sql, false)
+    }
+
+    /// The constant at the start of `toks`, in a UTF-8 database.
+    fn constant(toks: &[Tok]) -> Option<(Lit, usize)> {
+        super::constant(toks, false)
+    }
 
     #[test]
     fn varints_are_sqlites() {
@@ -1461,6 +1576,244 @@ mod tests {
         assert_eq!(trail(&e, "needle last"), ["checked", "row 1", "d"]);
         assert_eq!(trail(&e, "needle check"), ["checked", "row 1", "e"]);
         assert!(text.contains("\nlater\tb\t\t2\tlater check\n"), "{text}");
+    }
+
+    /// Fable M4 code r8 #1: `CAST(<constant> AS <type>)` is a constant to SQLite, whose
+    /// `sqlite3ValueFromExpr` gives the constant the type's affinity, casts it to the type and
+    /// then gives it the column's affinity, so a column added with such a DEFAULT may be missing
+    /// from a row. Each case is what SQLite 3.46.1, through Python's sqlite3, gives a row written
+    /// before `ALTER TABLE t ADD COLUMN <def>`; the same for the other DEFAULTs common in a
+    /// schema.
+    #[test]
+    fn a_cast_default_is_evaluated_as_sqlite_does() {
+        let t = |s: &str| Value::Text(s.into());
+        let (i, f, blob) = (Value::Int, Value::Float, Value::Blob);
+        let added = |def: &str| {
+            rebuild(
+                &columns(&format!("CREATE TABLE t(a TEXT, {def})")),
+                vec![t("1")],
+            )
+        };
+        for (def, want) in [
+            ("b DEFAULT (CAST(1 AS TEXT))", t("1")),
+            ("b DEFAULT (CAST('12abc' AS INTEGER))", i(12)),
+            ("b REAL DEFAULT (CAST(1 AS INT))", f(1.0)),
+            ("b DEFAULT (CAST('A' AS BLOB))", blob(1)),
+            ("b DEFAULT (CAST(CAST(1.5 AS INT) AS TEXT))", t("1")),
+            ("b INTEGER DEFAULT (CAST('7.0' AS TEXT))", i(7)),
+            ("b NOT NULL DEFAULT (CAST(0 AS TEXT))", t("0")),
+            ("b DEFAULT (CAST(1 AS TEXT)) CHECK(b IS NOT NULL)", t("1")),
+            ("b DEFAULT (CAST(7.0 AS BLOB))", blob(3)),
+            ("b DEFAULT (CAST(1.5 AS TEXT))", t("1.5")),
+            ("b DEFAULT (CAST(100.0 AS TEXT))", t("100.0")),
+            ("b DEFAULT (CAST(1e2 AS TEXT))", t("1e2")),
+            ("b DEFAULT (CAST(1.0e0 AS TEXT))", t("1.0e0")),
+            ("b DEFAULT (CAST(1.50 AS TEXT))", t("1.50")),
+            ("b DEFAULT (CAST(-1.50 AS TEXT))", t("-1.50")),
+            ("b DEFAULT (CAST(-0.0 AS TEXT))", t("-0.0")),
+            ("b DEFAULT (CAST(0x10 AS TEXT))", t("16")),
+            ("b DEFAULT (CAST(1_000 AS TEXT))", t("1000")),
+            ("b DEFAULT (CAST(TRUE AS TEXT))", t("1")),
+            ("b DEFAULT (CAST(-1 AS TEXT))", t("-1")),
+            ("b DEFAULT (CAST(-'5' AS TEXT))", t("-5")),
+            ("b DEFAULT (CAST(+(-1) AS TEXT))", t("-1")),
+            ("b DEFAULT (CAST(- -1 AS TEXT))", t("1")),
+            ("b DEFAULT (CAST((1) AS TEXT))", t("1")),
+            ("b DEFAULT (CAST(x'C3A9' AS TEXT))", t("é")),
+            ("b DEFAULT (CAST(x'41' AS TEXT))", t("A")),
+            ("b DEFAULT (CAST(CAST('abc' AS BLOB) AS TEXT))", t("abc")),
+            ("b DEFAULT (CAST(1e2 AS BLOB))", blob(5)),
+            ("b DEFAULT (CAST(0x10 AS BLOB))", blob(2)),
+            ("b DEFAULT (CAST(1.50 AS BLOB))", blob(3)),
+            ("b DEFAULT (CAST(-1.50 AS BLOB))", blob(4)),
+            ("b DEFAULT (CAST(TRUE AS BLOB))", blob(1)),
+            ("b DEFAULT (CAST(-'5' AS BLOB))", blob(2)),
+            ("b DEFAULT (CAST('1e2' AS INTEGER))", i(100)),
+            ("b DEFAULT (CAST('1.9' AS INTEGER))", i(1)),
+            ("b DEFAULT (CAST('-1.9' AS INTEGER))", i(-1)),
+            ("b DEFAULT (CAST('  42  ' AS INTEGER))", i(42)),
+            ("b DEFAULT (CAST(' -12abc' AS INTEGER))", i(-12)),
+            ("b DEFAULT (CAST('+5x' AS INTEGER))", i(5)),
+            ("b DEFAULT (CAST('1e5x' AS INTEGER))", i(1)),
+            ("b DEFAULT (CAST('abc' AS INTEGER))", i(0)),
+            ("b DEFAULT (CAST('0x10' AS INTEGER))", i(0)),
+            ("b DEFAULT (CAST('' AS INTEGER))", i(0)),
+            ("b DEFAULT (CAST(x'' AS INTEGER))", i(0)),
+            ("b DEFAULT (CAST(x'3132' AS INTEGER))", i(12)),
+            (
+                "b DEFAULT (CAST('99999999999999999999' AS INTEGER))",
+                i(i64::MAX),
+            ),
+            (
+                "b DEFAULT (CAST('99999999999999999999x' AS INTEGER))",
+                i(i64::MAX),
+            ),
+            (
+                "b DEFAULT (CAST('-99999999999999999999x' AS INTEGER))",
+                i(i64::MIN),
+            ),
+            ("b DEFAULT (CAST(1e30 AS INTEGER))", i(i64::MAX)),
+            ("b DEFAULT (CAST(-1e30 AS INTEGER))", i(i64::MIN)),
+            ("b DEFAULT (CAST(1e400 AS INTEGER))", i(i64::MAX)),
+            (
+                "b DEFAULT (CAST(9223372036854775808 AS INTEGER))",
+                i(i64::MAX),
+            ),
+            ("b DEFAULT (CAST(1e2 AS INTEGER))", i(100)),
+            ("b DEFAULT (CAST(1.9 AS INTEGER))", i(1)),
+            ("b DEFAULT (CAST(-1.9 AS INTEGER))", i(-1)),
+            ("b DEFAULT (CAST('12abc' AS REAL))", f(12.0)),
+            ("b DEFAULT (CAST('1.5e1x' AS REAL))", f(15.0)),
+            ("b DEFAULT (CAST('.5' AS REAL))", f(0.5)),
+            ("b DEFAULT (CAST('abc' AS REAL))", f(0.0)),
+            ("b DEFAULT (CAST('' AS REAL))", f(0.0)),
+            ("b DEFAULT (CAST('-0.0' AS REAL))", f(0.0)),
+            ("b DEFAULT (CAST(3 AS REAL))", f(3.0)),
+            ("b DEFAULT (CAST('3' AS REAL))", f(3.0)),
+            (
+                "b DEFAULT (CAST(9223372036854775807 AS REAL))",
+                f(9223372036854775807.0),
+            ),
+            ("b DEFAULT (CAST('3.0' AS NUMERIC))", i(3)),
+            ("b DEFAULT (CAST('3.5' AS NUMERIC))", f(3.5)),
+            ("b DEFAULT (CAST('12abc' AS NUMERIC))", i(12)),
+            ("b DEFAULT (CAST('1.5e1x' AS NUMERIC))", i(15)),
+            ("b DEFAULT (CAST('1e2' AS NUMERIC))", i(100)),
+            ("b DEFAULT (CAST('abc' AS NUMERIC))", i(0)),
+            ("b DEFAULT (CAST('0x10' AS NUMERIC))", i(0)),
+            ("b DEFAULT (CAST('' AS NUMERIC))", i(0)),
+            ("b DEFAULT (CAST(x'41' AS NUMERIC))", i(0)),
+            ("b DEFAULT (CAST(3.0 AS NUMERIC))", i(3)),
+            ("b DEFAULT (CAST(1.5 AS NUMERIC))", f(1.5)),
+            (
+                "b DEFAULT (CAST('9223372036854775807' AS NUMERIC))",
+                i(i64::MAX),
+            ),
+            (
+                "b DEFAULT (CAST('9223372036854775808' AS NUMERIC))",
+                f(9223372036854775808.0),
+            ),
+            ("b DEFAULT (CAST(NULL AS TEXT))", Value::Null),
+            ("b DEFAULT (CAST(NULL AS INTEGER))", Value::Null),
+            ("b DEFAULT (CAST(NULL AS BLOB))", Value::Null),
+            // The type's affinity by SQLite's rules, from all its words.
+            ("b DEFAULT (CAST(5 AS VARCHAR(10)))", t("5")),
+            ("b DEFAULT (CAST(5 AS \"TEXT\"))", t("5")),
+            ("b DEFAULT (CAST(5 AS 'TEXT'))", t("5")),
+            ("b DEFAULT (CAST('5' AS NONE))", i(5)),
+            ("b DEFAULT (CAST('5' AS FLOAT))", f(5.0)),
+            ("b DEFAULT (CAST('5' AS DOUBLE PRECISION))", f(5.0)),
+            ("b DEFAULT (CAST('5' AS UNSIGNED BIG INT))", i(5)),
+            ("b DEFAULT (CAST(('5') AS INTEGER))", i(5)),
+            ("b DEFAULT (CAST(+'5' AS INTEGER))", i(5)),
+            ("b DEFAULT ((CAST('5' AS INTEGER)))", i(5)),
+            ("b DEFAULT (cast('5' as integer))", i(5)),
+            ("b DEFAULT (CAST (1 AS TEXT))", t("1")),
+            ("b DEFAULT (CAST(1 AS TEXT) )", t("1")),
+            // A CAST in a CAST: the outer type's affinity applies to the inner one's value.
+            ("b DEFAULT (CAST(CAST('7' AS INTEGER) AS REAL))", f(7.0)),
+            ("b DEFAULT (CAST(CAST('7.5' AS REAL) AS INTEGER))", i(7)),
+            ("b DEFAULT (CAST(CAST(3 AS REAL) AS NUMERIC))", i(3)),
+            ("b TEXT DEFAULT (CAST(CAST(3 AS REAL) AS NUMERIC))", t("3")),
+            // A sign before a CAST.
+            ("b DEFAULT (-CAST('5' AS INTEGER))", i(-5)),
+            ("b DEFAULT (-CAST('5' AS TEXT))", i(-5)),
+            ("b TEXT DEFAULT (-CAST('5' AS TEXT))", t("-5")),
+            // And then the column's affinity.
+            ("b TEXT DEFAULT (CAST(1.5 AS REAL))", t("1.5")),
+            ("b TEXT DEFAULT (CAST(2 AS REAL))", t("2.0")),
+            ("b TEXT DEFAULT (CAST('5' AS INTEGER) )", t("5")),
+            ("b INTEGER DEFAULT (CAST(2.0 AS TEXT))", i(2)),
+            ("b INTEGER DEFAULT (CAST('2.5' AS TEXT))", f(2.5)),
+            ("b REAL DEFAULT (CAST('2' AS TEXT))", f(2.0)),
+            ("b NUMERIC DEFAULT (CAST(2.0 AS REAL))", i(2)),
+            ("b DEFAULT (CAST(2 AS REAL))", f(2.0)),
+            ("b BLOB DEFAULT (CAST(2 AS REAL))", f(2.0)),
+            ("b TEXT DEFAULT (CAST(x'41' AS BLOB))", blob(1)),
+            ("b INTEGER DEFAULT (CAST('7' AS BLOB))", blob(1)),
+            // The other DEFAULTs common in a schema.
+            ("b DEFAULT 7.0", f(7.0)),
+            ("b DEFAULT (7.0)", f(7.0)),
+            ("b DEFAULT -7.0", f(-7.0)),
+            ("b DEFAULT (-(7.0))", f(-7.0)),
+            ("b DEFAULT 1e2", f(100.0)),
+            ("b DEFAULT 9223372036854775808.0", f(9223372036854775808.0)),
+            ("b DEFAULT '7.0'", t("7.0")),
+            ("b TEXT DEFAULT 7.0", t("7.0")),
+            ("b DEFAULT 'abc' COLLATE nocase", t("abc")),
+            ("b DEFAULT ''", t("")),
+            ("b DEFAULT x''", blob(0)),
+            ("b DEFAULT 0", i(0)),
+            ("b BOOLEAN DEFAULT FALSE", i(0)),
+            ("b BOOLEAN DEFAULT 'false'", t("false")),
+            ("b DATETIME DEFAULT '1970-01-01'", t("1970-01-01")),
+            (
+                "b DATE DEFAULT '2020-01-01 00:00:00'",
+                t("2020-01-01 00:00:00"),
+            ),
+            ("b VARCHAR(10) DEFAULT 0", t("0")),
+            ("b DECIMAL(10,2) DEFAULT 0.00", i(0)),
+            ("b DECIMAL(10,2) DEFAULT '0.00'", i(0)),
+            ("b NUMERIC DEFAULT 1.50", f(1.5)),
+            ("b NUMERIC DEFAULT -0.0", i(0)),
+            ("b REAL DEFAULT '-0.0'", f(0.0)),
+            ("b JSON DEFAULT '{}'", t("{}")),
+            ("b TEXT DEFAULT 'null'", t("null")),
+        ] {
+            assert_eq!(added(def), Ok(vec![t("1"), want.clone()]), "{def}");
+            // The value as the Extractor prints it, which a -0.0 would else hide from the
+            // comparison above.
+            let got = added(def).unwrap().pop().unwrap();
+            assert_eq!(got.shown(), want.shown(), "{def}");
+        }
+        // In a UTF-16 database a text made a blob is its UTF-16 bytes, and a blob written as such
+        // is read as UTF-8, without an odd last byte when made text: the same in UTF-16le and
+        // UTF-16be.
+        for (def, want) in [
+            ("b DEFAULT (CAST('A' AS BLOB))", blob(2)),
+            ("b DEFAULT (CAST('é' AS BLOB))", blob(2)),
+            ("b DEFAULT (CAST(7.0 AS BLOB))", blob(6)),
+            ("b DEFAULT (CAST(-'5' AS BLOB))", blob(4)),
+            ("b DEFAULT (CAST(x'4100' AS TEXT))", t("A\0")),
+            ("b DEFAULT (CAST(x'0041' AS TEXT))", t("\0A")),
+            ("b DEFAULT (CAST(x'410042' AS TEXT))", t("A\0")),
+            ("b DEFAULT (CAST(x'31003200' AS INTEGER))", i(1)),
+            ("b DEFAULT (CAST(x'00310032' AS INTEGER))", i(0)),
+            ("b DEFAULT (CAST(x'3132' AS INTEGER))", i(12)),
+            ("b DEFAULT (CAST(x'31003200' AS REAL))", f(1.0)),
+            ("b DEFAULT (CAST(x'31003200' AS NUMERIC))", i(1)),
+            ("b DEFAULT (CAST(CAST('abc' AS BLOB) AS TEXT))", t("abc")),
+            ("b DEFAULT (-CAST('5' AS BLOB))", i(-5)),
+            ("b DEFAULT x'0041'", blob(2)),
+        ] {
+            let got = rebuild(
+                &super::columns(&format!("CREATE TABLE t(a TEXT, {def})"), true),
+                vec![t("1")],
+            );
+            assert_eq!(got, Ok(vec![t("1"), want]), "UTF-16: {def}");
+        }
+        // And in UTF-8.
+        assert_eq!(
+            added("b DEFAULT (CAST('é' AS BLOB))"),
+            Ok(vec![t("1"), blob(2)])
+        );
+        assert_eq!(
+            added("b DEFAULT (CAST(x'410042' AS TEXT))"),
+            Ok(vec![t("1"), t("A\0B")])
+        );
+        // SQLite refuses these with «Cannot add a column with non-constant default», so a row
+        // holds the column.
+        for def in [
+            "b DEFAULT (CAST(1 + 1 AS TEXT))",
+            "b DEFAULT (CAST(1 AS TEXT) || 'x')",
+            "b DEFAULT (CAST(1 AS TEXT) COLLATE nocase)",
+            "b DEFAULT ('abc' COLLATE nocase)",
+            "b DEFAULT CURRENT_TIMESTAMP",
+            "b DEFAULT (datetime('now'))",
+            "b DEFAULT (lower('A'))",
+        ] {
+            assert!(added(def).is_err(), "{def}");
+        }
     }
 
     /// Codex r1 #6: SQLite's quirk: a column's `INTEGER PRIMARY KEY DESC` is no alias of the
@@ -1850,7 +2203,10 @@ rng = random.Random(seed)
 COLLS = ["BINARY", "NOCASE", "RTRIM", "binary", "nocase", "rtrim"]
 TYPES = ["INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC", "", "INT", "VARCHAR(10)", "DOUBLE"]
 DEFAULTS = ["'dflt'", "42", "-3", "1.5", "NULL", "x'00ff'", "('par')", "-2.5", "+7", "0x10",
-            "'NOT NULL'", "('PRIMARY KEY')", "'UNIQUE DESC'", "'x COLLATE nocase'", "'GENERATED AS (a)'"]
+            "'NOT NULL'", "('PRIMARY KEY')", "'UNIQUE DESC'", "'x COLLATE nocase'", "'GENERATED AS (a)'",
+            # SQLite evaluates a CAST of a constant (Fable M4 code r8 #1).
+            "(CAST(1 AS TEXT))", "(CAST('12abc' AS INTEGER))", "(CAST(2 AS REAL))", "(CAST('A' AS BLOB))",
+            "(CAST(1.50 AS TEXT))", "(-CAST('5' AS TEXT))", "(CAST('7.0' AS NUMERIC))"]
 
 # Constraints whose expressions or strings hold the words of other constraints, which are no
 # constraints of the column (Codex M4 code r7 #1). Each holds for any row.
