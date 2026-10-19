@@ -2698,3 +2698,84 @@ fn a_root_linked_to_a_directory_is_walked_as_ripgrep() {
     }
     r.assert_empty();
 }
+
+/// A file without an extension of 100 000 bytes, a Match on its first line and others after,
+/// with a NUL at byte `nul`.
+fn log_with_a_nul(nul: usize) -> Vec<u8> {
+    let mut b = b"needle on the first line\n".to_vec();
+    let mut i = 0;
+    while b.len() < 100_000 {
+        let line = if i % 500 == 0 {
+            format!("needle again {i}\n")
+        } else {
+            format!("filler line {i}\n")
+        };
+        b.extend_from_slice(line.as_bytes());
+        i += 1;
+    }
+    b.truncate(100_000);
+    b[nul] = 0;
+    b
+}
+
+/// Code review r7, Fable #1: the first bytes read of a file without an extension to tell a
+/// document are searched first, and the searcher's first read of them and of the file after
+/// them holds what its first read of the file would, so binary data is detected where rg
+/// 14.1.1 detects it: NULs before, at and after the end of those bytes (2051) and of the
+/// searcher's first buffer (64 KiB), the file walked and named, in every mode.
+#[test]
+fn a_nul_past_the_head_of_a_file_without_an_extension_is_detected_as_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let offsets = [100, 2050, 2051, 2052, 4096, 65_535, 65_536, 70_000];
+    for nul in offsets {
+        std::fs::create_dir_all(fx.file(&format!("nulhead/at{nul}"))).unwrap();
+        std::fs::write(
+            fx.file(&format!("nulhead/at{nul}/log")),
+            log_with_a_nul(nul),
+        )
+        .unwrap();
+    }
+    let mut r = Report(Vec::new());
+    for nul in offsets {
+        let dir = format!("nulhead/at{nul}");
+        let file = format!("{dir}/log");
+        for root in [&dir, &file] {
+            for flags in [
+                &[][..],
+                &["-n"],
+                &["-l"],
+                &["-q"],
+                &["-c"],
+                &["--files-without-match"],
+                &["--json"],
+                &["-j1"],
+            ] {
+                let mut a = flags.to_vec();
+                a.extend_from_slice(&["needle", root]);
+                let want = rg(&fx, &a, In::Null);
+                let shown = |o: &Output| match flags {
+                    ["--json"] => common::mask_json_times(&stdout(o)),
+                    _ => stdout(o),
+                };
+                for mode in [&["--no-docs", "--no-trail"][..], &["--no-trail"], &[]] {
+                    let mut s = mode.to_vec();
+                    s.extend_from_slice(&a);
+                    let got = s4(&fx, &s, In::Null);
+                    // The Trail adds to each line: only its exit code is rg's, and the
+                    // summaries, which carry no Trail.
+                    let lines = mode.is_empty() && !matches!(flags, ["-l" | "-c" | "-q"]);
+                    let out = if lines { shown(&want) } else { shown(&got) };
+                    r.check(
+                        format!("{s:?}"),
+                        (code(&want), shown(&want)),
+                        (code(&got), out),
+                    );
+                }
+            }
+        }
+    }
+    r.assert_empty();
+}

@@ -490,6 +490,33 @@ struct Held {
     rest: Option<File>,
 }
 
+/// A reader of a file from the first bytes `Ctx::document` read of it and on through the file,
+/// each of whose reads fills the buffer as the file's own read would: what is left of the head,
+/// and the file after it in the same call. The searcher's first read then holds what rg
+/// 14.1.1's holds, and binary data is detected in the same read (code review r7, Fable #1).
+struct HeadThen {
+    head: Vec<u8>,
+    at: usize,
+    rest: File,
+}
+
+impl Read for HeadThen {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = (self.head.len() - self.at).min(buf.len());
+        buf[..n].copy_from_slice(&self.head[self.at..self.at + n]);
+        self.at += n;
+        if n == buf.len() {
+            return Ok(n);
+        }
+        match self.rest.read(&mut buf[n..]) {
+            Ok(m) => Ok(n + m),
+            // What was copied is returned; the next read meets the error again.
+            Err(_) if n > 0 => Ok(n),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 /// What a Trail-mode thread keeps between files: a searcher for files and stdin (BOM sniffing
 /// on, a reader), one for Sources (already decoded), and the output buffer.
 struct TrailState {
@@ -885,7 +912,11 @@ impl Ctx<'_> {
             Some(Held {
                 head,
                 rest: Some(f),
-            }) => Box::new(std::io::Cursor::new(head).chain(f)),
+            }) => Box::new(HeadThen {
+                head,
+                at: 0,
+                rest: f,
+            }),
             None => Box::new(File::open(p)?),
         })
     }
