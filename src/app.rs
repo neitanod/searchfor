@@ -315,36 +315,37 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         args.fragment_width
     };
     // The Format Definitions: for the Trails, and with --docs (the default) for every mode,
-    // which must tell a document by its name before the search (M4 plan, design note 3).
-    let registry = (matches!(mode, Mode::Trail) || args.docs)
-        .then(|| load_registry(&msgs, formats::user_formats_dir().as_deref()));
-    let detector = match &registry {
-        Some(r) => Some(Detector::new(r, &args.formats)?.with_docs(args.docs)),
-        None => None,
-    };
-    let roots = match args.docs {
-        true => paths
-            .iter()
-            .filter(|p| p.as_path() != Path::new("-"))
-            .map(|p| (p.clone(), resolve(p)))
-            .collect(),
-        false => Vec::new(),
-    };
-    let reach = roots.iter().any(|(_, r)| match r {
-        Resolved::At(at) => reaches(at),
-        Resolved::Descriptors | Resolved::Unknown => true,
-    });
+    // which must tell a document by its name before the search (M4 plan, design note 3). Only
+    // the built-in ones and no override: loaded once a file may be a document by the built-in
+    // document Formats' names (`Ctx::detector`), so a search without one costs what it costs
+    // with --no-docs (code review r7, Codex #3 and Fable #3). Else loaded here: the Trails
+    // need them for every file, an unknown override is an error before the search, and a
+    // user's or a Grammar's Definition may claim any name as a document, and warns first.
+    let user_formats = formats::user_formats_dir();
+    let registry = std::sync::OnceLock::new();
+    let detector = std::sync::OnceLock::new();
+    let lazy = args.docs
+        && matches!(mode, Mode::Passthrough | Mode::Quiet | Mode::QuietJson)
+        && args.formats.is_empty()
+        && !formats::any_user_definition(
+            user_formats.as_deref(),
+            crate::grammars::grammars_dir().as_deref(),
+        );
+    if (matches!(mode, Mode::Trail) || args.docs) && !lazy {
+        let r = registry.get_or_init(|| load_registry(&msgs, user_formats.as_deref()));
+        let _ = detector.set(Detector::new(r, &args.formats)?.with_docs(args.docs));
+    }
     let ctx = Ctx {
         args,
         matcher,
-        roots,
-        reach,
+        registry: &registry,
+        detector: &detector,
+        roots: Default::default(),
         follow: args.follow && !args.no_follow,
         links: Default::default(),
         linked: AtomicBool::new(false),
         msgs,
         pre,
-        docs: detector.as_ref().filter(|_| args.docs),
         in_memory: search::rg_in_memory(&paths, implicit_stdin),
         paths,
         walker,
@@ -397,7 +398,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
             }
         }
         Mode::Trail => {
-            let detector = detector.as_ref().expect("built for Mode::Trail");
+            let detector = ctx.detector();
             let ro = RenderOptions {
                 layout,
                 line_numbers: !args.no_line_number,
@@ -651,10 +652,14 @@ struct Ctx<'a> {
     processors: processors::Processors,
     /// `--pre` and `-z`.
     pre: Preprocess,
-    /// With --docs, the Detector that tells documents by their name or magic bytes.
-    docs: Option<&'a Detector<'a>>,
-    /// With --docs, each path to search and how its name resolves (`Ctx::through_descriptors`).
-    roots: Vec<(PathBuf, Resolved)>,
+    /// The Format Definitions and their Detector, which with --docs tells documents by their
+    /// name or magic bytes: loaded in `main`, or once needed (`Ctx::detector`).
+    registry: &'a std::sync::OnceLock<Registry>,
+    detector: &'a std::sync::OnceLock<Detector<'a>>,
+    /// With --docs, each path to search and how its name resolves, and whether some root may
+    /// have a name of a descriptor below it (`reaches`) or is not resolved: resolved once a
+    /// file may be a document (`Ctx::roots`).
+    roots: std::sync::OnceLock<(Vec<(PathBuf, Resolved)>, bool)>,
     /// `--follow`: the walker follows links below the roots.
     follow: bool,
     /// With --docs and `--follow`, each directory below a root the walker reached by following
@@ -663,11 +668,9 @@ struct Ctx<'a> {
     links: std::sync::RwLock<Links>,
     /// `links` is not empty.
     linked: AtomicBool,
-    /// Some root may have a name of a descriptor below it (`reaches`), or is not resolved.
-    reach: bool,
 }
 
-impl Ctx<'_> {
+impl<'a> Ctx<'a> {
     /// Walks the paths, sequentially where ripgrep 14.1.1 uses one thread (`--sort path`, `-j1`,
     /// one file), else in parallel with one state per thread (design note 11), and calls `visit`
     /// for every file to search.
@@ -741,7 +744,7 @@ impl Ctx<'_> {
         let is_dir = d.file_type().is_some_and(|t| t.is_dir())
             || (d.depth() == 0 && d.path_is_symlink() && d.path().is_dir());
         let explicit = d.depth() == 0 && !is_dir;
-        if is_dir && d.depth() > 0 && self.follow && self.docs.is_some() && d.path_is_symlink() {
+        if is_dir && d.depth() > 0 && self.follow && self.args.docs && d.path_is_symlink() {
             let resolved = resolve(d.path());
             let mut links = self.links.write().unwrap_or_else(|e| e.into_inner());
             let key = d.path().as_os_str().as_encoded_bytes().to_vec();
@@ -780,6 +783,48 @@ impl Ctx<'_> {
         })
     }
 
+    /// The Detector, loaded on the first call when `main` did not load it: then there is no
+    /// override and no Definition but the built-in ones, whose directories are not read again.
+    fn detector(&self) -> &'a Detector<'a> {
+        self.detector.get_or_init(|| {
+            let r = self
+                .registry
+                .get_or_init(|| Registry::load_all(None, None, &processors::Processors::known).0);
+            Detector::new(r, &self.args.formats)
+                .expect("without overrides")
+                .with_docs(self.args.docs)
+        })
+    }
+
+    /// With --docs, the Detector when `p` may be a document (`Detector::may_be_document`):
+    /// before it is loaded, as the built-in document Formats tell by the name, which are all
+    /// there are then (`main`).
+    fn may_be_document(&self, p: &Path) -> Option<&'a Detector<'a>> {
+        if !self.args.docs
+            || (self.detector.get().is_none() && !formats::detector::builtin_may_be_document(p))
+        {
+            return None;
+        }
+        Some(self.detector()).filter(|det| det.may_be_document(p))
+    }
+
+    /// `Ctx::roots`, resolved on the first call.
+    fn roots(&self) -> &(Vec<(PathBuf, Resolved)>, bool) {
+        self.roots.get_or_init(|| {
+            let roots: Vec<(PathBuf, Resolved)> = self
+                .paths
+                .iter()
+                .filter(|p| p.as_path() != Path::new("-"))
+                .map(|p| (p.clone(), resolve(p)))
+                .collect();
+            let reach = roots.iter().any(|(_, r)| match r {
+                Resolved::At(at) => reaches(at),
+                Resolved::Descriptors | Resolved::Unknown => true,
+            });
+            (roots, reach)
+        })
+    }
+
     /// With --docs, `Through::Docs` for a file whose Format is a document Format: by its name,
     /// or, for a name without an extension, by its first bytes (read only then, and kept in
     /// `held` when the file is no document).
@@ -790,7 +835,7 @@ impl Ctx<'_> {
         above: &mut Above,
     ) -> Option<Through> {
         let p = d.path();
-        let det = self.docs.filter(|det| det.may_be_document(p))?;
+        let det = self.may_be_document(p)?;
         // `/dev/stdin` redirected from a file is a regular file, which the reader would open
         // as its own stdin (code review r1, Codex #1), and so is a file under a directory
         // named by a descriptor (code review r2, Codex #2).
@@ -835,7 +880,8 @@ impl Ctx<'_> {
     /// so only those names are looked at, with no system call. A name that is a link itself is
     /// resolved whole (code review r6 and r7, Fable #1 and #2).
     fn through_descriptors(&self, d: &DirEntry, above: &mut Above) -> bool {
-        if d.depth() > 0 && !self.follow && !self.reach {
+        let (roots, reach) = self.roots();
+        if d.depth() > 0 && !self.follow && !reach {
             return false;
         }
         let p = d.path();
@@ -862,7 +908,7 @@ impl Ctx<'_> {
             }
             false => None,
         };
-        let base = linked.or_else(|| match self.roots.as_slice() {
+        let base = linked.or_else(|| match roots.as_slice() {
             [only] => Some(only),
             roots => p
                 .ancestors()
@@ -994,7 +1040,12 @@ impl Ctx<'_> {
         searcher.set_binary_detection(search::binary_detection(self.args, t.explicit));
         let m = &self.matcher;
         match &t.fs {
-            Some(p) if self.in_memory && t.through.is_none() => searcher.search_path(m, p, sink),
+            // The first bytes `Ctx::document` read, when they are the whole file, are what the
+            // memory map would hold (code review r7, Fable #3).
+            Some(p) if self.in_memory && t.through.is_none() => match t.held.take() {
+                Some(Held { head, rest: None }) => searcher.search_slice(m, &head, sink),
+                _ => searcher.search_path(m, p, sink),
+            },
             _ => {
                 let mut input = self.open_input(t)?;
                 let searched = searcher.search_reader(m, &mut input, sink);
@@ -1350,7 +1401,7 @@ impl Ctx<'_> {
     ) -> bool {
         let object = |head: &[u8]| !self.args.invert_match && detector.object(head).is_some();
         match &t.fs {
-            Some(p) if self.in_memory && t.through.is_none() => match Source::open(p, t.explicit) {
+            Some(p) if self.in_memory && t.through.is_none() => match self.source(t, p) {
                 Ok(src) if object(src.head()) => return false,
                 Ok(src) => self.stream_file(st, t, ro, Streamed::Source(&src), None, None),
                 Err(e) => self.msgs.error(format_args!("{}: {e}", t.path.display())),

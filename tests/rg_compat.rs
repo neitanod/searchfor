@@ -2699,12 +2699,12 @@ fn a_root_linked_to_a_directory_is_walked_as_ripgrep() {
     r.assert_empty();
 }
 
-/// A file without an extension of 100 000 bytes, a Match on its first line and others after,
+/// A file without an extension of `size` bytes, a Match on its first line and others after,
 /// with a NUL at byte `nul`.
-fn log_with_a_nul(nul: usize) -> Vec<u8> {
+fn log_with_a_nul(size: usize, nul: Option<usize>) -> Vec<u8> {
     let mut b = b"needle on the first line\n".to_vec();
     let mut i = 0;
-    while b.len() < 100_000 {
+    while b.len() < size {
         let line = if i % 500 == 0 {
             format!("needle again {i}\n")
         } else {
@@ -2713,8 +2713,10 @@ fn log_with_a_nul(nul: usize) -> Vec<u8> {
         b.extend_from_slice(line.as_bytes());
         i += 1;
     }
-    b.truncate(100_000);
-    b[nul] = 0;
+    b.truncate(size);
+    if let Some(nul) = nul {
+        b[nul] = 0;
+    }
     b
 }
 
@@ -2722,25 +2724,42 @@ fn log_with_a_nul(nul: usize) -> Vec<u8> {
 /// document are searched first, and the searcher's first read of them and of the file after
 /// them holds what its first read of the file would, so binary data is detected where rg
 /// 14.1.1 detects it: NULs before, at and after the end of those bytes (2051) and of the
-/// searcher's first buffer (64 KiB), the file walked and named, in every mode.
+/// searcher's first buffer (64 KiB), the file walked and named, in every mode. And files those
+/// bytes hold whole, which a named file is searched in memory from (Fable #3): with a NUL or
+/// without, a UTF-16 BOM, and empty.
 #[test]
 fn a_nul_past_the_head_of_a_file_without_an_extension_is_detected_as_ripgrep() {
     if !reference_rg() {
         return;
     }
     let fx = Fixture::new();
-    let offsets = [100, 2050, 2051, 2052, 4096, 65_535, 65_536, 70_000];
-    for nul in offsets {
-        std::fs::create_dir_all(fx.file(&format!("nulhead/at{nul}"))).unwrap();
-        std::fs::write(
-            fx.file(&format!("nulhead/at{nul}/log")),
-            log_with_a_nul(nul),
+    let mut cases: Vec<(String, Vec<u8>)> = [100, 2050, 2051, 2052, 4096, 65_535, 65_536, 70_000]
+        .into_iter()
+        .map(|nul| (format!("at{nul}"), log_with_a_nul(100_000, Some(nul))))
+        .collect();
+    let utf16: Vec<u8> = [0xFF, 0xFE]
+        .into_iter()
+        .chain(
+            "a needle\nb\nneedle c\n"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes),
         )
-        .unwrap();
+        .collect();
+    cases.extend([
+        ("whole1500".into(), log_with_a_nul(1500, Some(1400))),
+        ("whole2051".into(), log_with_a_nul(2051, Some(2050))),
+        ("over2052".into(), log_with_a_nul(2052, Some(2051))),
+        ("plain1500".into(), log_with_a_nul(1500, None)),
+        ("utf16".into(), utf16),
+        ("empty".into(), Vec::new()),
+    ]);
+    for (name, bytes) in &cases {
+        std::fs::create_dir_all(fx.file(&format!("nulhead/{name}"))).unwrap();
+        std::fs::write(fx.file(&format!("nulhead/{name}/log")), bytes).unwrap();
     }
     let mut r = Report(Vec::new());
-    for nul in offsets {
-        let dir = format!("nulhead/at{nul}");
+    for (name, _) in &cases {
+        let dir = format!("nulhead/{name}");
         let file = format!("{dir}/log");
         for root in [&dir, &file] {
             for flags in [
