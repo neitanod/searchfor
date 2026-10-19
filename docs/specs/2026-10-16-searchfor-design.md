@@ -709,7 +709,11 @@ binaries are often named without a telling extension (`libc.so.6`, `ls`; §4.1, 
   bytes around it, and the string made printable after, a control byte of a replacement shown
   as `.` (M5a plan, review r2); the replacements made by the search of the file in one pass
   over each line of those bytes, as `rg -a` makes them, so a `-P` Match after `\K` too, with the
-  groups the search found (M5a plan, reviews r3 and r4).
+  groups the search found (M5a plan, reviews r3 and r4). A line the search reports where the
+  search of the line's own bytes finds no Match, a `-P` Match whose `\K` leaves out the bytes
+  its pattern read before the line, is a row too: the string the line makes, under the Trail
+  of its offset, without a highlight, as rg prints that line, and s4 exits with 0 (M5a plan,
+  review r5).
 - **Trail (D7).** `ELF x86-64 › .rodata › main.version+0x10`:
   - the image (`kind = "object"`): the Format and the architecture, `ELF x86-64`, `ELF aarch64`,
     `PE x86-64`, `PE i386`, `Mach-O arm64`, `Mach-O x86-64`; a machine without a name shows its
@@ -1182,8 +1186,8 @@ v0.3 release binary, which adds `markup`, `csv` (with `csv-core`) and `subtitles
     the start of a line, as rg's printer of several lines (M5a plan, review r3). A `-U` search
     whose pattern cannot match a line break prints as one without `-U`, as grep-printer's
     printers choose (`multi_line_with_matcher`). Every row ends with `\n`, with `--crlf` and
-    `--null-data` too, a record's NUL left out (M5a plan, review r4); `--no-trail` prints rg's
-    terminator.
+    `--null-data` too, a record's NUL left out, a context record's too (M5a plan, reviews r4 and
+    r5); `--no-trail` prints rg's terminator.
   - `--passthru` prints every line of every file searched, a file without a Match too, whose
     exit code stays 1.
   - `--stats` prints rg's block after the output: every file searched is counted, the bytes
@@ -1432,7 +1436,12 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
     `--no-trail`, at most 1.03 ×, the median of three alternated series. In `tests/perf.rs`: `-P`
     and `-U` over 10 MB with `--no-trail` within 1.25 × rg; `--files` over 20 000 files within
     1.25 × rg plus 10 ms; on a 50 MB Markdown file, `--column -b`, `-o`, `--vimgrep`, `-r` and
-    `--trim` within 1.25 × the default's time and its RSS plus 16 MiB.
+    `--trim` within 1.25 × the default's time and its RSS plus 16 MiB. Every mode that prints
+    Matches costs time that grows with them, not with their square: in `tests/cli_m5.rs`
+    (`m5_22`), the Trail layouts with `-o`, `-r`, `--vimgrep`, `--trim`, `-C`, `--passthru`,
+    `--expand`, `-U` and `--null-data`, `--json`, object files and the MCP server, over 4 N
+    Matches of a line or of a file, each cost less than six times what they cost over N (M5a
+    plan, review r5).
 33. **No flag combination panics (M5a).** `tests/fuzz_m5.rs` runs seeded combinations of
     ripgrep's and s4's flags, patterns and paths (CRLF, NUL records, Latin-1, long lines): no
     run panics, none takes more than 10 s, every exit code is 0, 1, or 2 with a message.
