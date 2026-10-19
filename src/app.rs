@@ -1377,7 +1377,8 @@ impl<'a> Ctx<'a> {
             if failed == Some(true) {
                 return;
             }
-            match summary::render(mode, &t.path, d, self.with_filename, buf) {
+            let (look, zero) = (&ro.look, self.args.include_zero);
+            match summary::render(mode, &t.path, d, self.with_filename, look, zero, buf) {
                 Ok(true) => matched(),
                 Ok(false) => {}
                 Err(e) => self.msgs.error(e),
