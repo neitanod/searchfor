@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The corpus of scripts/bench-m4.sh (M4 plan, D23), written with Python's standard library
-only: documents of each --docs Format, object files copied from the system, and 20 000 small
+only: documents of each document Format, object files copied from the system, and 20 000 small
 text files. Every 40th document and object file holds SPARSE. `texts/` holds the text of each
 document as the Extractors write it (a line per paragraph or row), for rg to search.
 Usage: scripts/gen-m4-corpus.py DIR SPARSE"""

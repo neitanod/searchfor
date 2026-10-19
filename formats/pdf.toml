@@ -1,4 +1,4 @@
-# formats/pdf.toml — PDF with --docs (spec §5.8): `3 Results › 3.2 Costs › page 42`.
+# formats/pdf.toml — PDF (spec §5.8; searched unless --no-docs): `3 Results › 3.2 Costs › page 42`.
 name       = "pdf"
 extensions = ["pdf"]
 magic      = [{ hex = "255044462d" }]

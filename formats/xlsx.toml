@@ -1,4 +1,4 @@
-# formats/xlsx.toml — Excel workbooks: `Budget › B12` with --docs (spec §5.8).
+# formats/xlsx.toml — Excel workbooks: `Budget › B12` (spec §5.8; searched unless --no-docs).
 name       = "xlsx"
 extensions = ["xlsx", "xlsm", "xltx", "xltm"]
 processor  = "docs"

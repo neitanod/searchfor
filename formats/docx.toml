@@ -1,4 +1,4 @@
-# formats/docx.toml — Word documents: `2 Costs › table 1 › row 3 › Price` with --docs (spec §5.8).
+# formats/docx.toml — Word documents: `2 Costs › table 1 › row 3 › Price` (spec §5.8; searched unless --no-docs).
 name       = "docx"
 extensions = ["docx", "docm", "dotx", "dotm"]
 processor  = "docs"

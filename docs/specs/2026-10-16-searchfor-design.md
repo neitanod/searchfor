@@ -28,7 +28,7 @@ contract. That combination is the product.
 
 | Area | What ships | Grill |
 |---|---|---|
-| Formats | Markdown, YAML, JSON, TOML, code via tree-sitter, HTML, XML, CSV and TSV, subtitles (SubRip, WebVTT), ELF/PE/Mach-O; with `--docs`, PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite (§3, M4) | #1, 8380, 8390, 8395 |
+| Formats | Markdown, YAML, JSON, TOML, code via tree-sitter, HTML, XML, CSV and TSV, subtitles (SubRip, WebVTT), ELF/PE/Mach-O; by default, PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite, which `--no-docs` turns off (§3, M4) | #1, 8380, 8390, 8395, 8750 |
 | Engine | ripgrep's crates in-process ([ADR 0001](../adr/0001-embed-ripgrep-engine-as-library.md)) | #2 |
 | Flags | Full ripgrep flag compatibility as the target, plus searchfor's own flags; ripgrep's `--pre` and `-z` from M4 (§5.9) | #3, 8395 |
 | Structural search | `--within`, `--expand`, `--in-headings` | #4 |
@@ -59,7 +59,7 @@ contract. That combination is the product.
 paths ─▶ walker (ignore crate: .gitignore, -g, -t, --hidden…)
           │
           ├─ regular file ──────────────────────────────┐
-          └─ document (only with --docs) ─▶ extractor ──┤
+          └─ document (unless --no-docs) ─▶ extractor ──┤
                                                         ▼
                                     searcher (grep-searcher + grep-regex)
                                                         │ Matches, by file
@@ -73,16 +73,21 @@ paths ─▶ walker (ignore crate: .gitignore, -g, -t, --hidden…)
 1. **Search first, describe later.** The Detector and the Processor run only on files that
    have at least one Match. A tree with ten thousand files and three Matches pays for three
    Processor runs. This keeps the cost of searchfor over ripgrep proportional to the number
-   of matching files.
+   of matching files (8385). Documents, searched by default, are the exception of point 3:
+   each one is extracted whether it holds a Match or not (8750).
 2. **`--in-headings` is the exception**: it needs Trails to decide what counts as a Match, so
    with it every candidate file is processed. It is documented as slower.
 3. **What is searched (M4).** A file is searched as it is, or, as in ripgrep, through
-   `--pre` or `-z` (§5.9), or with `--docs` in the text an Extractor takes from a document
-   (decisions 8393–8395, §5.8): PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite. A
-   document is told by its name (or, without an extension, its first bytes) before the search,
-   extracted, and its text goes through the same searcher, filters and printers as a file; its
-   Trails come from the Extractor's Outline, so no Processor runs on it. Without `--docs` those
-   files are treated as ripgrep treats them, at no extra cost. `--docs` is independent of `-z`,
+   `--pre` or `-z` (§5.9), or, by default, in the text an Extractor takes from a document
+   (decisions 8393–8395, 8750, §5.8): PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite.
+   A document is told by its name (or, without an extension, its first bytes) before the
+   search, extracted, and its text goes through the same searcher, filters and printers as a
+   file; its Trails come from the Extractor's Outline, so no Processor runs on it. Documents are
+   the second exception to point 1: every document of the search is extracted, a Match in it
+   or not, so their cost does not wait for a Match (8750). This holds in a terminal and in a
+   pipe alike. With `--no-docs` those files are treated as ripgrep treats them, at no extra
+   cost; `--docs` turns the default back on after a `--no-docs`, the last of the two winning.
+   Searching documents is independent of `-z`,
    which keeps ripgrep's meaning (single-stream compressed files). Archive Formats (zip, tar, 7z,
    rar, deb, rpm, jar) are out of scope (8390).
 4. **Binary files.** ripgrep prints `binary file matches` and stops. For an object file (ELF,
@@ -109,7 +114,7 @@ Signals, in order; the first one that decides wins:
 2. Exact file name (`Dockerfile`, `Makefile`, `.bashrc`, `Cargo.lock`).
 3. Extension.
 4. Leading magic bytes (`%PDF-`, `SQLite format 3\0`, the `mimetype` of OpenDocument and EPUB
-   files at byte 30 for the documents of `--docs`, M4 plan; `<?xml` for XML, M3 plan; ELF,
+   files at byte 30 for the documents, M4 plan; `<?xml` for XML, M3 plan; ELF,
    `MZ`/PE and Mach-O for object files, below).
 5. Shebang on the first line (`#!/usr/bin/env bash` → bash).
 
@@ -124,8 +129,8 @@ Two M4 exceptions (M4 plan, D5, D10):
   a telling one (`libc.so.6`, `ls`, `app.bin`). In every file with a Match whose name decides
   no other Format, its first bytes are compared with their magic, read only once the file has a
   Match, so a binary costs nothing more until then (8385).
-- **Document Formats** (`processor = "docs"`) take part in detection only with `--docs`, and
-  then before the search, since the search runs on their text: by name, or, for a name without
+- **Document Formats** (`processor = "docs"`) take part in detection unless `--no-docs` (8750),
+  and then before the search, since the search runs on their text: by name, or, for a name without
   an extension, by its first bytes, read for that.
 
 A file no signal decides is **Plain**: its Matches print with an empty Trail, exactly like
@@ -185,7 +190,7 @@ it by speaking protocol v1 (§4.4).
 | `csv` | CSV, TSV | `csv-core`, which reads fields and reports the bytes each one takes (§5.5) |
 | `subtitles` | SubRip (`.srt`), WebVTT (`.vtt`) | a line scanner of our own (§5.6) |
 | `object` | ELF, PE, Mach-O (§5.7) | goblin 0.10, and rustc-demangle for Rust symbol names (M4 plan, D3) |
-| `docs` | PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB, SQLite, only with `--docs` (§5.8). Not a Processor that runs on a file: the Definition names the Extractor (`extractor` in `[params]`), which builds the text and its Outline before the search | lopdf 0.45 for PDF; the zip crate and an XML reader of our own for the zip-based formats; a SQLite reader of our own (M4 plan, D12, D13, D15) |
+| `docs` | PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB, SQLite, unless `--no-docs` (§5.8). Not a Processor that runs on a file: the Definition names the Extractor (`extractor` in `[params]`), which builds the text and its Outline before the search | lopdf 0.45 for PDF; the zip crate and an XML reader of our own for the zip-based formats; a SQLite reader of our own (M4 plan, D12, D13, D15) |
 | `external` | anything | a Helper Processor named in the Definition (§4.4) |
 
 `keypath` uses native parsers instead of tree-sitter (M2 research, 2026-10-16): tree-sitter-yaml
@@ -713,10 +718,13 @@ binaries are often named without a telling extension (`libc.so.6`, `ls`; §4.1, 
 - Image and audio metadata, WebAssembly and Java `.class` stay in M6 (8385); they will be more
   Formats of this kind (M4 plan, D1).
 
-### 5.8 Documents (`--docs`, 8393–8395)
+### 5.8 Documents (8393–8395, 8750)
 
-With `--docs`, PDF, Word, Excel, PowerPoint, OpenDocument text, spreadsheet and presentation,
-EPUB and SQLite files are searched in the text their Extractor takes from them. The Extractors
+By default, PDF, Word, Excel, PowerPoint, OpenDocument text, spreadsheet and presentation,
+EPUB and SQLite files are searched in the text their Extractor takes from them, in a terminal
+and in a pipe alike (8750: a person tries a command in a terminal before putting it in a pipe,
+so the two behave the same). `--no-docs` turns that off; `--docs` turns it back on, and of the
+two the last one given wins, as ripgrep's negations do. The Extractors
 are built in, written in Rust with no external programs (lopdf for PDF, the zip crate for the
 zip-based formats, readers of our own for their XML and for SQLite: M4 plan, D12, D13, D15). The
 extracted text goes through the same searcher, filters and printers as a file; its Trails come
@@ -747,16 +755,22 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
   Definition can give another extension to an Extractor (`extensions = ["ai"]`,
   `extractor = "pdf"`). The binary formats of Office 97–2003 (`.doc`, `.xls`, `.ppt`) are not
   read (D18).
-- **Without `--docs`** these Formats are never detected: the files are searched as ripgrep
+- **With `--no-docs`** these Formats are never detected: the files are searched as ripgrep
   searches them, at no extra cost, and print as ripgrep prints them; `--list-formats` still lists
-  them.
+  them. It is there for a search that wants ripgrep's speed over a tree with many documents, or
+  ripgrep's exact output: `s4 --no-docs --no-trail` prints what `rg` prints.
+- **What it costs (8750).** Every document of the search is extracted before it is searched,
+  whether it holds a Match or not, so documents are the exception to «search first, describe
+  later» (§3): a tree with many documents takes longer than ripgrep over it, and `--no-trail`
+  prints their text where ripgrep prints what it finds in their bytes. Both are documented
+  deviations (`docs/rg-compat.md`, «Documents»).
 - **Text.** One line per paragraph, heading, list item or table row; control characters
   (line breaks inside a cell, tabs inside a paragraph, NUL) become spaces, so a line is one line
   and the text never looks binary (D25); empty lines are left out. A table row is one line whose
   cells are separated by tabs: an empty cell keeps its tab, and a value its spaces. Line
   numbers count the lines of that text.
 - **Trails (D20)**, real output over the test fixtures (one-line layout): lines of
-  `s4 --docs -H --flat needle` over the documents of `tests/cli_m4.rs`, from their `m4/`
+  `s4 -H --flat needle` over the documents of `tests/cli_m4.rs`, from their `m4/`
   directory, one or two per Format, and over `tests/fixtures/docs/shop.sqlite`, from its
   directory:
 
@@ -898,11 +912,11 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
   8 bytes of text for each of its bytes, whatever its ToUnicode map says. A malformed part ends the
   text of that part where the reader stops, and a PDF stream that does not decompress draws
   nothing; nothing in a document makes s4 panic (the fuzz of §11 #27).
-- **With the other flags.** `--docs` is independent of `-z`, which keeps ripgrep's meaning
+- **With the other flags.** Searching documents is independent of `-z`, which keeps ripgrep's meaning
   (single-stream compressed files), and of `-a` and `--binary`, which apply to the files that
   are not documents: an extracted text has no binary data. A file that `--pre` (when its globs
   take the file) or `-z` (when its extension has a decompressor) reads is never extracted, so
-  `report.pdf.gz` with `-z --docs` is searched as decompressed bytes (§5.9, D21). The filters
+  `report.pdf.gz` with `-z` is searched as decompressed bytes (§5.9, D21). The filters
   (`-g`, `-t`, `--hidden`, ignore files, and `--max-filesize` once M5 implements it) select
   documents by their path and size on disk, as any file. `--no-trail`, `-c`, `--count-matches`, `-l`, `--files-without-match`
   and `-q` work on the extracted text and print what ripgrep would print for it (D22).
@@ -1020,7 +1034,7 @@ one line, wrapped here):
   `matches` count the Matches in names (a deviation from ripgrep, in `docs/rg-compat.md`). A
   Match over contiguous pieces of a name — an entity, an escape, a byte that is not UTF-8 between
   letters — is one submatch over all of them and counts once (M3 plan, D35).
-- A document searched with `--docs` keeps the document in `path`; its structure appears as
+- A document searched through its Extractor keeps the document in `path`; its structure appears as
   Segments of `trail`, and `lines`, `line_number` and `absolute_offset` refer to its extracted
   text (§5.8). An object file's row is described in §5.7.
 - Added field names are stable from v0.1; new ones may appear, existing ones are never renamed.
@@ -1108,11 +1122,12 @@ v0.3 release binary, which adds `markup`, `csv` (with `csv-core`) and `subtitles
 | `--in-headings` | match only inside Segment names (headings, keys, function names) |
 | `--format <F>` / `--format <GLOB>=<F>` | force a Format |
 | `--flat` / `--tree` | force an output layout |
-| `--no-trail` | ripgrep-identical output |
+| `--no-trail` | ripgrep's output; with `--no-docs`, identical to ripgrep's (§5.8) |
 | `--fragment-width <N>` | Fragment width when there is no terminal |
 | `--list-formats`, `--export-formats <DIR>` | Format Definitions |
 | `--install-grammar <LANG>`, `--list-grammars` | Grammar Helpers (§7) |
-| `--docs` | search PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite through the built-in Extractors (§5.8, 8395) |
+| `--no-docs` | search PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite files as ripgrep does, at ripgrep's cost, instead of through the built-in Extractors, which is the default (§5.8, 8395, 8750) |
+| `--docs` | turn the default back on after a `--no-docs`; the last of the two wins (8750) |
 | `--mcp` | run as an MCP server over stdio |
 
 Management actions are flags, not subcommands, because `s4 formats` must keep meaning
@@ -1138,7 +1153,8 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
 ## 11. Acceptance criteria
 
 1. `s4 PATTERN` over a tree with no structured files prints byte-for-byte what `rg PATTERN`
-   prints when given `--no-trail`, for the flags marked implemented in `docs/rg-compat.md`.
+   prints when given `--no-trail`, for the flags marked implemented in `docs/rg-compat.md`; over
+   a tree with documents, when given `--no-docs --no-trail` (8750).
 2. Every Format of §2 has a fixture and a snapshot test of its tree, one-line and JSON output.
    The fixture is under `tests/fixtures/`, or, for M4's documents and object files, written by
    the tests with the writers of `searchfor::docs::fixture` and
@@ -1153,8 +1169,8 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
    main.version+0xe`); in a PE and in each architecture of a fat Mach-O, the same three
    Segments (§5.7). A walked object file without `--binary` prints nothing, as rg; `-v`, `-c`
    and `--no-trail` print what rg prints.
-7. With `--docs`, a Match in a PDF gets the PDF's chapter Trail (`1 Intro › page 2`); without
-   `--docs`, the PDF is treated as ripgrep treats it. A zip is never opened (8390).
+7. By default, a Match in a PDF gets the PDF's chapter Trail (`1 Intro › page 2`); with
+   `--no-docs`, the PDF is treated as ripgrep treats it. A zip is never opened (8390).
 8. A 20 000-character minified JSON line with three Matches prints Fragments no wider than
    the terminal, with correct omitted counts.
 9. `--within "Install › Linux"` keeps only Matches under that Trail; `--expand` prints each
@@ -1201,7 +1217,7 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
     output, and as the decoded name in `--json`.
 22. The release binary (`target/release/s4`, Linux x86-64, the profile of `Cargo.toml`) weighs
     at most 23 MB (8612; 20 MB until then, M3 plan).
-23. With `--docs`, a Match in each document Format gets the Trail of §5.8: `1 Intro › 1.1 Scope`
+23. By default, a Match in each document Format gets the Trail of §5.8: `1 Intro › 1.1 Scope`
     and `2 Costs › table 1 › row 2 › Price` in Word and OpenDocument text, `Budget › A3` in Excel
     and OpenDocument spreadsheets, `slide 1 › notes` in PowerPoint and OpenDocument
     presentations, `1. Arrival › The Harbour` in EPUB, `users › row 12 › email` in SQLite.
@@ -1212,20 +1228,23 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
     rg 14.1.1 prints, errors and exit codes included; the one of `-z` and `--pre` given last
     wins.
 26. Performance of M4 (`scripts/bench-m4.sh`, M4 plan D23): over a corpus of documents, object
-    files and text files, without `--docs` and `--binary`, with a pattern no file matches, a
-    sparse one and `--no-trail`, s4 takes at most 1.1 × rg; `--docs` over files that are not
-    documents (text files, and object files, which have no extension), at most 1.05 × s4
-    without `--docs` (over those small files s4's ratio to rg is its own, the same with or
-    without `--docs`: M4 plan r6), so that its bound against rg is s4's own without `--docs`
-    times 1.05; without `--docs`, M4's s4 over the whole corpus, with the sparse pattern, at
-    most 1.03 × M3's (`191dbaf`), the median of three alternated series, which bounds what M4
-    adds to a search without `--docs`, the readers' memory counter included (M4 plan r7, r8); `--binary` over object files with a sparse pattern, s4's time
-    over rg's is at most the largest matching object ÷ 100 MB/s plus all matching objects ÷
-    (100 MB/s × threads) plus 0.05 s; `--docs` over the documents, s4's time over rg's on their
-    extracted texts is at most the texts' size ÷ (2 MB/s × threads) plus 0.1 s. In
-    `tests/perf.rs`: a 50 MB ELF with three Matches, also with 200 000 symbols, within `rg -a`'s
-    time plus 1 s and its RSS plus 64 MiB; a large document of each zip-based Format and PDF within
-    rg's time over its text plus the text ÷ its Format's rate (docx 12, odt 10, epub 20, pdf 7,
+    files and text files, with `--no-docs` and without `--binary`, with a pattern no file
+    matches, a sparse one and `--no-trail`, s4 takes at most 1.1 × rg; by default over files
+    that are not documents (text files, and object files, which have no extension), at most
+    1.05 × s4 with `--no-docs` (over those small files s4's ratio to rg is its own, the same
+    with or without documents: M4 plan r6), so that its bound against rg is s4's own with
+    `--no-docs` times 1.05; with `--no-docs`, M4's s4 over the whole corpus, with the sparse
+    pattern, at most 1.03 × M3's (`191dbaf`), the median of three alternated series, which
+    bounds what M4 adds to a search with `--no-docs`, the readers' memory counter included (M4
+    plan r7, r8); `--binary` over object files with a sparse pattern, s4's time over rg's is at
+    most the largest matching object ÷ 100 MB/s plus all matching objects ÷ (100 MB/s ×
+    threads) plus 0.05 s; by default over the documents, s4's time over rg's on their extracted
+    texts is at most the texts' size ÷ (2 MB/s × threads) plus 0.1 s; and by default over the
+    whole corpus with a pattern no file matches, where every document is extracted (8750), s4's
+    time over rg's is at most 0.1 × rg's plus the texts' size ÷ (2 MB/s × threads) plus 0.1 s.
+    In `tests/perf.rs`: a 50 MB ELF with three Matches, also with 200 000 symbols, within
+    `rg -a`'s time plus 1 s and its RSS plus 64 MiB; a large document of each zip-based Format
+    and PDF, searched with no flag, within rg's time over its text plus the text ÷ its Format's rate (docx 12, odt 10, epub 20, pdf 7,
     xlsx 2, ods 1, pptx 1.3 MB/s) plus 1 s; a zip bomb, and a workbook of six 200 MiB sheets,
     refused within 5 s and 256 MiB plus rg's RSS plus 64 MiB; and a PDF whose font's ToUnicode
     map decompresses to 300 MiB, a page of 63 MiB of `h` and an object stream of 63 MiB of `1 `,
@@ -1238,3 +1257,7 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
     files: nothing panics, an extraction ends within 2 s whatever it returns (the documents run
     in a child process, killed when a case does not end, so one that never ends fails the run),
     and every Segment and name lies inside the extracted text.
+28. Documents are searched by default, in a terminal and in a pipe alike: a `.docx` and a
+    `.pdf` print the Trails of §5.8 with no flag, and the same output on a pseudo-terminal as
+    with `--tree` in a pipe. `--no-docs` gives rg's output, errors and exit codes included;
+    `--no-docs --docs` searches the documents and `--docs --no-docs` does not (8750).

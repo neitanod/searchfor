@@ -237,7 +237,8 @@ is a decision; the agent's measurements are the reasons given at the time.
   - Together with «once per search» as the lifetime and the optional one-per-file mode of 8455.
 - **Still valid from M1** (8385): the search must be as fast as ripgrep, the added cost belongs
   to the files with Matches only, and a Match with no structure prints the way ripgrep prints
-  it.
+  it. (For documents, the added cost is superseded by 8750: they are searched by default and
+  each one is extracted; see the last section.)
 
 ---
 

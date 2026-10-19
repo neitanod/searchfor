@@ -1,4 +1,4 @@
-# formats/odt.toml — OpenDocument texts: `2 Costs › table 1 › row 3 › Price` with --docs (spec §5.8).
+# formats/odt.toml — OpenDocument texts: `2 Costs › table 1 › row 3 › Price` (spec §5.8; searched unless --no-docs).
 name       = "odt"
 extensions = ["odt", "ott"]
 magic      = [{ offset = 30, hex = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e74657874" }]

@@ -72,7 +72,7 @@ csv-core = "0.1"
 # Object files, ELF, PE and Mach-O, and Rust symbol names (spec §5.7; M4 plan, D3).
 goblin = { version = "0.10", default-features = false, features = ["std", "elf32", "elf64", "mach32", "mach64", "pe32", "pe64", "te", "endian_fd"] }
 rustc-demangle = "0.1"
-# --docs (spec §5.8; M4 plan, D12, D13): the zip of Office, OpenDocument and EPUB files, and
+# Documents (spec §5.8; M4 plan, D12, D13): the zip of Office, OpenDocument and EPUB files, and
 # PDF's objects, fonts, streams and encryption. Their XML and SQLite are read by our own code.
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 lopdf = { version = "0.45", default-features = false }

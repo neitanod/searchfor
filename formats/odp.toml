@@ -1,4 +1,4 @@
-# formats/odp.toml — OpenDocument presentations: `slide 3 › notes` with --docs (spec §5.8).
+# formats/odp.toml — OpenDocument presentations: `slide 3 › notes` (spec §5.8; searched unless --no-docs).
 name       = "odp"
 extensions = ["odp", "otp"]
 magic      = [{ offset = 30, hex = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e70726573656e746174696f6e" }]

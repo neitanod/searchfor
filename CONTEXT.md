@@ -81,7 +81,7 @@ is the whole file, a column's Section is its row.
 _Avoid_: block, region
 
 **Extractor**:
-A built-in component, enabled with `--docs`, that turns a document ripgrep cannot read (PDF,
+A built-in component, on by default and turned off with `--no-docs`, that turns a document ripgrep cannot read (PDF,
 Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB, SQLite) into searchable text plus its structure, an
 Outline of that text, before the search.
 _Avoid_: converter, preprocessor (ripgrep's `--pre` is the external variant)
@@ -118,9 +118,9 @@ _Avoid_: converter, preprocessor (ripgrep's `--pre` is the external variant)
 > and gets back `Player › update`; without it, the file is Plain."
 >
 > **Dev:** "And a match inside a PDF?"
-> **Domain expert:** "Only with `--docs`: the PDF **Extractor** turns it into text and gives
-> each line a **Trail** like `Chapter 3 › page 42`, the bookmark holding the page; without
-> `--docs`, searchfor treats the PDF as ripgrep does."
+> **Domain expert:** "By default the PDF **Extractor** turns it into text and gives each line
+> a **Trail** like `Chapter 3 › page 42`, the bookmark holding the page; with `--no-docs`,
+> searchfor treats the PDF as ripgrep does."
 >
 > **Dev:** "And a match inside `/usr/bin/ls`?"
 > **Domain expert:** "Named on the command line, it is an object file: the **Match** prints at
