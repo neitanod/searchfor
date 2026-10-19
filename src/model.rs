@@ -137,6 +137,11 @@ pub struct Described {
     /// The rows are an object file's printable strings (spec §5.7): tree and one-line output
     /// print each at the hex offset of its first Match, where they print a line number.
     pub offsets: bool,
+    /// An object file's `-r` (M5a plan, D4): each Match of the search, by its range in the
+    /// Source, with its replacement, made in one pass over the Match's line as grep-printer's
+    /// `Replacer` makes it, so with the groups the search found (review r4 of the plan, Codex
+    /// #1 and #2). Empty otherwise.
+    pub replacements: Vec<((usize, usize), Vec<u8>)>,
 }
 
 /// What a Processor receives about one file (design note 6). External Processors (M5) need

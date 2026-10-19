@@ -55,6 +55,7 @@ impl Fixture {
             .env("SEARCHFOR_FORMATS_DIR", self.formats.path())
             .env("SEARCHFOR_GRAMMARS_DIR", self.grammars.path())
             .env("SEARCHFOR_GRAMMAR_INDEX", self.no_index())
+            .env_remove("SEARCHFOR_CONFIG_PATH")
             .env_remove("RIPGREP_CONFIG_PATH")
             .stdin(Stdio::null());
         let args: Vec<_> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();

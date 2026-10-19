@@ -122,6 +122,7 @@ fn measure_to(
         .env("SEARCHFOR_FORMATS_DIR", fx.formats.path())
         .env("SEARCHFOR_GRAMMARS_DIR", fx.grammars.path())
         .env("SEARCHFOR_GRAMMAR_INDEX", fx.no_index())
+        .env_remove("SEARCHFOR_CONFIG_PATH")
         .env_remove("RIPGREP_CONFIG_PATH")
         .stdin(match stdin {
             None => Stdio::null(),
@@ -538,6 +539,7 @@ fn sfor_output(fx: &Fixture, args: &[&str]) -> (String, String) {
             .env("SEARCHFOR_FORMATS_DIR", fx.formats.path())
             .env("SEARCHFOR_GRAMMARS_DIR", fx.grammars.path())
             .env("SEARCHFOR_GRAMMAR_INDEX", fx.no_index())
+            .env_remove("SEARCHFOR_CONFIG_PATH")
             .env_remove("RIPGREP_CONFIG_PATH")
             .stdin(Stdio::null()),
     );
@@ -1503,6 +1505,7 @@ fn a_zip_bomb_is_refused_within_its_limit() {
         Command::new(sfor_bin())
             .args(args)
             .current_dir(fx.path())
+            .env_remove("SEARCHFOR_CONFIG_PATH")
             .env_remove("RIPGREP_CONFIG_PATH")
             .stdin(Stdio::null()),
     );
@@ -1644,6 +1647,7 @@ fn refuses_the_bomb(name: &str, bytes: &[u8], extra_mib: u64, warning: &str, cod
         Command::new(sfor_bin())
             .args(args)
             .current_dir(fx.path())
+            .env_remove("SEARCHFOR_CONFIG_PATH")
             .env_remove("RIPGREP_CONFIG_PATH")
             .stdin(Stdio::null()),
     );
@@ -1836,6 +1840,7 @@ fn a_pdf_past_the_readers_memory_is_refused_within_its_limit() {
         Command::new(sfor_bin())
             .args(args)
             .current_dir(fx.path())
+            .env_remove("SEARCHFOR_CONFIG_PATH")
             .env_remove("RIPGREP_CONFIG_PATH")
             .stdin(Stdio::null()),
     );
@@ -1857,6 +1862,7 @@ fn command(bin: &Path, fx: &Fixture, args: &[&str]) -> Command {
         .env("SEARCHFOR_FORMATS_DIR", fx.formats.path())
         .env("SEARCHFOR_GRAMMARS_DIR", fx.grammars.path())
         .env("SEARCHFOR_GRAMMAR_INDEX", fx.no_index())
+        .env_remove("SEARCHFOR_CONFIG_PATH")
         .env_remove("RIPGREP_CONFIG_PATH")
         .stdin(Stdio::null())
         .stdout(Stdio::null())

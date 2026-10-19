@@ -992,6 +992,7 @@ fn m4_17_the_readers_flag_is_no_pattern() {
         std::process::Command::new(assert_cmd::cargo::cargo_bin("s4"))
             .args(["__extract-document", "m4/words.txt", "--no-trail"])
             .current_dir(fx.path())
+            .env_remove("SEARCHFOR_CONFIG_PATH")
             .env_remove("RIPGREP_CONFIG_PATH")
             .stdin(std::process::Stdio::null()),
     );
@@ -1001,6 +1002,7 @@ fn m4_17_the_readers_flag_is_no_pattern() {
         std::process::Command::new(assert_cmd::cargo::cargo_bin("s4"))
             .args(["--__extract-document", "m4/words.txt"])
             .current_dir(fx.path())
+            .env_remove("SEARCHFOR_CONFIG_PATH")
             .env_remove("RIPGREP_CONFIG_PATH")
             .stdin(std::process::Stdio::null()),
     );

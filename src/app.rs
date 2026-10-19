@@ -4,6 +4,7 @@ use crate::cli::{self, Args, CliError, ColorWhen};
 use crate::docs;
 use crate::filter;
 use crate::formats::{self, Registry, detector::Detector};
+use crate::matcher::PatternMatcher;
 use crate::model::{Described, FileMatches, FileStats, Input, Item, Line, Name, Submatch, Trail};
 use crate::output::{
     self, Layout, RenderOptions,
@@ -22,7 +23,6 @@ use grep_printer::{
     ColorSpecs, JSON, JSONBuilder, Standard, StandardBuilder, Stats, Summary, SummaryBuilder,
     SummaryKind,
 };
-use grep_regex::RegexMatcher;
 use grep_searcher::{BinaryDetection, Searcher, Sink, SinkContext, SinkFinish, SinkMatch};
 use ignore::{DirEntry, WalkBuilder, WalkState};
 use std::ffi::OsString;
@@ -35,7 +35,7 @@ use std::time::Instant;
 use termcolor::{Buffer, BufferWriter, ColorChoice, WriteColor};
 
 pub fn run(argv: Vec<OsString>) -> i32 {
-    let args = match cli::parse(argv) {
+    let args = match cli::parse_all(argv) {
         Ok(a) => a,
         Err(CliError::Clap(e)) => {
             let _ = e.print();
@@ -84,30 +84,6 @@ impl Messages {
 /// nothing, neither on stdout nor on stderr, as rg prints nothing after Ctrl-C.
 fn stopped() -> bool {
     crate::helper::host::cancel::stopped()
-}
-
-/// The message of a pattern that does not compile, with ripgrep 14.1.1's suggestions when it
-/// has them (hiargs.rs, `suggest_multiline` and then `suggest_pcre2` on its result): multiline
-/// mode for a literal `\n`, PCRE2 for a look-around or a backreference, both when the message,
-/// which repeats the pattern, names both (Fable M4 code r9 #4). s4 has neither yet, as
-/// rg-compat.md says, and prints rg's message whole (Fable M4 code r8 #4).
-fn suggestion(msg: String) -> String {
-    let msg = if msg.contains("the literal") && msg.contains("not allowed") {
-        format!(
-            "{msg}\n\nConsider enabling multiline mode with the --multiline flag (or -U for \
-             short).\nWhen multiline mode is enabled, new line characters can be matched."
-        )
-    } else {
-        msg
-    };
-    if msg.contains("backreferences") || msg.contains("look-around") {
-        format!(
-            "{msg}\n\nConsider enabling PCRE2 with the --pcre2 flag, which can handle \
-             backreferences\nand look-around."
-        )
-    } else {
-        msg
-    }
 }
 
 /// The built-in Definitions, those of the installed Grammar Helpers and the user's (D26).
@@ -256,8 +232,8 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         }
         return Ok(1);
     }
-    let matcher = search::matcher(args, &pats.patterns)
-        .map_err(|e| anyhow::anyhow!(suggestion(e.to_string())))?;
+    // The error carries rg 14.1.1's suggestions (`matcher::build`).
+    let matcher = search::matcher(args, &pats.patterns)?;
     let one_file = paths.len() == 1 && (paths[0] == Path::new("-") || !paths[0].is_dir());
     let with_filename = if args.with_filename {
         true
@@ -431,6 +407,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
                 context,
                 expand: args.expand,
                 binary: args.binary_choice,
+                look: output::Look::default(),
             };
             ctx.walk(
                 || TrailState {
@@ -642,7 +619,7 @@ enum Printer<'a> {
 
 struct Ctx<'a> {
     args: &'a Args,
-    matcher: RegexMatcher,
+    matcher: PatternMatcher,
     msgs: Messages,
     paths: Vec<PathBuf>,
     /// Walks `paths`, with the file types and the globs (`search::walker`).
@@ -1829,6 +1806,7 @@ impl<'a> Ctx<'a> {
                     format: Some(name.clone()),
                     sections: Vec::new(),
                     offsets: false,
+                    replacements: Vec::new(),
                 };
                 return self.filter(st, t, src, d);
             }
@@ -1871,6 +1849,7 @@ impl<'a> Ctx<'a> {
                     trails,
                     sections: Vec::new(),
                     offsets: false,
+                    replacements: Vec::new(),
                 };
                 (src, d)
             })
@@ -2008,6 +1987,7 @@ impl<'a> Ctx<'a> {
             trails,
             sections: Vec::new(),
             offsets: true,
+            replacements: Vec::new(),
         }))
     }
 
@@ -2173,6 +2153,7 @@ impl<'a> Ctx<'a> {
                 file,
                 format: Some(format),
                 offsets: false,
+                replacements: Vec::new(),
                 trails,
                 // With --expand, the Section of each named Segment (code review r1, Fable #4).
                 sections: if self.args.expand {
@@ -2433,7 +2414,7 @@ impl<'a> Ctx<'a> {
         for n in names {
             // --expand prints the Section of the named Segment.
             let section = n.trail.last().map(|s| (s.line, s.end_line));
-            // RegexMatcher's error type is NoError: the search cannot fail.
+            // PatternMatcher's error type is NoError: the search cannot fail.
             let _ = self.matcher.find_iter(n.text.as_bytes(), |m| {
                 // One Match over contiguous pieces (`a&lt;b`, a replaced byte between letters)
                 // is one hit: its Source ranges are joined where they touch, never across two
@@ -2613,7 +2594,7 @@ type HeadingLine = (u64, Vec<(usize, usize)>, Vec<Trail>, Vec<Section>);
 /// (the Processor) only when it found one. None: no Match.
 fn if_matched<T>(
     searcher: &mut Searcher,
-    matcher: &RegexMatcher,
+    matcher: &PatternMatcher,
     invert: bool,
     bytes: &[u8],
     then: impl FnOnce() -> T,
@@ -2970,7 +2951,7 @@ impl WriteColor for SpillLines<'_> {
 
 /// The counting part of grep-printer 0.2.2's summary sink with statistics, for `--json -q`.
 struct StatsSink<'m> {
-    matcher: &'m RegexMatcher,
+    matcher: &'m PatternMatcher,
     invert: bool,
     max: MaxCount,
     stats: FileStats,
@@ -3034,7 +3015,7 @@ mod tests {
         assert!(!builds_outline(processors::by_name("keypath").unwrap()));
     }
 
-    fn searcher_for(argv: &[&str]) -> (Searcher, RegexMatcher, bool) {
+    fn searcher_for(argv: &[&str]) -> (Searcher, PatternMatcher, bool) {
         let mut v = vec!["s4"];
         v.extend_from_slice(argv);
         let a = cli::parse(v.iter().map(Into::into).collect()).unwrap();

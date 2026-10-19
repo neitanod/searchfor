@@ -270,6 +270,7 @@ mod tests {
             trails,
             sections: vec![],
             offsets: false,
+            replacements: Vec::new(),
         }
     }
 

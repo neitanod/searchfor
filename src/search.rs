@@ -1,10 +1,10 @@
 //! Walking and searching with ripgrep's crates (ADR 0001, design notes 3 and 4).
-use crate::cli::{Args, BinaryMode, Case};
+use crate::cli::{Args, BinaryMode, SortKind, SortMode, TypeChange};
+use crate::matcher::PatternMatcher;
 use crate::model::{FileMatches, FileStats, Item, Line, Submatch};
 use crate::source::Source;
 use anyhow::Result;
 use grep_matcher::Matcher;
-use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{
     BinaryDetection, MmapChoice, Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind,
     SinkFinish, SinkMatch,
@@ -13,24 +13,9 @@ use ignore::{WalkBuilder, overrides::OverrideBuilder, types::TypesBuilder};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-pub fn matcher(args: &Args, patterns: &[String]) -> Result<RegexMatcher> {
-    let mut b = RegexMatcherBuilder::new();
-    match args.case() {
-        Case::Insensitive => {
-            b.case_insensitive(true);
-        }
-        Case::Smart => {
-            b.case_smart(true);
-        }
-        Case::Sensitive => {}
-    }
-    b.word(args.word_regexp)
-        .whole_line(args.line_regexp)
-        .fixed_strings(args.fixed_strings && !args.no_fixed_strings)
-        .multi_line(true) // as ripgrep: ^ and $ match at line boundaries inside a buffer
-        .line_terminator(Some(b'\n'));
-    // An empty pattern set never reaches here: C9 exits 1 before searching.
-    Ok(b.build_many(patterns)?)
+/// The run's matcher (`matcher::build`).
+pub fn matcher(args: &Args, patterns: &[String]) -> Result<PatternMatcher> {
+    crate::matcher::build(args, patterns)
 }
 
 /// ripgrep 14.1.1's memory-map choice, which is also its in-memory vs reader choice: the
@@ -131,12 +116,20 @@ pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder>
     }
     // The file types before the globs, as ripgrep 14.1.1 validates them (code review r3).
     let mut tb = rg_types()?;
-    // In command-line order, as ripgrep: the last selection of a type wins.
-    for (select, t) in &args.type_selections {
-        if *select {
-            tb.select(t);
-        } else {
-            tb.negate(t);
+    // In command-line order, as ripgrep (hiargs.rs `types`): the last selection of a type wins,
+    // and --type-add and --type-clear change the types the selections after them see.
+    for change in &args.type_changes {
+        match change {
+            TypeChange::Select(t) => {
+                tb.select(t);
+            }
+            TypeChange::Negate(t) => {
+                tb.negate(t);
+            }
+            TypeChange::Add(def) => tb.add_def(def)?,
+            TypeChange::Clear(t) => {
+                tb.clear(t);
+            }
         }
     }
     w.types(tb.build()?);
@@ -153,17 +146,23 @@ pub fn walker(args: &Args, paths: &[PathBuf], cwd: &Path) -> Result<WalkBuilder>
         }
     }
     w.overrides(ob.build()?);
-    if args.sort.as_deref() == Some("path") {
+    if args.sort == Some(PATH) {
         w.sort_by_file_path(|a, b| a.cmp(b));
     }
     w.threads(walker_threads(args));
     Ok(w)
 }
 
-/// Whether ripgrep 14.1.1 searches with one thread (hiargs.rs:167): under `--sort path`, with
-/// one file, or when the walker's threads are one.
+/// `--sort path`, the order the walker itself can give.
+const PATH: SortMode = SortMode {
+    kind: SortKind::Path,
+    reverse: false,
+};
+
+/// Whether ripgrep 14.1.1 searches with one thread (hiargs.rs:167): under any `--sort` or
+/// `--sortr`, with one file, or when the walker's threads are one.
 pub fn one_thread(args: &Args, one_file: bool) -> bool {
-    args.sort.as_deref() == Some("path") || one_file || walker_threads(args) == 1
+    args.sort.is_some() || one_file || walker_threads(args) == 1
 }
 
 /// The walker's threads: `-j N`, or ripgrep 14.1.1's default when `-j` is absent or 0, the
@@ -287,7 +286,7 @@ impl MaxCount {
 /// ranges of the Source) except after binary data in a reader search, whose NUL conversion makes
 /// them differ from the Source (`reader`).
 pub struct CollectSink<'m> {
-    matcher: &'m RegexMatcher,
+    matcher: &'m PatternMatcher,
     invert: bool,
     /// `-q` without structural flags: stop the file at its first Match (design note 10).
     quiet: bool,
@@ -299,7 +298,7 @@ pub struct CollectSink<'m> {
 }
 
 impl<'m> CollectSink<'m> {
-    pub fn new(matcher: &'m RegexMatcher, invert: bool, quiet: bool) -> Self {
+    pub fn new(matcher: &'m PatternMatcher, invert: bool, quiet: bool) -> Self {
         Self {
             matcher,
             invert,
@@ -361,14 +360,14 @@ pub fn number_lines(items: &mut [Item], bytes: &[u8]) {
 /// `range.start`, so `\A` sees what ripgrep's printer sees (`bar\nfoo needle\n` with
 /// `\Afoo|needle` reports only `needle`). Matches starting at or after `range.end` stop
 /// the search; offsets are relative to `range.start`.
-pub fn submatches(matcher: &RegexMatcher, buffer: &[u8], range: Range<usize>) -> Vec<Submatch> {
+pub fn submatches(matcher: &PatternMatcher, buffer: &[u8], range: Range<usize>) -> Vec<Submatch> {
     let mut end = range.end;
     if buffer[..end].ends_with(b"\n") {
         end -= 1;
     }
     let haystack = &buffer[..end];
     let mut subs = Vec::new();
-    // RegexMatcher's error type is NoError: the search cannot fail.
+    // PatternMatcher's error type is NoError: the search cannot fail.
     let _ = matcher.find_iter_at(haystack, range.start, |m| {
         if m.start() >= range.end {
             return false;
@@ -392,7 +391,11 @@ pub fn submatches(matcher: &RegexMatcher, buffer: &[u8], range: Range<usize>) ->
 
 /// The submatches of a reported line as ripgrep's printers record them: none on an inverted
 /// Match; on a context line, only with `-v`, searched in the line's own bytes.
-pub fn match_submatches(matcher: &RegexMatcher, invert: bool, m: &SinkMatch<'_>) -> Vec<Submatch> {
+pub fn match_submatches(
+    matcher: &PatternMatcher,
+    invert: bool,
+    m: &SinkMatch<'_>,
+) -> Vec<Submatch> {
     // grep-printer records matches on inverted lines too; none are found there.
     if invert {
         Vec::new()
@@ -401,7 +404,7 @@ pub fn match_submatches(matcher: &RegexMatcher, invert: bool, m: &SinkMatch<'_>)
     }
 }
 
-pub fn context_submatches(matcher: &RegexMatcher, invert: bool, bytes: &[u8]) -> Vec<Submatch> {
+pub fn context_submatches(matcher: &PatternMatcher, invert: bool, bytes: &[u8]) -> Vec<Submatch> {
     // grep-printer's context path searches the line's own bytes (range 0..len).
     if invert {
         submatches(matcher, bytes, 0..bytes.len())
@@ -569,7 +572,7 @@ impl<R> Reads<R> {
 /// decide (code review r9, Codex #1).
 pub fn binary_probe(
     searcher: &mut Searcher,
-    matcher: &RegexMatcher,
+    matcher: &PatternMatcher,
     reader: impl std::io::Read,
 ) -> Result<BinarySink> {
     let mut sink = BinarySink::default();
@@ -607,7 +610,7 @@ pub fn binary_probe(
 /// result has a binary offset, C9 skips the Processor.
 pub fn search_source(
     searcher: &mut Searcher,
-    matcher: &RegexMatcher,
+    matcher: &PatternMatcher,
     src: &Source,
     in_memory: bool,
     quiet: bool,
@@ -620,7 +623,7 @@ pub fn search_source(
 /// summary of `--json -q`).
 pub fn search_source_stats(
     searcher: &mut Searcher,
-    matcher: &RegexMatcher,
+    matcher: &PatternMatcher,
     src: &Source,
     in_memory: bool,
     limit: Option<u64>,
@@ -630,7 +633,7 @@ pub fn search_source_stats(
 
 fn search_with(
     searcher: &mut Searcher,
-    matcher: &RegexMatcher,
+    matcher: &PatternMatcher,
     src: &Source,
     in_memory: bool,
     quiet: bool,

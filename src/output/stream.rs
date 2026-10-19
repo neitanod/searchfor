@@ -5,10 +5,10 @@
 //! Described file.
 use super::json::{JsonFile, JsonOptions, RunStats};
 use super::{Layout, LineText, RenderOptions, Row, flat, tree};
+use crate::matcher::PatternMatcher;
 use crate::model::{FileStats, Line, Segment, Submatch};
 use crate::search::{MaxCount, context_submatches, match_submatches};
 use crate::trail::{Outline, TrailCursor};
-use grep_regex::RegexMatcher;
 use grep_searcher::{Searcher, Sink, SinkContext, SinkFinish, SinkMatch};
 use std::path::Path;
 use std::rc::Rc;
@@ -43,7 +43,7 @@ struct Pending {
 
 pub struct StreamSink<'a, W: WriteColor> {
     w: &'a mut W,
-    matcher: &'a RegexMatcher,
+    matcher: &'a PatternMatcher,
     invert: bool,
     o: &'a RenderOptions,
     file: StreamFile<'a>,
@@ -79,7 +79,7 @@ pub struct StreamSink<'a, W: WriteColor> {
 impl<'a, W: WriteColor> StreamSink<'a, W> {
     pub fn new(
         w: &'a mut W,
-        matcher: &'a RegexMatcher,
+        matcher: &'a PatternMatcher,
         invert: bool,
         o: &'a RenderOptions,
         jo: &'a JsonOptions,
@@ -486,6 +486,7 @@ mod tests {
             context: a.before() > 0 || a.after() > 0,
             expand: false,
             binary: a.binary_choice,
+            look: crate::output::Look::default(),
         };
         let jo = JsonOptions {
             line_numbers: ro.line_numbers,
@@ -561,6 +562,7 @@ mod tests {
                 trails,
                 sections: Vec::new(),
                 offsets: false,
+                replacements: Vec::new(),
             };
             match layout {
                 Layout::Flat => {
