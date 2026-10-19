@@ -9,6 +9,7 @@
 //! saying why a Match was left out (review r2: Codex #5, #6; Fable #1, #2, #3), and its
 //! messages paid for within the same limit (review r3: Codex #1, #2; Fable #1, #2).
 use serde_json::{Map, Value, json};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -399,27 +400,233 @@ pub fn search_args(arguments: &Value) -> Result<(Vec<OsString>, u64), String> {
     Ok((args, max))
 }
 
-/// A Match of `s4 --json`, as the tool returns it (D17): `path`, `line`, the Trail's names, the
-/// line's `text` without its terminator, and the Format.
-fn compact(d: &Value) -> Value {
-    let names: Vec<Value> = d["trail"]
-        .as_array()
-        .map(|t| t.iter().map(|s| s["name"].clone()).collect())
-        .unwrap_or_default();
-    let mut text = d["lines"]["text"].as_str().unwrap_or_default().to_string();
-    if text.ends_with('\n') {
-        text.pop();
-        if text.ends_with('\r') {
-            text.pop();
+/// A Section already in the answer: its file, by the exact path s4 gave (its JSON, so two
+/// paths that read the same with U+FFFD differ: review r2 of the M5a plan, Codex #5), and its
+/// first and last line.
+type SectionKey = (String, Value, Value);
+
+/// The Matches of a `match` message's `data`, as the Trail and the Section of each: one per
+/// distinct Trail of its submatches, in the order they first come, each with the Section of
+/// the first submatch under it, as the Trail layouts print a row per Trail. s4 gives a
+/// submatch its own `trail` and `section` only when they differ from the line's (spec §6.4;
+/// review r2 of the M5a plan, Fable #2). They come one at a time and borrowed from the
+/// message, so a line of many Trails costs only the Matches the answer takes (review r3,
+/// Codex #1). A Trail seen before is found by its hash: comparing each submatch's Trail with
+/// every Trail before it made a line of N Trails cost N² (review r5 of the M5a plan).
+fn by_trail(d: &Value) -> impl Iterator<Item = (&Value, Option<&Value>)> {
+    let subs = d["submatches"].as_array().map_or(&[][..], Vec::as_slice);
+    let line = (&d["trail"], d.get("section"));
+    let split = subs.iter().any(|s| s.get("trail").is_some());
+    let mut trails: HashMap<u64, Vec<&Value>> = HashMap::new();
+    let each = subs[..if split { subs.len() } else { 0 }]
+        .iter()
+        .filter_map(move |sub| {
+            let trail = sub.get("trail").unwrap_or(line.0);
+            let same = trails.entry(value_hash(trail)).or_default();
+            if same.contains(&trail) {
+                return None;
+            }
+            same.push(trail);
+            Some((trail, sub.get("section").or(line.1)))
+        });
+    (!split).then_some(line).into_iter().chain(each)
+}
+
+/// A hash of `v` that equal values share: an object's members hashed in any order, as
+/// `preserve_order`'s equality compares them.
+fn value_hash(v: &Value) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    match v {
+        Value::Null => 0u8.hash(&mut h),
+        Value::Bool(b) => (1u8, b).hash(&mut h),
+        Value::Number(n) => (2u8, n.to_string()).hash(&mut h),
+        Value::String(t) => (3u8, t).hash(&mut h),
+        Value::Array(a) => {
+            4u8.hash(&mut h);
+            for x in a {
+                value_hash(x).hash(&mut h);
+            }
+        }
+        Value::Object(o) => {
+            5u8.hash(&mut h);
+            let members = o.iter().map(|(k, x)| {
+                let mut m = DefaultHasher::new();
+                (k, value_hash(x)).hash(&mut m);
+                m.finish()
+            });
+            members.fold(0u64, u64::wrapping_add).hash(&mut h);
         }
     }
-    json!({
-        "path": d["path"]["text"],
-        "line": d["line_number"],
-        "trail": names,
-        "text": text,
-        "format": d["format"]
-    })
+    h.finish()
+}
+
+/// What the Matches of one `match` message share, decoded once for all of them: decoding the
+/// line again for each of its Trails made a line of N Trails cost N × the line (review r5 of
+/// the M5a plan). `text` is the line without its terminator, or s4's Fragment of it, cut to
+/// `MAX_TEXT_BYTES` (`text_cut`).
+struct Shared {
+    path: String,
+    path_lossy: bool,
+    line_lossy: bool,
+    text: String,
+    text_cut: bool,
+}
+
+impl Shared {
+    fn of(d: &Value) -> Self {
+        let (path, path_lossy) = decoded(&d["path"]);
+        let line_lossy = d["lines"].get("text").and_then(Value::as_str).is_none();
+        let fragment = d["fragment"].get("text").and_then(Value::as_str);
+        let (text, text_cut) = match fragment {
+            Some(f) => cut_to(f, MAX_TEXT_BYTES),
+            None => {
+                let (mut line, _) = decoded(&d["lines"]);
+                if line.ends_with('\n') {
+                    line.pop();
+                    if line.ends_with('\r') {
+                        line.pop();
+                    }
+                }
+                cut_to(&line, MAX_TEXT_BYTES)
+            }
+        };
+        Shared {
+            path,
+            path_lossy,
+            line_lossy,
+            text,
+            text_cut,
+        }
+    }
+}
+
+/// A Match of `s4 --json` under `trail`, with `section` (`by_trail`), as the tool returns it
+/// (D17): `path`, `line`, the Trail's names, the line's `text` without its terminator, the
+/// Format, and with `expand` the Section.
+/// Bytes that are not UTF-8 are decoded with U+FFFD (`lossy`), and a path that is not UTF-8
+/// also comes exact, in base64 (`path_base64`). The text is s4's Fragment when the line is
+/// longer than it (`omitted_before`, `omitted_after`); a text, a name or a Section longer than
+/// its limit is cut (`cut`), the outermost names past `MAX_TRAIL` left out (`trail_omitted`),
+/// and a Section `seen` before gives the Match that holds it (`same_as`). Returns the Section
+/// this Match holds, to remember once the Match is in the answer.
+fn compact(
+    d: &Value,
+    shared: &Shared,
+    trail: &Value,
+    section: Option<&Value>,
+    seen: &HashMap<SectionKey, usize>,
+) -> (Value, Option<SectionKey>) {
+    let mut out = Map::new();
+    out.insert("path".into(), Value::String(shared.path.clone()));
+    if shared.path_lossy {
+        out.insert("path_base64".into(), d["path"]["bytes"].clone());
+    }
+    out.insert("line".into(), d["line_number"].clone());
+    let mut cut = false;
+    let names: Vec<&Value> = trail
+        .as_array()
+        .map(|t| t.iter().map(|s| &s["name"]).collect())
+        .unwrap_or_default();
+    let omitted = names.len().saturating_sub(MAX_TRAIL);
+    let trail: Vec<Value> = names[omitted..]
+        .iter()
+        .map(|n| {
+            let (n, c) = cut_to(n.as_str().unwrap_or_default(), MAX_NAME_BYTES);
+            cut |= c;
+            Value::String(n)
+        })
+        .collect();
+    out.insert("trail".into(), Value::Array(trail));
+    if omitted > 0 {
+        out.insert("trail_omitted".into(), omitted.into());
+    }
+    cut |= shared.text_cut;
+    out.insert("text".into(), Value::String(shared.text.clone()));
+    if let Some(f) = d["fragment"].as_object() {
+        out.insert("omitted_before".into(), f["omitted_before"].clone());
+        out.insert("omitted_after".into(), f["omitted_after"].clone());
+    }
+    out.insert("format".into(), d["format"].clone());
+    if shared.path_lossy || shared.line_lossy {
+        out.insert("lossy".into(), Value::Bool(true));
+    }
+    let mut holds = None;
+    if let Some(section) = section {
+        let value = match section.as_object() {
+            None => Value::Null,
+            Some(s) => {
+                let file = d["path"].to_string();
+                let key = (file, s["start_line"].clone(), s["end_line"].clone());
+                let mut v = json!({ "start_line": key.1.clone(), "end_line": key.2.clone() });
+                match seen.get(&key) {
+                    Some(&i) => v["same_as"] = i.into(),
+                    None => {
+                        let (t, c) =
+                            cut_to(s["text"].as_str().unwrap_or_default(), MAX_SECTION_BYTES);
+                        cut |= c;
+                        v["text"] = Value::String(t);
+                        holds = Some(key);
+                    }
+                }
+                v
+            }
+        };
+        out.insert("section".into(), value);
+    }
+    if cut {
+        out.insert("cut".into(), Value::Bool(true));
+    }
+    (Value::Object(out), holds)
+}
+
+/// grep-printer's `{"text": …}` or `{"bytes": base64}` as text, and whether it was bytes.
+fn decoded(v: &Value) -> (String, bool) {
+    if let Some(t) = v.get("text").and_then(Value::as_str) {
+        return (t.to_string(), false);
+    }
+    let bytes = v
+        .get("bytes")
+        .and_then(Value::as_str)
+        .map(base64_decode)
+        .unwrap_or_default();
+    (String::from_utf8_lossy(&bytes).into_owned(), true)
+}
+
+/// Standard base64 with padding, as grep-printer writes it; what is not base64 is skipped.
+fn base64_decode(s: &str) -> Vec<u8> {
+    let value = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let mut out = Vec::with_capacity(s.len() / 4 * 3);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for v in s.bytes().filter_map(value) {
+        acc = (acc << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    out
+}
+
+/// `s` in at most `max` bytes, cut at a character's boundary, and whether it was cut.
+fn cut_to(s: &str, max: usize) -> (String, bool) {
+    if s.len() <= max {
+        return (s.to_string(), false);
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    (s[..end].to_string(), true)
 }
 
 fn call(params: &Value, s: &dyn Searcher) -> Result<Value, String> {
@@ -446,11 +653,14 @@ fn run(s: &dyn Searcher, args: &[OsString], max: u64) -> Value {
         Err(e) => return tool_error(&e),
     };
     let mut matches = Vec::new();
+    let mut sections = HashMap::new();
     let mut truncated_by = None;
     let mut stop = false;
     let mut line = Vec::new();
     // A failed read ends the loop like the end of the output; how the search ended says why.
-    while let Ok(Some(whole)) = read_line_capped(search.output(), MAX_MESSAGE_BYTES, &mut line) {
+    'read: while let Ok(Some(whole)) =
+        read_line_capped(search.output(), MAX_MESSAGE_BYTES, &mut line)
+    {
         if !whole {
             continue;
         }
@@ -460,12 +670,20 @@ fn run(s: &dyn Searcher, args: &[OsString], max: u64) -> Value {
         if v["type"] != "match" {
             continue;
         }
-        if matches.len() as u64 == max {
-            truncated_by = Some("max_results");
-            stop = true;
-            break;
+        let d = &v["data"];
+        let shared = Shared::of(d);
+        for (trail, section) in by_trail(d) {
+            if matches.len() as u64 == max {
+                truncated_by = Some("max_results");
+                stop = true;
+                break 'read;
+            }
+            let (m, holds) = compact(d, &shared, trail, section, &sections);
+            if let Some(key) = holds {
+                sections.insert(key, matches.len());
+            }
+            matches.push(m);
         }
-        matches.push(compact(&v["data"]));
     }
     let (ended, stderr) = search.end(stop);
     let messages = stderr.trim_end();
@@ -938,6 +1156,158 @@ mod tests {
         }
     }
 
+    /// Codex r1 #2, Fable r1 #2: a long line comes as s4's Fragment, or cut; a long Section and
+    /// a long name come cut; a Section repeated comes once; a Trail past `MAX_TRAIL` keeps
+    /// its innermost names.
+    #[test]
+    fn long_texts_come_cut() {
+        let mut long = guide();
+        long["data"]["lines"]["text"] = json!(format!("{}\n", "é".repeat(MAX_TEXT_BYTES)));
+        let mut fragment = guide();
+        fragment["data"]["fragment"] =
+            json!({"text":"install needle","start":4,"omitted_before":4,"omitted_after":4});
+        let mut deep = guide();
+        let names: Vec<Value> = (0..MAX_TRAIL + 2)
+            .map(|i| json!({"kind":"key","name":format!("k{i}"),"line":1,"end_line":1}))
+            .collect();
+        deep["data"]["trail"] = Value::Array(names);
+        deep["data"]["trail"][MAX_TRAIL + 1]["name"] = json!("n".repeat(MAX_NAME_BYTES + 1));
+        let section =
+            json!({"start_line":9,"end_line":18,"text":"s".repeat(MAX_SECTION_BYTES + 1)});
+        let mut expanded = guide();
+        expanded["data"]["section"] = section.clone();
+        let s = with(
+            &[long, fragment, deep, expanded.clone(), expanded],
+            Ended::Code(0),
+            "",
+        );
+        let r = call_with(json!({"pattern":"needle","expand":true}), &s);
+        let m = &r["structuredContent"]["matches"];
+        assert_eq!(m[0]["cut"], true);
+        assert_eq!(m[0]["text"].as_str().unwrap().len(), MAX_TEXT_BYTES);
+        assert_eq!(m[1]["text"], "install needle");
+        assert_eq!(
+            (&m[1]["omitted_before"], &m[1]["cut"]),
+            (&json!(4), &Value::Null)
+        );
+        assert_eq!(m[2]["trail_omitted"], 2);
+        let trail = m[2]["trail"].as_array().unwrap();
+        assert_eq!((trail.len(), &trail[0]), (MAX_TRAIL, &json!("k2")));
+        assert_eq!(trail[MAX_TRAIL - 1].as_str().unwrap().len(), MAX_NAME_BYTES);
+        assert_eq!(m[2]["cut"], true);
+        assert_eq!(
+            m[3]["section"]["text"].as_str().unwrap().len(),
+            MAX_SECTION_BYTES
+        );
+        assert_eq!(m[3]["cut"], true);
+        assert_eq!(
+            m[4]["section"],
+            json!({"start_line":9,"end_line":18,"same_as":3})
+        );
+        assert_eq!(r["structuredContent"]["truncated"], false);
+    }
+
+    /// Review r2 of the M5a plan, Fable #2: a line whose submatches lie under different
+    /// Trails is a Match per Trail, as the Trail layouts print a row per Trail; a submatch's
+    /// own Section, when s4 gives one, is that Match's.
+    #[test]
+    fn a_match_per_trail_of_the_line() {
+        let cell = |name: &str| {
+            json!([{"kind":"heading","name":"Plans","line":19,"end_line":34,"level":2},
+                   {"kind":"cell","name":name,"line":24,"end_line":24}])
+        };
+        let mut row = guide();
+        row["data"]["line_number"] = json!(24);
+        row["data"]["lines"] = json!({"text":"| needle-a | needle-b |\n"});
+        row["data"]["trail"] = cell("Plan");
+        row["data"]["submatches"] = json!([
+            {"match":{"text":"needle-a"},"start":2,"end":10,"trail":cell("Plan")},
+            {"match":{"text":"needle-b"},"start":13,"end":21,"trail":cell("Price")},
+            {"match":{"text":"needle-a"},"start":22,"end":30,"trail":cell("Plan"),
+             "section":{"start_line":20,"end_line":24,"text":"other"}}
+        ]);
+        row["data"]["section"] = json!({"start_line":21,"end_line":24,"text":"| Plan | Price |"});
+        let s = with(&[row], Ended::Code(0), "");
+        let r = call_with(json!({"pattern":"needle-[ab]","expand":true}), &s);
+        let m = r["structuredContent"]["matches"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let seen: Vec<(Value, Value, Value)> = m
+            .iter()
+            .map(|m| (m["line"].clone(), m["trail"].clone(), m["section"].clone()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (
+                    json!(24),
+                    json!(["Plans", "Plan"]),
+                    json!({"start_line":21,"end_line":24,"text":"| Plan | Price |"})
+                ),
+                (
+                    json!(24),
+                    json!(["Plans", "Price"]),
+                    json!({"start_line":21,"end_line":24,"same_as":0})
+                ),
+            ]
+        );
+        assert_eq!(m[1]["text"], "| needle-a | needle-b |");
+        // Review r3 of the plan, Codex #1: a line of many Trails costs only the Matches the
+        // answer holds; each Trail is read from the message, never a copy of it.
+        let mut many = guide();
+        let subs: Vec<Value> = (0..240)
+            .map(|i| {
+                json!({"match":{"text":"needle"},"start":12,"end":18,
+                    "trail":[{"kind":"element","name":format!("k{i}"),"line":1,"end_line":1}]})
+            })
+            .collect();
+        many["data"]["submatches"] = Value::Array(subs);
+        let d = &many["data"];
+        let (trail, _) = by_trail(d).nth(239).unwrap();
+        assert!(std::ptr::eq(trail, &d["submatches"][239]["trail"]));
+        // Review r5 of the plan: a Trail seen before is found by its hash, whatever the order
+        // of its members; a Trail that differs in a member is another Match.
+        let mut twice = guide();
+        twice["data"]["submatches"] = json!([
+            {"match":{"text":"needle"},"start":0,"end":6,
+             "trail":[{"kind":"key","name":"a","line":1,"end_line":1}]},
+            {"match":{"text":"needle"},"start":7,"end":13,
+             "trail":[{"name":"a","end_line":1,"kind":"key","line":1}]},
+            {"match":{"text":"needle"},"start":14,"end":20,
+             "trail":[{"kind":"key","name":"a","line":1,"end_line":2}]}
+        ]);
+        let trails: Vec<&Value> = by_trail(&twice["data"]).map(|(t, _)| t).collect();
+        assert_eq!(trails.len(), 2, "{trails:?}");
+        assert_eq!(trails[1][0]["end_line"], 2);
+        let s = with(&[many], Ended::Code(0), "");
+        let r = call_with(json!({"pattern":"needle","max_results":1}), &s);
+        let r = &r["structuredContent"];
+        assert_eq!(r["matches"][0]["trail"], json!(["k0"]));
+        assert_eq!(r["truncated_by"], "max_results");
+    }
+
+    /// Review r2 of the M5a plan, Codex #5: a Section is the same only in the same file, told
+    /// by its exact path: two paths that read the same with U+FFFD are two files.
+    #[test]
+    fn sections_of_files_whose_names_read_alike() {
+        let at = |b64: &str| {
+            let mut m = guide();
+            m["data"]["path"] = json!({"bytes": b64});
+            m["data"]["section"] = json!({"start_line":9,"end_line":18,"text":b64});
+            m
+        };
+        let s = with(&[at("Yf4ubWQ="), at("Yf8ubWQ=")], Ended::Code(0), "");
+        let r = call_with(json!({"pattern":"needle","expand":true}), &s);
+        let m = &r["structuredContent"]["matches"];
+        assert_eq!(
+            (&m[0]["path"], &m[1]["path"]),
+            (&json!("a\u{FFFD}.md"), &json!("a\u{FFFD}.md"))
+        );
+        assert_eq!(m[1]["section"]["text"], "Yf8ubWQ=");
+        assert_eq!(m[1]["section"]["same_as"], Value::Null);
+    }
+
     /// Codex r1 #3: every way a search ends. Exit 2 with Matches gives them and s4's errors;
     /// exit 2 without Matches, another code or a signal is a tool error with s4's message.
     #[test]
@@ -990,5 +1360,23 @@ mod tests {
             (&json!(true), &json!("s4: regex parse error"))
         );
         assert_eq!(s.stopped.get(), Some(false));
+    }
+
+    /// Codex r1 #7: a line or a path that is not UTF-8 comes decoded, with U+FFFD (`lossy`),
+    /// the path exact in base64 too.
+    #[test]
+    fn bytes_are_decoded() {
+        let mut m = guide();
+        // `needle\xff\n` and `a\xff.md`, as grep-printer writes them.
+        m["data"]["lines"] = json!({"bytes":"bmVlZGxl/wo="});
+        m["data"]["path"] = json!({"bytes":"Yf8ubWQ="});
+        let s = with(&[m], Ended::Code(0), "");
+        let r = call_with(json!({"pattern":"needle"}), &s);
+        let m = &r["structuredContent"]["matches"][0];
+        assert_eq!(m["text"], "needle\u{FFFD}");
+        assert_eq!(m["path"], "a\u{FFFD}.md");
+        assert_eq!(m["path_base64"], "Yf8ubWQ=");
+        assert_eq!(m["lossy"], true);
+        assert_eq!(base64_decode("Yf8ubWQ="), b"a\xff.md");
     }
 }
