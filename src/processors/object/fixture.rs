@@ -624,3 +624,52 @@ pub fn pe_shared_imports(mut file: Vec<u8>, start: usize, dlls: usize, entries: 
     file[0xd4..0xd8].copy_from_slice(&(table as u32).to_le_bytes());
     file
 }
+
+/// The bytes an export table of `exports` takes in `pe_exports`.
+pub fn pe_exports_size(exports: &[(&str, u32)]) -> usize {
+    let mut names: Vec<&str> = exports.iter().map(|e| e.0).collect();
+    names.sort_unstable();
+    names.dedup();
+    40 + 10 * exports.len() + names.iter().map(|n| n.len() + 1).sum::<usize>()
+}
+
+/// `file`, a PE32+ written by `pe` with a section at file offset `start` and RVA `rva` that has
+/// room for it (`pe_exports_size`; `pe` loads section `i` at `0x1000 * (i + 1)`), with an
+/// export table at that section's start: one export per `(name, rva)` of `exports`, ordinal `i`
+/// the `i`-th, each distinct name written once and named by every export that has it.
+pub fn pe_exports(mut file: Vec<u8>, start: usize, rva: u32, exports: &[(&str, u32)]) -> Vec<u8> {
+    let base = rva as usize;
+    let n = exports.len();
+    let (funcs, names, ords) = (40, 40 + 4 * n, 40 + 8 * n);
+    let mut strings = 40 + 10 * n;
+    assert!(
+        file.len() >= start + pe_exports_size(exports),
+        "the section has room"
+    );
+    let mut at = |o: usize, v: &[u8]| file[start + o..start + o + v.len()].copy_from_slice(v);
+    at(20, &(n as u32).to_le_bytes()); // NumberOfFunctions
+    at(24, &(n as u32).to_le_bytes()); // NumberOfNames
+    at(28, &((base + funcs) as u32).to_le_bytes());
+    at(32, &((base + names) as u32).to_le_bytes());
+    at(36, &((base + ords) as u32).to_le_bytes());
+    let mut written = std::collections::HashMap::new();
+    for (i, (name, rva)) in exports.iter().enumerate() {
+        let o = match written.get(name) {
+            Some(&o) => o,
+            None => {
+                let o = strings;
+                strings += name.len() + 1;
+                at(o, name.as_bytes());
+                written.insert(*name, o);
+                o
+            }
+        };
+        at(funcs + 4 * i, &rva.to_le_bytes());
+        at(names + 4 * i, &((base + o) as u32).to_le_bytes());
+        at(ords + 2 * i, &(i as u16).to_le_bytes());
+    }
+    // The export table's entry of the data directories (PE32+: at 0x58 + 112, the first).
+    file[0xc8..0xcc].copy_from_slice(&(base as u32).to_le_bytes());
+    file[0xcc..0xd0].copy_from_slice(&(strings as u32).to_le_bytes());
+    file
+}

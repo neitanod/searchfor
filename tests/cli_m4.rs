@@ -1769,9 +1769,10 @@ fn limited(c: &mut std::process::Command, mib: u64) -> &mut std::process::Comman
 /// first 4 KiB) is searched as rg searches it, without a warning (D9), and so is a PE with 1000
 /// sections named by one 1 MiB name of its string table (`/4`), which goblin copies for each;
 /// an ELF, PE or Mach-O whose symbols all name one 64 KiB name, a Mach-O whose segment command
-/// is read 10 000 times with 10 000 sections each and a PE with 3000 import descriptors naming
-/// one table of 3000 imports get their Trail. Each is a file of at most 2 MiB, searched with a
-/// data segment of 256 MiB.
+/// is read 10 000 times with 10 000 sections each, a PE with 3000 import descriptors naming
+/// one table of 3000 imports and a PE with 32 000 exports named by one 64 KiB name (Codex M4
+/// code r9 #1) get their Trail. Each is a file of at most 2 MiB, searched with a data segment
+/// of 256 MiB.
 #[test]
 fn m4_30_what_an_object_file_declares_costs_no_more_than_the_file() {
     if !common::reference_rg() {
@@ -1839,6 +1840,17 @@ fn m4_30_what_an_object_file_declares_costs_no_more_than_the_file() {
         "pe-imports",
         &obj::pe_shared_imports(l.file.clone(), l.starts[0], 3000, 3000),
     );
+    // 32 000 exports named by one 64 KiB name, all at the needle's section (Codex M4 code r9
+    // #1: goblin read the name once per export, 1.5 s for a 258 KB file in a release build).
+    let shared = vec![(long.as_str(), 0x1000u32); 32_000];
+    let exports = obj::Spec::new()
+        .section(".rdata", b"a needle\0")
+        .section(".edata", &vec![0u8; obj::pe_exports_size(&shared)]);
+    let l = obj::pe(&exports);
+    w(
+        "pe-exports",
+        &obj::pe_exports(l.file.clone(), l.starts[1], 0x2000, &shared),
+    );
     for (f, plain) in [
         ("fat-repeated", true),
         ("elf-names", false),
@@ -1847,6 +1859,7 @@ fn m4_30_what_an_object_file_declares_costs_no_more_than_the_file() {
         ("mac-segments", false),
         ("pe-sections", true),
         ("pe-imports", false),
+        ("pe-exports", false),
     ] {
         let path = format!("m4/bin/{f}");
         let len = std::fs::metadata(fx.path().join(&path)).unwrap().len();
@@ -1863,6 +1876,10 @@ fn m4_30_what_an_object_file_declares_costs_no_more_than_the_file() {
             assert_eq!(stdout(&s), stdout(&r), "{what}");
         } else {
             assert!(stdout(&s).contains(" │ "), "{what}: {}", stdout(&s));
+        }
+        if f == "pe-exports" {
+            // The exports are still read: the name, cut to fit, names the needle.
+            assert!(stdout(&s).contains(" › nnnnnnnn"), "{what}");
         }
     }
 }

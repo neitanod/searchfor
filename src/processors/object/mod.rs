@@ -7,8 +7,9 @@
 //! declares (Codex M4 code r5 #1): the names of sections and symbols are borrowed from the file,
 //! never copied once per symbol that names them; a fat Mach-O's slices neither overlap nor
 //! repeat; a Mach-O segment has the sections its command has room for, and its symbol table the
-//! symbols the file has room for; a PE's import, resource, TLS and certificate tables are not
-//! read, and its sections' long names fit in the file together.
+//! symbols the file has room for; of a PE goblin reads the headers and the section table, whose
+//! long names fit in the file together, and the Processor reads the exports itself, each name
+//! once.
 #[doc(hidden)]
 pub mod fixture;
 pub mod rows;
@@ -100,7 +101,8 @@ pub struct Map<'a> {
 const MAX_ARCHES: usize = (4096 - 8) / 20;
 
 impl<'a> Map<'a> {
-    /// None when goblin does not read `bytes` as an ELF, PE or Mach-O file (the file is then
+    /// None when goblin does not read `bytes` as an ELF, PE or Mach-O file (of a PE, its headers
+    /// and section table; the file is then
     /// Plain, without a warning: M4 plan, D9), also when it panics on them: goblin 0.10.7 does
     /// arithmetic on the file's values that overflows in a debug build (Codex M4 code r4 #1),
     /// and the Processor runs in s4's process. A release build wraps it instead, so the same
@@ -126,15 +128,17 @@ impl<'a> Map<'a> {
                 if !pe_section_names_fit(bytes) {
                     return None;
                 }
-                let mut opts = goblin::pe::options::ParseOptions::default();
-                opts.parse_imports = false;
-                opts.parse_resources = false;
-                opts.parse_tls_data = false;
-                opts.parse_attribute_certificates = false;
-                vec![pe(
-                    &goblin::pe::PE::parse_with_opts(bytes, &opts).ok()?,
-                    bytes,
-                )]
+                // Only the headers and the section table: goblin's `PE::parse` reads the
+                // exports, a name once per export that names it and each RVA by looking at
+                // every section (Codex M4 code r9 #1), and the import, resource, TLS and
+                // certificate tables, which the Trail does not use. `pe` reads the exports.
+                let header = goblin::pe::header::Header::parse(bytes).ok()?;
+                let optional = header.optional_header?;
+                optional.container().ok()?;
+                let mut at = (header.dos_header.pe_pointer as usize)
+                    .checked_add(4 + 20 + header.coff_header.size_of_optional_header as usize)?;
+                let sections = header.coff_header.sections(bytes, &mut at).ok()?;
+                vec![pe(&header, &optional, &sections, bytes)]
             }
             goblin::Hint::Mach(_) | goblin::Hint::MachFat(_) => match Mach::parse(bytes).ok()? {
                 Mach::Binary(m) => vec![macho(&m, bytes, 0..bytes.len())],
@@ -305,6 +309,124 @@ fn section_name_offset(name: &[u8]) -> Option<usize> {
     std::str::from_utf8(rest).ok()?.parse().ok()
 }
 
+/// Which of a list of ranges holds a value: the first of the list that holds it, as a search
+/// through the list finds it, in O(log n) for any number of values. A PE's sections may overlap
+/// in memory, and a search through them for each export costs the exports times the sections.
+struct Rvas {
+    /// From each start, the range that holds the values up to the next one.
+    cuts: Vec<(u64, Option<usize>)>,
+}
+
+impl Rvas {
+    fn new(ranges: Vec<Range<u64>>) -> Self {
+        let mut events: Vec<(u64, bool, usize)> = Vec::with_capacity(2 * ranges.len());
+        for (i, r) in ranges.iter().enumerate().filter(|(_, r)| !r.is_empty()) {
+            events.push((r.start, true, i));
+            events.push((r.end, false, i));
+        }
+        events.sort_unstable();
+        let mut open = std::collections::BTreeSet::new();
+        let mut cuts: Vec<(u64, Option<usize>)> = Vec::new();
+        let mut k = 0;
+        while k < events.len() {
+            let at = events[k].0;
+            while k < events.len() && events[k].0 == at {
+                let (_, starts, i) = events[k];
+                if starts {
+                    open.insert(i);
+                } else {
+                    open.remove(&i);
+                }
+                k += 1;
+            }
+            let first = open.first().copied();
+            if cuts.last().is_none_or(|c| c.1 != first) {
+                cuts.push((at, first));
+            }
+        }
+        Rvas { cuts }
+    }
+
+    fn find(&self, v: u64) -> Option<usize> {
+        let i = self.cuts.partition_point(|c| c.0 <= v).checked_sub(1)?;
+        self.cuts[i].1
+    }
+}
+
+/// The exports of a PE that have a name, each `(rva, name)`, as goblin 0.10.7 reads them (its
+/// `pe/export.rs`): the name pointer and ordinal tables up to the count they declare or the
+/// file's end, the address of each name's ordinal, and the RVAs mapped to the file through the
+/// section their read size holds (its `pe/utils.rs`). A forwarder's RVA is its string's, which
+/// is not read. Each name's bytes are read once, whatever the exports that name them (Codex M4
+/// code r9 #1).
+fn pe_exports<'a>(
+    bytes: &'a [u8],
+    table: &[goblin::pe::section_table::SectionTable],
+    align: u32,
+    dir: &goblin::pe::data_directories::DataDirectory,
+) -> Vec<(u64, &'a str)> {
+    if align == 0 || !align.is_power_of_two() {
+        return Vec::new();
+    }
+    let align = align as u64;
+    // goblin's `section_read_size`, from a pointer rounded down to 512 to the size of raw data
+    // rounded up to the file alignment, and at most the sizes rounded up to 4 KiB.
+    let page = |n: u64| n.div_ceil(0x1000) * 0x1000;
+    let read = table.iter().map(|s| {
+        let (raw, ptr) = (s.size_of_raw_data as u64, s.pointer_to_raw_data as u64);
+        let mut n = 0;
+        if raw > 0 {
+            n = ((ptr + raw).div_ceil(align) * align - (ptr & !0x1ff)).min(page(raw));
+            if s.virtual_size > 0 {
+                n = n.min(page(s.virtual_size as u64));
+            }
+        }
+        let va = s.virtual_address as u64;
+        va..va + n
+    });
+    let rvas = Rvas::new(read.collect());
+    let offset = |rva: u64| -> Option<usize> {
+        let s = &table[rvas.find(rva)?];
+        usize::try_from(s.pointer_to_raw_data as u64 + (rva - s.virtual_address as u64)).ok()
+    };
+    let le = |at: usize, n: usize| {
+        bytes
+            .get(at..at.checked_add(n)?)
+            .map(|b| b.iter().rev().fold(0u64, |a, &x| a << 8 | x as u64))
+    };
+    let Some(d) = offset(dir.virtual_address as u64).filter(|&d| le(d, 40).is_some()) else {
+        return Vec::new();
+    };
+    let field = |k: usize| le(d + k, 4).unwrap_or(0);
+    let (functions, names) = (field(20) as usize, field(24) as usize);
+    if names > bytes.len() || functions > bytes.len() {
+        return Vec::new();
+    }
+    let room = |rva: u64, each: usize, count: usize| {
+        offset(rva).map_or((0, 0), |at| {
+            (at, count.min(bytes.len().saturating_sub(at) / each))
+        })
+    };
+    let (funcs, functions) = room(field(28), 4, functions);
+    let (pointers, n) = room(field(32), 4, names);
+    let (ords, n_ords) = room(field(36), 2, names);
+    let mut exports = Vec::new();
+    for i in 0..n.min(n_ords) {
+        let ordinal = le(ords + 2 * i, 2).unwrap_or(0) as usize;
+        if ordinal >= functions {
+            continue;
+        }
+        let rva = le(funcs + 4 * ordinal, 4).unwrap_or(0);
+        let name = le(pointers + 4 * i, 4).and_then(offset);
+        exports.push((rva, name));
+    }
+    let names = Names::at(bytes, exports.iter().filter_map(|e| e.1).collect());
+    exports
+        .into_iter()
+        .filter_map(|(rva, at)| Some((rva, names.get(at?)?)))
+        .collect()
+}
+
 fn segment(kind: &str, name: &str, range: &Range<usize>, lines: &LineIndex) -> Segment {
     Segment {
         kind: kind.into(),
@@ -419,8 +541,13 @@ fn elf<'a>(e: &goblin::elf::Elf<'a>, bytes: &'a [u8]) -> Image<'a> {
     }
 }
 
-fn pe<'a>(p: &goblin::pe::PE<'a>, bytes: &'a [u8]) -> Image<'a> {
-    let machine = match p.header.coff_header.machine {
+fn pe<'a>(
+    header: &goblin::pe::header::Header,
+    optional: &goblin::pe::optional_header::OptionalHeader,
+    table: &[goblin::pe::section_table::SectionTable],
+    bytes: &'a [u8],
+) -> Image<'a> {
+    let machine = match header.coff_header.machine {
         0x8664 => "x86-64".to_string(),
         0x14c => "i386".into(),
         0xaa64 => "aarch64".into(),
@@ -429,7 +556,7 @@ fn pe<'a>(p: &goblin::pe::PE<'a>, bytes: &'a [u8]) -> Image<'a> {
     };
     let mut sections = Vec::new();
     let mut rvas = Vec::new();
-    for s in &p.sections {
+    for s in table {
         let start = s.pointer_to_raw_data as usize;
         // The raw data is padded to the file alignment; the virtual size says what is used.
         let used = if s.virtual_size > 0 {
@@ -444,22 +571,21 @@ fn pe<'a>(p: &goblin::pe::PE<'a>, bytes: &'a [u8]) -> Image<'a> {
             file: start..end,
             symbols: Vec::new(),
         });
-        rvas.push((
-            s.virtual_address as u64,
-            s.virtual_size.max(s.size_of_raw_data) as u64,
-        ));
+        let va = s.virtual_address as u64;
+        rvas.push(va..va + s.virtual_size.max(s.size_of_raw_data) as u64);
     }
+    let rvas = Rvas::new(rvas);
     let mut syms = Vec::new();
-    for x in &p.exports {
-        let (Some(name), rva) = (x.name, x.rva as u64) else {
-            continue;
-        };
-        if let Some(i) = rvas.iter().position(|(a, n)| *a <= rva && rva < a + n) {
-            syms.push((i, rva - rvas[i].0, None, name));
+    if let Some(dir) = optional.data_directories.get_export_table() {
+        let align = optional.windows_fields.file_alignment;
+        for (rva, name) in pe_exports(bytes, table, align, dir) {
+            if let Some(i) = rvas.find(rva) {
+                syms.push((i, rva - table[i].virtual_address as u64, None, name));
+            }
         }
     }
     // A COFF symbol table, which MinGW leaves in images that were not stripped.
-    let coff = &p.header.coff_header;
+    let coff = &header.coff_header;
     if let (Ok(Some(table)), Ok(Some(strings))) = (coff.symbols(bytes), coff.strings(bytes)) {
         for (_, inline, s) in table.iter() {
             // External and static symbols, except the static ones that define a section
@@ -563,43 +689,58 @@ fn macho_symbols<'a>(
 struct Names<'a> {
     /// Each name's start, and its bytes from the first offset after which they are UTF-8 up to
     /// its NUL (or the table's end); names of no bytes are left out.
-    names: Vec<(u32, u32, &'a str)>,
+    names: Vec<(usize, usize, &'a str)>,
 }
 
 impl<'a> Names<'a> {
     fn new(table: &'a [u8]) -> Self {
-        let table = &table[..table.len().min(u32::MAX as usize)];
-        let mut names = Vec::new();
+        let mut names = Names { names: Vec::new() };
         let mut start = 0;
         while start < table.len() {
-            let end = memchr::memchr(0, &table[start..]).map_or(table.len(), |n| start + n);
-            // After the last bytes that are not UTF-8, every char boundary starts a name.
-            let mut valid = start;
-            let mut at = start;
-            for chunk in table[start..end].utf8_chunks() {
-                at += chunk.valid().len() + chunk.invalid().len();
-                if !chunk.invalid().is_empty() {
-                    valid = at;
-                }
-            }
-            if let Ok(text) = std::str::from_utf8(&table[valid..end])
-                && !text.is_empty()
-            {
-                names.push((start as u32, valid as u32, text));
-            }
-            start = end + 1;
+            start = names.read(table, start) + 1;
         }
-        Names { names }
+        names
+    }
+
+    /// The names of `bytes` that hold the offsets `at`, each read once from the first of them
+    /// it holds.
+    fn at(bytes: &'a [u8], mut at: Vec<usize>) -> Self {
+        at.sort_unstable();
+        at.dedup();
+        let mut names = Names { names: Vec::new() };
+        let mut next = 0;
+        for start in at {
+            if start >= next && start < bytes.len() {
+                next = names.read(bytes, start) + 1;
+            }
+        }
+        names
+    }
+
+    /// Reads the name at `start`, and returns where its NUL is.
+    fn read(&mut self, table: &'a [u8], start: usize) -> usize {
+        let end = memchr::memchr(0, &table[start..]).map_or(table.len(), |n| start + n);
+        // After the last bytes that are not UTF-8, every char boundary starts a name.
+        let mut valid = start;
+        let mut at = start;
+        for chunk in table[start..end].utf8_chunks() {
+            at += chunk.valid().len() + chunk.invalid().len();
+            if !chunk.invalid().is_empty() {
+                valid = at;
+            }
+        }
+        if let Ok(text) = std::str::from_utf8(&table[valid..end])
+            && !text.is_empty()
+        {
+            self.names.push((start, valid, text));
+        }
+        end
     }
 
     fn get(&self, at: usize) -> Option<&'a str> {
-        let i = self
-            .names
-            .partition_point(|n| n.0 as usize <= at)
-            .checked_sub(1)?;
+        let i = self.names.partition_point(|n| n.0 <= at).checked_sub(1)?;
         let (_, valid, text) = self.names[i];
-        text.get(at.checked_sub(valid as usize)?..)
-            .filter(|t| !t.is_empty())
+        text.get(at.checked_sub(valid)?..).filter(|t| !t.is_empty())
     }
 }
 
@@ -767,6 +908,62 @@ mod tests {
         );
         // The padding after a section's used bytes is in no section.
         assert_eq!(trail_at(&l.file, l.offset(1, 100)), ["PE x86-64"]);
+    }
+
+    /// A PE's exports name the bytes their RVAs point to, as its COFF symbols do; an export
+    /// whose RVA is in no section names nothing.
+    #[test]
+    fn pe_trail_uses_the_exports() {
+        let exports = [
+            ("version_string", 0x2000 + 6),
+            ("lost", 0x9000),
+            ("abc", 0x2002),
+        ];
+        let s = Spec::new()
+            .section(".edata", &vec![0u8; fixture::pe_exports_size(&exports)])
+            .section(".rdata", b"\0\0abc\0version=1.2.3-needle\0");
+        let l = fixture::pe(&s);
+        let f = fixture::pe_exports(l.file.clone(), l.starts[0], 0x1000, &exports);
+        let at = l.offset(1, 6 + 14);
+        assert_eq!(&f[at..at + 6], b"needle");
+        assert_eq!(
+            trail_at(&f, at),
+            ["PE x86-64", ".rdata", "version_string+0xe"]
+        );
+        assert_eq!(
+            trail_at(&f, l.offset(1, 3)),
+            ["PE x86-64", ".rdata", "abc+0x1"]
+        );
+    }
+
+    /// The section an RVA is in is the first of the table that holds it, as a search through
+    /// the table finds it, also where sections overlap.
+    #[test]
+    fn an_rva_is_in_the_first_section_that_holds_it() {
+        let r = Rvas::new(vec![10..20, 15..30, 0..0, 5..12, 40..50]);
+        let got: Vec<_> = [0, 5, 9, 10, 14, 15, 19, 20, 29, 30, 40, 49, 50]
+            .iter()
+            .map(|&v| r.find(v))
+            .collect();
+        let none = None;
+        assert_eq!(
+            got,
+            [
+                none,
+                Some(3),
+                Some(3),
+                Some(0),
+                Some(0),
+                Some(0),
+                Some(0),
+                Some(1),
+                Some(1),
+                none,
+                Some(4),
+                Some(4),
+                none
+            ]
+        );
     }
 
     #[test]
