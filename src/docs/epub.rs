@@ -257,15 +257,14 @@ fn body(xhtml: &str, b: &mut Builder) {
             Ev::Text(t) if skip == 0 && in_body => match heading.as_mut() {
                 Some(h) if pre > 0 => h.1.push_str(&t),
                 Some(h) => collapse(&mut h.1, &t),
-                // Each line of a `pre` is a line, with its spaces (Fable M4 code r4 #3).
+                // Each line of a `pre` is a line, with its spaces (Fable M4 code r4 #3). A
+                // carriage return ends one too, as XML reads it (Fable M4 code r5 #5); the empty
+                // line between a CR and its LF is skipped.
                 None if pre > 0 => {
-                    let mut parts = t.split('\n');
+                    let mut parts = t.split(['\n', '\r']);
                     line.push_str(parts.next().unwrap_or(""));
                     kept = true;
                     for part in parts {
-                        if line.ends_with('\r') {
-                            line.pop();
-                        }
                         flush(&mut line, &mut kept, b);
                         line.push_str(part);
                         kept = true;
@@ -485,6 +484,45 @@ mod tests {
             )
         );
         assert_eq!(trail(&d, "    needle();"), ["Arrival", "Code"]);
+    }
+
+    /// Fable M4 code r5 #4: a paragraph of no-break spaces alone, the separator Word, calibre
+    /// and Sigil write for a blank line (`<p>&nbsp;</p>`), shows no text, and is no line; a
+    /// no-break space at the end of a line with text is kept.
+    #[test]
+    fn a_line_of_no_break_spaces_alone_is_no_line() {
+        let ch = concat!(
+            "<p>one needle</p>",
+            "<p>&nbsp;</p>",
+            "<p class=\"calibre1\">&#160;</p>",
+            "<p> &#160; </p>",
+            "<pre>\u{a0}\n\u{2003}\nx\u{a0}</pre>",
+            "<p>two&nbsp;</p>",
+        );
+        let d = fixture::epub(&[("Arrival", ch)], true);
+        let e = extract(Kind::Epub, &d).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&e.text),
+            "one needle\nx\u{a0}\ntwo\u{a0}\n"
+        );
+    }
+
+    /// Fable M4 code r5 #5: XML reads a carriage return, alone or before a line feed, as a line
+    /// feed (XML 1.0 §2.11): in a `pre` it ends a line, also the last one, and also when the
+    /// line feed comes in the next piece of text.
+    #[test]
+    fn a_carriage_return_ends_a_line_of_a_pre() {
+        let ch = concat!(
+            "<pre>a needle\r\nb needle\r\nc needle\r</pre>",
+            "<pre>mac\rneedle\rlines</pre>",
+            "<pre>p\r<b>q</b>\nr</pre>",
+        );
+        let d = fixture::epub(&[("Arrival", ch)], true);
+        let e = extract(Kind::Epub, &d).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&e.text),
+            "a needle\nb needle\nc needle\nmac\nneedle\nlines\np\nq\nr\n"
+        );
     }
 
     #[test]

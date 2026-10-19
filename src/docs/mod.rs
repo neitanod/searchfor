@@ -233,10 +233,10 @@ impl Builder {
     }
 
     /// Appends one line as it is, with the spaces at its ends (an EPUB `pre`, or a line that
-    /// ends in a no-break space), its control characters as spaces. A line of ASCII white space
-    /// alone is skipped.
+    /// ends in a no-break space), its control characters as spaces. A line of white space
+    /// alone, no-break spaces included, shows no text and is skipped (Fable M4 code r5 #4).
     pub fn verbatim(&mut self, s: &str) {
-        if s.trim_matches(|c: char| c.is_ascii_whitespace()).is_empty() || !self.room(s.len() + 1) {
+        if s.trim().is_empty() || !self.room(s.len() + 1) {
             return;
         }
         clean(s, &mut self.text);

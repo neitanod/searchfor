@@ -804,8 +804,10 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
     whose text is the chapter's name holds only its own line, so the Trail names the chapter
     once (`Arrival`, never `Arrival › Arrival`). A line per block
     element (`p`, `div`, `li`, `td`…), its white space collapsed as a browser shows it (a `br`
-    is a space; a no-break space is kept); a `pre` is a line per line of its own, with its
-    spaces; `script`, `style` and the `head` are not text. XML's
+    is a space; a no-break space is kept, also at the end of a line, but a line of white space
+    alone, no-break spaces included, is left out); a `pre` is a line per line of its own, with
+    its spaces, a carriage return ending a line as a line feed does; `script`, `style` and the
+    `head` are not text. Only EPUB keeps a no-break space at the end of a line. XML's
     entities, character references and the common HTML entities (`&nbsp;`, `&mdash;`, `&copy;`…)
     are decoded.
   - **The XML parts** of Word, Excel, PowerPoint, OpenDocument and EPUB files are read in their
