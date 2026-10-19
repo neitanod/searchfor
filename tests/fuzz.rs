@@ -1051,10 +1051,19 @@ fn mutated_objects_do_not_panic_the_object_processor() {
         ])
         .0,
     ];
+    // Where the last panic of this thread was: goblin's own panics on what a file says are what
+    // `Map::parse` silences (Codex M4 code r4 #1); a panic anywhere else is ours, and fails the
+    // fuzz (Fable M4 code r5 #3), which therefore calls the parser that does not silence them.
+    thread_local! {
+        static WHERE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    }
     let hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    std::panic::set_hook(Box::new(|info| {
+        let at = info.location().map(|l| l.to_string()).unwrap_or_default();
+        WHERE.with(|w| *w.borrow_mut() = at);
+    }));
     let mut failures = Vec::new();
-    let mut tried = 0;
+    let (mut tried, mut in_goblin) = (0, 0);
     for s in &seeds {
         for _ in 0..count() / 4 {
             tried += 1;
@@ -1062,7 +1071,7 @@ fn mutated_objects_do_not_panic_the_object_processor() {
             let anchors: Vec<usize> = (0..4).map(|_| rng.below(bytes.len() + 1)).collect();
             let got = catch_unwind(AssertUnwindSafe(|| {
                 let lines = searchfor::trail::LineIndex::new(&bytes);
-                if let Some(m) = object::Map::parse(&bytes) {
+                if let Some(m) = object::Map::parse_loudly(&bytes) {
                     for &a in &anchors {
                         let _ = m.trail(a, &lines);
                     }
@@ -1076,7 +1085,12 @@ fn mutated_objects_do_not_panic_the_object_processor() {
                 object::rows::rows(&bytes, &sorted, None, &lines)
             }));
             match got {
-                Err(_) => failures.push(format!("panic\n  input: \"{}\"", bytes.escape_ascii())),
+                Err(_) if WHERE.with(|w| w.borrow().contains("/goblin-")) => in_goblin += 1,
+                Err(_) => failures.push(format!(
+                    "panic at {}\n  input: \"{}\"",
+                    WHERE.with(|w| w.borrow().clone()),
+                    bytes.escape_ascii()
+                )),
                 Ok(rows) => {
                     for r in rows {
                         let end = r.absolute_offset as usize + r.len;
@@ -1093,7 +1107,10 @@ fn mutated_objects_do_not_panic_the_object_processor() {
         }
     }
     std::panic::set_hook(hook);
-    eprintln!("fuzz: {tried} object files, {} failures", failures.len());
+    eprintln!(
+        "fuzz: {tried} object files, {in_goblin} panics in goblin, {} failures",
+        failures.len()
+    );
     assert!(
         failures.is_empty(),
         "{} of {tried} failed:\n{}",

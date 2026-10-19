@@ -490,3 +490,137 @@ pub fn fat(arches: &[(u32, Vec<u8>)]) -> (Vec<u8>, Vec<usize>) {
     }
     (out, starts)
 }
+
+/// A fat Mach-O whose arch table is `entries`, each `(cputype, offset, size)`, with each of
+/// `images` written at its offset: the ranges may overlap or repeat, which a fat file must not.
+pub fn fat_raw(entries: &[(u32, u32, u32)], images: &[(usize, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend(0xcafe_babeu32.to_be_bytes());
+    out.extend((entries.len() as u32).to_be_bytes());
+    for &(cpu, at, size) in entries {
+        for v in [cpu, 3, at, size, 12] {
+            out.extend(v.to_be_bytes());
+        }
+    }
+    for &(at, f) in images {
+        if out.len() < at + f.len() {
+            out.resize(at + f.len(), 0);
+        }
+        out[at..at + f.len()].copy_from_slice(f);
+    }
+    out
+}
+
+/// `file`, an ELF, PE or Mach-O written by these writers, with every symbol's name made the
+/// longest one: the name's bytes are in the file once, and the symbol tables name them once per
+/// symbol.
+pub fn shared_names(mut file: Vec<u8>) -> Vec<u8> {
+    let u32_at = |f: &[u8], at: usize| u32::from_le_bytes(f[at..at + 4].try_into().unwrap());
+    match goblin::Object::parse(&file).expect("a file of these writers") {
+        goblin::Object::Elf(e) => {
+            let sh = e
+                .section_headers
+                .iter()
+                .find(|s| s.sh_type == goblin::elf::section_header::SHT_SYMTAB)
+                .expect("a .symtab");
+            let (at, n) = (sh.sh_offset as usize, sh.sh_size as usize / 24);
+            let longest = (1..n)
+                .map(|i| u32_at(&file, at + 24 * i))
+                .max_by_key(|&o| e.strtab.get_at(o as usize).map_or(0, str::len))
+                .expect("a symbol");
+            drop(e);
+            for i in 1..n {
+                file[at + 24 * i..at + 24 * i + 4].copy_from_slice(&longest.to_le_bytes());
+            }
+        }
+        goblin::Object::Mach(goblin::mach::Mach::Binary(m)) => {
+            let (at, n) = m
+                .load_commands
+                .iter()
+                .find_map(|c| match c.command {
+                    goblin::mach::load_command::CommandVariant::Symtab(s) => {
+                        Some((s.symoff as usize, s.nsyms as usize))
+                    }
+                    _ => None,
+                })
+                .expect("an LC_SYMTAB");
+            let longest = m
+                .symbols()
+                .flatten()
+                .enumerate()
+                .max_by_key(|(_, (name, _))| name.len())
+                .map(|(i, _)| u32_at(&file, at + 16 * i))
+                .expect("a symbol");
+            drop(m);
+            for i in 0..n {
+                file[at + 16 * i..at + 16 * i + 4].copy_from_slice(&longest.to_le_bytes());
+            }
+        }
+        goblin::Object::PE(p) => {
+            let coff = p.header.coff_header;
+            let (at, n) = (
+                coff.pointer_to_symbol_table as usize,
+                coff.number_of_symbol_table as usize,
+            );
+            drop(p);
+            let strings = at + 18 * n;
+            // The names in the string table, by their offset in it.
+            let longest = (0..n)
+                .filter(|i| u32_at(&file, at + 18 * i) == 0)
+                .map(|i| u32_at(&file, at + 18 * i + 4))
+                .max_by_key(|&o| {
+                    let s = &file[strings + o as usize..];
+                    memchr::memchr(0, s).unwrap_or(s.len())
+                })
+                .expect("a name in the string table");
+            for i in 0..n {
+                file[at + 18 * i..at + 18 * i + 4].fill(0);
+                file[at + 18 * i + 4..at + 18 * i + 8].copy_from_slice(&longest.to_le_bytes());
+            }
+        }
+        _ => panic!("not a file of these writers"),
+    }
+    file
+}
+
+/// `file`, a Mach-O written by `macho`, whose first load command, a segment, is read `n` times:
+/// the header says `n` commands and the first one's size is 0, so each starts where it does.
+/// The segment says it holds `nsects` sections, more than its command has room for; the file
+/// is grown with zeros so that they all fit in it.
+pub fn macho_repeated_segment(mut file: Vec<u8>, n: u32, nsects: u32) -> Vec<u8> {
+    let len = (32 + 72 + 80 * nsects as usize).max(8 * n as usize);
+    if file.len() < len {
+        file.resize(len, 0);
+    }
+    file[16..20].copy_from_slice(&n.to_le_bytes());
+    file[20..24].copy_from_slice(&(8 * n).to_le_bytes());
+    assert_eq!(file[32], 0x19, "the first command is an LC_SEGMENT_64");
+    file[36..40].copy_from_slice(&0u32.to_le_bytes());
+    file[32 + 64..32 + 68].copy_from_slice(&nsects.to_le_bytes());
+    file
+}
+
+/// `file`, a PE32+ written by `pe` whose first section has room for them, with an import table
+/// at that section's start: `dlls` import descriptors that all name one lookup table of
+/// `entries` imports by ordinal.
+pub fn pe_shared_imports(mut file: Vec<u8>, start: usize, dlls: usize, entries: usize) -> Vec<u8> {
+    const RVA: usize = 0x1000;
+    let table = 20 * (dlls + 1);
+    let name = table + 8 * (entries + 1);
+    assert!(file.len() >= start + name + 6, "the section has room");
+    for i in 0..dlls {
+        let d = start + 20 * i;
+        for (k, v) in [(0, RVA + table), (12, RVA + name), (16, RVA + table)] {
+            file[d + k..d + k + 4].copy_from_slice(&(v as u32).to_le_bytes());
+        }
+    }
+    for i in 0..entries {
+        let e = start + table + 8 * i;
+        file[e..e + 8].copy_from_slice(&(0x8000_0000_0000_0001u64 + i as u64).to_le_bytes());
+    }
+    file[start + name..start + name + 6].copy_from_slice(b"a.dll\0");
+    // The import table's entry of the data directories (PE32+: at 0x58 + 112, the second).
+    file[0xd0..0xd4].copy_from_slice(&(RVA as u32).to_le_bytes());
+    file[0xd4..0xd8].copy_from_slice(&(table as u32).to_le_bytes());
+    file
+}

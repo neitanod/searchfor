@@ -1,12 +1,21 @@
 //! The `object` Processor (spec §5.7): the Trail of a Match in an ELF, PE or Mach-O file is
 //! `ELF x86-64 › .rodata › main.version+0x10`: the image, the section the Match's bytes are in,
 //! and the closest symbol of that section at or before them. Parsed with goblin (M4 plan, D3).
+//!
+//! The Processor runs in s4's process, where an allocation that fails aborts s4 whatever
+//! `catch_unwind` says, so what a file costs is bounded by its size and never by a count it
+//! declares (Codex M4 code r5 #1): the names of sections and symbols are borrowed from the file,
+//! never copied once per symbol that names them; a fat Mach-O's slices neither overlap nor
+//! repeat; a Mach-O segment has the sections its command has room for, and its symbol table the
+//! symbols the file has room for; a PE's import, resource, TLS and certificate tables are not
+//! read, and its sections' long names fit in the file together.
 #[doc(hidden)]
 pub mod fixture;
 pub mod rows;
 
 use crate::model::{Input, Name, Segment, Trail};
 use crate::trail::LineIndex;
+use std::borrow::Cow;
 use std::ops::Range;
 
 pub struct Object;
@@ -56,69 +65,81 @@ fn quietly<T>(f: impl FnOnce() -> Option<T>) -> Option<T> {
 /// One section: its name, the bytes of the file it holds, and its symbols, sorted by offset,
 /// one per offset.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Sect {
-    name: String,
+struct Sect<'a> {
+    name: Cow<'a, str>,
     file: Range<usize>,
-    symbols: Vec<Sym>,
+    symbols: Vec<Sym<'a>>,
 }
 
 /// A symbol at file offset `at`; `end` is where it ends when the table says (ELF's `st_size`).
+/// Its name as the table has it, demangled when it names a Match.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Sym {
+struct Sym<'a> {
     at: usize,
     end: Option<usize>,
-    name: String,
+    name: &'a str,
 }
 
 /// One image: a whole ELF or PE file, or one architecture of a fat Mach-O.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Image {
+struct Image<'a> {
     label: String,
     range: Range<usize>,
     /// Sorted by start; sections without bytes in the file are left out.
-    sections: Vec<Sect>,
+    sections: Vec<Sect<'a>>,
 }
 
-/// What the `object` Processor knows of a file: its images.
+/// What the `object` Processor knows of a file: its images, which borrow their names from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Map {
-    images: Vec<Image>,
+pub struct Map<'a> {
+    images: Vec<Image<'a>>,
 }
 
-impl Map {
+/// The arches a fat Mach-O may have: Apple's loader reads the fat header and its arch table
+/// from the file's first 4 KiB (xnu's `mach_fat.c`), which hold 204 of them.
+const MAX_ARCHES: usize = (4096 - 8) / 20;
+
+impl<'a> Map<'a> {
     /// None when goblin does not read `bytes` as an ELF, PE or Mach-O file (the file is then
     /// Plain, without a warning: M4 plan, D9), also when it panics on them: goblin 0.10.7 does
     /// arithmetic on the file's values that overflows in a debug build (Codex M4 code r4 #1),
-    /// and the Processor runs in s4's process.
-    pub fn parse(bytes: &[u8]) -> Option<Map> {
+    /// and the Processor runs in s4's process. A release build wraps it instead, so the same
+    /// file may have a Trail there (Fable M4 code r5 #1). A fat Mach-O whose slices are not a
+    /// valid fat file's is None as well.
+    pub fn parse(bytes: &'a [u8]) -> Option<Map<'a>> {
         quietly(|| Map::read(bytes))
     }
 
-    fn read(bytes: &[u8]) -> Option<Map> {
-        let images = match goblin::Object::parse(bytes).ok()? {
-            goblin::Object::Elf(e) => vec![elf(&e, bytes.len())],
-            goblin::Object::PE(p) => vec![pe(&p, bytes)],
-            goblin::Object::Mach(goblin::mach::Mach::Binary(m)) => vec![macho(&m, 0..bytes.len())],
-            goblin::Object::Mach(goblin::mach::Mach::Fat(f)) => {
-                let mut v = Vec::new();
-                for (i, arch) in f.iter_arches().enumerate() {
-                    let arch = arch.ok()?;
-                    let start = arch.offset as usize;
-                    let end = start.checked_add(arch.size as usize)?.min(bytes.len());
-                    if let Ok(goblin::mach::SingleArch::MachO(m)) = f.get(i) {
-                        let mut img = macho(&m, start..end);
-                        for s in &mut img.sections {
-                            s.file = s.file.start + start..s.file.end + start;
-                            for sym in &mut s.symbols {
-                                sym.at += start;
-                                sym.end = sym.end.map(|e| e + start);
-                            }
-                        }
-                        v.push(img);
-                    }
+    /// `parse` without catching a panic, for the fuzz: a panic in our own code must fail it
+    /// (Fable M4 code r5 #3).
+    #[doc(hidden)]
+    pub fn parse_loudly(bytes: &'a [u8]) -> Option<Map<'a>> {
+        Map::read(bytes)
+    }
+
+    fn read(bytes: &'a [u8]) -> Option<Map<'a>> {
+        use goblin::mach::Mach;
+        let hint = goblin::peek_bytes(bytes.get(..16)?.try_into().ok()?).ok()?;
+        let images = match hint {
+            goblin::Hint::Elf(_) => vec![elf(&goblin::elf::Elf::parse(bytes).ok()?, bytes)],
+            goblin::Hint::PE => {
+                if !pe_section_names_fit(bytes) {
+                    return None;
                 }
-                v
+                let mut opts = goblin::pe::options::ParseOptions::default();
+                opts.parse_imports = false;
+                opts.parse_resources = false;
+                opts.parse_tls_data = false;
+                opts.parse_attribute_certificates = false;
+                vec![pe(
+                    &goblin::pe::PE::parse_with_opts(bytes, &opts).ok()?,
+                    bytes,
+                )]
             }
+            goblin::Hint::Mach(_) | goblin::Hint::MachFat(_) => match Mach::parse(bytes).ok()? {
+                Mach::Binary(m) => vec![macho(&m, bytes, 0..bytes.len())],
+                Mach::Fat(f) => fat(&f, bytes)?,
+            },
             _ => return None,
         };
         let mut images: Vec<Image> = images
@@ -162,15 +183,124 @@ impl Map {
         {
             let next = sect.symbols.get(i).map_or(sect.file.end, |s| s.at);
             let end = sym.end.map_or(next, |e| e.min(next).max(sym.at + 1));
+            let name = demangle(sym.name);
             let shown = if at == sym.at {
-                sym.name.clone()
+                name
             } else {
-                format!("{}+0x{:x}", sym.name, at - sym.at)
+                format!("{name}+0x{:x}", at - sym.at)
             };
             t.push(segment("symbol", &shown, &(sym.at..end), lines));
         }
         t
     }
+}
+
+/// The images of a fat Mach-O, each over its slice of the file, or None when its slices are
+/// not a valid fat file's (Codex M4 code r5 #1, as xnu's `mach_fat.c` checks them): more than
+/// `MAX_ARCHES`, one over the arch table, or one over another. Otherwise every arch is parsed
+/// once, and they hold at most the file's bytes together. A slice that ends past the file is
+/// skipped, as before.
+fn fat<'a>(f: &goblin::mach::MultiArch<'a>, bytes: &'a [u8]) -> Option<Vec<Image<'a>>> {
+    if f.narches > MAX_ARCHES {
+        return None;
+    }
+    let table = 8 + 20 * f.narches;
+    let mut ranges = Vec::new();
+    for arch in f.iter_arches() {
+        let arch = arch.ok()?;
+        let start = arch.offset as usize;
+        let end = start.checked_add(arch.size as usize)?;
+        if start < table && arch.size > 0 {
+            return None;
+        }
+        ranges.push(start..end);
+    }
+    let mut sorted: Vec<&Range<usize>> = ranges.iter().filter(|r| !r.is_empty()).collect();
+    sorted.sort_by_key(|r| r.start);
+    if sorted.windows(2).any(|w| w[0].end > w[1].start) {
+        return None;
+    }
+    let mut v = Vec::new();
+    for (i, r) in ranges.iter().enumerate() {
+        let (start, end) = (r.start, r.end.min(bytes.len()));
+        if let Ok(goblin::mach::SingleArch::MachO(m)) = f.get(i) {
+            let mut img = macho(&m, &bytes[start..end], start..end);
+            for s in &mut img.sections {
+                s.file = s.file.start + start..s.file.end + start;
+                for sym in &mut s.symbols {
+                    sym.at += start;
+                    sym.end = sym.end.map(|e| e + start);
+                }
+            }
+            v.push(img);
+        }
+    }
+    Some(v)
+}
+
+/// Whether the long names of a PE's sections (`/4`: at offset 4 of the COFF string table),
+/// which goblin copies for each section that names them, fit in the file together (Codex M4
+/// code r5 #1). The headers are read as goblin reads them; what it cannot read it rejects
+/// itself.
+fn pe_section_names_fit(bytes: &[u8]) -> bool {
+    let le = |at: usize, n: usize| {
+        bytes
+            .get(at..at.checked_add(n)?)
+            .map(|b| b.iter().rev().fold(0usize, |a, &x| a << 8 | x as usize))
+    };
+    let Some(coff) = le(0x3c, 4).map(|pe| pe + 4) else {
+        return true;
+    };
+    let (Some(n), Some(symtab), Some(nsyms), Some(optional)) = (
+        le(coff + 2, 2),
+        le(coff + 8, 4),
+        le(coff + 12, 4),
+        le(coff + 16, 2),
+    ) else {
+        return true;
+    };
+    let strings = symtab.saturating_add(nsyms.saturating_mul(18));
+    let mut total = 0usize;
+    for i in 0..n {
+        let Some(name) = bytes
+            .get(coff + 20 + optional + 40 * i..)
+            .and_then(|b| b.get(..8))
+        else {
+            break;
+        };
+        let Some(at) = section_name_offset(name).and_then(|o| strings.checked_add(o)) else {
+            continue;
+        };
+        let Some(rest) = bytes.get(at..) else {
+            continue;
+        };
+        total += memchr::memchr(0, rest).unwrap_or(rest.len());
+        if total > bytes.len() {
+            return false;
+        }
+    }
+    true
+}
+
+/// The offset in the string table that a section's 8-byte name points to, as goblin reads it:
+/// `/` and its decimal digits, or `//` and up to six base-64 digits.
+fn section_name_offset(name: &[u8]) -> Option<usize> {
+    let rest = name.strip_prefix(b"/")?;
+    let rest = &rest[..memchr::memchr(0, rest).unwrap_or(rest.len())];
+    if let Some(b64) = rest.strip_prefix(b"/") {
+        return b64.iter().try_fold(0usize, |a, &c| {
+            let v = match c {
+                b'A'..=b'Z' => c - b'A',
+                b'a'..=b'z' => c - b'a' + 26,
+                b'0'..=b'9' => c - b'0' + 52,
+                b'+' => 62,
+                b'/' => 63,
+                _ => return None,
+            };
+            Some(a * 64 + v as usize)
+        });
+    }
+    std::str::from_utf8(rest).ok()?.parse().ok()
 }
 
 fn segment(kind: &str, name: &str, range: &Range<usize>, lines: &LineIndex) -> Segment {
@@ -194,10 +324,10 @@ fn demangle(name: &str) -> String {
 
 /// A symbol as a table gives it: the index of its section in `sections`, its address minus the
 /// section's address, its size when known (and not zero), and its name.
-type RawSym = (usize, u64, Option<u64>, String);
+type RawSym<'a> = (usize, u64, Option<u64>, &'a str);
 
 /// Adds the symbols to the sections they fall in.
-fn place(sections: &mut [Sect], syms: Vec<RawSym>) {
+fn place<'a>(sections: &mut [Sect<'a>], syms: Vec<RawSym<'a>>) {
     for (i, delta, size, name) in syms {
         let Some(s) = sections.get_mut(i) else {
             continue;
@@ -214,11 +344,7 @@ fn place(sections: &mut [Sect], syms: Vec<RawSym>) {
         let end = size
             .and_then(|n| usize::try_from(n).ok())
             .and_then(|n| at.checked_add(n));
-        s.symbols.push(Sym {
-            at,
-            end,
-            name: demangle(&name),
-        });
+        s.symbols.push(Sym { at, end, name });
     }
     for s in sections {
         // Stable: of the symbols at one offset, the first in the symbol tables is kept.
@@ -245,8 +371,9 @@ fn elf_machine(m: u16, is_64: bool) -> String {
     }
 }
 
-fn elf(e: &goblin::elf::Elf, len: usize) -> Image {
+fn elf<'a>(e: &goblin::elf::Elf<'a>, bytes: &'a [u8]) -> Image<'a> {
     use goblin::elf::section_header::{SHT_NOBITS, SHT_NULL};
+    let len = bytes.len();
     let mut sections = Vec::new();
     // ELF section index → index in `sections`.
     let mut index = vec![usize::MAX; e.section_headers.len()];
@@ -257,11 +384,11 @@ fn elf(e: &goblin::elf::Elf, len: usize) -> Image {
         }
         let start = sh.sh_offset as usize;
         let end = start.saturating_add(sh.sh_size as usize).min(len);
-        let name = e.shdr_strtab.get_at(sh.sh_name).unwrap_or("").to_string();
+        let name = e.shdr_strtab.get_at(sh.sh_name).unwrap_or("");
         index[i] = sections.len();
         addr[i] = sh.sh_addr;
         sections.push(Sect {
-            name,
+            name: Cow::Borrowed(name),
             file: start..end,
             symbols: Vec::new(),
         });
@@ -277,7 +404,7 @@ fn elf(e: &goblin::elf::Elf, len: usize) -> Image {
             if index[sh] == usize::MAX || s.st_value < addr[sh] {
                 continue;
             }
-            let name = strs.get_at(s.st_name).unwrap_or("").to_string();
+            let name = strs.get_at(s.st_name).unwrap_or("");
             let size = (s.st_size > 0).then_some(s.st_size);
             syms.push((index[sh], s.st_value - addr[sh], size, name));
         }
@@ -290,7 +417,7 @@ fn elf(e: &goblin::elf::Elf, len: usize) -> Image {
     }
 }
 
-fn pe(p: &goblin::pe::PE, bytes: &[u8]) -> Image {
+fn pe<'a>(p: &goblin::pe::PE<'a>, bytes: &'a [u8]) -> Image<'a> {
     let machine = match p.header.coff_header.machine {
         0x8664 => "x86-64".to_string(),
         0x14c => "i386".into(),
@@ -310,7 +437,8 @@ fn pe(p: &goblin::pe::PE, bytes: &[u8]) -> Image {
         };
         let end = start.saturating_add(used as usize).min(bytes.len());
         sections.push(Sect {
-            name: s.name().unwrap_or("").to_string(),
+            // At most the file's size together (`pe_section_names_fit`).
+            name: Cow::Owned(s.name().unwrap_or("").to_string()),
             file: start..end,
             symbols: Vec::new(),
         });
@@ -325,13 +453,13 @@ fn pe(p: &goblin::pe::PE, bytes: &[u8]) -> Image {
             continue;
         };
         if let Some(i) = rvas.iter().position(|(a, n)| *a <= rva && rva < a + n) {
-            syms.push((i, rva - rvas[i].0, None, name.to_string()));
+            syms.push((i, rva - rvas[i].0, None, name));
         }
     }
     // A COFF symbol table, which MinGW leaves in images that were not stripped.
     let coff = &p.header.coff_header;
     if let (Ok(Some(table)), Ok(Some(strings))) = (coff.symbols(bytes), coff.strings(bytes)) {
-        for (_, _, s) in table.iter() {
+        for (_, inline, s) in table.iter() {
             // External and static symbols, except the static ones that define a section
             // (`.rdata`, with an auxiliary record) and `.`-names.
             if s.section_number <= 0 || s.storage_class != 2 && s.storage_class != 3 {
@@ -340,15 +468,19 @@ fn pe(p: &goblin::pe::PE, bytes: &[u8]) -> Image {
             if s.is_section_definition() {
                 continue;
             }
-            if let Ok(name) = s.name(&strings)
+            // A long name is at its offset in the string table, which counts from the table's
+            // 4-byte length (one under 4 is malformed: goblin's `name` panics on it, found
+            // fuzzing for code review r4).
+            let name = match inline {
+                Some(n) => Some(n),
+                None => u32::from_le_bytes(s.name[4..8].try_into().unwrap_or_default())
+                    .checked_sub(4)
+                    .and_then(|o| strings.get_at(o as usize)),
+            };
+            if let Some(name) = name
                 && !name.starts_with('.')
             {
-                syms.push((
-                    s.section_number as usize - 1,
-                    s.value as u64,
-                    None,
-                    name.to_string(),
-                ));
+                syms.push((s.section_number as usize - 1, s.value as u64, None, name));
             }
         }
     }
@@ -373,13 +505,114 @@ fn macho_cpu(cpu: u32) -> String {
     }
 }
 
-/// `range` is the slice of the file this Mach-O is; its offsets are relative to it.
-fn macho(m: &goblin::mach::MachO, range: Range<usize>) -> Image {
-    let len = range.len();
+/// The symbols of a Mach-O's `LC_SYMTAB` that the file has room for, each `(name, n_type,
+/// n_sect, n_value)`. The count may say more, each past the file's end (found fuzzing for code
+/// review r4, a count of 318 million); a symbol whose name is out of the string table or not
+/// UTF-8 is left out, and the ones after it are read (Fable M4 code r5 #2). The string table is
+/// read once, where goblin's iterator reads a name's bytes once per symbol that names it, which
+/// costs a name's length times the symbols (Codex M4 code r5 #1).
+fn macho_symbols<'a>(
+    m: &goblin::mach::MachO<'a>,
+    bytes: &'a [u8],
+) -> impl Iterator<Item = (&'a str, u8, u8, u64)> + 'a {
+    let symtab = m.load_commands.iter().find_map(|c| match c.command {
+        goblin::mach::load_command::CommandVariant::Symtab(t) => Some(t),
+        _ => None,
+    });
+    let (is_64, le) = (m.is_64, m.little_endian);
+    let size = if is_64 { 16 } else { 12 };
+    let (symoff, nsyms, stroff, strsize) = symtab.map_or((0, 0, 0, 0), |t| {
+        (
+            t.symoff as usize,
+            t.nsyms as usize,
+            t.stroff as usize,
+            t.strsize as usize,
+        )
+    });
+    let count = nsyms.min(bytes.len().saturating_sub(symoff) / size);
+    let table = bytes
+        .get(stroff..)
+        .map_or(&[][..], |b| &b[..strsize.min(b.len())]);
+    let names = Names::new(table);
+    let word = move |b: &[u8]| {
+        let mut a = [0u8; 8];
+        let a = &mut a[..b.len()];
+        a.copy_from_slice(b);
+        if le {
+            a.reverse();
+        }
+        a.iter().fold(0u64, |v, &x| v << 8 | x as u64)
+    };
+    (0..count).filter_map(move |i| {
+        let e = bytes.get(symoff + size * i..symoff + size * (i + 1))?;
+        let value = if is_64 {
+            word(&e[8..16])
+        } else {
+            word(&e[8..12])
+        };
+        let name = names.get(word(&e[..4]) as usize)?;
+        Some((name, e[4], e[5], value))
+    })
+}
+
+/// A string table of NUL-ended names, read once: each name a symbol points to, at any offset,
+/// is found in it by a binary search, and checked for UTF-8 in constant time.
+struct Names<'a> {
+    /// Each name's start, and its bytes from the first offset after which they are UTF-8 up to
+    /// its NUL (or the table's end); names of no bytes are left out.
+    names: Vec<(u32, u32, &'a str)>,
+}
+
+impl<'a> Names<'a> {
+    fn new(table: &'a [u8]) -> Self {
+        let table = &table[..table.len().min(u32::MAX as usize)];
+        let mut names = Vec::new();
+        let mut start = 0;
+        while start < table.len() {
+            let end = memchr::memchr(0, &table[start..]).map_or(table.len(), |n| start + n);
+            // After the last bytes that are not UTF-8, every char boundary starts a name.
+            let mut valid = start;
+            let mut at = start;
+            for chunk in table[start..end].utf8_chunks() {
+                at += chunk.valid().len() + chunk.invalid().len();
+                if !chunk.invalid().is_empty() {
+                    valid = at;
+                }
+            }
+            if let Ok(text) = std::str::from_utf8(&table[valid..end])
+                && !text.is_empty()
+            {
+                names.push((start as u32, valid as u32, text));
+            }
+            start = end + 1;
+        }
+        Names { names }
+    }
+
+    fn get(&self, at: usize) -> Option<&'a str> {
+        let i = self
+            .names
+            .partition_point(|n| n.0 as usize <= at)
+            .checked_sub(1)?;
+        let (_, valid, text) = self.names[i];
+        text.get(at.checked_sub(valid as usize)?..)
+            .filter(|t| !t.is_empty())
+    }
+}
+
+/// `bytes` is the slice of the file this Mach-O is, at `range`; its offsets are relative to it.
+fn macho<'a>(m: &goblin::mach::MachO<'a>, bytes: &'a [u8], range: Range<usize>) -> Image<'a> {
+    let len = bytes.len();
+    let (head, each) = if m.is_64 { (72, 80) } else { (56, 68) };
     let mut sections = Vec::new();
     let mut addrs = Vec::new();
     for seg in m.segments.iter() {
-        let Ok(list) = seg.sections() else { continue };
+        // The sections a segment's command has room for: goblin reads as many as it says, from
+        // whatever follows the command (Codex M4 code r5 #1).
+        let room = (seg.cmdsize as usize).saturating_sub(head) / each;
+        let Ok(list) = seg.into_iter().take(room).collect::<Result<Vec<_>, _>>() else {
+            continue;
+        };
         for (s, _) in list {
             const S_ZEROFILL: u32 = 0x1;
             const S_GB_ZEROFILL: u32 = 0xc;
@@ -398,34 +631,32 @@ fn macho(m: &goblin::mach::MachO, range: Range<usize>) -> Image {
             // n_sect counts every section, also the ones without bytes in the file.
             addrs.push(s.addr);
             sections.push(Sect {
-                name,
+                name: Cow::Owned(name),
                 file: start..end,
                 symbols: Vec::new(),
             });
         }
     }
     let mut syms = Vec::new();
-    // The symbols end at the first one that cannot be read: a count past the file's end is
-    // that many errors (found fuzzing for code review r4).
-    for (name, nl) in m.symbols().map_while(Result::ok) {
+    for (name, n_type, n_sect, n_value) in macho_symbols(m, bytes) {
         const N_STAB: u8 = 0xe0;
         const N_TYPE: u8 = 0x0e;
         const N_SECT: u8 = 0x0e;
-        if nl.n_type & N_STAB != 0 || nl.n_type & N_TYPE != N_SECT || nl.n_sect == 0 {
+        if n_type & N_STAB != 0 || n_type & N_TYPE != N_SECT || n_sect == 0 {
             continue;
         }
         // A local `l…` or `L…` is an assembler's label (`ltmp1`, `L_.str`), not a symbol; an
         // external one is a symbol (Codex r1 #8).
         const N_EXT: u8 = 0x01;
-        if nl.n_type & N_EXT == 0 && (name.starts_with('l') || name.starts_with('L')) {
+        if n_type & N_EXT == 0 && (name.starts_with('l') || name.starts_with('L')) {
             continue;
         }
-        let i = nl.n_sect - 1;
+        let i = n_sect as usize - 1;
         let Some(&a) = addrs.get(i) else { continue };
-        if nl.n_value < a {
+        if n_value < a {
             continue;
         }
-        syms.push((i, nl.n_value - a, None, name.to_string()));
+        syms.push((i, n_value - a, None, name));
     }
     place(&mut sections, syms);
     Image {
@@ -613,6 +844,94 @@ mod tests {
         assert!(trail_at(&fat, 2).is_empty());
     }
 
+    /// Codex M4 code r5 #1: a fat file's slices neither overlap nor repeat, nor cover its arch
+    /// table, and Apple's loader reads that table from the first 4 KiB (xnu's `mach_fat.c`):
+    /// a fat file that breaks one of these is no object file (D9), and is not parsed once per
+    /// arch that names the same bytes.
+    #[test]
+    fn a_fat_macho_whose_slices_overlap_is_no_object_file() {
+        let s = Spec::new()
+            .section("__TEXT,__cstring", b"hi\0version=1.2.3-needle\0")
+            .symbol("_version", 0, 3);
+        let img = fixture::macho(&s).file;
+        let n = img.len() as u32;
+        let (x86, arm) = (0x0100_0007, 0x0100_000c);
+        let one = |entries: &[(u32, u32, u32)]| fixture::fat_raw(entries, &[(0x1000, &img)]);
+        let both = |entries: &[(u32, u32, u32)]| {
+            fixture::fat_raw(entries, &[(0x1000, &img), (0x2000, &img)])
+        };
+        // Valid: two slices one after the other, or one of no bytes beside another.
+        assert!(Map::parse(&both(&[(x86, 0x1000, n), (arm, 0x2000, n)])).is_some());
+        assert!(Map::parse(&one(&[(x86, 0x1000, n), (arm, 0, 0)])).is_some());
+        for (why, f) in [
+            ("repeated", one(&[(x86, 0x1000, n), (arm, 0x1000, n)])),
+            (
+                "overlapping",
+                both(&[(x86, 0x1000, 0x1001), (arm, 0x2000, n)]),
+            ),
+            ("over the table", one(&[(x86, 0x1000, n), (arm, 20, 100)])),
+            ("4096 repeated", one(&vec![(x86, 0x1000, n); 4096])),
+        ] {
+            assert_eq!(Map::parse(&f), None, "{why}");
+        }
+        // 204 arches fit in the first 4 KiB; 205 do not.
+        let many = |k: u32| {
+            let mut e = vec![(x86, 0x1000, n)];
+            e.extend((1..k).map(|i| (arm + i, 0, 0)));
+            one(&e)
+        };
+        assert!(Map::parse(&many(204)).is_some());
+        assert_eq!(Map::parse(&many(205)), None);
+    }
+
+    /// Fable M4 code r5 #2: a Mach-O symbol whose name is out of the string table or is not
+    /// UTF-8 is left out alone: the symbols after it still name their bytes.
+    #[test]
+    fn a_macho_symbol_with_a_broken_name_leaves_out_only_itself() {
+        let s = Spec::new()
+            .section("__TEXT,__const", b"aaaaaaaabbbbbbbbccccneedle\0")
+            .symbol("_a", 0, 0)
+            .symbol("_b", 0, 8)
+            .symbol("_c", 0, 16);
+        let l = fixture::macho(&s);
+        let at = l.offset(0, 20);
+        assert_eq!(trail_at(&l.file, at)[2], "_c+0x4");
+        // LC_SYMTAB follows the one LC_SEGMENT_64 (72 bytes and an 80-byte section).
+        let symtab = 32 + 72 + 80;
+        let symoff = u32::from_le_bytes(l.file[symtab + 8..symtab + 12].try_into().unwrap());
+        let stroff = u32::from_le_bytes(l.file[symtab + 16..symtab + 20].try_into().unwrap());
+        let b = symoff as usize + 16;
+        let mut out = l.file.clone();
+        out[b..b + 4].copy_from_slice(&0x7fff_0000u32.to_le_bytes());
+        assert_eq!(trail_at(&out, at)[2], "_c+0x4");
+        assert_eq!(trail_at(&out, l.offset(0, 10))[2], "_a+0xa");
+        let mut bad = l.file.clone();
+        let name = u32::from_le_bytes(bad[b..b + 4].try_into().unwrap()) as usize;
+        bad[stroff as usize + name + 1] = 0xff;
+        assert_eq!(trail_at(&bad, at)[2], "_c+0x4");
+        assert_eq!(trail_at(&bad, l.offset(0, 10))[2], "_a+0xa");
+    }
+
+    /// A name at any offset of a string table, as goblin's `Strtab::get_at` reads one: the
+    /// rest of a name from that offset, when it is UTF-8 and not empty.
+    #[test]
+    fn names_are_found_at_any_offset() {
+        let n = Names::new(b"\0_main\0\xff_b\0\0a\xc3\xa9z\0tail");
+        assert_eq!(n.get(1), Some("_main"));
+        assert_eq!(n.get(3), Some("ain"));
+        assert_eq!(n.get(6), None); // its NUL
+        assert_eq!(n.get(0), None);
+        assert_eq!(n.get(7), None); // `\xff_b`: not UTF-8
+        assert_eq!(n.get(8), Some("_b"));
+        assert_eq!(n.get(11), None);
+        assert_eq!(n.get(12), Some("a\u{e9}z"));
+        assert_eq!(n.get(14), None); // inside `\u{e9}`
+        assert_eq!(n.get(15), Some("z"));
+        assert_eq!(n.get(17), Some("tail"));
+        assert_eq!(n.get(21), None);
+        assert_eq!(n.get(1000), None);
+    }
+
     #[test]
     fn rust_symbols_are_demangled_without_their_hash() {
         assert_eq!(
@@ -625,29 +944,28 @@ mod tests {
 
     /// Codex M4 code r4 #1 and the implementers' r4 note: goblin 0.10.7 panics on a 64-bit
     /// Mach-O with an `LC_MAIN` whose `__TEXT` is loaded below its file offset (a subtraction
-    /// that overflows, goblin/src/mach/mod.rs:280, in a debug build; a release build wraps).
-    /// The Processor runs in s4's process: such a file is no object file. A PE has the same
-    /// risk: a COFF symbol whose name's offset in the string table is under 4 (pe/symbol.rs:240,
-    /// found fuzzing); none was found in ELF files.
+    /// that overflows, goblin/src/mach/mod.rs:280, in a debug build; a release build wraps, and
+    /// the file has a Trail). The Processor runs in s4's process: such a file is no object
+    /// file. A PE had the same risk, a COFF symbol whose name's offset in the string table is
+    /// under 4 (goblin's pe/symbol.rs:240, found fuzzing): the Processor reads that offset
+    /// itself since Codex M4 code r5 #1, and leaves the symbol out in both builds.
     #[test]
     fn a_file_goblin_panics_on_is_no_object_file() {
         let s = Spec::new()
             .section("__TEXT,__text", b"\xc3\0\0\0needle\0")
             .entry(0)
             .vmaddr(0);
+        let f = fixture::macho(&s).file;
+        let got = std::panic::catch_unwind(|| Map::parse(&f));
+        let got = got.expect("Map::parse panicked");
+        if cfg!(debug_assertions) {
+            assert_eq!(got, None);
+        }
         let pe = Spec::new()
             .section(".rdata", b"\0needle\0")
             .symbol("version_string", 0, 1);
-        for f in [
-            fixture::macho(&s).file,
-            fixture::pe_with_name_offset_0(fixture::pe(&pe).file),
-        ] {
-            let got = std::panic::catch_unwind(|| Map::parse(&f));
-            let got = got.expect("Map::parse panicked");
-            if cfg!(debug_assertions) {
-                assert_eq!(got, None);
-            }
-        }
+        let f = fixture::pe_with_name_offset_0(fixture::pe(&pe).file);
+        assert_eq!(trail_at(&f, 512 + 1), ["PE x86-64", ".rdata"]);
     }
 
     /// Found fuzzing for code review r4: a 387-byte Mach-O whose `LC_SYMTAB` says it has 318

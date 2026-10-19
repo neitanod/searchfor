@@ -1687,9 +1687,12 @@ fn m4_25_a_command_that_fails_late_is_an_error_after_its_lines() {
 }
 
 /// Codex M4 code r4 #1: goblin 0.10.7 panics (debug builds) on a Mach-O whose `__TEXT` is
-/// loaded below its file offset with an `LC_MAIN`, and on a PE with a symbol name's offset
-/// under 4, and the `object` Processor runs in s4's process: the file, by its name or on stdin,
-/// is searched as rg searches it, without a word of the panic, in every layout.
+/// loaded below its file offset with an `LC_MAIN`, and the `object` Processor runs in s4's
+/// process: the file, by its name or on stdin, is searched as rg searches it, without a word of
+/// the panic, in every layout. A release build wraps goblin's subtraction and reads the file,
+/// which then has its Trail (Fable M4 code r5 #1). A PE with a symbol name's offset under 4,
+/// on which goblin's `name` panics, has its Trail in both builds, without that symbol, since
+/// the Processor reads the offset itself (Codex M4 code r5 #1).
 #[test]
 fn m4_29_an_object_file_goblin_panics_on_is_searched_as_rg_searches_it() {
     if !common::reference_rg() {
@@ -1725,9 +1728,141 @@ fn m4_29_an_object_file_goblin_panics_on_is_searched_as_rg_searches_it() {
             let what = format!("{layout} {file} (stdin {stdin})");
             assert_eq!(stderr(&s), "", "{what}");
             assert_eq!(code(&s), code(&r), "{what}");
-            if layout != "--tree" {
+            let read = file.ends_with(".exe") || !cfg!(debug_assertions);
+            if layout == "--flat" && read {
+                let row = if file.ends_with(".exe") {
+                    "0x201: PE x86-64 › .rdata │ needle\n"
+                } else {
+                    "0xd4: Mach-O x86-64 › __TEXT,__text │ needle\n"
+                };
+                assert_eq!(stdout(&s), row, "{what}");
+            } else if layout != "--tree" {
                 assert_eq!(stdout(&s), stdout(&r), "{what}");
             }
+        }
+    }
+}
+
+/// `c` with its data segment limited to `mib` MiB (`RLIMIT_DATA`), so that an allocation past
+/// it fails and aborts s4.
+fn limited(c: &mut std::process::Command, mib: u64) -> &mut std::process::Command {
+    let bytes = mib << 20;
+    // SAFETY: setrlimit() is async-signal-safe, as pre_exec asks.
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(c, move || {
+            let l = libc::rlimit {
+                rlim_cur: bytes,
+                rlim_max: bytes,
+            };
+            if libc::setrlimit(libc::RLIMIT_DATA, &l) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        })
+    }
+}
+
+/// Codex M4 code r5 #1: the `object` Processor runs in s4's process, where `catch_unwind` does
+/// not stop an allocation that fails. What it keeps of a file is bounded by the file's size, not
+/// by a count the file declares: a fat Mach-O whose 4096 arches all name one image (a valid fat
+/// file's slices neither overlap nor repeat, and Apple's loader reads its arch table from the
+/// first 4 KiB) is searched as rg searches it, without a warning (D9), and so is a PE with 1000
+/// sections named by one 1 MiB name of its string table (`/4`), which goblin copies for each;
+/// an ELF, PE or Mach-O whose symbols all name one 64 KiB name, a Mach-O whose segment command
+/// is read 10 000 times with 10 000 sections each and a PE with 3000 import descriptors naming
+/// one table of 3000 imports get their Trail. Each is a file of at most 2 MiB, searched with a
+/// data segment of 256 MiB.
+#[test]
+fn m4_30_what_an_object_file_declares_costs_no_more_than_the_file() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = fixture();
+    let d = fx.path().join("m4/bin");
+    let w = |p: &str, b: &[u8]| std::fs::write(d.join(p), b).unwrap();
+    // The fat file: 4096 arches over one image of 8000 symbols.
+    let mut spec = obj::Spec::new().section("__TEXT,__const", &[b'x'; 8000]);
+    for i in 0..8000 {
+        spec = spec.symbol(&format!("_s{i}"), 0, i);
+    }
+    let image = obj::macho(&spec.section("__TEXT,__cstring", b"a needle\0")).file;
+    let entries = vec![(0x0100_0007, 0x1_0000, image.len() as u32); 4096];
+    w(
+        "fat-repeated",
+        &obj::fat_raw(&entries, &[(0x1_0000, &image)]),
+    );
+    let long = "n".repeat(64 << 10);
+    let shared = |s: obj::Spec| {
+        let mut s = s.symbol(&long, 0, 0);
+        for i in 0..32_768 {
+            s = s.symbol(&format!("s{i}"), 0, 0);
+        }
+        s
+    };
+    w(
+        "elf-names",
+        &obj::shared_names(
+            obj::elf(&shared(obj::Spec::new().section(".rodata", b"a needle\0"))).file,
+        ),
+    );
+    w(
+        "mac-names",
+        &obj::shared_names(
+            obj::macho(&shared(
+                obj::Spec::new().section("__TEXT,__const", b"a needle\0"),
+            ))
+            .file,
+        ),
+    );
+    w(
+        "pe-names",
+        &obj::shared_names(
+            obj::pe(&shared(obj::Spec::new().section(".rdata", b"a needle\0"))).file,
+        ),
+    );
+    let mac = obj::macho(&obj::Spec::new().section("__TEXT,__const", b"a needle\0")).file;
+    w(
+        "mac-segments",
+        &obj::macho_repeated_segment(mac, 10_000, 10_000),
+    );
+    let mut sections = obj::Spec::new().section(".rdata", b"a needle\0");
+    for _ in 0..1000 {
+        sections = sections.section("/4", b"x");
+    }
+    let sections = sections.symbol(&"n".repeat(1 << 20), 0, 0);
+    w("pe-sections", &obj::pe(&sections).file);
+    let imports = obj::Spec::new()
+        .section(".idata", &vec![0u8; 20 * 3001 + 8 * 3001 + 6])
+        .section(".rdata", b"a needle\0");
+    let l = obj::pe(&imports);
+    w(
+        "pe-imports",
+        &obj::pe_shared_imports(l.file.clone(), l.starts[0], 3000, 3000),
+    );
+    for (f, plain) in [
+        ("fat-repeated", true),
+        ("elf-names", false),
+        ("mac-names", false),
+        ("pe-names", false),
+        ("mac-segments", false),
+        ("pe-sections", true),
+        ("pe-imports", false),
+    ] {
+        let path = format!("m4/bin/{f}");
+        let len = std::fs::metadata(fx.path().join(&path)).unwrap().len();
+        assert!(len <= 2 << 20, "{f}: {len} bytes");
+        let started = std::time::Instant::now();
+        let s = run(limited(&mut fx.s4(["-j1", "--flat", "needle", &path]), 256));
+        let took = started.elapsed();
+        let what = format!("{f}: {:?} {}", s.status, stderr(&s));
+        assert_eq!((code(&s), stderr(&s).as_str()), (0, ""), "{what}");
+        // Goblin's iterator read a Mach-O name once per symbol: 32 768 times 64 KiB took 56 s.
+        assert!(took < std::time::Duration::from_secs(10), "{f}: {took:?}");
+        if plain {
+            let r = run(&mut fx.rg(["needle", &path]));
+            assert_eq!(stdout(&s), stdout(&r), "{what}");
+        } else {
+            assert!(stdout(&s).contains(" │ "), "{what}: {}", stdout(&s));
         }
     }
 }
