@@ -2642,3 +2642,51 @@ fn e_and_f_patterns_join_in_command_line_order() {
     }
     r.assert_empty();
 }
+
+/// Code review r6, Fable #2: a root that is a link to a directory is a directory, which the
+/// sequential walker (`--sort path`, `-j1`) walks as rg 14.1.1 does, with and without `-L`,
+/// and not a file to open: no "Is a directory" error, and rg's exit code.
+#[cfg(unix)]
+#[test]
+fn a_root_linked_to_a_directory_is_walked_as_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir_all(fx.file("sl/sub")).unwrap();
+    std::fs::write(fx.file("sl/sub/a.txt"), "needle here\n").unwrap();
+    std::os::unix::fs::symlink("sub", fx.file("sl/subl")).unwrap();
+    let mut r = Report(Vec::new());
+    for pattern in ["needle", "absent"] {
+        for walk in [
+            &["--sort", "path"][..],
+            &["-j1"],
+            &["-L", "--sort", "path"],
+            &[],
+        ] {
+            for roots in [&["sl/subl"][..], &["sl/sub", "sl/subl"]] {
+                let mut a = walk.to_vec();
+                a.push(pattern);
+                a.extend_from_slice(roots);
+                let want = rg(&fx, &a, In::Null);
+                let want = (code(&want), stdout(&want), common::stderr(&want));
+                for mode in [&["--no-docs", "--no-trail"][..], &["--no-trail"], &[]] {
+                    let mut s = mode.to_vec();
+                    s.extend_from_slice(&a);
+                    let got = s4(&fx, &s, In::Null);
+                    let mut got = (code(&got), stdout(&got), common::stderr(&got));
+                    // The Trail adds to each line: only its exit code and stderr are rg's.
+                    if mode.is_empty() {
+                        got.1 = want.1.clone();
+                    }
+                    r.check(
+                        format!("{s:?}"),
+                        (want.0, format!("{}{}", want.1, want.2)),
+                        (got.0, format!("{}{}", got.1, got.2)),
+                    );
+                }
+            }
+        }
+    }
+    r.assert_empty();
+}

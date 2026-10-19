@@ -664,7 +664,11 @@ impl Ctx<'_> {
                 doc: None,
             });
         }
-        let is_dir = d.file_type().is_some_and(|t| t.is_dir());
+        // A root that is a link to a directory is a directory, as ripgrep 14.1.1's
+        // `Haystack::is_dir` follows it; below the roots, a link is skipped either way, so
+        // only a root pays the look-up (code review r6, Fable #2).
+        let is_dir = d.file_type().is_some_and(|t| t.is_dir())
+            || (d.depth() == 0 && d.path_is_symlink() && d.path().is_dir());
         let explicit = d.depth() == 0 && !is_dir;
         if is_dir || (!explicit && !d.file_type().is_some_and(|t| t.is_file())) {
             return None;
