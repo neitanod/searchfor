@@ -588,6 +588,9 @@ struct Reader<'a> {
     fonts: RefCell<HashMap<ObjectId, Rc<Font<'a>>>>,
     /// Each Form, read the first time it is drawn.
     forms: RefCell<HashMap<ObjectId, Rc<Form<'a>>>>,
+    /// The Forms being drawn, outermost first: a `Do` of one of them draws nothing, as
+    /// `pdftotext` reads it (Fable M4 code r8 #2).
+    drawing: RefCell<Vec<ObjectId>>,
     inflated: Cell<usize>,
     work: Cell<usize>,
     /// `MAX_WORK` and the `PAGE_WORK` of the document's pages.
@@ -606,6 +609,7 @@ impl<'a> Reader<'a> {
             contents: RefCell::default(),
             fonts: RefCell::default(),
             forms: RefCell::default(),
+            drawing: RefCell::default(),
             inflated: Cell::new(0),
             work: Cell::new(0),
         }
@@ -1184,12 +1188,22 @@ fn run<'a>(
                 let Some((id, stream)) = res.form(doc, name) else {
                     continue;
                 };
+                // A Form inside itself, which no PDF draws: `MAX_FORM_DEPTH` stays for the Forms
+                // that are no objects of their own.
+                if id.is_some_and(|id| r.drawing.borrow().contains(&id)) {
+                    continue;
+                }
                 let form = r.form(id, stream)?;
                 r.work(FORM_DRAW)?;
                 let inner = form.res.as_ref().unwrap_or(res);
                 let mut drawn = gs.clone();
                 drawn.ctm = form.matrix.then(gs.ctm);
-                run(r, &form.data, inner, drawn, out, depth + 1)?;
+                r.drawing.borrow_mut().extend(id);
+                let ran = run(r, &form.data, inner, drawn, out, depth + 1);
+                if id.is_some() {
+                    r.drawing.borrow_mut().pop();
+                }
+                ran?;
             }
             _ => {}
         }
@@ -2940,6 +2954,47 @@ mod tests {
             &[(form, false, Some(vec![("F2", x_font("inner"))]))],
         );
         reads_as_pdftotext(&pdf, "needle\ninner\nneedle\n");
+    }
+
+    /// Fable M4 code r8 #2: a Form that draws itself, directly or through another, is not drawn
+    /// again while it is being drawn, as `pdftotext` reads it; one that draws itself 64 times no
+    /// longer spends the whole document's work. A Form drawn again after its draw ends is drawn
+    /// again.
+    #[test]
+    fn a_form_is_not_drawn_inside_itself() {
+        let font = || simple_font(|_| {});
+        let page: &[u8] = b"BT /F1 12 Tf 72 700 Td (page) Tj ET /Fm0 Do";
+        let pdf = pdf_with(
+            font(),
+            page,
+            &[(b"BT /F1 12 Tf 72 650 Td (self) Tj ET /Fm0 Do", false)],
+        );
+        reads_as_pdftotext(&pdf, "page\nself\n");
+        let pdf = pdf_with(
+            font(),
+            b"BT /F1 12 Tf 72 700 Td (page) Tj ET /Fm0 Do BT 72 100 Td (after) Tj ET",
+            &[
+                (b"BT 72 650 Td (A) Tj ET /Fm1 Do", false),
+                (
+                    b"BT /F1 30 Tf 72 600 Td (B) Tj ET 2 0 0 2 0 0 cm /Fm0 Do",
+                    false,
+                ),
+            ],
+        );
+        reads_as_pdftotext(&pdf, "page\nA\nB\nafter\n");
+        let fan = [
+            b"BT 72 650 Td (fan) Tj ET ".to_vec(),
+            b"/Fm0 Do ".repeat(64),
+        ]
+        .concat();
+        let pdf = pdf_with(font(), page, &[(&fan, false)]);
+        reads_as_pdftotext(&pdf, "page\nfan\n");
+        let pdf = pdf_with(
+            font(),
+            b"BT /F1 12 Tf 72 700 Td (page) Tj ET /Fm0 Do 1 0 0 1 0 -100 cm /Fm0 Do",
+            &[(b"BT 72 650 Td (twice) Tj ET", false)],
+        );
+        reads_as_pdftotext(&pdf, "page\ntwice\ntwice\n");
     }
 
     #[test]
