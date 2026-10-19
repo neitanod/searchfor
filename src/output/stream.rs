@@ -187,7 +187,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         }
         if !self.header {
             self.header = true;
-            tree::write_header(self.w, self.file.path)?;
+            self.tree.header(self.w, self.file.path, self.o)?;
         }
         self.tree.row(self.w, r, self.o)
     }
@@ -369,7 +369,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         }
         if !self.header && tree {
             self.header = true;
-            tree::write_header(self.w, self.file.path)?;
+            self.tree.header(self.w, self.file.path, self.o)?;
         }
         self.lead()?;
         if gap && self.o.context {
@@ -393,7 +393,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         }
         self.flush(None)?;
         if self.o.layout == Layout::Tree && !self.header {
-            tree::write_header(self.w, self.file.path)?;
+            self.tree.header(self.w, self.file.path, self.o)?;
         }
         let msg = super::binary_message(self.stats.binary_offset, true, self.file.explicit, self.o);
         if let Some(msg) = msg {

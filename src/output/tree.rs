@@ -62,62 +62,109 @@ fn write_trail(
     printed: &[Segment],
     trail: &[Segment],
     seen: &Seen,
+    o: &RenderOptions,
 ) -> std::io::Result<()> {
     for (depth, s) in trail.iter().enumerate().skip(shared(printed, trail)) {
         if seen.iter().any(|&(_, line)| line == s.line) {
             continue;
         }
         w.write_all(indent(depth).as_bytes())?;
-        style::write_styled(w, "trail", &label(s))?;
+        style::write_in(w, &o.look.palette, "trail", label(s).as_bytes())?;
         w.write_all(b"\n")?;
     }
     Ok(())
 }
 
-/// One line at `depth`: indentation, line number (an object file's row: its hex offset, spec
-/// §5.7) with `:` or `-`, text.
-#[allow(clippy::too_many_arguments)]
+/// The numbers before a row's text: the line number (an object file's row: its hex offset,
+/// spec §5.7), the column (`--column`) and the byte offset (`-b`), each followed by the field
+/// separator, `:` for a Match and `-` for a context line (M5a plan, D4).
+#[derive(Default)]
+pub(crate) struct Numbers<'a> {
+    pub line: u64,
+    pub offset: Option<u64>,
+    pub column: Option<u64>,
+    pub byte_offset: Option<u64>,
+    /// The file, for a link over the numbers with a `--hyperlink-format` that names `{line}`.
+    pub path: Option<&'a std::path::Path>,
+}
+
+/// One line at `depth`: indentation, numbers, text.
 pub(crate) fn write_row(
     w: &mut dyn WriteColor,
     depth: usize,
-    line_number: u64,
-    offset: Option<u64>,
+    numbers: &Numbers,
     bytes: &[u8],
     subs: &[(usize, usize)],
     is_match: bool,
     o: &RenderOptions,
 ) -> std::io::Result<()> {
     let line = super::LineText::new(bytes);
-    write_row_text(w, depth, line_number, offset, &line, subs, is_match, o)
+    write_row_text(w, depth, numbers, &line, subs, is_match, o)
 }
 
 /// `write_row` for a line whose text the rows before may have worked out already.
-#[allow(clippy::too_many_arguments)]
 fn write_row_text(
     w: &mut dyn WriteColor,
     depth: usize,
-    line_number: u64,
-    offset: Option<u64>,
+    n: &Numbers,
     line: &super::LineText,
     subs: &[(usize, usize)],
     is_match: bool,
     o: &RenderOptions,
 ) -> std::io::Result<()> {
-    let at = match offset {
+    let at = match n.offset {
         Some(off) => format!("0x{off:x}"),
-        None => line_number.to_string(),
+        None => n.line.to_string(),
     };
-    let sep = if is_match { ":" } else { "-" };
-    let used = 2 * (depth + 1) + if o.line_numbers { at.len() + 1 } else { 0 };
+    let sep: &[u8] = if is_match {
+        &o.look.sep_match
+    } else {
+        &o.look.sep_context
+    };
+    let mut fields: Vec<(&str, String)> = Vec::new();
+    if o.line_numbers {
+        fields.push(("line", at));
+    }
+    if o.look.column
+        && let Some(c) = n.column
+    {
+        fields.push(("column", c.to_string()));
+    }
+    if o.look.byte_offset
+        && let Some(b) = n.byte_offset
+    {
+        fields.push(("column", b.to_string()));
+    }
+    let sep_width = String::from_utf8_lossy(sep).chars().count();
+    let used = 2 * (depth + 1)
+        + fields
+            .iter()
+            .map(|(_, f)| f.len() + sep_width)
+            .sum::<usize>();
+    // rg links a heading's row numbers when the format names `{line}` or `{column}`.
+    let link_path = n.path.filter(|_| {
+        o.look
+            .hyperlinks
+            .as_ref()
+            .is_some_and(|h| h.line_dependent())
+    });
     let prefix = |w: &mut dyn WriteColor| -> std::io::Result<()> {
         write_indent(w, depth)?;
-        if o.line_numbers {
-            w.set_color(&style::spec("line"))?;
-            w.write_all(at.as_bytes())?;
-            w.reset()?;
-            w.write_all(sep.as_bytes())?;
+        let link = match (link_path, fields.is_empty()) {
+            (Some(p), false) => super::link_start(
+                w,
+                &o.look,
+                p,
+                Some(n.line).filter(|_| n.offset.is_none()),
+                n.column,
+            )?,
+            _ => false,
+        };
+        for (kind, text) in &fields {
+            style::write_in(w, &o.look.palette, kind, text.as_bytes())?;
+            w.write_all(sep)?;
         }
-        Ok(())
+        super::link_end(w, link)
     };
     super::write_line_text(
         w,
@@ -130,10 +177,22 @@ fn write_row_text(
     )
 }
 
-/// The file's first line: its path.
-pub(crate) fn write_header(w: &mut dyn WriteColor, path: &std::path::Path) -> std::io::Result<()> {
-    super::write_path(w, path)?;
-    w.write_all(b"\n")
+/// The file's first line: its path (`--path-separator`, `--colors`, `--hyperlink-format`),
+/// ended by a line break or, with `-0`, by a NUL (grep-printer's `write_path_line`).
+pub(crate) fn write_header(
+    w: &mut dyn WriteColor,
+    path: &std::path::Path,
+    o: &RenderOptions,
+) -> std::io::Result<()> {
+    let link = super::link_start(w, &o.look, path, None, None)?;
+    style::write_in(
+        w,
+        &o.look.palette,
+        "path",
+        &super::shown_path(path, &o.look),
+    )?;
+    super::link_end(w, link)?;
+    w.write_all(&[o.look.path_terminator.unwrap_or(b'\n')])
 }
 
 /// ripgrep's binary message, after a file's rows.
@@ -149,10 +208,24 @@ pub(crate) struct TreeState {
     /// Rows printed under the Trail on screen: a row may be the label of a Segment printed
     /// later. Rows deeper than the part of the Trail that stays are out of view.
     seen: Seen,
+    /// The file, for the links of its rows (`header`).
+    path: Option<std::path::PathBuf>,
 }
 
 impl TreeState {
-    /// One row under its Trail: `--` first after a gap, the Segments not on screen yet, the line.
+    /// The file's header (`write_header`), and its path kept for the links of its rows.
+    pub(crate) fn header(
+        &mut self,
+        w: &mut dyn WriteColor,
+        path: &std::path::Path,
+        o: &RenderOptions,
+    ) -> std::io::Result<()> {
+        self.path = Some(path.to_path_buf());
+        write_header(w, path, o)
+    }
+
+    /// One row under its Trail: the group separator first after a gap, the Segments not on
+    /// screen yet, the line.
     pub(crate) fn row(
         &mut self,
         w: &mut dyn WriteColor,
@@ -161,10 +234,14 @@ impl TreeState {
     ) -> std::io::Result<()> {
         let depth = r.trail.len();
         let shown = shared(&self.printed, r.trail);
-        if r.gap_before {
+        if r.gap_before
+            && let Some(sep) = &o.look.sep_group
+        {
             // At the depth of what is printed next: the first new Segment, or the line.
             let at = depth.min(shown);
-            w.write_all(format!("{}--\n", indent(at)).as_bytes())?;
+            w.write_all(indent(at).as_bytes())?;
+            w.write_all(sep)?;
+            w.write_all(b"\n")?;
         }
         // Every row on screen is at most as deep as the Trail on screen: nothing to drop while
         // that Trail stays whole.
@@ -172,19 +249,17 @@ impl TreeState {
             self.seen.retain(|&(d, _)| d <= shown);
         }
         if shown != depth || self.printed.len() != depth {
-            write_trail(w, &self.printed, r.trail, &self.seen)?;
+            write_trail(w, &self.printed, r.trail, &self.seen, o)?;
             self.printed = r.trail.to_vec();
         }
-        write_row_text(
-            w,
-            depth,
-            r.line_number,
-            r.offset,
-            &r.line,
-            &r.subs,
-            r.is_match,
-            o,
-        )?;
+        let numbers = Numbers {
+            line: r.line_number,
+            offset: r.offset,
+            column: r.column,
+            byte_offset: Some(r.byte_offset),
+            path: self.path.as_deref(),
+        };
+        write_row_text(w, depth, &numbers, &r.line, &r.subs, r.is_match, o)?;
         if self.seen.len() == SEEN {
             self.seen.pop_front();
         }
@@ -202,13 +277,18 @@ impl TreeState {
         kept: &std::collections::HashMap<u64, Vec<(usize, usize)>>,
         o: &RenderOptions,
     ) -> std::io::Result<()> {
-        write_trail(w, &self.printed, trail, &Seen::new())?;
+        write_trail(w, &self.printed, trail, &Seen::new(), o)?;
         self.printed = trail.to_vec();
         self.seen.clear();
         for (n, line) in super::section_lines(src, start, end) {
             let subs = kept.get(&n);
             let s = subs.map_or(&[][..], |v| v.as_slice());
-            write_row(w, trail.len(), n, None, line, s, subs.is_some(), o)?;
+            let numbers = Numbers {
+                line: n,
+                path: self.path.as_deref(),
+                ..Numbers::default()
+            };
+            write_row(w, trail.len(), &numbers, line, s, subs.is_some(), o)?;
         }
         Ok(())
     }
@@ -220,13 +300,13 @@ pub fn render(
     o: &RenderOptions,
     w: &mut dyn WriteColor,
 ) -> std::io::Result<()> {
-    write_header(w, &d.file.path)?;
+    let mut state = TreeState::default();
+    state.header(w, &d.file.path, o)?;
     let kept = if o.expand {
         super::match_lines(d)
     } else {
         Default::default()
     };
-    let mut state = TreeState::default();
     for piece in super::pieces(d, src, o) {
         match piece {
             Piece::Row(r) => state.row(w, &r, o)?,
@@ -297,6 +377,76 @@ mod tests {
         let mut w = NoColor::new(Vec::new());
         render(d, src, o, &mut w).unwrap();
         String::from_utf8(w.into_inner()).unwrap()
+    }
+
+    /// M5a plan, D4: the tree's rows with `--column`, `-b`, rg's separators, `-0` after the
+    /// header's path, `--path-separator` and `--context-separator`.
+    #[test]
+    fn rows_with_ripgreps_prelude_flags() {
+        use crate::output::Look;
+        let s = src(&["# Install", "  run needle", "after", "x", "y", "z needle"]);
+        let d = described(
+            &s,
+            vec![mat(&s, 2), ctx(&s, 3), mat(&s, 6)],
+            vec![
+                vec![vec![h(1, "Install", 1, 6)]],
+                vec![vec![h(1, "Install", 1, 6)]],
+            ],
+        );
+        let o = |look| RenderOptions {
+            context: true,
+            look,
+            ..opts()
+        };
+        assert_eq!(
+            plain(&d, &s, &o(Look::default())),
+            "docs/a.md\n  # Install\n    2:  run needle\n    3-after\n    --\n    6:z needle\n"
+        );
+        let look = Look {
+            column: true,
+            byte_offset: true,
+            sep_match: b"=".to_vec(),
+            sep_group: Some(b"##".to_vec()),
+            path_terminator: Some(0),
+            path_separator: Some(b'\\'),
+            ..Look::default()
+        };
+        assert_eq!(
+            plain(&d, &s, &o(look)),
+            "docs\\a.md\x00  # Install\n    2=7=10=  run needle\n    3-23-after\n    ##\n    6=3=33=z needle\n"
+        );
+    }
+
+    /// The header's path and, with a format that names `{line}`, each row's numbers are links.
+    #[test]
+    fn links_in_the_tree() {
+        use crate::output::{Look, hyperlink::Hyperlinks};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.md");
+        std::fs::write(&path, "x").unwrap();
+        let s = src(&["# Install", "needle"]);
+        let mut d = described(
+            &s,
+            vec![mat(&s, 2)],
+            vec![vec![vec![h(1, "Install", 1, 2)]]],
+        );
+        d.file.path = path.clone();
+        let o = RenderOptions {
+            look: Look {
+                hyperlinks: Hyperlinks::new("file://{path}:{line}", None).map(std::sync::Arc::new),
+                ..Look::default()
+            },
+            ..opts()
+        };
+        let mut w = Ansi::new(Vec::new());
+        render(&d, &s, &o, &mut w).unwrap();
+        let out = String::from_utf8(w.into_inner()).unwrap();
+        let url = format!("file://{}", path.canonicalize().unwrap().display());
+        assert!(
+            out.starts_with(&format!("\x1b]8;;{url}:1\x1b\\")),
+            "{out:?}"
+        );
+        assert!(out.contains(&format!("\x1b]8;;{url}:2\x1b\\")), "{out:?}");
     }
 
     fn ansi(d: &Described, src: &[u8], o: &RenderOptions) -> String {
