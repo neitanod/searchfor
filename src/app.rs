@@ -315,22 +315,20 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         args.fragment_width
     };
     // The Format Definitions: for the Trails, and with --docs (the default) for every mode,
-    // which must tell a document by its name before the search (M4 plan, design note 3). Only
-    // the built-in ones and no override: loaded once a file may be a document by the built-in
-    // document Formats' names (`Ctx::detector`), so a search without one costs what it costs
-    // with --no-docs (code review r7, Codex #3 and Fable #3). Else loaded here: the Trails
-    // need them for every file, an unknown override is an error before the search, and a
-    // user's or a Grammar's Definition may claim any name as a document, and warns first.
+    // which must tell a document by its name before the search (M4 plan, design note 3).
+    // Without a Definition of the user's and no override: loaded once a file may be a document
+    // by the built-in document Formats' names (`Ctx::detector`), so a search without one costs
+    // what it costs with --no-docs (code review r7, Codex #3 and Fable #3); an installed
+    // Grammar's Definition claims no name as a document's (Fable M4 code r8 #3). Else loaded
+    // here: the Trails need them for every file, an unknown override is an error before the
+    // search, and a user's Definition may claim any name as a document, and warns first.
     let user_formats = formats::user_formats_dir();
     let registry = std::sync::OnceLock::new();
     let detector = std::sync::OnceLock::new();
     let lazy = args.docs
         && matches!(mode, Mode::Passthrough | Mode::Quiet | Mode::QuietJson)
         && args.formats.is_empty()
-        && !formats::any_user_definition(
-            user_formats.as_deref(),
-            crate::grammars::grammars_dir().as_deref(),
-        );
+        && !formats::any_user_definition(user_formats.as_deref());
     if (matches!(mode, Mode::Trail) || args.docs) && !lazy {
         let r = registry.get_or_init(|| load_registry(&msgs, user_formats.as_deref()));
         let _ = detector.set(Detector::new(r, &args.formats)?.with_docs(args.docs));
@@ -784,12 +782,13 @@ impl<'a> Ctx<'a> {
     }
 
     /// The Detector, loaded on the first call when `main` did not load it: then there is no
-    /// override and no Definition but the built-in ones, whose directories are not read again.
+    /// override and no Definition of the user's, whose directory is not read again, so the
+    /// Registry is `main`'s: the built-in Definitions and the installed Grammars'.
     fn detector(&self) -> &'a Detector<'a> {
         self.detector.get_or_init(|| {
             let r = self
                 .registry
-                .get_or_init(|| Registry::load_all(None, None, &processors::Processors::known).0);
+                .get_or_init(|| load_registry(&self.msgs, None));
             Detector::new(r, &self.args.formats)
                 .expect("without overrides")
                 .with_docs(self.args.docs)

@@ -19,18 +19,18 @@ pub fn user_formats_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("searchfor").join("formats"))
 }
 
-/// Whether a Definition other than the built-in ones would load: a `*.toml` in `user_dir`, or a
-/// Grammar installed in `grammars_dir` (`Registry::load_all`). Either may claim any name as a
-/// document's, so the built-in names alone cannot tell (code review r7, Codex #3).
-pub fn any_user_definition(user_dir: Option<&Path>, grammars_dir: Option<&Path>) -> bool {
-    let toml = user_dir.is_some_and(|d| {
+/// Whether a Definition of the user's would load: a `*.toml` in `user_dir`, which may claim any
+/// name as a document's, so the built-in names alone cannot tell (code review r7, Codex #3).
+/// An installed Grammar's Definition claims none: its processor is `treesitter`, as
+/// `grammars::install` requires (Fable M4 code r8 #3).
+pub fn any_user_definition(user_dir: Option<&Path>) -> bool {
+    user_dir.is_some_and(|d| {
         std::fs::read_dir(d)
             .into_iter()
             .flatten()
             .flatten()
             .any(|e| e.path().extension().is_some_and(|x| x == "toml"))
-    });
-    toml || grammars_dir.is_some_and(|d| !crate::grammars::installed(d).is_empty())
+    })
 }
 
 impl Registry {
@@ -210,29 +210,18 @@ fn resolve(p: &Path) -> std::io::Result<PathBuf> {
 mod tests {
     use super::*;
 
-    /// Code review r7, Codex #3: a `*.toml` in the user directory, or a Grammar installed, may
-    /// claim any name as a document; nothing else does.
+    /// Code review r7, Codex #3: a `*.toml` in the user directory may claim any name as a
+    /// document; nothing else does, an installed Grammar neither (Fable M4 code r8 #3).
     #[test]
-    fn user_definitions_are_toml_files_and_installed_grammars() {
-        let (user, grammars) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let (u, g) = (user.path(), grammars.path());
-        assert!(!any_user_definition(None, None));
-        assert!(!any_user_definition(
-            Some(&u.join("none")),
-            Some(&g.join("none"))
-        ));
+    fn user_definitions_are_toml_files() {
+        let user = tempfile::tempdir().unwrap();
+        let u = user.path();
+        assert!(!any_user_definition(None));
+        assert!(!any_user_definition(Some(&u.join("none"))));
         std::fs::write(u.join("notes.txt"), "").unwrap();
-        std::fs::create_dir(g.join(".lua.part-abc")).unwrap();
-        assert!(!any_user_definition(Some(u), Some(g)));
+        assert!(!any_user_definition(Some(u)));
         std::fs::write(u.join("mine.toml"), "").unwrap();
-        assert!(any_user_definition(Some(u), Some(g)));
-        assert!(!any_user_definition(None, Some(g)));
-        let lua = g.join("lua");
-        std::fs::create_dir(&lua).unwrap();
-        std::fs::write(lua.join(crate::grammars::binary_name("lua")), b"bin").unwrap();
-        std::fs::write(lua.join("lua.toml"), b"name = 'x'").unwrap();
-        std::fs::write(lua.join("installed.json"), br#"{"version":"1"}"#).unwrap();
-        assert!(any_user_definition(None, Some(g)));
+        assert!(any_user_definition(Some(u)));
     }
     fn known(p: &str) -> bool {
         crate::processors::Processors::known(p)

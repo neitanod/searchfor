@@ -2061,3 +2061,46 @@ fn one_file_that_is_no_document_costs_what_it_costs_without_documents() {
         );
     }
 }
+
+/// Fable M4 code r8 #3: an installed Grammar claims no name as a document's (its Definition's
+/// processor is `treesitter`, `grammars::install` refuses any other), so with one installed a
+/// search of a file that is no document still loads no Format Definition: s4 opens no file of
+/// the Grammar. Once a file may be a document, the Definitions load with the Grammar's, as
+/// they load for the Trails.
+#[cfg(unix)]
+#[test]
+fn an_installed_grammar_leaves_a_search_without_documents_unloaded() {
+    let fx = Fixture::new();
+    std::fs::create_dir_all(fx.file("one")).unwrap();
+    std::fs::write(fx.file("one/small.txt"), "a line of a small plain file\n").unwrap();
+    let lua = fx.grammars.path().join("lua");
+    std::fs::create_dir(&lua).unwrap();
+    std::fs::write(lua.join("searchfor-grammar-lua"), b"bin").unwrap();
+    std::fs::write(
+        lua.join("lua.toml"),
+        "name = \"lua\"\nextensions = [\"lua\"]\nprocessor = \"treesitter\"\n\n[params]\n\
+         grammar = \"lua\"\nquery = \"(function_declaration) @segment\"\n",
+    )
+    .unwrap();
+    std::fs::write(lua.join("installed.json"), br#"{"version":"1"}"#).unwrap();
+    let grammar = |trace: &str| {
+        trace
+            .lines()
+            .filter(|l| l.contains("installed.json") || l.contains("lua.toml"))
+            .count()
+    };
+    for mode in [&["--no-trail"][..], &["-q"], &["-l"], &["-c"]] {
+        let mut a = mode.to_vec();
+        a.extend(["zzqq-absent", "one/small.txt"]);
+        let Some(trace) = traced(&fx, &a, "open,openat", 1) else {
+            eprintln!("strace cannot trace here: system calls not looked at");
+            return;
+        };
+        assert_eq!(grammar(&trace), 0, "{a:?}: {trace}");
+    }
+    let a = ["-c", "needle", "docs/shop.sqlite"];
+    let trace = traced(&fx, &a, "open,openat", 0).unwrap();
+    assert!(grammar(&trace) > 0, "{a:?}: {trace}");
+    let o = fx.s4(a).output().unwrap();
+    assert_eq!(common::stdout(&o), "9\n", "{}", common::stderr(&o));
+}
