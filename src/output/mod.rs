@@ -1,7 +1,9 @@
 //! Rendering of Described files (spec §6).
 pub mod flat;
 pub mod fragment;
+pub mod hyperlink;
 pub mod json;
+pub mod replace;
 pub mod stream;
 pub mod style;
 pub mod summary;
@@ -40,6 +42,64 @@ pub struct RenderOptions {
     pub expand: bool,
     /// --binary / --text / ripgrep's default: picks the binary message (design note 3).
     pub binary: BinaryChoice,
+    /// How each row looks: ripgrep's output flags in the Trail layouts (M5a plan, D4).
+    pub look: Look,
+}
+
+/// ripgrep's output flags as the tree and one-line layouts print them (M5a plan, D4). The
+/// default is what M1–M4 print.
+#[derive(Debug, Clone)]
+pub struct Look {
+    /// `--column`: the 1-based column of the row's first Match after its line number.
+    pub column: bool,
+    /// `-b`: the byte offset of the row's line (with `-o`, of its Match) after the column.
+    pub byte_offset: bool,
+    /// `-o`: one row per Match, its text the matched bytes alone.
+    pub only_matching: bool,
+    /// `--vimgrep`: one row per Match, its text the whole line.
+    pub per_match: bool,
+    /// `--trim`: the text without its leading ASCII white space.
+    pub trim: bool,
+    /// `--max-columns-preview`: with `-M`, the start of a long line before the omission.
+    pub max_columns_preview: bool,
+    /// `-r`: the Matches of each line replaced (`replace::Replacer`).
+    pub replace: Option<std::sync::Arc<replace::Replacer>>,
+    /// `--field-match-separator`: after the path and each number of a Match row (`:`).
+    pub sep_match: Vec<u8>,
+    /// `--field-context-separator`: the same for a context row (`-`).
+    pub sep_context: Vec<u8>,
+    /// `--context-separator` (`--`), None with `--no-context-separator`.
+    pub sep_group: Option<Vec<u8>>,
+    /// `-0`: the byte printed after each path in place of the field separator (one-line) or of
+    /// the line break (tree's header).
+    pub path_terminator: Option<u8>,
+    /// `--path-separator`: the byte printed in place of each `/` of a path.
+    pub path_separator: Option<u8>,
+    /// `--colors`: the colours of path, line, column, match, Trail and markers.
+    pub palette: style::Palette,
+    /// `--hyperlink-format`: paths and line numbers as links on a terminal with colour.
+    pub hyperlinks: Option<std::sync::Arc<hyperlink::Hyperlinks>>,
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Look {
+            column: false,
+            byte_offset: false,
+            only_matching: false,
+            per_match: false,
+            trim: false,
+            max_columns_preview: false,
+            replace: None,
+            sep_match: b":".to_vec(),
+            sep_context: b"-".to_vec(),
+            sep_group: Some(b"--".to_vec()),
+            path_terminator: None,
+            path_separator: None,
+            palette: style::Palette::default(),
+            hyperlinks: None,
+        }
+    }
 }
 
 /// True when -M omits this line: ripgrep compares the whole line, terminator included
@@ -758,6 +818,7 @@ pub(crate) mod fixture {
             trails,
             sections: Vec::new(),
             offsets: false,
+            replacements: Vec::new(),
         }
     }
 }
@@ -777,6 +838,7 @@ pub(crate) mod tests {
             context: false,
             expand: false,
             binary: BinaryChoice::Auto,
+            look: Look::default(),
         }
     }
 

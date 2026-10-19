@@ -1,6 +1,22 @@
 //! Colours of the printers.
 use termcolor::{Color, ColorSpec, WriteColor};
 
+/// The colours of a run: ripgrep's defaults and `--colors` (M5a plan, D11; chunk 4).
+#[derive(Debug, Clone, Default)]
+pub struct Palette {}
+
+impl Palette {
+    /// The palette of the `--colors` specs, in order, over the defaults.
+    pub fn new(_specs: &[String]) -> Palette {
+        Palette {}
+    }
+
+    /// The colour of `kind`: `path`, `line`, `column`, `match`, `trail`, or the markers' dim.
+    pub fn spec(&self, kind: &str) -> ColorSpec {
+        spec(kind)
+    }
+}
+
 /// ripgrep's default colours (path magenta, line number green, match bold red), plus cyan
 /// Trails and dim markers (grill decision 8381).
 pub fn spec(kind: &str) -> ColorSpec {
