@@ -1473,7 +1473,17 @@ fn a_pattern_error_suggests_what_ripgrep_suggests() {
     let file = file.path().to_str().unwrap().to_string();
     let mut r = Report(Vec::new());
     let mut cases: Vec<Vec<&str>> = Vec::new();
-    for p in ["needle\\nline", "[\\n]", "(?=a)", "a(?<!b)", "(a)\\1", "("] {
+    // The last one names both in the message that repeats it, and rg suggests both, multiline
+    // mode first (Fable M4 code r9 #4).
+    for p in [
+        "needle\\nline",
+        "[\\n]",
+        "(?=a)",
+        "a(?<!b)",
+        "(a)\\1",
+        "(",
+        "look-around the literal not allowed (",
+    ] {
         for flags in [&[][..], &["-w"], &["-x"], &["-i"], &["-e", "ok"]] {
             let mut c = flags.to_vec();
             c.extend(["-e", p, "md"]);

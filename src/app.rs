@@ -86,20 +86,24 @@ fn stopped() -> bool {
     crate::helper::host::cancel::stopped()
 }
 
-/// The message of a pattern that does not compile, with ripgrep 14.1.1's suggestion when it has
-/// one (hiargs.rs, `suggest_pcre2` and `suggest_multiline`): PCRE2 for a look-around or a
-/// backreference, multiline mode for a literal `\n`. s4 has neither yet, as rg-compat.md says,
-/// and prints rg's message whole (Fable M4 code r8 #4).
+/// The message of a pattern that does not compile, with ripgrep 14.1.1's suggestions when it
+/// has them (hiargs.rs, `suggest_multiline` and then `suggest_pcre2` on its result): multiline
+/// mode for a literal `\n`, PCRE2 for a look-around or a backreference, both when the message,
+/// which repeats the pattern, names both (Fable M4 code r9 #4). s4 has neither yet, as
+/// rg-compat.md says, and prints rg's message whole (Fable M4 code r8 #4).
 fn suggestion(msg: String) -> String {
+    let msg = if msg.contains("the literal") && msg.contains("not allowed") {
+        format!(
+            "{msg}\n\nConsider enabling multiline mode with the --multiline flag (or -U for \
+             short).\nWhen multiline mode is enabled, new line characters can be matched."
+        )
+    } else {
+        msg
+    };
     if msg.contains("backreferences") || msg.contains("look-around") {
         format!(
             "{msg}\n\nConsider enabling PCRE2 with the --pcre2 flag, which can handle \
              backreferences\nand look-around."
-        )
-    } else if msg.contains("the literal") && msg.contains("not allowed") {
-        format!(
-            "{msg}\n\nConsider enabling multiline mode with the --multiline flag (or -U for \
-             short).\nWhen multiline mode is enabled, new line characters can be matched."
         )
     } else {
         msg
