@@ -2132,3 +2132,187 @@ fn m4_35_with_follow_names_below_links_to_descriptors_are_no_documents() {
         assert_eq!(sorted(&s, &plain), docs, "{args:?}");
     }
 }
+
+/// `doc`, a document of these writers with one paragraph `BODY`, with `xml` in its place.
+fn with_body(doc: Vec<u8>, part: &str, xml: &str) -> Vec<u8> {
+    doc::rezip(&doc, |name, data| {
+        if name != part {
+            return data;
+        }
+        let s = String::from_utf8(data).unwrap();
+        let body = [
+            r#"<w:p><w:r><w:t xml:space="preserve">BODY</w:t></w:r></w:p>"#,
+            "<text:p>BODY</text:p>",
+            "<a:p><a:r><a:t>BODY</a:t></a:r></a:p>",
+        ]
+        .into_iter()
+        .find(|b| s.contains(b))
+        .expect("the BODY paragraph");
+        s.replace(body, xml).into_bytes()
+    })
+}
+
+/// Codex M4 code r9 #2, Fable M4 code r9 #1: a cell is named by the column of the grid it
+/// starts at, and a first-row cell that spans columns names each of them (spec §5.8, the
+/// first row's cell above it). A table of four columns, `Name | Q (two) | Total`, as Word
+/// writes it (`w:gridSpan`, `w:vMerge`, `w:gridBefore`), as OpenDocument does
+/// (`number-columns-spanned` and `covered-table-cell`, across and down) and as PowerPoint does
+/// (`gridSpan`, `hMerge`, `vMerge`), each row with one needle.
+#[test]
+fn m4_36_a_merged_cell_keeps_the_columns_after_it_named() {
+    let fx = fixture();
+    let w = |p: &str, b: &[u8]| std::fs::write(fx.path().join("m4").join(p), b).unwrap();
+    let cell = |open: &str, close: &str, para: &dyn Fn(&str) -> String, t: &str| {
+        format!("{open}{}{close}", para(t))
+    };
+    let wp = |t: &str| format!("<w:p><w:r><w:t>{t}</w:t></w:r></w:p>");
+    let wc = |t: &str| cell("<w:tc>", "</w:tc>", &wp, t);
+    let ws = |n: u32, t: &str| {
+        cell(
+            &format!(r#"<w:tc><w:tcPr><w:gridSpan w:val="{n}"/></w:tcPr>"#),
+            "</w:tc>",
+            &wp,
+            t,
+        )
+    };
+    let wv = |v: &str, t: &str| {
+        cell(
+            &format!(r#"<w:tc><w:tcPr><w:vMerge{v}/></w:tcPr>"#),
+            "</w:tc>",
+            &wp,
+            t,
+        )
+    };
+    let tr = |cells: &[String]| format!("<w:tr>{}</w:tr>", cells.concat());
+    let docx = format!(
+        "<w:tbl>{}</w:tbl>",
+        [
+            tr(&[wc("Name"), ws(2, "Q"), wc("Total")]),
+            tr(&[wc("a"), wc("b"), wc("needle2"), wc("d")]),
+            tr(&[ws(2, "x"), wc("needle3"), wc("f")]),
+            tr(&[
+                wv(r#" w:val="restart""#, "v"),
+                wc("g"),
+                wc("h"),
+                wc("needle4")
+            ]),
+            tr(&[wv("", ""), wc("needle5"), wc("i"), wc("j")]),
+            format!(
+                r#"<w:tr><w:trPr><w:gridBefore w:val="1"/></w:trPr>{}</w:tr>"#,
+                [wc("needle6"), wc("k"), wc("l")].concat()
+            ),
+        ]
+        .concat()
+    );
+    w(
+        "merged.docx",
+        &with_body(doc::docx(&[doc::p("BODY")]), "word/document.xml", &docx),
+    );
+    let op = |t: &str| format!("<text:p>{t}</text:p>");
+    let oc = |t: &str| cell("<table:table-cell>", "</table:table-cell>", &op, t);
+    let os = |attr: &str, t: &str| {
+        cell(
+            &format!("<table:table-cell {attr}>"),
+            "</table:table-cell>",
+            &op,
+            t,
+        )
+    };
+    let covered = "<table:covered-table-cell/>".to_string();
+    let otr = |cells: &[String]| format!("<table:table-row>{}</table:table-row>", cells.concat());
+    let odt = format!(
+        r#"<table:table table:name="T">{}</table:table>"#,
+        [
+            otr(&[
+                oc("Name"),
+                os(r#"table:number-columns-spanned="2""#, "Q"),
+                covered.clone(),
+                oc("Total"),
+            ]),
+            otr(&[oc("a"), oc("b"), oc("needle2"), oc("d")]),
+            otr(&[
+                os(r#"table:number-columns-spanned="2""#, "x"),
+                covered.clone(),
+                oc("needle3"),
+                oc("f"),
+            ]),
+            otr(&[
+                os(r#"table:number-rows-spanned="2""#, "v"),
+                oc("g"),
+                oc("h"),
+                oc("needle4"),
+            ]),
+            otr(&[covered.clone(), oc("needle5"), oc("i"), oc("j")]),
+        ]
+        .concat()
+    );
+    w(
+        "merged.odt",
+        &with_body(doc::odt(&[doc::p("BODY")]), "content.xml", &odt),
+    );
+    let ap = |t: &str| format!("<a:txBody><a:p><a:r><a:t>{t}</a:t></a:r></a:p></a:txBody>");
+    let ac = |attr: &str, t: &str| cell(&format!("<a:tc{attr}>"), "</a:tc>", &ap, t);
+    let atr = |cells: &[String]| format!(r#"<a:tr h="1">{}</a:tr>"#, cells.concat());
+    let pptx = format!(
+        "<a:tbl>{}</a:tbl>",
+        [
+            atr(&[
+                ac("", "Name"),
+                ac(r#" gridSpan="2""#, "Q"),
+                ac(r#" hMerge="1""#, ""),
+                ac("", "Total"),
+            ]),
+            atr(&[ac("", "a"), ac("", "b"), ac("", "needle2"), ac("", "d")]),
+            atr(&[
+                ac(r#" gridSpan="2""#, "x"),
+                ac(r#" hMerge="1""#, ""),
+                ac("", "needle3"),
+                ac("", "f"),
+            ]),
+            atr(&[
+                ac(r#" rowSpan="2""#, "v"),
+                ac("", "g"),
+                ac("", "h"),
+                ac("", "needle4"),
+            ]),
+            atr(&[
+                ac(r#" vMerge="1""#, ""),
+                ac("", "needle5"),
+                ac("", "i"),
+                ac("", "j"),
+            ]),
+        ]
+        .concat()
+    );
+    let slides: &[(&[&str], Option<&str>)] = &[(&["BODY"], None)];
+    w(
+        "merged.pptx",
+        &with_body(doc::pptx(slides), "ppt/slides/slide1.xml", &pptx),
+    );
+    let names = |f: &str| {
+        let out = ok(&fx, &["--flat", "needle[0-9]", &format!("m4/{f}")]);
+        out.lines()
+            .map(|l| {
+                let (trail, text) = l.split_once(" │ ").expect("a Trail");
+                let col = trail.rsplit(" › ").next().unwrap().to_string();
+                let at = text.find("needle").expect("the needle");
+                (text[at..at + 7].to_string(), col)
+            })
+            .collect::<Vec<_>>()
+    };
+    let want = |n: usize| {
+        [
+            ("needle2", "Q"),
+            ("needle3", "Q"),
+            ("needle4", "Total"),
+            ("needle5", "Q"),
+            ("needle6", "Q"),
+        ][..n]
+            .iter()
+            .map(|(m, c)| (m.to_string(), c.to_string()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names("merged.docx"), want(5));
+    assert_eq!(names("merged.odt"), want(4));
+    assert_eq!(names("merged.pptx"), want(4));
+}

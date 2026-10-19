@@ -108,9 +108,34 @@ impl<'s> Flow<'s> {
                         }
                         self.tables.push(Table::default());
                     }
+                    // PowerPoint writes a cell per column of the grid: one that spans
+                    // columns (`gridSpan`) is followed by a covered one (`hMerge`) for each
+                    // other column (Codex M4 code r9 #2).
+                    "tc" if attr(attrs, "hMerge").is_some_and(|v| matches!(&*v, "1" | "true")) => {
+                        if let Some(t) = self.tables.last_mut() {
+                            t.cover(1);
+                        }
+                    }
                     "tc" if !empty => {
                         if let Some(t) = self.tables.last_mut() {
                             t.push_cell();
+                            if let Some(n) = attr(attrs, "gridSpan").and_then(|v| count(&v)) {
+                                t.span(n);
+                            }
+                        }
+                    }
+                    // Word writes one cell for the columns it spans, and the columns a row
+                    // leaves out before its first cell.
+                    "gridSpan" | "gridBefore" if *ns == Ns::Word => {
+                        if let (Some(t), Some(n)) = (
+                            self.tables.last_mut(),
+                            attr(attrs, "val").and_then(|v| count(&v)),
+                        ) {
+                            if l == "gridSpan" {
+                                t.span(n);
+                            } else {
+                                t.skip(n);
+                            }
                         }
                     }
                     _ => {}
@@ -197,6 +222,11 @@ impl<'s> Flow<'s> {
             None => b.line(&text),
         }
     }
+}
+
+/// A count of columns of the grid, as an attribute writes it.
+fn count(v: &str) -> Option<usize> {
+    v.trim().parse().ok()
 }
 
 fn walk(xml: &str, flow: &mut Flow, b: &mut Builder) {

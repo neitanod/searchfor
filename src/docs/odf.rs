@@ -168,14 +168,28 @@ impl Flow {
                         }
                         self.tables.push(Table::default());
                     }
-                    (Ns::Table, "table-cell") => {
+                    (Ns::Table, "table-cell" | "covered-table-cell") => {
                         if let Some(t) = self.tables.last_mut() {
-                            let n = attr(attrs, "number-columns-repeated")
-                                .and_then(|v| v.parse::<usize>().ok())
-                                .unwrap_or(1);
-                            // Repeated cells are empty but the last, which `p` fills.
-                            for _ in 0..n.min(MAX_REPEAT) {
+                            let number = |a: &str| {
+                                attr(attrs, a).and_then(|v| v.trim().parse::<usize>().ok())
+                            };
+                            let n = number("number-columns-repeated").unwrap_or(1);
+                            if l == "covered-table-cell" {
+                                // A column of a cell that spans it, across or down (Codex M4
+                                // code r9 #2).
+                                t.cover(n);
+                            } else {
+                                // Repeated cells are empty but the last, which `p` fills; it
+                                // is at its column of the grid past `MAX_REPEAT` too.
+                                let pushed = n.clamp(1, MAX_REPEAT);
+                                for _ in 1..pushed {
+                                    t.push_cell();
+                                }
+                                t.skip(n.saturating_sub(pushed));
                                 t.push_cell();
+                                if let Some(span) = number("number-columns-spanned") {
+                                    t.span(span);
+                                }
                             }
                         }
                     }
