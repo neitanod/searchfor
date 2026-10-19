@@ -379,6 +379,13 @@ struct Columns {
     /// COLUMN` has it in the rows written before, whose records end earlier (M4 plan r5,
     /// Codex #2).
     defaults: Vec<Option<Value>>,
+    /// Whether `ALTER TABLE ADD COLUMN` could have added each column, so that a record may
+    /// end before it: not one of a key or of a UNIQUE constraint, not a STORED generated
+    /// column, and with a constant DEFAULT if it has a DEFAULT or is NOT NULL (non-NULL then).
+    addable: Vec<bool>,
+    /// How many of `stored`'s first values are a `WITHOUT ROWID` table's key, which SQLite
+    /// keeps NOT NULL.
+    key_len: usize,
 }
 
 /// A token of SQL (M4 plan r2, Codex #4): a word, a quoted name (`"…"`, `` `…` ``, `[…]`) or
@@ -578,6 +585,10 @@ fn columns(sql: &str) -> Columns {
     let mut collations: Vec<Option<String>> = Vec::new();
     // Whether `pk` is the table's constraint, `PRIMARY KEY(…)`, rather than a column's.
     let mut table_pk = false;
+    // Columns a table's UNIQUE constraint names, and each column's own constraints that no
+    // added column may have.
+    let mut unique: Vec<String> = Vec::new();
+    let mut fixed: Vec<bool> = Vec::new();
     let mut virtuals: Vec<usize> = Vec::new();
     let mut defaults: Vec<Option<Value>> = Vec::new();
     for part in split_commas(&toks[open + 1..close.max(open + 1)]) {
@@ -586,6 +597,19 @@ fn columns(sql: &str) -> Columns {
             .iter()
             .any(|k| first.is(k))
         {
+            if let Some(at) = part.iter().position(|t| t.is("UNIQUE"))
+                && part.get(at + 1) == Some(&Tok::Punct('('))
+            {
+                let end = part
+                    .iter()
+                    .rposition(|t| *t == Tok::Punct(')'))
+                    .unwrap_or(part.len());
+                unique.extend(
+                    split_commas(&part[at + 2..end.max(at + 2)])
+                        .iter()
+                        .filter_map(|c| c.first().and_then(Tok::name)),
+                );
+            }
             if let Some(at) = primary_key(part)
                 && part.get(at) == Some(&Tok::Punct('('))
             {
@@ -636,6 +660,9 @@ fn columns(sql: &str) -> Columns {
         if generated_virtual(part) {
             virtuals.push(names.len());
         }
+        let generated = part
+            .windows(2)
+            .any(|w| w[0].is("AS") && w[1] == Tok::Punct('('));
         if let Some(at) = primary_key(part) {
             pk = vec![(name.clone(), None)];
             table_pk = false;
@@ -643,12 +670,19 @@ fn columns(sql: &str) -> Columns {
                 ipk = Some(names.len());
             }
         }
-        defaults.push(
-            part.iter()
-                .position(|t| t.is("DEFAULT"))
-                .and_then(|d| constant(&part[d + 1..]))
-                .map(|(lit, _)| lit.with_affinity(affinity(&ty))),
+        let default = part.iter().position(|t| t.is("DEFAULT"));
+        let value = default
+            .and_then(|d| constant(&part[d + 1..]))
+            .map(|(lit, _)| lit.with_affinity(affinity(&ty)));
+        let not_null = part.windows(2).any(|w| w[0].is("NOT") && w[1].is("NULL"));
+        fixed.push(
+            primary_key(part).is_some()
+                || part.iter().any(|t| t.is("UNIQUE"))
+                || (generated && !generated_virtual(part))
+                || (default.is_some() && value.is_none())
+                || (not_null && value.as_ref().is_none_or(|v| *v == Value::Null)),
         );
+        defaults.push(value);
         collations.push(collation(part));
         names.push(name);
         types.push(ty);
@@ -698,14 +732,77 @@ fn columns(sql: &str) -> Columns {
         .iter()
         .map(|t| affinity(t) == Affinity::Real)
         .collect();
+    let addable = (0..names.len())
+        .map(|i| {
+            !fixed[i]
+                && !pk.iter().any(|(k, _)| k.eq_ignore_ascii_case(&names[i]))
+                && !unique.iter().any(|u| u.eq_ignore_ascii_case(&names[i]))
+        })
+        .collect();
     Columns {
         names,
         real,
         ipk: if without_rowid { None } else { ipk },
         without_rowid,
+        key_len: if without_rowid { key.len() } else { 0 },
         stored,
         defaults,
+        addable,
     }
+}
+
+/// A row's values in their declared order, from the values its record holds in `stored`
+/// order. A record may hold fewer, when the columns it lacks were added since, which then have
+/// their DEFAULT; a NULL the record holds stays NULL. A column the key stores twice (two
+/// collations) holds one value twice.
+///
+/// Err when the row does not fit what the `CREATE TABLE` says, which would else lose or move
+/// a value silently (Codex M4 code r5 #2, r6 #1): more values than the table stores, one
+/// missing that no `ALTER TABLE ADD COLUMN` could have left out, two copies of a key's column
+/// that differ, a value in the rowid's alias, which SQLite stores as NULL, or a NULL in a
+/// `WITHOUT ROWID` key.
+fn rebuild(cols: &Columns, stored: Vec<Value>) -> Result<Vec<Value>, String> {
+    let held = stored.len();
+    let name = |at: usize| &cols.names[at];
+    if held > cols.stored.len() {
+        return Err(format!(
+            "a row holds {held} values, where the table stores {}",
+            cols.stored.len()
+        ));
+    }
+    if let Some(&at) = cols.stored[held..].iter().find(|&&at| !cols.addable[at]) {
+        return Err(format!("a row has no value of column {}", name(at)));
+    }
+    let mut values = vec![Value::Null; cols.names.len()];
+    let mut set = vec![false; values.len()];
+    for (k, v) in stored.into_iter().enumerate() {
+        let at = cols.stored[k];
+        if k < cols.key_len && v == Value::Null {
+            return Err(format!("a row's key holds NULL in column {}", name(at)));
+        }
+        if Some(at) == cols.ipk && v != Value::Null {
+            return Err(format!(
+                "a row holds a value in the rowid's column {}",
+                name(at)
+            ));
+        }
+        if std::mem::replace(&mut set[at], true) {
+            if values[at] != v {
+                return Err(format!(
+                    "a row's key holds two values of column {}",
+                    name(at)
+                ));
+            }
+        } else {
+            values[at] = v;
+        }
+    }
+    for &at in &cols.stored[held..] {
+        if let Some(Some(d)) = cols.defaults.get(at) {
+            values[at] = d.clone();
+        }
+    }
+    Ok(values)
 }
 
 /// A column's affinity, from its declared type by SQLite's rules, in their order: `INT`, then
@@ -990,36 +1087,17 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     for (name, root, sql) in tables {
         let cols = columns(&sql);
         let t = b.open("table", &name);
+        let mut misfit = None;
         let r = db.walk(root, &mut |rowid, stored| {
+            let values = match rebuild(&cols, stored) {
+                Ok(v) => v,
+                Err(e) => {
+                    misfit = Some(DocError::broken(format!("table {name}: {e}")));
+                    return false;
+                }
+            };
             b.start_row(Some(&format!("row {rowid}")));
-            // The values in their declared order: a record may hold fewer (columns added
-            // since), which have their DEFAULT, or more, which go after the declared ones. A
-            // NULL the record holds stays NULL. A column the key stores twice (two collations)
-            // has its first value.
-            let held = stored.len();
-            let extra = held.saturating_sub(cols.stored.len());
-            let mut values = vec![Value::Null; cols.names.len() + extra];
-            let mut set = vec![false; values.len()];
-            for (k, v) in stored.into_iter().enumerate() {
-                let at = match cols.stored.get(k) {
-                    Some(&at) => at,
-                    None => cols.names.len() + k - cols.stored.len(),
-                };
-                if !std::mem::replace(&mut set[at], true) {
-                    values[at] = v;
-                }
-            }
-            for &at in cols.stored.iter().skip(held) {
-                if let Some(Some(d)) = cols.defaults.get(at) {
-                    values[at] = d.clone();
-                }
-            }
-            for (i, v) in values.iter().enumerate() {
-                let col = cols
-                    .names
-                    .get(i)
-                    .cloned()
-                    .unwrap_or_else(|| format!("column {}", i + 1));
+            for (i, (v, col)) in values.iter().zip(&cols.names).enumerate() {
                 let shown = match v {
                     Value::Null if Some(i) == cols.ipk => rowid.to_string(),
                     Value::Int(n) if cols.real.get(i) == Some(&true) => {
@@ -1027,13 +1105,16 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                     }
                     v => v.shown(),
                 };
-                b.cell("column", &col, &shown);
+                b.cell("column", col, &shown);
             }
             b.end_row();
             !b.full()
         });
         b.close(t);
         r?;
+        if let Some(e) = misfit {
+            return Err(e);
+        }
         if b.full() {
             break;
         }
@@ -1181,6 +1262,94 @@ mod tests {
         assert_eq!(db.record(&p), None);
         // A value past the payload.
         assert_eq!(db.record(&[2, 17, b'x']), None);
+    }
+
+    /// Codex M4 code r5 and r6: a row that does not fit what the table's `CREATE TABLE` says
+    /// is not rebuilt with a value lost or moved: more values than the table stores, a value
+    /// missing that no `ALTER TABLE ADD COLUMN` could have left out, two copies of a key's
+    /// column that differ, a value where the rowid's alias holds NULL, or a NULL in a WITHOUT
+    /// ROWID key are an error, and the database is searched as rg searches it.
+    #[test]
+    fn a_row_that_does_not_fit_its_table_is_an_error() {
+        let r = |sql: &str, v: Vec<Value>| rebuild(&columns(sql), v);
+        let t = |s: &str| Value::Text(s.into());
+        assert_eq!(
+            r("CREATE TABLE t(a, b DEFAULT 'x')", vec![t("1")]),
+            Ok(vec![t("1"), t("x")])
+        );
+        assert_eq!(
+            r("CREATE TABLE t(a, b)", vec![t("1")]),
+            Ok(vec![t("1"), Value::Null])
+        );
+        assert_eq!(
+            r(
+                "CREATE TABLE t(a, b NOT NULL DEFAULT 'x' COLLATE NOCASE)",
+                vec![t("1")]
+            ),
+            Ok(vec![t("1"), t("x")])
+        );
+        assert_eq!(
+            r(
+                "CREATE TABLE t(a, b, PRIMARY KEY(b, b COLLATE NOCASE)) WITHOUT ROWID",
+                vec![t("k"), t("k"), t("v")]
+            ),
+            Ok(vec![t("v"), t("k")])
+        );
+        assert_eq!(
+            r(
+                "CREATE TABLE t(id INTEGER PRIMARY KEY, a)",
+                vec![Value::Null, t("a")]
+            ),
+            Ok(vec![Value::Null, t("a")])
+        );
+        assert!(r("CREATE TABLE t(a)", vec![t("1"), t("2")]).is_err());
+        for sql in [
+            "CREATE TABLE t(a, b NOT NULL)",
+            "CREATE TABLE t(a, b UNIQUE)",
+            "CREATE TABLE t(a, b, UNIQUE(b))",
+            "CREATE TABLE t(a, b, CONSTRAINT u UNIQUE (b COLLATE NOCASE))",
+            "CREATE TABLE t(a, b PRIMARY KEY)",
+            "CREATE TABLE t(a, b, PRIMARY KEY(a, b))",
+            "CREATE TABLE t(a, b AS (a) STORED)",
+            "CREATE TABLE t(a, b DEFAULT (1 + 2))",
+            "CREATE TABLE t(a, b, PRIMARY KEY(a, b)) WITHOUT ROWID",
+        ] {
+            assert!(r(sql, vec![t("1")]).is_err(), "{sql}");
+        }
+        assert!(
+            r(
+                "CREATE TABLE t(a, b, PRIMARY KEY(b, b COLLATE NOCASE)) WITHOUT ROWID",
+                vec![t("k"), t("v"), t("a")]
+            )
+            .is_err()
+        );
+        assert!(
+            r(
+                "CREATE TABLE t(id INTEGER PRIMARY KEY, a)",
+                vec![Value::Int(3), t("a")]
+            )
+            .is_err()
+        );
+        assert!(
+            r(
+                "CREATE TABLE t(a, b PRIMARY KEY) WITHOUT ROWID",
+                vec![Value::Null, t("a")]
+            )
+            .is_err()
+        );
+        // keys.sqlite's k7 with its two COLLATE clauses swapped, which keeps the schema's
+        // length: b is then NOCASE, and its key two copies of it, which the rows do not hold.
+        let mut f = fixture("keys.sqlite");
+        let (from, to) = (
+            b"b TEXT COLLATE NOCASE COLLATE RTRIM",
+            b"b TEXT COLLATE RTRIM COLLATE NOCASE",
+        );
+        let at = memchr::memmem::find(&f, from).unwrap();
+        f[at..at + from.len()].copy_from_slice(to);
+        match super::super::extract(super::super::Kind::Sqlite, &f) {
+            Err(DocError::Broken(m)) => assert!(m.starts_with("table k7: "), "{m}"),
+            other => panic!("{:?}", other.map(|e| e.text)),
+        }
     }
 
     /// Codex r1 #6: SQLite's quirk: a column's `INTEGER PRIMARY KEY DESC` is no alias of the
@@ -1555,6 +1724,204 @@ mod tests {
         let mut b = Builder::new(10);
         assert!(extract(&fixture("many.sqlite"), &mut b).is_ok());
         assert!(b.full());
+    }
+
+    /// Writes random tables with Python's sqlite3 module, and gives, for each, its file, its
+    /// schema and the lines `SELECT` gives, sorted, as the Extractor prints a row: tabs between
+    /// the values, NULL and a VIRTUAL column empty, a blob `[blob N bytes]`, anything else as
+    /// SQLite casts it to text. Arguments: directory, seed, count. The test leaves out the
+    /// lines of rows without text, which the Builder does not write.
+    const RANDOM_TABLES: &str = r##"
+import json, os, random, sqlite3, sys
+
+out, seed, count = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+rng = random.Random(seed)
+COLLS = ["BINARY", "NOCASE", "RTRIM", "binary", "nocase", "rtrim"]
+TYPES = ["INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC", "", "INT", "VARCHAR(10)", "DOUBLE"]
+DEFAULTS = ["'dflt'", "42", "-3", "1.5", "NULL", "x'00ff'", "('par')", "-2.5", "+7", "0x10"]
+
+def collates():
+    return "".join(f" COLLATE {rng.choice(COLLS)}" for _ in range(rng.choice([0, 0, 1, 1, 2, 3])))
+
+def text():
+    base = "".join(rng.choice("aAbBzZ ñ") for _ in range(rng.randint(0, 6)))
+    if rng.random() < 0.05:
+        base += "x" * rng.randint(300, 5000)
+    return base + rng.choice(["", "", " ", "  "])
+
+def value(ty):
+    r = rng.random()
+    if r < 0.12:
+        return None
+    if r < 0.35:
+        return rng.randint(-2**40, 2**40) if rng.random() < 0.3 else rng.randint(-5, 300)
+    if r < 0.5:
+        return rng.choice([0.5, 1.25, -3.0, 1e-5, 1e16, 123.456, 0.1 + 0.2, 3.0, -0.0])
+    if r < 0.9:
+        return text()
+    return bytes(rng.randint(0, 255) for _ in range(rng.randint(0, 20)))
+
+cases = []
+for n in range(count):
+    path = os.path.join(out, f"t{n}.sqlite")
+    db = sqlite3.connect(path)
+    db.execute(f"PRAGMA page_size={rng.choice([512, 1024, 4096])}")
+    if rng.random() < 0.2:
+        db.execute(f"PRAGMA encoding='{rng.choice(['UTF-16le', 'UTF-16be'])}'")
+    without = rng.random() < 0.5
+    ncol = rng.randint(1, 5)
+    defs, plain = [], []
+    inline_pk = None
+    if not without and rng.random() < 0.3:
+        inline_pk = 0
+    for j in range(ncol):
+        ty = rng.choice(TYPES)
+        d = f"c{j} {ty}{collates()}"
+        if j == inline_pk:
+            d += " PRIMARY KEY" + rng.choice(["", " ASC", " DESC"])
+            plain.append(j)
+        elif j > 0 and rng.random() < 0.2:
+            d += f" GENERATED ALWAYS AS (c0) {rng.choice(['VIRTUAL', 'STORED'])}" if rng.random() < 0.5 \
+                else f" AS (c0){rng.choice(['', ' STORED', ' VIRTUAL'])}"
+        else:
+            if rng.random() < 0.2:
+                d += f" DEFAULT {rng.choice(DEFAULTS)}"
+            elif rng.random() < 0.1:
+                d += " NOT NULL DEFAULT 'nn'"
+            if rng.random() < 0.1:
+                d += " UNIQUE"
+            plain.append(j)
+        defs.append(d)
+    pk = ""
+    if inline_pk is None and (without or rng.random() < 0.5):
+        terms = []
+        for _ in range(rng.randint(1, 4)):
+            terms.append(f"c{rng.choice(plain)}{collates()}{rng.choice(['', '', ' ASC', ' DESC'])}")
+        pk = f", PRIMARY KEY({', '.join(terms)})"
+    if rng.random() < 0.15:
+        pk += f", UNIQUE(c{rng.choice(plain)}{collates()})"
+    sql = f"CREATE TABLE t({', '.join(defs)}{pk})" + (" WITHOUT ROWID" if without else "")
+    try:
+        db.execute(sql)
+    except sqlite3.Error as e:
+        db.close(); os.remove(path); continue
+    names = [f"c{j}" for j in plain]
+    def insert(k):
+        for _ in range(k):
+            vals = [value(None) for _ in names]
+            try:
+                db.execute(f"INSERT OR IGNORE INTO t({', '.join(names)}) VALUES ({', '.join('?' * len(names))})", vals)
+            except sqlite3.Error:
+                pass
+    insert(rng.randint(0, 12))
+    db.commit()
+    for a in range(rng.choice([0, 0, 1, 2])):
+        name = f"a{a}"
+        if rng.random() < 0.2:
+            add = f"{name} AS (c0) VIRTUAL"
+        else:
+            add = f"{name} {rng.choice(TYPES)}{collates()}" + (f" DEFAULT {rng.choice(DEFAULTS)}" if rng.random() < 0.7 else "")
+            if rng.random() < 0.2:
+                add += " NOT NULL DEFAULT 5" if "DEFAULT" not in add else " NOT NULL"
+        try:
+            db.execute(f"ALTER TABLE t ADD COLUMN {add}")
+            if "AS (" not in add:
+                names.append(name)
+        except sqlite3.Error:
+            pass
+        insert(rng.randint(0, 6))
+        db.commit()
+    info = db.execute("PRAGMA table_xinfo(t)").fetchall()
+    exprs = []
+    for cid, name, ty, notnull, dflt, pkk, hidden in info:
+        q = '"' + name + '"'
+        exprs.append("''" if hidden == 2 else
+                     f"CASE typeof({q}) WHEN 'null' THEN '' WHEN 'blob' THEN '[blob ' || length({q}) || ' bytes]' ELSE CAST({q} AS TEXT) END")
+    lines = ["\t".join(r) for r in db.execute(f"SELECT {', '.join(exprs)} FROM t")]
+    final = db.execute("SELECT sql FROM sqlite_schema WHERE name = 't'").fetchone()[0]
+    db.close()
+    cases.append({"file": path, "sql": final, "lines": sorted(lines)})
+json.dump(cases, sys.stdout)
+"##;
+
+    /// Codex M4 code r5 and r6: a row rebuilt wrongly loses values silently. Random tables,
+    /// with several COLLATE clauses, keys that repeat a column, WITHOUT ROWID, DESC, generated
+    /// columns and `ALTER TABLE ADD COLUMN`, written by Python's sqlite3, are read as it reads
+    /// them: each table's lines are its `SELECT`'s, and none is broken.
+    /// `SEARCHFOR_SQLITE_TABLES` sets how many (400 by default), `SEARCHFOR_SQLITE_SEED` the
+    /// seed. Skipped with a note without python3, unless SEARCHFOR_REQUIRE_REFERENCE=1.
+    #[test]
+    fn random_tables_read_as_sqlite_reads_them() {
+        let var = |k: &str, d: u64| {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d)
+        };
+        let (count, seed) = (
+            var("SEARCHFOR_SQLITE_TABLES", 400),
+            var("SEARCHFOR_SQLITE_SEED", 1),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("python3")
+            .args(["-I", "-c", RANDOM_TABLES])
+            .arg(dir.path())
+            .args([seed.to_string(), count.to_string()])
+            .output();
+        let out = match out {
+            Ok(o) if o.status.success() => o,
+            other => {
+                if std::env::var_os("SEARCHFOR_REQUIRE_REFERENCE").is_some_and(|v| v == "1") {
+                    panic!("python3 with sqlite3 is required and failed: {other:?}");
+                }
+                eprintln!("note: python3 with sqlite3 is missing; random tables skipped");
+                return;
+            }
+        };
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+        let (mut differ, mut broken) = (Vec::new(), 0);
+        for c in &cases {
+            let bytes = std::fs::read(c["file"].as_str().unwrap()).unwrap();
+            let want: Vec<&str> = c["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l.as_str().unwrap())
+                // A row without text writes nothing (`Builder::end_row`).
+                .filter(|l| !l.split('\t').all(|f| f.trim().is_empty()))
+                .collect();
+            let got = match super::super::extract(super::super::Kind::Sqlite, &bytes) {
+                Ok(e) => {
+                    let text = String::from_utf8(e.text).unwrap();
+                    let mut lines: Vec<String> =
+                        text.split_terminator('\n').map(str::to_string).collect();
+                    lines.sort();
+                    Ok(lines)
+                }
+                Err(e) => Err(format!("{e:?}")),
+            };
+            broken += usize::from(got.is_err());
+            if got.as_ref().map(|l| l != &want).unwrap_or(true) {
+                differ.push(format!("{}\n  want {want:?}\n  got  {got:?}", c["sql"]));
+            }
+        }
+        eprintln!(
+            "random tables (seed {seed}): {} compared, {} differ, {broken} of them as broken",
+            cases.len(),
+            differ.len()
+        );
+        assert!(
+            cases.len() * 10 >= count as usize * 9,
+            "{} of {count}",
+            cases.len()
+        );
+        assert!(
+            differ.is_empty(),
+            "{} of {} tables differ:\n{}",
+            differ.len(),
+            cases.len(),
+            differ[..differ.len().min(8)].join("\n")
+        );
     }
 
     #[test]
