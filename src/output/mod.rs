@@ -866,6 +866,693 @@ pub(crate) mod tests {
         String::from_utf8(out).unwrap()
     }
 
+    /// (line number, text, highlighted ranges, column, byte offset, Trail names) of each row.
+    type Seen = (u64, String, Vec<(usize, usize)>, Option<u64>, u64, String);
+
+    fn seen(d: &Described, src: &[u8], o: &RenderOptions) -> Vec<Seen> {
+        rows(d, src, o)
+            .map(|r| {
+                let names: Vec<&str> = r.trail.iter().map(|s| s.name.as_str()).collect();
+                (
+                    r.line_number,
+                    r.line.text().to_string(),
+                    r.subs.clone(),
+                    r.column,
+                    r.byte_offset,
+                    names.join(" › "),
+                )
+            })
+            .collect()
+    }
+
+    fn with(look: Look) -> RenderOptions {
+        RenderOptions { look, ..opts() }
+    }
+
+    /// A line with two needles under two Trails, and a context line.
+    fn two_trails() -> (Vec<u8>, Described) {
+        use super::fixture::*;
+        let src = src(&["intro", "  a needle b needle"]);
+        let d = described(
+            &src,
+            vec![ctx(&src, 1), mat(&src, 2)],
+            vec![vec![
+                vec![seg("key", "A", 2, 2)],
+                vec![seg("key", "B", 2, 2)],
+            ]],
+        );
+        (src, d)
+    }
+
+    #[test]
+    fn rows_carry_column_and_byte_offset() {
+        let (src, d) = two_trails();
+        assert_eq!(
+            seen(&d, &src, &opts()),
+            [
+                (1, "intro".into(), vec![], None, 0, "A".into()),
+                (
+                    2,
+                    "  a needle b needle".into(),
+                    vec![(4, 10)],
+                    Some(5),
+                    6,
+                    "A".into()
+                ),
+                (
+                    2,
+                    "  a needle b needle".into(),
+                    vec![(13, 19)],
+                    Some(14),
+                    6,
+                    "B".into()
+                ),
+            ]
+        );
+    }
+
+    /// M5a plan, D4: `-o` makes a row of each Match, its text the matched bytes.
+    #[test]
+    fn only_matching_rows() {
+        let (src, d) = two_trails();
+        let o = with(Look {
+            only_matching: true,
+            ..Look::default()
+        });
+        assert_eq!(
+            seen(&d, &src, &o),
+            [
+                (1, "intro".into(), vec![], None, 0, "A".into()),
+                (2, "needle".into(), vec![(0, 6)], Some(5), 10, "A".into()),
+                (2, "needle".into(), vec![(0, 6)], Some(14), 19, "B".into()),
+            ]
+        );
+    }
+
+    /// `--vimgrep`: a row of each Match, its text the whole line.
+    #[test]
+    fn per_match_rows() {
+        let (src, d) = two_trails();
+        let o = with(Look {
+            per_match: true,
+            ..Look::default()
+        });
+        let got = seen(&d, &src, &o);
+        assert_eq!(
+            got[1],
+            (
+                2,
+                "  a needle b needle".into(),
+                vec![(4, 10)],
+                Some(5),
+                10,
+                "A".into()
+            )
+        );
+        assert_eq!(
+            got[2],
+            (
+                2,
+                "  a needle b needle".into(),
+                vec![(13, 19)],
+                Some(14),
+                19,
+                "B".into()
+            )
+        );
+    }
+
+    /// Review r3 of the M5a plan, Codex #4: `--vimgrep` in a search of several lines (`-U` with
+    /// a pattern that can match a line break) prints a row for the first line a Match touches,
+    /// so none for an empty Match at a line's start, as rg's printer of several lines; a search
+    /// of lines prints every Match.
+    #[test]
+    fn per_match_rows_of_a_multi_line_search() {
+        use super::fixture::*;
+        let src = src(&["needle", "next"]);
+        let columns = |n: u64, subs: &[(usize, usize)], multi_line: bool| -> Vec<(u64, u64)> {
+            let mut item = mat(&src, n);
+            if let Item::Match(l) = &mut item {
+                l.submatches = subs
+                    .iter()
+                    .map(|&(start, end)| Submatch { start, end })
+                    .collect();
+            }
+            let trails = vec![vec![seg("key", "A", 1, 2)]; subs.len()];
+            let d = described(&src, vec![item], vec![trails]);
+            let look = Look {
+                per_match: true,
+                multi_line,
+                ..Look::default()
+            };
+            seen(&d, &src, &with(look))
+                .into_iter()
+                .map(|r| (r.0, r.3.unwrap()))
+                .collect()
+        };
+        let subs = [(0, 0), (1, 2), (6, 6)];
+        assert_eq!(columns(1, &subs, true), [(1, 2), (1, 7)]);
+        assert_eq!(columns(1, &subs, false), [(1, 1), (1, 2), (1, 7)]);
+        assert_eq!(columns(2, &[(0, 0)], true), []);
+    }
+
+    /// M5a plan, D6: a `-U` Match prints a row per line, numbered as rg numbers them, under
+    /// its Trail; with `-o`, each line of the Match that is not empty.
+    #[test]
+    fn multi_line_blocks() {
+        use super::fixture::*;
+        let src = src(&["## Linux", "", "Run the needle"]);
+        let mut m = Line::owned(1, 0, &src[..]);
+        m.owned = None;
+        m.submatches = vec![Submatch { start: 3, end: 13 }];
+        let d = described(
+            &src,
+            vec![Item::Match(m)],
+            vec![vec![vec![seg("heading", "Linux", 1, 3)]]],
+        );
+        let o = with(Look {
+            multi_line: true,
+            ..Look::default()
+        });
+        assert_eq!(
+            seen(&d, &src, &o),
+            [
+                (
+                    1,
+                    "## Linux".into(),
+                    vec![(3, 8)],
+                    Some(4),
+                    0,
+                    "Linux".into()
+                ),
+                (2, "".into(), vec![(0, 0)], Some(4), 9, "Linux".into()),
+                (
+                    3,
+                    "Run the needle".into(),
+                    vec![(0, 3)],
+                    Some(4),
+                    10,
+                    "Linux".into()
+                ),
+            ]
+        );
+        let o = with(Look {
+            multi_line: true,
+            only_matching: true,
+            ..Look::default()
+        });
+        let got: Vec<(u64, String)> = seen(&d, &src, &o).into_iter().map(|r| (r.0, r.1)).collect();
+        assert_eq!(got, [(1, "Linux".into()), (3, "Run".into())]);
+    }
+
+    /// A `--null-data` record's lines are rows with the record's number, its NUL not printed.
+    #[test]
+    fn null_data_records() {
+        use super::fixture::*;
+        let src = b"one needle\ntwo\0".to_vec();
+        let mut m = Line::owned(1, 0, &src);
+        m.owned = None;
+        m.submatches = vec![Submatch { start: 4, end: 10 }];
+        let d = described(&src, vec![Item::Match(m)], vec![vec![vec![]]]);
+        let o = with(Look {
+            null_data: true,
+            ..Look::default()
+        });
+        let got: Vec<(u64, String)> = seen(&d, &src, &o).into_iter().map(|r| (r.0, r.1)).collect();
+        assert_eq!(got, [(1, "one needle".into()), (1, "two".into())]);
+        // A record of one line too (review r4 of the plan, found checking Fable #1).
+        let src = b"a needle\0".to_vec();
+        let mut m = Line::owned(1, 0, &src);
+        m.owned = None;
+        m.submatches = vec![Submatch { start: 2, end: 8 }];
+        let d = described(&src, vec![Item::Match(m)], vec![vec![vec![]]]);
+        let got: Vec<(u64, String)> = seen(&d, &src, &o).into_iter().map(|r| (r.0, r.1)).collect();
+        assert_eq!(got, [(1, "a needle".into())]);
+        // Review r5 of the plan, Codex #3: a context record of one line too, as `-C1` and
+        // `--passthru` print it, and as `-v` prints it with the pattern's submatches.
+        let src = b"before\0needle\0after\0".to_vec();
+        let record = |n: u64, at: usize, len: usize, subs: Vec<Submatch>| {
+            let mut l = Line::owned(n, at as u64, &src[at..at + len]);
+            l.owned = None;
+            l.submatches = subs;
+            l
+        };
+        let needle = || vec![Submatch { start: 0, end: 6 }];
+        let d = described(
+            &src,
+            vec![
+                Item::Context(record(1, 0, 7, vec![])),
+                Item::Match(record(2, 7, 7, needle())),
+                Item::Context(record(3, 14, 6, vec![])),
+            ],
+            vec![vec![vec![]]],
+        );
+        let got: Vec<(u64, String)> = seen(&d, &src, &o).into_iter().map(|r| (r.0, r.1)).collect();
+        assert_eq!(
+            got,
+            [
+                (1, "before".into()),
+                (2, "needle".into()),
+                (3, "after".into())
+            ]
+        );
+        let d = described(
+            &src,
+            vec![
+                Item::Match(record(1, 0, 7, vec![])),
+                Item::Context(record(2, 7, 7, needle())),
+                Item::Match(record(3, 14, 6, vec![])),
+            ],
+            vec![vec![vec![]], vec![vec![]]],
+        );
+        let got: Vec<(String, Subs)> = seen(&d, &src, &o).into_iter().map(|r| (r.1, r.2)).collect();
+        assert_eq!(
+            got,
+            [
+                ("before".into(), vec![]),
+                ("needle".into(), vec![(0, 6)]),
+                ("after".into(), vec![])
+            ]
+        );
+    }
+
+    /// A Match of the line break inside a `--null-data` record ends where its row's text ends
+    /// (found by tests/fuzz_m5.rs: its range past the text panicked in the Fragments).
+    #[test]
+    fn a_match_of_a_records_line_break_stays_in_its_row() {
+        use super::fixture::*;
+        let src = format!("# Long\n\n{} needle\n", "x".repeat(300)).into_bytes();
+        let mut m = Line::owned(1, 0, &src);
+        m.owned = None;
+        m.submatches = memchr::memchr_iter(b'\n', &src)
+            .map(|i| Submatch {
+                start: i,
+                end: i + 1,
+            })
+            .collect();
+        let d = described(&src, vec![Item::Match(m)], vec![vec![vec![]; 3]]);
+        let o = RenderOptions {
+            width: 40,
+            look: Look {
+                null_data: true,
+                ..Look::default()
+            },
+            ..opts()
+        };
+        let got = seen(&d, &src, &o);
+        assert_eq!(got.len(), 3);
+        assert!(
+            got.iter().all(|r| r.2.iter().all(|&(_, e)| e <= r.1.len())),
+            "{got:?}"
+        );
+        let mut w = NoColor::new(Vec::new());
+        super::flat::render(
+            &d,
+            &src,
+            &RenderOptions {
+                layout: Layout::Flat,
+                ..o
+            },
+            None,
+            &mut w,
+        )
+        .unwrap();
+    }
+
+    /// `-r`: each row's text is the line with its Matches replaced, and its highlight covers
+    /// its own replacements; the column is the replacement's, as rg's.
+    #[test]
+    fn replaced_rows() {
+        let (src, d) = two_trails();
+        let a = crate::cli::parse(["s4", "needle"].iter().map(Into::into).collect()).unwrap();
+        let m = crate::matcher::build(&a, &["needle".into()]).unwrap();
+        let r = replace::Replacer::new(
+            m,
+            b"N".to_vec(),
+            grep_matcher::LineTerminator::byte(b'\n'),
+            false,
+        );
+        let o = with(Look {
+            replace: Some(std::sync::Arc::new(r)),
+            ..Look::default()
+        });
+        let got = seen(&d, &src, &o);
+        assert_eq!(
+            got[1],
+            (2, "  a N b N".into(), vec![(4, 5)], Some(5), 6, "A".into())
+        );
+        assert_eq!(
+            got[2],
+            (2, "  a N b N".into(), vec![(8, 9)], Some(9), 6, "B".into())
+        );
+    }
+
+    /// A Replacer of `pattern` by `with`, as `-r` builds it.
+    fn replacer(pattern: &str, with: &[u8]) -> Look {
+        let a = crate::cli::parse(["s4", "x"].iter().map(Into::into).collect()).unwrap();
+        let m = crate::matcher::build(&a, &[pattern.into()]).unwrap();
+        let r = replace::Replacer::new(
+            m,
+            with.to_vec(),
+            grep_matcher::LineTerminator::byte(b'\n'),
+            false,
+        );
+        Look {
+            replace: Some(std::sync::Arc::new(r)),
+            ..Look::default()
+        }
+    }
+
+    /// Review r2 of the M5a plan, Codex #2: an object file's `-r` replaces each Match where the
+    /// search found it in the file's bytes, its anchors and groups read there, and only then
+    /// makes the string printable. `^needle` does not match after a NUL, and a control byte in a
+    /// Match is replaced with the Match.
+    #[test]
+    fn object_rows_replace_over_the_files_bytes() {
+        use super::fixture::*;
+        let src = b"\x7fELF\0\0needle target\0zz ab\x01cd yy\0".to_vec();
+        // As processors::object::rows makes them: each string at its offset, the control bytes
+        // of its Matches shown as `.`.
+        let row = |at: u64, text: &[u8], sub: (usize, usize)| {
+            let mut l = Line::owned(1, at, text);
+            l.submatches = vec![Submatch {
+                start: sub.0,
+                end: sub.1,
+            }];
+            l
+        };
+        let base = || vec![vec![seg("object", "ELF x86-64", 1, 1)]];
+        // The replacements as the search of the file makes them: one pass over each line.
+        let texts = |l: Line, look: Look| -> Vec<(String, Vec<(usize, usize)>)> {
+            let mut d = described(&src, vec![Item::Match(l)], vec![base()]);
+            d.offsets = true;
+            let r = look.replace.as_ref().unwrap();
+            d.replacements = r.replacements(&src, 0..src.len());
+            rows(&d, &src, &with(look))
+                .map(|r| (r.line.text().to_string(), r.subs.clone()))
+                .collect()
+        };
+        let target = || row(6, b"needle target", (7, 13));
+        assert_eq!(
+            texts(target(), replacer("^needle|target", b"X")),
+            [("needle X".to_string(), vec![(7, 8)])]
+        );
+        let control = || row(20, b"zz ab.cd yy", (3, 8));
+        assert_eq!(
+            texts(control(), replacer("ab\\x01cd", b"X")),
+            [("zz X yy".to_string(), vec![(3, 4)])]
+        );
+        // A group that holds the control byte: read from the file, then shown as `.`.
+        assert_eq!(
+            texts(control(), replacer("a(b\\x01c)d", b"<$1>")),
+            [("zz <b.c> yy".to_string(), vec![(3, 8)])]
+        );
+        let only = Look {
+            only_matching: true,
+            ..replacer("a(b\\x01c)d", b"<$1>")
+        };
+        assert_eq!(
+            texts(control(), only),
+            [("<b.c>".to_string(), vec![(0, 5)])]
+        );
+        // Review r4 of the plan, Codex #1 and #2: each Match prints the replacement the search
+        // made, with the groups it found (PCRE2's `(A)\x00\KB|(B)` gives `<A|>` where a search
+        // from the string's start finds the second alternative), and is not looked for again;
+        // a Match without one keeps its bytes.
+        let mut d = described(&src, vec![Item::Match(target())], vec![base()]);
+        d.offsets = true;
+        d.replacements = vec![((13, 19), b"<A|>".to_vec())];
+        let look = with(replacer("(t)arget|(target)", b"<$1|$2>"));
+        let got: Vec<String> = rows(&d, &src, &look)
+            .map(|r| r.line.text().to_string())
+            .collect();
+        assert_eq!(got, ["needle <A|>"]);
+        d.replacements.clear();
+        let got: Vec<String> = rows(&d, &src, &look)
+            .map(|r| r.line.text().to_string())
+            .collect();
+        assert_eq!(got, ["needle target"]);
+    }
+
+    /// Review r2 of the M5a plan, Codex #4: `-o` prints a row for every Match, as rg's printer
+    /// of one line does: an empty Match and an empty replacement are an empty row, and only the
+    /// active line terminator is left out (a `\r` Match without `--crlf` is printed).
+    #[test]
+    fn only_matching_rows_as_ripgrep() {
+        use super::fixture::*;
+        let texts = |src: &[u8], subs: &[(usize, usize)], look: Look| -> Vec<Seen> {
+            let mut item = mat(src, 1);
+            if let Item::Match(l) = &mut item {
+                l.submatches = subs
+                    .iter()
+                    .map(|&(start, end)| Submatch { start, end })
+                    .collect();
+            }
+            let trails = vec![vec![seg("key", "A", 1, 1)]; subs.len()];
+            let d = described(src, vec![item], vec![trails]);
+            seen(
+                &d,
+                src,
+                &with(Look {
+                    only_matching: true,
+                    ..look
+                }),
+            )
+        };
+        let row = |text: &str, subs: Vec<(usize, usize)>, column, at| {
+            (1, text.to_string(), subs, Some(column), at, "A".to_string())
+        };
+        assert_eq!(
+            texts(b"needle\n", &[(0, 6)], replacer("needle", b"")),
+            [row("", vec![], 1, 0)]
+        );
+        assert_eq!(
+            texts(b"needle\n", &[(0, 0), (3, 3)], Look::default()),
+            [row("", vec![], 1, 0), row("", vec![], 4, 3)]
+        );
+        assert_eq!(
+            texts(b"needle\r\n", &[(6, 7)], Look::default()),
+            [row("\r", vec![(0, 1)], 7, 6)]
+        );
+    }
+
+    /// An object file's rows (review r1 of the plan, Codex #4): `-o` and `--vimgrep` make a
+    /// row of each Match, at that Match's offset and under its Trail; `-r` replaces in the
+    /// string, which stays one row at its first Match.
+    #[test]
+    fn object_rows_take_o_vimgrep_and_r() {
+        let (src, d) = super::fixture::object_row_twice();
+        type ObjectRow = (Option<u64>, String, Vec<(usize, usize)>, String);
+        let at = |d: &Described, o: &RenderOptions| -> Vec<ObjectRow> {
+            rows(d, &src, o)
+                .map(|r| {
+                    let names: Vec<&str> = r.trail.iter().map(|s| s.name.as_str()).collect();
+                    (
+                        r.offset,
+                        r.line.text().to_string(),
+                        r.subs.clone(),
+                        names.join(" › "),
+                    )
+                })
+                .collect()
+        };
+        let only = with(Look {
+            only_matching: true,
+            ..Look::default()
+        });
+        assert_eq!(
+            at(&d, &only),
+            [
+                (
+                    Some(6),
+                    "needle".into(),
+                    vec![(0, 6)],
+                    "ELF x86-64 › .rodata › s".into()
+                ),
+                (
+                    Some(13),
+                    "needle".into(),
+                    vec![(0, 6)],
+                    "ELF x86-64 › .rodata › s+0x7".into()
+                ),
+            ]
+        );
+        let vim = with(Look {
+            per_match: true,
+            ..Look::default()
+        });
+        assert_eq!(
+            at(&d, &vim),
+            [
+                (
+                    Some(6),
+                    "needle needle".into(),
+                    vec![(0, 6)],
+                    "ELF x86-64 › .rodata › s".into()
+                ),
+                (
+                    Some(13),
+                    "needle needle".into(),
+                    vec![(7, 13)],
+                    "ELF x86-64 › .rodata › s+0x7".into()
+                ),
+            ]
+        );
+        let a = crate::cli::parse(["s4", "needle"].iter().map(Into::into).collect()).unwrap();
+        let m = crate::matcher::build(&a, &["needle".into()]).unwrap();
+        let r = replace::Replacer::new(
+            m,
+            b"N".to_vec(),
+            grep_matcher::LineTerminator::byte(b'\n'),
+            false,
+        );
+        // The replacements the search of the file makes, in one pass over its line.
+        let mut d = d.clone();
+        d.replacements = r.replacements(&src, 0..src.len());
+        let replaced = with(Look {
+            replace: Some(std::sync::Arc::new(r)),
+            ..Look::default()
+        });
+        assert_eq!(
+            at(&d, &replaced),
+            [(
+                Some(6),
+                "N N".into(),
+                vec![(0, 1), (2, 3)],
+                "ELF x86-64 › .rodata › s".into()
+            )]
+        );
+    }
+
+    /// `--trim` leaves out grep-printer's white space (`\t`, `\n`, `\x0B`, `\x0C`, `\r`, ` `)
+    /// but never a byte of the line terminator (review r1 of the plan, Codex #8).
+    #[test]
+    fn trim_leaves_out_greps_white_space_but_the_terminator() {
+        let o = |crlf: bool, null_data: bool| {
+            with(Look {
+                trim: true,
+                crlf,
+                null_data,
+                ..Look::default()
+            })
+        };
+        assert_eq!(trimmed(b"\r needle\n", &o(false, false)), 2);
+        assert_eq!(trimmed(b"\x0b needle\n", &o(false, false)), 2);
+        assert_eq!(trimmed(b"\x0c\t needle\n", &o(false, false)), 3);
+        assert_eq!(trimmed(b"\r needle\r\n", &o(true, false)), 0);
+        assert_eq!(trimmed(b"\n needle\n", &o(false, false)), 0);
+        assert_eq!(trimmed(b"\n\r needle\0", &o(false, true)), 3);
+        assert_eq!(trimmed(b"\0 needle", &o(false, true)), 0);
+    }
+
+    fn written(line: &[u8], subs: &[(usize, usize)], color: bool, o: &RenderOptions) -> String {
+        let pre = |w: &mut dyn WriteColor| w.write_all(b"P:");
+        let out = if color {
+            let mut w = Ansi::new(Vec::new());
+            write_line(&mut w, &pre, line, subs, true, 80, o).unwrap();
+            w.into_inner()
+        } else {
+            let mut w = NoColor::new(Vec::new());
+            write_line(&mut w, &pre, line, subs, true, 80, o).unwrap();
+            w.into_inner()
+        };
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn trim_leaves_out_leading_ascii_space() {
+        let o = with(Look {
+            trim: true,
+            ..Look::default()
+        });
+        assert_eq!(
+            written(b" \t needle x\n", &[(3, 9)], false, &o),
+            "P:needle x\n"
+        );
+        assert_eq!(
+            written(b"  needle\n", &[(2, 8)], true, &o),
+            "P:\x1b[0m\x1b[1m\x1b[31mneedle\x1b[0m\n"
+        );
+    }
+
+    /// `--max-columns-preview`, as grep-printer's `write_exceeded_line`.
+    #[test]
+    fn previews_of_long_lines() {
+        let o = RenderOptions {
+            max_columns: Some(10),
+            look: Look {
+                max_columns_preview: true,
+                ..Look::default()
+            },
+            ..opts()
+        };
+        let line = b"Some intro needle here.\n";
+        assert_eq!(
+            written(line, &[(11, 17)], false, &o),
+            "P:Some intro [... omitted end of long line]\n"
+        );
+        assert_eq!(
+            written(line, &[(11, 17)], true, &o),
+            "P:Some intro [... 1 more match]\n"
+        );
+        assert_eq!(
+            written(b"Run the needle command:\n", &[(8, 14)], true, &o),
+            "P:Run the \x1b[0m\x1b[1m\x1b[31mne\x1b[0m [... 0 more matches]\n"
+        );
+    }
+
+    #[test]
+    fn the_palette_colours_matches_and_markers() {
+        let o = with(Look {
+            palette: style::Palette::new(&["match:fg:blue".into(), "match:style:nobold".into()]),
+            ..Look::default()
+        });
+        assert_eq!(
+            written(b"a needle\n", &[(2, 8)], true, &o),
+            "P:a \x1b[0m\x1b[34mneedle\x1b[0m\n"
+        );
+    }
+
+    #[test]
+    fn paths_with_a_separator_and_links() {
+        let look = Look {
+            path_separator: Some(b'\\'),
+            ..Look::default()
+        };
+        assert_eq!(
+            shown_path(std::path::Path::new("a/b/c.md"), &look),
+            b"a\\b\\c.md"
+        );
+        assert_eq!(
+            shown_path(std::path::Path::new("a/b"), &Look::default()),
+            b"a/b"
+        );
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("f.md");
+        std::fs::write(&p, "x").unwrap();
+        let look = Look {
+            hyperlinks: hyperlink::Hyperlinks::new("file://{path}:{line}", None)
+                .map(std::sync::Arc::new),
+            ..Look::default()
+        };
+        let mut w = Ansi::new(Vec::new());
+        let on = link_start(&mut w, &look, &p, Some(3), None).unwrap();
+        std::io::Write::write_all(&mut w, b"f.md").unwrap();
+        link_end(&mut w, on).unwrap();
+        let out = String::from_utf8(w.into_inner()).unwrap();
+        let canon = p.canonicalize().unwrap();
+        assert_eq!(
+            out,
+            format!(
+                "\x1b]8;;file://{}:3\x1b\\f.md\x1b]8;;\x1b\\",
+                canon.display()
+            )
+        );
+        // No colour, no link.
+        let mut w = NoColor::new(Vec::new());
+        assert!(!link_start(&mut w, &look, &p, Some(3), None).unwrap());
+    }
+
     #[test]
     fn submatches_group_by_trail_in_the_order_their_trails_come() {
         use super::fixture::seg;
