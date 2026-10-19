@@ -25,6 +25,8 @@ pub struct Table {
     next: usize,
     /// The columns of the last cell's span that covered cells have not taken yet.
     inside: usize,
+    /// The rows the row being read stands for, when more than one.
+    repeat: Option<usize>,
 }
 
 /// A cell of the row being read: its text, and the columns of the grid it spans.
@@ -65,6 +67,11 @@ impl Table {
         self.skip(n - inside);
     }
 
+    /// The row being read stands for `n` rows (OpenDocument's `number-rows-repeated`).
+    pub fn repeat(&mut self, n: usize) {
+        self.repeat = Some(n);
+    }
+
     /// The row's next cell starts `n` columns of the grid later (Word's `w:gridBefore`).
     pub fn skip(&mut self, n: usize) {
         self.next = self.next.saturating_add(n);
@@ -92,7 +99,7 @@ impl Table {
     }
 
     fn take_cells(&mut self) -> Vec<Cell> {
-        (self.next, self.inside) = (0, 0);
+        (self.next, self.inside, self.repeat) = (0, 0, None);
         std::mem::take(&mut self.cells)
     }
 
@@ -103,33 +110,44 @@ impl Table {
     /// line but still counts, so the rows after it keep their numbers, and an empty first row
     /// still names the columns, every name empty (Codex r8 #2).
     pub fn end_row(&mut self, b: &mut Builder) {
+        // One row more than a document has bytes cannot take the count past the largest one.
+        let _ = self.end_rows(b, 1);
+    }
+
+    /// `end_row` for a row that stands for more (`repeat`): each is written as one, at most
+    /// `writes` times, and they all count (Codex M4 code r9 #4). None when they take the count
+    /// past the largest number.
+    pub fn end_rows(&mut self, b: &mut Builder, writes: usize) -> Option<()> {
+        let n = self.repeat.unwrap_or(1);
         let cells = self.take_cells();
-        self.rows += 1;
-        if self.rows == 1 {
+        let first = self.rows;
+        self.rows = self.rows.checked_add(n)?;
+        if first == 0 {
             self.names = cells
                 .iter()
                 .map(|c| (c.col, c.col.saturating_add(c.width), cut(&c.text)))
                 .collect();
         }
         if cells.iter().all(|c| c.text.trim().is_empty()) {
-            return;
+            return Some(());
         }
-        b.start_row(Some(&format!("row {}", self.rows)));
-        if self.rows == 1 {
+        for row in first + 1..=first + n.min(writes) {
+            b.start_row(Some(&format!("row {row}")));
             for c in &cells {
-                b.cell("column", "", &c.text);
-            }
-        } else {
-            for c in &cells {
-                let i = self.names.partition_point(|n| n.0 <= c.col);
-                let name = match i.checked_sub(1).map(|i| &self.names[i]) {
-                    Some((_, end, n)) if c.col < *end && !n.is_empty() => n.clone(),
-                    _ => format!("column {}", c.col.saturating_add(1)),
+                let name = if row == 1 {
+                    String::new()
+                } else {
+                    let i = self.names.partition_point(|n| n.0 <= c.col);
+                    match i.checked_sub(1).map(|i| &self.names[i]) {
+                        Some((_, end, n)) if c.col < *end && !n.is_empty() => n.clone(),
+                        _ => format!("column {}", c.col.saturating_add(1)),
+                    }
                 };
                 b.cell("column", &name, &c.text);
             }
+            b.end_row();
         }
-        b.end_row();
+        Some(())
     }
 }
 

@@ -2316,3 +2316,74 @@ fn m4_36_a_merged_cell_keeps_the_columns_after_it_named() {
     assert_eq!(names("merged.odt"), want(4));
     assert_eq!(names("merged.pptx"), want(4));
 }
+
+/// Codex M4 code r9 #4: a row of an OpenDocument text table repeated by
+/// `table:number-rows-repeated` counts as every row it stands for (spec §5.8), empty or not,
+/// self-closed or not; one with text is written once per row, at most 1000 times, as in a
+/// spreadsheet; and a count past the largest number is a broken document, warned and searched
+/// as rg searches it, as in a spreadsheet.
+#[test]
+fn m4_37_a_repeated_row_of_a_text_table_counts_as_every_row() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = fixture();
+    let cell = |t: &str| format!("<table:table-cell><text:p>{t}</text:p></table:table-cell>");
+    let row = |rep: &str, cells: &[&str]| {
+        format!(
+            "<table:table-row{rep}>{}</table:table-row>",
+            cells.iter().map(|c| cell(c)).collect::<String>()
+        )
+    };
+    let table = |rows: &[String]| {
+        format!(
+            r#"<table:table table:name="T">{}</table:table>"#,
+            rows.concat()
+        )
+    };
+    let odt = table(&[
+        row("", &["Name", "Value"]),
+        row(r#" table:number-rows-repeated="3""#, &["", ""]),
+        r#"<table:table-row table:number-rows-repeated="2"/>"#.to_string(),
+        row(r#" table:number-rows-repeated="2""#, &["again", "x"]),
+        row("", &["needle", "y"]),
+        row(r#" table:number-rows-repeated="5000""#, &["many", "z"]),
+        row("", &["last needle", "w"]),
+    ]);
+    let path = fx.path().join("m4/repeated.odt");
+    std::fs::write(
+        &path,
+        with_body(doc::odt(&[doc::p("BODY")]), "content.xml", &odt),
+    )
+    .unwrap();
+    assert_eq!(
+        ok(&fx, &["--flat", "needle|again", "m4/repeated.odt"]),
+        "2: table 1 › row 7 › Name │ again\tx\n\
+         3: table 1 › row 8 › Name │ again\tx\n\
+         4: table 1 › row 9 › Name │ needle\ty\n\
+         1005: table 1 › row 5010 › Name │ last needle\tw\n"
+    );
+    assert_eq!(ok(&fx, &["-c", "many", "m4/repeated.odt"]), "1000\n");
+    let max = usize::MAX;
+    let odt = table(&[
+        row("", &["Name", "Value"]),
+        row(
+            &format!(r#" table:number-rows-repeated="{max}""#),
+            &["", ""],
+        ),
+        row("", &["needle", "y"]),
+    ]);
+    std::fs::write(
+        &path,
+        with_body(doc::odt(&[doc::p("BODY")]), "content.xml", &odt),
+    )
+    .unwrap();
+    let args = ["needle", "m4/repeated.odt"];
+    let s = run(&mut fx.s4(["--flat"].iter().chain(&args)));
+    let r = run(&mut fx.rg(args));
+    assert_eq!(
+        stderr(&s),
+        "s4: m4/repeated.odt: odt: a repeated row or column goes past the largest number\n"
+    );
+    assert_eq!((stdout(&s), code(&s)), (stdout(&r), code(&r)));
+}

@@ -113,7 +113,9 @@ impl Flow {
         }
     }
 
-    fn event(&mut self, ev: &Ev, b: &mut Builder) {
+    /// Reads `ev`; an error when the repeated rows of a table take its count past the largest
+    /// number.
+    fn event(&mut self, ev: &Ev, b: &mut Builder) -> Result<(), DocError> {
         match ev {
             Ev::Start {
                 name,
@@ -132,7 +134,7 @@ impl Flow {
                     if !empty {
                         self.skip += 1;
                     }
-                    return;
+                    return Ok(());
                 }
                 match (ns, l) {
                     (Ns::Draw, "frame") if !empty => self.frames += 1,
@@ -168,6 +170,15 @@ impl Flow {
                         }
                         self.tables.push(Table::default());
                     }
+                    (Ns::Table, "table-row") => {
+                        let n = repeat(attrs, "number-rows-repeated")?;
+                        if let Some(t) = self.tables.last_mut() {
+                            t.repeat(n);
+                        }
+                        if *empty {
+                            self.end_row(b)?;
+                        }
+                    }
                     (Ns::Table, "table-cell" | "covered-table-cell") => {
                         if let Some(t) = self.tables.last_mut() {
                             let number = |a: &str| {
@@ -199,19 +210,19 @@ impl Flow {
             Ev::End { name, ns } => {
                 if self.skip > 0 {
                     self.skip -= 1;
-                    return;
+                    return Ok(());
                 }
                 match (ns, local(name)) {
                     (Ns::Draw, "frame") => self.frames = self.frames.saturating_sub(1),
                     (Ns::Text, "p" | "h") => {
                         let Some(para) = self.paras.pop() else {
-                            return;
+                            return Ok(());
                         };
                         if let Some(outer) = self.paras.last_mut() {
                             // A footnote's paragraph comes after the one holding the note.
                             outer.after.push((para.text, para.level));
                             outer.after.extend(para.after);
-                            return;
+                            return Ok(());
                         }
                         let lines = std::iter::once((para.text, para.level)).chain(para.after);
                         for (text, level) in lines {
@@ -225,15 +236,7 @@ impl Flow {
                             }
                         }
                     }
-                    (Ns::Table, "table-row") => {
-                        if self.tables.len() == 1 {
-                            self.tables[0].end_row(b);
-                        } else if let Some(t) = self.tables.last_mut() {
-                            let row = t.take_row();
-                            let n = self.tables.len();
-                            self.tables[n - 2].add_text(&row);
-                        }
-                    }
+                    (Ns::Table, "table-row") => self.end_row(b)?,
                     (Ns::Table, "table") => {
                         self.tables.pop();
                         if self.tables.is_empty()
@@ -253,6 +256,22 @@ impl Flow {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Ends a row of the innermost table: a row of the outermost one is written, one of a
+    /// nested table joins the cell that holds it.
+    fn end_row(&mut self, b: &mut Builder) -> Result<(), DocError> {
+        if self.tables.len() == 1 {
+            self.tables[0]
+                .end_rows(b, MAX_REPEAT)
+                .ok_or_else(|| DocError::broken(PAST_LARGEST))?;
+        } else if let Some(t) = self.tables.last_mut() {
+            let row = t.take_row();
+            let n = self.tables.len();
+            self.tables[n - 2].add_text(&row);
+        }
+        Ok(())
     }
 
     fn push(&mut self, s: &str) {
@@ -310,7 +329,7 @@ pub fn odt(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                 name,
                 ns: Ns::Office,
             } if local(name) == "text" => body = false,
-            _ if body => flow.event(&ev, b),
+            _ if body => flow.event(&ev, b)?,
             _ => {}
         }
         if b.full() {
@@ -380,7 +399,7 @@ pub fn odp(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                     hidden = 1;
                 }
             }
-            _ if slide.is_some() => flow.event(&ev, b),
+            _ if slide.is_some() => flow.event(&ev, b)?,
             _ => {}
         }
         if b.full() {
@@ -415,8 +434,10 @@ fn stored(attrs: &str) -> Option<String> {
 /// what a machine word holds (Codex r1 #10).
 fn add(a: usize, b: usize) -> Result<usize, DocError> {
     a.checked_add(b)
-        .ok_or_else(|| DocError::broken("a repeated row or column goes past the largest number"))
+        .ok_or_else(|| DocError::broken(PAST_LARGEST))
 }
+
+const PAST_LARGEST: &str = "a repeated row or column goes past the largest number";
 
 /// A repeat count: 1 when absent or not a number, an error when it is a number past the
 /// largest one (M4 plan r2, Codex #6).
@@ -427,9 +448,9 @@ fn repeat(attrs: &str, name: &str) -> Result<usize, DocError> {
     match v.trim().parse::<usize>() {
         Ok(n) => Ok(n.max(1)),
         // By the error's kind, so `+18446744073709551616` is one too (M4 plan r3, Codex #7).
-        Err(e) if *e.kind() == std::num::IntErrorKind::PosOverflow => Err(DocError::broken(
-            "a repeated row or column goes past the largest number",
-        )),
+        Err(e) if *e.kind() == std::num::IntErrorKind::PosOverflow => {
+            Err(DocError::broken(PAST_LARGEST))
+        }
         Err(_) => Ok(1),
     }
 }
