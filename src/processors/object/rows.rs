@@ -77,9 +77,7 @@ pub fn rows(
             let mut owned = bytes[w.clone()].to_vec();
             for s in &subs {
                 for b in &mut owned[s.start - w.start..s.end - w.start] {
-                    if *b < 0x20 && *b != b'\t' || *b == 0x7f {
-                        *b = b'.';
-                    }
+                    *b = shown(*b);
                 }
             }
             Line {
@@ -97,6 +95,15 @@ pub fn rows(
             }
         })
         .collect()
+}
+
+/// A byte of a Match as its row shows it: a control byte (a tab aside) as `.`.
+pub fn shown(b: u8) -> u8 {
+    if b < 0x20 && b != b'\t' || b == 0x7f {
+        b'.'
+    } else {
+        b
+    }
 }
 
 /// Whether `bytes[from..to]` is printable characters only.

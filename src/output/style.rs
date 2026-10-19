@@ -1,20 +1,67 @@
 //! Colours of the printers.
 use termcolor::{Color, ColorSpec, WriteColor};
 
-/// The colours of a run: ripgrep's defaults and `--colors` (M5a plan, D11; chunk 4).
-#[derive(Debug, Clone, Default)]
-pub struct Palette {}
+/// The colours of a run (M5a plan, D11): ripgrep's defaults with each `--colors` spec applied
+/// in order, as grep-printer's `ColorSpecs` applies them, and s4's: the Trail in cyan (8381),
+/// which `--colors 'trail:…'` changes with the same attributes, and its markers dimmed.
+#[derive(Debug, Clone)]
+pub struct Palette {
+    path: ColorSpec,
+    line: ColorSpec,
+    column: ColorSpec,
+    matched: ColorSpec,
+    trail: ColorSpec,
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Palette::new(&[])
+    }
+}
 
 impl Palette {
-    /// The palette of the `--colors` specs, in order, over the defaults.
-    pub fn new(_specs: &[String]) -> Palette {
-        Palette {}
+    /// The palette of the `--colors` specs, each one valid (`cli::values::color_spec`).
+    pub fn new(specs: &[String]) -> Palette {
+        let mut rg = grep_printer::default_color_specs();
+        let mut trail: Vec<grep_printer::UserColorSpec> = vec![parse("path:fg:cyan")];
+        for s in specs {
+            match s.strip_prefix("trail:") {
+                Some(rest) => trail.push(parse(&format!("path:{rest}"))),
+                None => rg.push(parse(s)),
+            }
+        }
+        let rg = grep_printer::ColorSpecs::new(&rg);
+        Palette {
+            path: rg.path().clone(),
+            line: rg.line().clone(),
+            column: rg.column().clone(),
+            matched: rg.matched().clone(),
+            trail: grep_printer::ColorSpecs::new(&trail).path().clone(),
+        }
     }
 
-    /// The colour of `kind`: `path`, `line`, `column`, `match`, `trail`, or the markers' dim.
+    /// The colour of `kind`: `path`, `line`, `column`, `match`, `trail`; anything else is a
+    /// marker (`│`, `…[+N]`), dimmed.
     pub fn spec(&self, kind: &str) -> ColorSpec {
-        spec(kind)
+        match kind {
+            "path" => self.path.clone(),
+            "line" => self.line.clone(),
+            "column" => self.column.clone(),
+            "match" => self.matched.clone(),
+            "trail" => self.trail.clone(),
+            _ => {
+                let mut c = ColorSpec::new();
+                c.set_dimmed(true);
+                c
+            }
+        }
     }
+}
+
+/// A spec `cli::values::color_spec` accepted.
+fn parse(s: &str) -> grep_printer::UserColorSpec {
+    s.parse()
+        .unwrap_or_else(|_| "path:none".parse().expect("valid"))
 }
 
 /// ripgrep's default colours (path magenta, line number green, match bold red), plus cyan
@@ -47,10 +94,36 @@ pub fn write_styled(w: &mut dyn WriteColor, kind: &str, s: &str) -> std::io::Res
     w.reset()
 }
 
+/// `write_styled` with the run's palette.
+pub fn write_in(w: &mut dyn WriteColor, p: &Palette, kind: &str, s: &[u8]) -> std::io::Result<()> {
+    w.set_color(&p.spec(kind))?;
+    w.write_all(s)?;
+    w.reset()
+}
+
+/// `write_highlighted` with the run's palette.
+pub fn write_highlighted_in(
+    w: &mut dyn WriteColor,
+    p: &Palette,
+    text: &str,
+    subs: &[(usize, usize)],
+) -> std::io::Result<()> {
+    highlighted(w, &p.spec("match"), text, subs)
+}
+
 /// Writes `text`, with each byte range of `subs` in the match colour. Ranges are clamped to
 /// `text` and moved to char boundaries.
 pub fn write_highlighted(
     w: &mut dyn WriteColor,
+    text: &str,
+    subs: &[(usize, usize)],
+) -> std::io::Result<()> {
+    highlighted(w, &spec("match"), text, subs)
+}
+
+fn highlighted(
+    w: &mut dyn WriteColor,
+    color: &ColorSpec,
     text: &str,
     subs: &[(usize, usize)],
 ) -> std::io::Result<()> {
@@ -85,7 +158,9 @@ pub fn write_highlighted(
             continue;
         }
         w.write_all(&text.as_bytes()[at..s])?;
-        write_styled(w, "match", &text[s..e])?;
+        w.set_color(color)?;
+        w.write_all(&text.as_bytes()[s..e])?;
+        w.reset()?;
         at = e;
     }
     w.write_all(&text.as_bytes()[at..])
@@ -106,6 +181,24 @@ mod tests {
         let mut w = Ansi::new(Vec::new());
         write_highlighted(&mut w, text, subs).unwrap();
         String::from_utf8(w.into_inner()).unwrap()
+    }
+
+    /// M5a plan, D11: `--colors` over rg's defaults, and the `trail` type of s4.
+    #[test]
+    fn palette_of_colors_specs() {
+        let d = Palette::default();
+        assert_eq!(d.spec("path").fg(), Some(&Color::Magenta));
+        assert_eq!(d.spec("trail").fg(), Some(&Color::Cyan));
+        assert!(d.spec("match").bold());
+        let p = Palette::new(&[
+            "path:none".into(),
+            "trail:fg:yellow".into(),
+            "column:fg:blue".into(),
+        ]);
+        assert_eq!(p.spec("path").fg(), None);
+        assert_eq!(p.spec("trail").fg(), Some(&Color::Yellow));
+        assert_eq!(p.spec("column").fg(), Some(&Color::Blue));
+        assert!(p.spec("dim").dimmed());
     }
 
     #[test]
