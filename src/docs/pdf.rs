@@ -75,7 +75,14 @@ pub fn extract(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                 if r.contents.borrow_mut().insert(doc.get_page_contents(*id)) {
                     r.inflated(content.len())?;
                 }
-                run(&r, &content, &res, Matrix::IDENTITY, &mut text, 0)?;
+                run(
+                    &r,
+                    &content,
+                    &res,
+                    State::new(Matrix::IDENTITY),
+                    &mut text,
+                    0,
+                )?;
             }
             // A stream past the limit fails the document; any other error leaves the page
             // empty (lopdf reads a stream that does not decompress as it is, which draws
@@ -1024,16 +1031,37 @@ impl Layout {
     }
 }
 
-#[derive(Clone, Copy)]
-struct State {
+/// The graphics state a content stream runs with: its CTM, and the text state, whose font is
+/// the font itself rather than its name in some resources, so that a Form drawn with it shows
+/// with the font of the stream that draws it even when the Form's resources name another
+/// (Codex M4 code r7 #2). The text rendering mode (`Tr`) is not kept: invisible text is text
+/// to search too, as `pdftotext` reads it.
+#[derive(Clone)]
+struct State<'a> {
     ctm: Matrix,
-    font: Option<usize>,
+    font: Option<Rc<Font<'a>>>,
     size: f64,
     tc: f64,
     tw: f64,
     th: f64,
     tl: f64,
     rise: f64,
+}
+
+impl State<'_> {
+    /// The state a page starts with: its CTM, and the text state's defaults.
+    fn new(ctm: Matrix) -> Self {
+        State {
+            ctm,
+            font: None,
+            size: 0.0,
+            tc: 0.0,
+            tw: 0.0,
+            th: 1.0,
+            tl: 0.0,
+            rise: 0.0,
+        }
+    }
 }
 
 /// The most bytes of text a string may write for each of its bytes (D17).
@@ -1043,29 +1071,20 @@ const MAX_GROWTH: usize = 8;
 /// restores nothing (D17).
 const MAX_SAVES: usize = 256;
 
-/// Runs a content stream, writing the text it shows into `out`, until the text is full. Its
-/// operations are read one at a time (`Ops`), so a stream never becomes a list of them, and
-/// each one spends the document's work as it is read (D17).
+/// Runs a content stream from the graphics state `gs`, writing the text it shows into `out`,
+/// until the text is full. Its operations are read one at a time (`Ops`), so a stream never
+/// becomes a list of them, and each one spends the document's work as it is read (D17). A Form
+/// it draws runs from a copy of its state, so what the Form changes stays in it.
 fn run<'a>(
     r: &Reader<'a>,
     data: &[u8],
     res: &Res<'a>,
-    ctm: Matrix,
+    gs: State<'a>,
     out: &mut Layout,
     depth: usize,
 ) -> Result<(), DocError> {
     let doc = r.doc;
-    let keys: Vec<&Vec<u8>> = res.fonts.keys().collect();
-    let mut gs = State {
-        ctm,
-        font: None,
-        size: 0.0,
-        tc: 0.0,
-        tw: 0.0,
-        th: 1.0,
-        tl: 0.0,
-        rise: 0.0,
-    };
+    let mut gs = gs;
     let mut stack = Vec::new();
     // The `q` past `MAX_SAVES`, which their `Q` match first.
     let mut lost = 0usize;
@@ -1082,10 +1101,14 @@ fn run<'a>(
         r.work(1)?;
         let n = |i: usize| o.get(i).and_then(Operand::num).unwrap_or(0.0);
         match op {
-            b"q" if stack.len() < MAX_SAVES => stack.push(gs),
+            b"q" if stack.len() < MAX_SAVES => stack.push(gs.clone()),
             b"q" => lost += 1,
             b"Q" if lost > 0 => lost -= 1,
-            b"Q" => gs = stack.pop().unwrap_or(gs),
+            b"Q" => {
+                if let Some(saved) = stack.pop() {
+                    gs = saved;
+                }
+            }
             b"cm" => {
                 if let Some(m) = Matrix::of(&o) {
                     gs.ctm = m.then(gs.ctm);
@@ -1097,7 +1120,7 @@ fn run<'a>(
             }
             b"Tf" => {
                 gs.font = match o.first() {
-                    Some(Operand::Name(f)) => keys.iter().position(|k| k.as_slice() == f.as_ref()),
+                    Some(Operand::Name(f)) => res.fonts.get(f.as_ref()).cloned(),
                     _ => None,
                 };
                 gs.size = n(1);
@@ -1140,7 +1163,7 @@ fn run<'a>(
                     (_, Some(s)) => std::slice::from_ref(s),
                     _ => continue,
                 };
-                let font = gs.font.map(|i| res.fonts[keys[i]].as_ref());
+                let font = gs.font.as_deref();
                 for item in items {
                     if let Some(s) = item.string() {
                         show(&s, font, &gs, &mut tm, out, kern_space);
@@ -1164,8 +1187,9 @@ fn run<'a>(
                 let form = r.form(id, stream)?;
                 r.work(FORM_DRAW)?;
                 let inner = form.res.as_ref().unwrap_or(res);
-                let m = form.matrix.then(gs.ctm);
-                run(r, &form.data, inner, m, out, depth + 1)?;
+                let mut drawn = gs.clone();
+                drawn.ctm = form.matrix.then(gs.ctm);
+                run(r, &form.data, inner, drawn, out, depth + 1)?;
             }
             _ => {}
         }
@@ -2048,6 +2072,17 @@ mod tests {
     /// XObjects `forms` (name, content, compressed) as `/Fm0`, `/Fm1`…, each with the page's
     /// resources.
     fn pdf_with(font: Dictionary, content: &[u8], forms: &[(&[u8], bool)]) -> Vec<u8> {
+        let forms: Vec<_> = forms.iter().map(|(b, c)| (*b, *c, None)).collect();
+        pdf_forms(font, content, &forms)
+    }
+
+    /// A Form of `pdf_forms`: its content, whether it is compressed, and its own fonts, by
+    /// name, when it has resources of its own.
+    type TestForm<'f> = (&'f [u8], bool, Option<Vec<(&'f str, Dictionary)>>);
+
+    /// `pdf_with`, each Form with resources of its own when it has fonts: those fonts and the
+    /// page's Forms.
+    fn pdf_forms(font: Dictionary, content: &[u8], forms: &[TestForm]) -> Vec<u8> {
         let mut doc = Document::with_version("1.5");
         let id = Object::String(b"searchfor-adverse".to_vec(), StringFormat::Hexadecimal);
         doc.trailer.set("ID", Object::Array(vec![id.clone(), id]));
@@ -2061,12 +2096,36 @@ mod tests {
             }
         }
         let font_id = doc.add_object(font);
+        let xo_id = doc.new_object_id();
         let mut xo = Dictionary::new();
-        for (i, (body, compressed)) in forms.iter().enumerate() {
+        for (i, (body, compressed, own)) in forms.iter().enumerate() {
             let mut d = Dictionary::new();
             d.set("Type", Object::Name(b"XObject".to_vec()));
             d.set("Subtype", Object::Name(b"Form".to_vec()));
-            d.set("Resources", Object::Reference(res_id));
+            // Required, and pdftotext draws nothing of a Form without it.
+            d.set(
+                "BBox",
+                Object::Array(vec![0.into(), 0.into(), 612.into(), 792.into()]),
+            );
+            match own {
+                Some(own) => {
+                    let mut fonts = Dictionary::new();
+                    for (name, f) in own {
+                        let mut f = f.clone();
+                        for (_, v) in f.iter_mut() {
+                            if let Object::Stream(st) = v {
+                                *v = Object::Reference(doc.add_object(st.clone()));
+                            }
+                        }
+                        fonts.set(*name, Object::Reference(doc.add_object(f)));
+                    }
+                    let mut r = Dictionary::new();
+                    r.set("Font", Object::Dictionary(fonts));
+                    r.set("XObject", Object::Reference(xo_id));
+                    d.set("Resources", Object::Dictionary(r));
+                }
+                None => d.set("Resources", Object::Reference(res_id)),
+            }
             let mut st = Stream::new(d, body.to_vec());
             if *compressed {
                 st.compress().unwrap();
@@ -2077,7 +2136,8 @@ mod tests {
         fonts.set("F1", Object::Reference(font_id));
         let mut res = Dictionary::new();
         res.set("Font", Object::Dictionary(fonts));
-        res.set("XObject", Object::Dictionary(xo));
+        doc.objects.insert(xo_id, Object::Dictionary(xo));
+        res.set("XObject", Object::Reference(xo_id));
         doc.objects.insert(res_id, Object::Dictionary(res));
         let content_id = doc.add_object(Stream::new(Dictionary::new(), content.to_vec()));
         let mut page = Dictionary::new();
@@ -2779,6 +2839,109 @@ mod tests {
         assert_eq!(text_of(&pdf), "B17\n");
     }
 
+    /// A simple font whose ToUnicode map reads the code `X` as `text`.
+    fn x_font(text: &str) -> Dictionary {
+        let map = cmap(1, &[(0x58, text)]);
+        simple_font(|f| {
+            f.set(
+                "ToUnicode",
+                Object::Stream(Stream::new(Dictionary::new(), map)),
+            )
+        })
+    }
+
+    /// The words `pdftotext -raw` reads from `pdf`, if it is installed: in the order the
+    /// content streams show them.
+    fn pdftotext_words(pdf: &[u8]) -> Option<Vec<String>> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.pdf");
+        std::fs::write(&path, pdf).unwrap();
+        let out = std::process::Command::new("pdftotext")
+            .args(["-raw", "-q"])
+            .arg(&path)
+            .arg("-")
+            .output()
+            .ok()?;
+        out.status.success().then(|| {
+            String::from_utf8_lossy(&out.stdout)
+                .split_whitespace()
+                .map(str::to_string)
+                .collect()
+        })
+    }
+
+    /// `text_of(pdf)` is `want`, and its words are `pdftotext`'s when it is installed.
+    fn reads_as_pdftotext(pdf: &[u8], want: &str) {
+        let got = text_of(pdf);
+        assert_eq!(got, want);
+        match pdftotext_words(pdf) {
+            Some(words) => assert_eq!(got.split_whitespace().collect::<Vec<_>>(), words),
+            None => eprintln!("note: pdftotext is missing; the comparison is skipped"),
+        }
+    }
+
+    /// Codex M4 code r7 #2: a Form runs with the graphics state in force where `Do` draws it:
+    /// the page's font and size, which the Form uses without a `Tf` of its own, its text
+    /// parameters, and its CTM, with the Form's /Matrix applied.
+    #[test]
+    fn a_form_inherits_the_state_it_is_drawn_with() {
+        let form: &[u8] = b"BT 72 700 Td (X) Tj ET";
+        let pdf = pdf_with(
+            x_font("needle"),
+            b"BT /F1 12 Tf ET /Fm0 Do",
+            &[(form, false)],
+        );
+        reads_as_pdftotext(&pdf, "needle\n");
+        // The font is the page's even when the Form has resources of its own, which name
+        // another font /F1 or none.
+        for own in [vec![("F1", x_font("wrong"))], vec![("F2", x_font("wrong"))]] {
+            let pdf = pdf_forms(
+                x_font("needle"),
+                b"BT /F1 12 Tf ET /Fm0 Do",
+                &[(form, false, Some(own))],
+            );
+            reads_as_pdftotext(&pdf, "needle\n");
+        }
+        // The leading (TL) and the rise (Ts): T* moves 14 down, and a rise of 20 moves the
+        // string up, so both start a line.
+        let pdf = pdf_with(
+            x_font("needle"),
+            b"BT /F1 12 Tf 14 TL ET /Fm0 Do",
+            &[(b"BT 72 700 Td (X) Tj T* (X) Tj ET", false)],
+        );
+        reads_as_pdftotext(&pdf, "needle\nneedle\n");
+        let pdf = pdf_with(
+            x_font("needle"),
+            b"BT /F1 12 Tf 72 700 Td (X) Tj ET 20 Ts /Fm0 Do",
+            &[(form, false)],
+        );
+        reads_as_pdftotext(&pdf, "needle\nneedle\n");
+        // The size: at 40, a string 10 lower is on the same line.
+        let pdf = pdf_with(
+            x_font("needle"),
+            b"BT /F1 40 Tf ET /Fm0 Do",
+            &[(b"BT 72 700 Td (X) Tj 0 -10 Td (X) Tj ET", false)],
+        );
+        assert_eq!(text_of(&pdf), "needleneedle\n");
+    }
+
+    /// Codex M4 code r7 #2: what a Form changes of the state stays in it: after `Do`, the
+    /// page's font, size and CTM are the ones it had.
+    #[test]
+    fn a_forms_changes_to_the_state_stay_in_it() {
+        let page = b"BT /F1 12 Tf 72 700 Td ET /Fm0 Do BT 72 600 Td (X) Tj ET";
+        // The Form shows with the page's font, then with its own at 30, and moves the CTM 50
+        // up, which would put the page's last string on the line of the Form's.
+        let form: &[u8] =
+            b"BT 72 700 Td (X) Tj ET BT /F2 30 Tf 72 650 Td (X) Tj ET 1 0 0 1 0 50 cm";
+        let pdf = pdf_forms(
+            x_font("needle"),
+            page,
+            &[(form, false, Some(vec![("F2", x_font("inner"))]))],
+        );
+        reads_as_pdftotext(&pdf, "needle\ninner\nneedle\n");
+    }
+
     #[test]
     fn tj_kerning_wide_enough_is_a_space() {
         let data = b"BT /F1 10 Tf [(ne) -20 (edle) -300 (here)] TJ ET";
@@ -2786,7 +2949,8 @@ mod tests {
         let r = super::Reader::new(&doc, 0);
         let res = super::Res::new(&r, Vec::new()).unwrap();
         let mut out = super::Layout::new(usize::MAX);
-        super::run(&r, data, &res, super::Matrix::IDENTITY, &mut out, 0).unwrap();
+        let gs = super::State::new(super::Matrix::IDENTITY);
+        super::run(&r, data, &res, gs, &mut out, 0).unwrap();
         assert_eq!(out.out, "needle here");
     }
 }
