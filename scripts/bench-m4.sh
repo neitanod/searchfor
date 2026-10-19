@@ -11,6 +11,11 @@
 #     default reads their first bytes: M4 plan r1, Fable #5). Its ratio to rg is printed: over
 #     these small files it is s4's own, M1–M3's, 1.04–1.10 × with or without documents, which
 #     put a ceiling of 1.1 × rg here at the mercy of the noise (M4 plan r6, Fable #5);
+#   - the default over 20 000 files of about 100 bytes without an extension, seven levels deep
+#     (as .git/objects or bin/), written to a temporary directory, a pattern no file matches,
+#     with and without the Trail: s4 ≤ 1.05 × s4 --no-docs. A name without an extension may be
+#     a document's, so the default reads its first bytes; the search reads on from them (code
+#     review r6, Fable #1: the corpus's few large object files hid what it cost a small file);
 #   - with --no-docs, s4 against M3's (SEARCHFOR_BASE_BIN, the sfor of 191dbaf), the sparse
 #     pattern over the whole corpus: ≤ 1.03 ×, the median of three series (what M4 adds with
 #     --no-docs, the readers' memory counter of D31 included; M4 plan r7, Fable #2); skipped
@@ -98,6 +103,28 @@ median docs-none '"$SEARCHFOR_RG_PATH" --color never -e "$SEARCHFOR_BENCH_NONE" 
   '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR/text" "$SEARCHFOR_BENCH_DIR/bin"'
 median docs-added '"$SEARCHFOR_BIN_PATH" --color never --flat --no-docs -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR/text" "$SEARCHFOR_BENCH_DIR/bin"' \
   '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR/text" "$SEARCHFOR_BENCH_DIR/bin"' \
+  's4 --no-docs' s4; within 1.05
+python3 -I - "$iso/noext" <<'__NOEXT__'
+import os, sys
+n = 0
+for a in range(4):
+    for b in range(4):
+        for c in range(5):
+            d = os.path.join(sys.argv[1], f"d{a}", f"d{b}", f"d{c}", "e", "f", "g")
+            os.makedirs(d)
+            for _ in range(250):
+                with open(os.path.join(d, f"f{n:05x}"), "w") as f:
+                    f.write(f"line {n:05} of a small file without an extension\n" * 2)
+                n += 1
+__NOEXT__
+export SEARCHFOR_BENCH_NOEXT="$iso/noext"
+median noext-rg '"$SEARCHFOR_RG_PATH" --color never -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_NOEXT"' \
+  '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_NOEXT"'
+median noext-added '"$SEARCHFOR_BIN_PATH" --color never --flat --no-docs -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_NOEXT"' \
+  '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_NOEXT"' \
+  's4 --no-docs' s4; within 1.05
+median noext-passthru '"$SEARCHFOR_BIN_PATH" --color never --no-trail --no-docs -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_NOEXT"' \
+  '"$SEARCHFOR_BIN_PATH" --color never --no-trail -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_NOEXT"' \
   's4 --no-docs' s4; within 1.05
 if [ -n "${SEARCHFOR_BASE_BIN:-}" ]; then
   # Three series in alternating order, and the median of their ratios: one series of the same
