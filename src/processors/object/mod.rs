@@ -405,7 +405,9 @@ fn macho(m: &goblin::mach::MachO, range: Range<usize>) -> Image {
         }
     }
     let mut syms = Vec::new();
-    for (name, nl) in m.symbols().flatten() {
+    // The symbols end at the first one that cannot be read: a count past the file's end is
+    // that many errors (found fuzzing for code review r4).
+    for (name, nl) in m.symbols().map_while(Result::ok) {
         const N_STAB: u8 = 0xe0;
         const N_TYPE: u8 = 0x0e;
         const N_SECT: u8 = 0x0e;
@@ -646,6 +648,30 @@ mod tests {
                 assert_eq!(got, None);
             }
         }
+    }
+
+    /// Found fuzzing for code review r4: a 387-byte Mach-O whose `LC_SYMTAB` says it has 318
+    /// million symbols took 4 s in a release build (185 s in debug), every symbol past the
+    /// file's end an error that was skipped. The symbols end at the first one that cannot be
+    /// read.
+    #[test]
+    fn a_macho_symbol_count_past_the_file_costs_nothing() {
+        let s = Spec::new()
+            .section("__TEXT,__const", b"abcneedle\0")
+            .symbol("_start", 0, 0);
+        let l = fixture::macho(&s);
+        let mut f = l.file.clone();
+        // LC_SYMTAB follows the one LC_SEGMENT_64 (72 bytes and an 80-byte section).
+        let symtab = 32 + 72 + 80;
+        assert_eq!(f[symtab], 0x2);
+        f[symtab + 12..symtab + 16].copy_from_slice(&0x1300_0001u32.to_le_bytes());
+        let started = std::time::Instant::now();
+        assert_eq!(
+            trail_at(&f, l.offset(0, 3)),
+            ["Mach-O x86-64", "__TEXT,__const", "_start+0x3"]
+        );
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_millis(500), "{took:?}");
     }
 
     #[test]
