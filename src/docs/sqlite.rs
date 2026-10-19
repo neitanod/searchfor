@@ -241,7 +241,8 @@ impl<'a> Db<'a> {
 
     /// Calls `row` with (rowid, values) for every row of the table b-tree rooted at `root`, in
     /// rowid order; for a `WITHOUT ROWID` table (an index b-tree), with the 1-based position
-    /// as its id. Stops when `row` returns false. Err: a page that is not what its parent says.
+    /// as its id. Stops when `row` returns false, which is no error. Err: a page that is not
+    /// what its parent says, or a cell that cannot be read (Codex M4 code r5 #3).
     fn walk(
         &self,
         root: usize,
@@ -262,7 +263,7 @@ impl<'a> Db<'a> {
                 Next::Cell(n, c) => {
                     ordinal += 1;
                     let page = self.page(n).unwrap_or_default();
-                    if !self.index_cell(page, c, ordinal, row) {
+                    if !self.index_cell(n, page, c, ordinal, row)? {
                         return Ok(());
                     }
                     continue;
@@ -299,18 +300,13 @@ impl<'a> Db<'a> {
                 0x0d => {
                     for i in 0..cells {
                         let c = cell(i).ok_or_else(|| DocError::broken("a cell past its page"))?;
-                        let Some((size, a)) = varint(page, c) else {
-                            continue;
-                        };
-                        let Some((rowid, b)) = varint(page, c + a) else {
-                            continue;
-                        };
-                        let Some(p) = self.payload(page, c + a + b, size as usize, false) else {
-                            continue;
-                        };
-                        if let Some(v) = self.record(&p)
-                            && !row(rowid as i64, v)
-                        {
+                        let (size, a) = varint(page, c).ok_or_else(|| past(n))?;
+                        let (rowid, b) = varint(page, c + a).ok_or_else(|| unreadable(n))?;
+                        let v = self
+                            .payload(page, c + a + b, size as usize, false)
+                            .and_then(|p| self.record(&p))
+                            .ok_or_else(|| unreadable(n))?;
+                        if !row(rowid as i64, v) {
                             return Ok(());
                         }
                     }
@@ -319,7 +315,7 @@ impl<'a> Db<'a> {
                     for i in 0..cells {
                         let c = cell(i).ok_or_else(|| DocError::broken("a cell past its page"))?;
                         ordinal += 1;
-                        if !self.index_cell(page, c, ordinal, row) {
+                        if !self.index_cell(n, page, c, ordinal, row)? {
                             return Ok(());
                         }
                     }
@@ -330,24 +326,31 @@ impl<'a> Db<'a> {
         Ok(())
     }
 
+    /// The row of index cell `c` of page `n`, given to `row`: Ok(false) when `row` stops the
+    /// walk.
     fn index_cell(
         &self,
+        n: usize,
         page: &[u8],
         c: usize,
         id: i64,
         row: &mut dyn FnMut(i64, Vec<Value>) -> bool,
-    ) -> bool {
-        let Some((size, a)) = varint(page, c) else {
-            return true;
-        };
-        let Some(p) = self.payload(page, c + a, size as usize, true) else {
-            return true;
-        };
-        match self.record(&p) {
-            Some(v) => row(id, v),
-            None => true,
-        }
+    ) -> Result<bool, DocError> {
+        let (size, a) = varint(page, c).ok_or_else(|| past(n))?;
+        let v = self
+            .payload(page, c + a, size as usize, true)
+            .and_then(|p| self.record(&p))
+            .ok_or_else(|| unreadable(n))?;
+        Ok(row(id, v))
     }
+}
+
+fn past(page: usize) -> DocError {
+    DocError::broken(format!("page {page} has a cell past its end"))
+}
+
+fn unreadable(page: usize) -> DocError {
+    DocError::broken(format!("page {page} has a cell that cannot be read"))
 }
 
 /// What a `CREATE TABLE` says of its columns.
@@ -1415,6 +1418,54 @@ mod tests {
         let e = extracted("utf16.sqlite");
         assert_eq!(e.text, "año needle\n".as_bytes());
         assert_eq!(trail(&e, "needle"), ["t", "row 1", "name"]);
+    }
+
+    /// Codex M4 code r5 #3: a cell that cannot be read (its pointer past its page, its payload
+    /// past its page or its overflow pages, its record not one) makes the database `broken`,
+    /// as SQLite says `database disk image is malformed`, and it is then searched as rg
+    /// searches it; the walk a full text stops is no error.
+    #[test]
+    fn a_cell_that_cannot_be_read_breaks_the_database() {
+        let broken = |name: &str, patch: &dyn Fn(&mut Vec<u8>)| {
+            let mut f = fixture(name);
+            patch(&mut f);
+            let got = super::super::extract(super::super::Kind::Sqlite, &f);
+            match got {
+                Err(DocError::Broken(m)) => m,
+                other => panic!("{name}: {:?}", other.map(|e| e.text)),
+            }
+        };
+        // utf16.sqlite: one table, its row on page 2 (512 bytes), its cell at 488.
+        let page = 512;
+        let cell =
+            |f: &mut Vec<u8>, at: u16| f[page + 8..page + 10].copy_from_slice(&at.to_be_bytes());
+        assert_eq!(
+            broken("utf16.sqlite", &|f| cell(f, 0xffff)),
+            "page 2 has a cell past its end"
+        );
+        // The payload's size says 400 bytes, where 24 are left in the page.
+        assert_eq!(
+            broken("utf16.sqlite", &|f| f[page + 488] = 0x83),
+            "page 2 has a cell that cannot be read"
+        );
+        // The record's header says serial type 10, which SQLite reserves.
+        assert_eq!(
+            broken("utf16.sqlite", &|f| f[page + 488 + 3] = 10),
+            "page 2 has a cell that cannot be read"
+        );
+        // keys.sqlite: k1, a WITHOUT ROWID table (an index b-tree), on page 2.
+        assert_eq!(
+            broken("keys.sqlite", &|f| cell(f, 0xffff)),
+            "page 2 has a cell past its end"
+        );
+        assert_eq!(
+            broken("keys.sqlite", &|f| f[page + 497] = 0x83),
+            "page 2 has a cell that cannot be read"
+        );
+        // A text cut at its limit is no error.
+        let mut b = Builder::new(10);
+        assert!(extract(&fixture("many.sqlite"), &mut b).is_ok());
+        assert!(b.full());
     }
 
     #[test]

@@ -1866,3 +1866,26 @@ fn m4_30_what_an_object_file_declares_costs_no_more_than_the_file() {
         }
     }
 }
+
+/// Codex M4 code r5 #3: a database with a cell that cannot be read is no empty database: one
+/// warning, and its bytes are searched as rg searches them (§5.8).
+#[test]
+fn m4_31_a_database_with_a_broken_cell_warns_and_is_searched_as_rg() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = fixture();
+    let mut db = std::fs::read(common::source_dir().join("docs/keys.sqlite")).unwrap();
+    // The cell pointer of page 2 (512 bytes), k1's one row, past the page.
+    db[512 + 8..512 + 10].copy_from_slice(&[0xff, 0xff]);
+    std::fs::write(fx.path().join("m4/cell.sqlite"), db).unwrap();
+    let args = ["needle1", "m4/cell.sqlite"];
+    let s = run(&mut fx.s4(["--docs", "--flat"].iter().chain(&args)));
+    let r = run(&mut fx.rg(args));
+    assert_eq!(
+        stderr(&s),
+        "s4: m4/cell.sqlite: sqlite: page 2 has a cell past its end\n"
+    );
+    assert_eq!((stdout(&s), code(&s)), (stdout(&r), code(&r)));
+    assert!(stdout(&r).contains("binary file matches"), "{}", stdout(&r));
+}
