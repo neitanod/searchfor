@@ -243,7 +243,7 @@ A file with no structure (Plain) prints `line: text` in `--flat` and `--tree` (`
 when the search has several files), like every other file of the search, where rg 14.1.1 prints
 `text` (or `path:text`) and adds the line number only with `-n` or on a terminal. The uniform
 layout is Sebastián's decision (the Hilo, 17/10/2026, after code review m3-code-r2, Codex #4);
-`--no-trail` prints exactly what rg prints:
+`--no-trail` prints what rg prints for every file but a document (see «Documents», below):
 
 ```sh
 printf 'needle\n' > notes.txt
@@ -275,9 +275,24 @@ s4 --flat version /usr/bin/ls      # rows; rg: binary file matches
 s4 --flat --binary version /usr/bin    # the same for every object file with a Match
 ```
 
-### Documents with `--docs`
+### Documents
 
-`--docs` has no ripgrep counterpart: a PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB or SQLite
-file is searched in the text its Extractor takes from it (spec §5.8), also with `--no-trail`,
-`-c`, `-l` and `-q`, which print what rg would print for that text. `bytes_searched` counts the
-text. Without `--docs` these files are searched as rg searches them.
+By default, s4 searches inside documents, which rg 14.1.1 does not: a PDF, Word/ODT,
+Excel/ODS, PowerPoint/ODP, EPUB or SQLite file is searched in the text its Extractor takes from
+it (spec §5.8), in a terminal and in a pipe alike (the Hilo, 18/10/2026, 8750). That holds with
+`--no-trail`, `-c`, `-l`, `-q` and `--json` too, which print what rg would print for that text,
+so where the search finds a document `--no-trail` prints more than rg, and `bytes_searched`
+counts the text. The cost differs too: every document of the search is extracted, a Match in
+it or not, in a child process with its own time and memory limits, so a tree with many
+documents takes longer than rg over it. The search finds a document by its name, and a file
+without an extension by its first bytes.
+
+`--no-docs` turns that off: the documents are searched as rg searches them, at rg's cost, and
+`s4 --no-docs --no-trail` prints exactly what rg prints. `--docs` turns it back on; of the two,
+the last one given wins, as rg's negations do:
+
+```sh
+s4 --no-trail needle report.docx            # the lines of the document's text with needle
+s4 --no-docs --no-trail needle report.docx  # what rg prints for the bytes of the zip
+s4 --no-docs --docs needle report.docx      # the document's text again
+```

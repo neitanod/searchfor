@@ -314,8 +314,8 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     } else {
         args.fragment_width
     };
-    // The Format Definitions: for the Trails, and with --docs for every mode, which must tell a
-    // document by its name before the search (M4 plan, design note 3).
+    // The Format Definitions: for the Trails, and with --docs (the default) for every mode,
+    // which must tell a document by its name before the search (M4 plan, design note 3).
     let registry = (matches!(mode, Mode::Trail) || args.docs)
         .then(|| load_registry(&msgs, formats::user_formats_dir().as_deref()));
     let detector = match &registry {

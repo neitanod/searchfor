@@ -12,8 +12,8 @@ enum Override {
 pub struct Detector<'r> {
     registry: &'r Registry,
     overrides: Vec<Override>,
-    /// `--docs`: without it the document Formats (`processor = "docs"`) are never detected,
-    /// so their files are Plain, as ripgrep reads them (spec §5.8).
+    /// `--docs`, on by default: with `--no-docs` the document Formats (`processor = "docs"`)
+    /// are never detected, so their files are Plain, as ripgrep reads them (spec §5.8).
     docs: bool,
     /// With `--docs`, the exact names and the extensions (lowercase) the document Formats
     /// claim (`may_be_document`).
@@ -104,7 +104,7 @@ impl<'r> Detector<'r> {
             || self.doc_extensions.contains(&ext.to_ascii_lowercase())
     }
 
-    /// Whether `d` takes part in detection: a document Format only with `--docs`.
+    /// Whether `d` takes part in detection: a document Format unless `--no-docs`.
     fn active(&self, d: &FormatDefinition) -> bool {
         self.docs || d.processor != "docs"
     }

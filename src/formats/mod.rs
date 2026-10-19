@@ -199,7 +199,7 @@ mod tests {
         crate::processors::Processors::known(p)
     }
 
-    /// M4 plan, D5 and D10: document Formats only with --docs; object Formats by their magic
+    /// M4 plan, D5 and D10: document Formats unless --no-docs; object Formats by their magic
     /// whatever the name.
     #[test]
     fn the_m4_definitions_load_and_detect() {
@@ -227,7 +227,7 @@ mod tests {
             );
             assert!(
                 plain.detect(p(path), b"").is_none(),
-                "{path} without --docs"
+                "{path} with --no-docs"
             );
         }
         let mut odt = b"PK\x03\x04".to_vec();

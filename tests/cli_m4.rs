@@ -1,7 +1,7 @@
-//! End-to-end tests of M4 (plan, Chunk 11): object files, documents with --docs, ripgrep's
-//! --pre and -z. The documents and object files are written into the fixture copy by the
-//! writers of `searchfor::docs::fixture` and `searchfor::processors::object::fixture`; the
-//! SQLite databases are tests/fixtures/docs/*.sqlite (scripts/gen-sqlite-fixtures.py).
+//! End-to-end tests of M4 (plan, Chunk 11): object files, documents (searched by default,
+//! grill 8750), ripgrep's --pre and -z. The documents and object files are written into the
+//! fixture copy by the writers of `searchfor::docs::fixture` and
+//! `searchfor::processors::object::fixture`; the SQLite databases are tests/fixtures/docs/*.sqlite (scripts/gen-sqlite-fixtures.py).
 mod common;
 
 use common::{Fixture, code, run, stderr, stdout};
@@ -252,7 +252,7 @@ fn m4_04_object_rows_count_for_m_and_json() {
 }
 
 #[test]
-fn m4_05_pdf_chapters_only_with_docs_and_zips_never() {
+fn m4_05_pdf_chapters_unless_no_docs_and_zips_never() {
     // Spec §11 #7.
     let fx = fixture();
     assert_eq!(
@@ -260,8 +260,8 @@ fn m4_05_pdf_chapters_only_with_docs_and_zips_never() {
         "3: 1 Intro › page 2 │ intro needle\n5: 2 Costs › page 3 │ costs needle\n"
     );
     if common::reference_rg() {
-        // Without --docs the PDF is searched as rg searches it (its streams are compressed).
-        let s = run(&mut fx.s4(["--flat", "needle", "m4/report.pdf"]));
+        // With --no-docs the PDF is searched as rg searches it (its streams are compressed).
+        let s = run(&mut fx.s4(["--no-docs", "--flat", "needle", "m4/report.pdf"]));
         let r = run(&mut fx.rg(["needle", "m4/report.pdf"]));
         assert_eq!((stdout(&s), code(&s)), (stdout(&r), code(&r)));
     }
@@ -587,7 +587,7 @@ fn m4_10_structural_flags_on_documents_and_objects() {
 }
 
 #[test]
-fn m4_11_without_docs_documents_are_ripgreps() {
+fn m4_11_with_no_docs_documents_are_ripgreps() {
     if !common::reference_rg() {
         return;
     }
@@ -596,11 +596,11 @@ fn m4_11_without_docs_documents_are_ripgreps() {
         &["--sort", "path", "needle", "m4"][..],
         &["-a", "needle", "m4/report.docx"],
     ] {
-        let s = run(&mut fx.s4(args.iter().copied().chain(["--no-trail"])));
+        let s = run(&mut fx.s4(args.iter().copied().chain(["--no-docs", "--no-trail"])));
         let r = run(&mut fx.rg(args));
         assert_eq!(stdout(&s), stdout(&r), "{args:?}");
         assert_eq!(code(&s), code(&r), "{args:?}");
-        let f = run(&mut fx.s4(args.iter().copied().chain(["--flat"])));
+        let f = run(&mut fx.s4(args.iter().copied().chain(["--no-docs", "--flat"])));
         assert_eq!(stderr(&f), "", "{args:?}");
         assert!(!stdout(&f).contains(" › page "), "{args:?}");
     }
@@ -1888,4 +1888,175 @@ fn m4_31_a_database_with_a_broken_cell_warns_and_is_searched_as_rg() {
     );
     assert_eq!((stdout(&s), code(&s)), (stdout(&r), code(&r)));
     assert!(stdout(&r).contains("binary file matches"), "{}", stdout(&r));
+}
+
+/// Grill, 8750: documents are searched by default, with no flag, a PDF and a Word file
+/// included, in every mode.
+#[test]
+fn m4_32_documents_are_searched_by_default() {
+    let fx = fixture();
+    for f in ["m4/report.docx", "m4/report.pdf", "docs/shop.sqlite"] {
+        assert_eq!(
+            ok(&fx, &["--flat", "needle", f]),
+            ok(&fx, &["--docs", "--flat", "needle", f]),
+            "{f}"
+        );
+    }
+    assert_eq!(
+        ok(&fx, &["--flat", "needle", "m4/report.pdf"]),
+        "3: 1 Intro › page 2 │ intro needle\n5: 2 Costs › page 3 │ costs needle\n"
+    );
+    assert_eq!(
+        ok(&fx, &["--no-trail", "needle", "m4/report.docx"]),
+        "The intro needle.\nScope needle.\nPens\t1.50 needle\n"
+    );
+    assert_eq!(ok(&fx, &["-c", "needle", "m4/report.docx"]), "3\n");
+}
+
+/// Grill, 8750: --no-docs gives ripgrep's output, the last of --docs and --no-docs winning.
+#[test]
+fn m4_33_no_docs_gives_ripgreps_output_and_the_last_flag_wins() {
+    let fx = fixture();
+    // m4/ holds locked.pdf and broken.docx, whose warnings go to stderr.
+    let flat = |flags: &[&str]| {
+        let mut a = flags.to_vec();
+        a.extend(["--flat", "--sort", "path", "needle", "m4"]);
+        let o = run(&mut fx.s4(&a));
+        assert_eq!(code(&o), 0, "{a:?}: {}", stderr(&o));
+        (stdout(&o), stderr(&o))
+    };
+    let with = flat(&[]);
+    assert!(
+        with.0.contains("1 Intro › 1.1 Scope │ Scope needle."),
+        "{}",
+        with.0
+    );
+    assert!(
+        with.1.contains("m4/locked.pdf: pdf: encrypted"),
+        "{}",
+        with.1
+    );
+    let off = flat(&["--no-docs"]);
+    assert!(
+        !off.0.contains(" › page ") && !off.0.contains("Scope needle."),
+        "{}",
+        off.0
+    );
+    assert_eq!(off.1, "");
+    assert_eq!(flat(&["--docs", "--no-docs"]), off);
+    assert_eq!(flat(&["--no-docs", "--docs"]), with);
+    assert_eq!(flat(&["--docs"]), with);
+    if !common::reference_rg() {
+        return;
+    }
+    for args in [
+        &["--sort", "path", "needle", "m4"][..],
+        &["--sort", "path", "needle"],
+        &["-c", "--sort", "path", "needle", "m4"],
+        &["-a", "needle", "m4/report.docx"],
+        &["needle", "m4/report.pdf"],
+    ] {
+        let r = run(&mut fx.rg(args));
+        for flags in [&["--no-docs"][..], &["--docs", "--no-docs"]] {
+            let s = run(&mut fx.s4(flags.iter().chain(["--no-trail"].iter()).chain(args)));
+            assert_eq!(stdout(&s), stdout(&r), "{flags:?} {args:?}");
+            assert_eq!(code(&s), code(&r), "{flags:?} {args:?}");
+            assert_eq!(stderr(&s), stderr(&r), "{flags:?} {args:?}");
+        }
+    }
+}
+
+/// Runs `c` with its stdout on a new pseudo-terminal of 200 columns and returns what it wrote,
+/// with the terminal's `\r\n` back to `\n`, and its exit code.
+#[cfg(target_os = "linux")]
+fn on_a_terminal(c: &mut std::process::Command) -> (String, i32) {
+    use std::io::Read;
+    use std::os::fd::{FromRawFd, OwnedFd};
+    // SAFETY: plain libc calls on a descriptor this function owns; ptsname_r writes into `name`.
+    let (master, slave) = unsafe {
+        let m = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+        assert!(m >= 0, "posix_openpt");
+        let master = OwnedFd::from_raw_fd(m);
+        assert_eq!(libc::grantpt(m), 0);
+        assert_eq!(libc::unlockpt(m), 0);
+        let size = libc::winsize {
+            ws_row: 50,
+            ws_col: 200,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        assert_eq!(libc::ioctl(m, libc::TIOCSWINSZ, &size), 0);
+        let mut name = [0 as libc::c_char; 128];
+        assert_eq!(libc::ptsname_r(m, name.as_mut_ptr(), name.len()), 0);
+        let path = std::ffi::CStr::from_ptr(name.as_ptr())
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let slave = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        (std::fs::File::from(master), slave)
+    };
+    c.stdout(slave);
+    let mut child = c.spawn().unwrap();
+    // The Command keeps its copy of the terminal's other end until it is dropped: replace it,
+    // so that the master reads EIO once the child exits.
+    c.stdout(std::process::Stdio::null());
+    let reader = std::thread::spawn(move || {
+        let mut master = master;
+        let mut out = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match master.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => out.extend_from_slice(&buf[..n]),
+            }
+        }
+        out
+    });
+    let status = child.wait().unwrap();
+    let out = reader.join().unwrap();
+    (
+        String::from_utf8_lossy(&out).replace("\r\n", "\n"),
+        status.code().unwrap_or(-1),
+    )
+}
+
+/// Grill, 8750: a pipe searches documents as a terminal does, and --no-docs turns that off in
+/// both.
+#[cfg(target_os = "linux")]
+#[test]
+fn m4_34_a_pipe_searches_documents_as_a_terminal_does() {
+    let fx = fixture();
+    let args = [
+        "--sort",
+        "path",
+        "needle",
+        "m4/report.docx",
+        "m4/report.pdf",
+    ];
+    let (tty, status) = on_a_terminal(&mut fx.s4(args));
+    assert_eq!(status, 0, "{tty}");
+    let pipe = ok(
+        &fx,
+        &["--tree"].iter().chain(&args).copied().collect::<Vec<_>>(),
+    );
+    assert!(tty.contains("1.1 Scope") && tty.contains("page 2"), "{tty}");
+    assert_eq!(tty, pipe);
+    let flat = ok(&fx, &args);
+    assert!(
+        flat.contains("m4/report.docx:4: 1 Intro › 1.1 Scope │ Scope needle."),
+        "{flat}"
+    );
+    let off: Vec<&str> = ["--no-docs"].iter().chain(&args).copied().collect();
+    let (tty_off, _) = on_a_terminal(&mut fx.s4(&off));
+    assert!(!tty_off.contains("Scope needle."), "{tty_off}");
+    let pipe_off = run(&mut fx.s4(&off));
+    assert!(
+        !stdout(&pipe_off).contains("Scope needle."),
+        "{}",
+        stdout(&pipe_off)
+    );
 }

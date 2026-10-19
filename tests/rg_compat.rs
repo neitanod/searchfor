@@ -52,18 +52,24 @@ impl Report {
     }
 }
 
+/// `s4 --no-docs --no-trail` against rg over the whole fixture copy, and `s4 --no-trail`,
+/// which searches documents (grill, 8750), against rg over every file but the documents.
 fn passthrough(fx: &Fixture, r: &mut Report, args: &[&str], input: In) {
-    let mut a = vec!["--sort", "path"];
-    a.extend_from_slice(args);
-    let want = rg(fx, &a, input);
-    let mut s = vec!["--no-trail"];
-    s.extend_from_slice(&a);
-    let got = s4(fx, &s, input);
-    r.check(
-        format!("{args:?}"),
-        (code(&want), stdout(&want)),
-        (code(&got), stdout(&got)),
-    );
+    for (docs, globs) in [(&["--no-docs"][..], &[][..]), (&[], &["-g", "!*.sqlite"])] {
+        let mut a = vec!["--sort", "path"];
+        a.extend_from_slice(globs);
+        a.extend_from_slice(args);
+        let want = rg(fx, &a, input);
+        let mut s = docs.to_vec();
+        s.push("--no-trail");
+        s.extend_from_slice(&a);
+        let got = s4(fx, &s, input);
+        r.check(
+            format!("{docs:?} {globs:?} {args:?}"),
+            (code(&want), stdout(&want)),
+            (code(&got), stdout(&got)),
+        );
+    }
 }
 
 #[test]
@@ -252,7 +258,8 @@ fn json_equals_ripgrep() {
         a.extend_from_slice(args);
         let want = rg(&fx, &a, *input);
         let want = (code(&want), json_lines(&want, false));
-        let mut nt = vec!["--no-trail"];
+        // The fixture copy holds SQLite databases, which s4 searches by default (8750).
+        let mut nt = vec!["--no-docs", "--no-trail"];
         nt.extend_from_slice(&a);
         let got = s4(&fx, &nt, *input);
         r.check(
@@ -260,7 +267,11 @@ fn json_equals_ripgrep() {
             want.clone(),
             (code(&got), json_lines(&got, false)),
         );
-        let got = s4(&fx, &a, *input);
+        let got = s4(
+            &fx,
+            &nt[..1].iter().chain(&a).copied().collect::<Vec<_>>(),
+            *input,
+        );
         let masked = (want.0, {
             let w = rg(&fx, &a, *input);
             json_lines(&w, true)
@@ -285,7 +296,7 @@ fn json_equals_ripgrep() {
                 stdout(&want)
             },
         );
-        let mut nt = vec!["--no-trail"];
+        let mut nt = vec!["--no-docs", "--no-trail"];
         nt.extend_from_slice(&a);
         let got = s4(&fx, &nt, n);
         let got = (
@@ -903,7 +914,8 @@ fn json_quiet_equals_ripgrep() {
         a.extend_from_slice(args);
         let want = rg(&fx, &a, *input);
         let want = (code(&want), json_lines(&want, false));
-        for mode in [&["--no-trail"][..], &[]] {
+        // The fixture copy holds SQLite databases, which s4 searches by default (8750).
+        for mode in [&["--no-docs", "--no-trail"][..], &["--no-docs"]] {
             let mut s = mode.to_vec();
             s.extend_from_slice(&a);
             let got = s4(&fx, &s, *input);

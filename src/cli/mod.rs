@@ -220,12 +220,19 @@ pub struct Args {
     pub flat: bool,
     #[arg(long, overrides_with = "flat")]
     pub tree: bool,
-    /// Print exactly what ripgrep would print.
+    /// Print what ripgrep would print; with --no-docs, exactly that.
     #[arg(long)]
     pub no_trail: bool,
     /// Search PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite files through the
-    /// built-in Extractors (spec §5.8).
-    #[arg(long)]
+    /// built-in Extractors (spec §5.8). On by default; turns it back on after --no-docs.
+    #[arg(long = "docs", overrides_with = "no_docs")]
+    pub docs_flag: bool,
+    /// Search documents as ripgrep does, at ripgrep's cost: no Extractor runs.
+    #[arg(long, overrides_with = "docs_flag")]
+    pub no_docs: bool,
+    /// Whether documents are searched through their Extractors: on unless --no-docs comes
+    /// after the last --docs (grill, 8750), resolved in `parse`.
+    #[arg(skip = true)]
     pub docs: bool,
     /// Fragment width when there is no terminal.
     #[arg(long, default_value_t = 200)]
@@ -305,6 +312,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
     a.no_ignore_resolved = last_by_index(&m, &[("no_ignore", true), ("ignore", false)], u(0), true);
     a.hidden_resolved = last_by_index(&m, &[("hidden", true), ("no_hidden", false)], u(1), true);
     a.binary_choice = binary_choice(&m);
+    a.docs = !a.no_docs;
     (a.pre, a.search_zip) = pre_and_zip(&m);
     a.type_selections = type_selections(&m);
     a.pattern_sources = pattern_sources(&m);
@@ -635,6 +643,19 @@ mod tests {
         ]);
         assert_eq!(a.pre_globs, ["*.pdf", "!a.pdf"]);
         assert!(a.docs);
+    }
+
+    /// Documents are searched by default; --no-docs turns that off and --docs turns it back
+    /// on, the last one given winning, as ripgrep's negations (grill, 8750).
+    #[test]
+    fn docs_is_on_by_default_and_the_last_of_docs_and_no_docs_wins() {
+        assert!(p(&["s4", "x"]).docs);
+        assert!(p(&["s4", "x", "--docs"]).docs);
+        assert!(!p(&["s4", "x", "--no-docs"]).docs);
+        assert!(p(&["s4", "x", "--no-docs", "--docs"]).docs);
+        assert!(!p(&["s4", "x", "--docs", "--no-docs"]).docs);
+        assert!(!p(&["s4", "--no-docs", "x", "--docs", "--no-docs"]).docs);
+        assert!(p(&["s4", "--docs", "--no-docs", "x", "--docs"]).docs);
     }
 
     /// Code review r2, Codex #3: --pre and --pre-glob take a value that starts with a dash,
