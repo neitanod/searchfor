@@ -703,6 +703,8 @@ binaries are often named without a telling extension (`libc.so.6`, `ls`; §4.1, 
   rows, also after `--within`. Context lines (`-A`, `-B`, `-C`) are not printed for rows, and
   no `--` goes between them. `--within` keeps the Matches whose Trail it selects, and drops a
   row with none; `--expand` prints the rows themselves: a Section of a binary is not text (D8).
+  rg's `-o` and `--vimgrep` make a row of each Match, at that Match's hex offset and under its
+  Trail, and `-r` replaces the Matches of the string, which stays one row (M5a plan, review r1).
 - **Trail (D7).** `ELF x86-64 › .rodata › main.version+0x10`:
   - the image (`kind = "object"`): the Format and the architecture, `ELF x86-64`, `ELF aarch64`,
     `PE x86-64`, `PE i386`, `Mach-O arm64`, `Mach-O x86-64`; a machine without a name shows its
@@ -1138,8 +1140,9 @@ v0.3 release binary, which adds `markup`, `csv` (with `csv-core`) and `subtitles
 - **The configuration file (M5a plan, D3).** `SEARCHFOR_CONFIG_PATH` names a file read as rg 14.1.1
   reads `RIPGREP_CONFIG_PATH`: one argument per line, trimmed, blank lines and `#` comments
   skipped, the arguments put before the command line's. The command line is parsed alone first,
-  so `--help`, `--version`, `--pcre2-version` and `--no-config` never depend on the file; a file
-  that cannot be read is a message (`s4: failed to read the file specified in
+  so `--help`, `--version`, `--pcre2-version` and `--no-config` never depend on the file, and
+  `--mcp` reads no file, nor do the searches it runs (§9); a file that cannot be read is a
+  message (`s4: failed to read the file specified in
   SEARCHFOR_CONFIG_PATH: …`). There is no default location: without the variable nothing is
   read.
 - **rg's output flags in the Trail layouts (M5a plan, D4–D6).** With `--no-trail`, and in the
@@ -1153,7 +1156,8 @@ v0.3 release binary, which adds `markup`, `csv` (with `csv-core`) and `subtitles
     the one-line layout (rg's `--vimgrep` turns the heading off).
   - `-r` prints each line with its Matches replaced (`$1`, `$name`, `${name}` from each
     Match's groups, as grep-printer replaces them), each row's replacements highlighted;
-    `--trim` leaves out a line's leading ASCII white space; `--max-columns-preview` prints the
+    `--trim` leaves out a line's leading white space as grep-printer does (tab, line feed,
+    vertical tab, form feed, carriage return and space, but never a byte of the line terminator); `--max-columns-preview` prints the
     first `-M` graphemes of a long line and rg's ` [... N more matches]`.
   - `--field-match-separator`, `--field-context-separator`, `--context-separator` and
     `--no-context-separator` replace `:`, `-` and `--`; `-0` puts a NUL after each path, in the
@@ -1219,18 +1223,31 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
 
 ## 9. Agents (#19)
 
-- **MCP server** (`s4 --mcp`, M5a plan, D17): JSON-RPC 2.0, one message per line, over stdin
-  and stdout, as the Model Context Protocol's stdio transport; it answers `initialize` with the
-  client's protocol version when it is one it speaks (2025-06-18, 2025-03-26, 2024-11-05) and
-  else the newest, `ping`, `tools/list` and `tools/call`, and ignores notifications. One tool,
-  `search`, with `pattern` (required), `paths`, `within`, `expand`, `glob`, `case_insensitive`
-  and `max_results` (100 when not given); unknown arguments are refused. Each call runs `s4
-  --json` with those flags as a child process of the same binary, so a search that fails never
-  ends the server, and returns `{"matches": [{"path", "line", "trail": [names], "text",
-  "format", "section"?}], "truncated"}` both as `structuredContent` and as the text of its
-  `content`; a search s4 refuses (a pattern that does not compile) is a tool result with
-  `isError` and s4's message, which the model can read. Management actions stay flags, so `s4
-  mcp` searches for the word `mcp`.
+- **MCP server** (`s4 --mcp`, a flag: Sebastián, 8837; M5a plan, D17): JSON-RPC 2.0, one
+  message per line, over stdin and stdout, as the Model Context Protocol's stdio transport; it
+  answers `initialize` with the client's protocol version when it is one it speaks (2025-06-18,
+  2025-03-26, 2024-11-05) and else the newest, `ping`, `tools/list` and `tools/call`, and
+  ignores notifications. A message JSON-RPC 2.0 does not allow (not an object, a batch, no
+  `"jsonrpc": "2.0"`, an `id` that is not a string or a number) is answered with -32600, a line
+  that is not JSON with -32700, and the server goes on. One tool, `search`, with `pattern`
+  (required), `paths`, `within`, `expand`, `glob`, `case_insensitive` and `max_results` (100 when
+  not given, at most 1 000), each of its schema's type; unknown arguments are refused. Each call
+  runs `s4 --no-config --json` with those flags as a child process of the same binary, without
+  `SEARCHFOR_CONFIG_PATH` or `RIPGREP_CONFIG_PATH` in its environment and with every value
+  joined to its flag, so the user's configuration file (its `--pre`, `-z` or paths) never
+  reaches a call and nothing the client sends is read as a flag; a search that fails never ends
+  the server. It returns `{"matches": [{"path", "line", "trail": [names], "text", "format",
+  "section"?}], "truncated", "errors"?}` both as `structuredContent` and as the text of its
+  `content`, in at most 256 KiB: `text` is the line, or s4's Fragment of it when the line is
+  longer than the Fragment width (`omitted_before`, `omitted_after`), at most 2 KiB; a Section at most 16 KiB and once per
+  answer (`same_as` names the Match that holds it); a name at most 256 bytes and the 32
+  innermost names of a Trail (`trail_omitted`); `cut: true` on a Match something of which was
+  cut; text that is not UTF-8 decoded with U+FFFD (`lossy: true`), a path also exact in base64
+  (`path_base64`). `truncated` is true when the search found Matches the answer does not hold.
+  s4's messages are `errors`; a search s4 refuses (a pattern that does not compile, every path
+  missing), or that ends with another code or a signal, is a tool result with `isError` and
+  s4's message, which the model can read. Management actions stay flags, so `s4 mcp` searches
+  for the word `mcp`.
 - **Claude Code skill** in `skills/searchfor/SKILL.md`: when to use `s4` instead of `rg`,
   with `--within` and `--expand` recipes.
 - **README section "For AI agents"** with copy-ready commands.
@@ -1297,8 +1314,9 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
     `PATH`), and a comparison that cannot run makes an acceptance run fail instead of passing
     silently (`SEARCHFOR_REQUIRE_REFERENCE=1`, M3 plan, D33).
 14. `s4 --mcp` answers a `search` call from Claude Code: `initialize`, `tools/list` and
-    `tools/call` over stdin and stdout, the Matches of a call with their Trails, an error of s4
-    as a tool result with `isError` (§9; M5a, `m5_11` and `mcp::tests`).
+    `tools/call` over stdin and stdout, the Matches of a call with their Trails within the
+    answer's limits, an error of s4 as a tool result with `isError` and the errors of a search
+    with Matches beside them, no configuration file read (§9; M5a, `m5_11` and `mcp::tests`).
 15. In `pool`, `concurrent` and `oneshot` modes, an example Helper Processor gives the same
     Trails; a pool never runs more copies than search threads; a concurrent helper that answers
     out of order still gets each answer to its own file.
@@ -1385,7 +1403,8 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
     prints rg's message and exits 2.
 32. **Performance of M5a** (`scripts/bench-m5.sh`, M5a plan, D18): over the M4 corpus, with
     `--no-docs --no-trail`, `-P`, `-U`, `--column -b -o`, `--vimgrep` and `-r --trim` at most
-    1.1 × rg; `--files` and `--files --sort path` at most 1.1 × rg; in the one-line layout,
+    1.1 × rg; `--files` and `--files --sort path` at most 1.1 × rg, over a generated tree of
+    100 000 files; in the one-line layout,
     `--column -b`, `-o`, `--vimgrep`, `-r`, `--trim` and `--stats` at most 1.1 × the same search
     without them; and with `--no-docs`, M5a's s4 against M4's (522bf96), `--flat` and
     `--no-trail`, at most 1.03 ×, the median of three alternated series. In `tests/perf.rs`: `-P`
