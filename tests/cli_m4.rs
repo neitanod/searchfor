@@ -1992,15 +1992,55 @@ fn run_limited(c: &mut std::process::Command, mib: u64) -> std::process::Output 
 /// an ELF, PE or Mach-O whose symbols all name one 64 KiB name, a Mach-O whose segment command
 /// is read 10 000 times with 10 000 sections each, a PE with 3000 import descriptors naming
 /// one table of 3000 imports and a PE with 32 000 exports named by one 64 KiB name (Codex M4
-/// code r9 #1) get their Trail. Each is a file of at most 2 MiB, searched with a data segment
-/// of 256 MiB.
-#[cfg(not(target_os = "macos"))]
+/// code r9 #1) get their Trail. Each is a file of at most 2 MiB. `m4_30_…` checks the output
+/// on every system; `m4_30b_…` searches each file with a data segment of 256 MiB, which macOS
+/// refuses to impose.
 #[test]
-fn m4_30_what_an_object_file_declares_costs_no_more_than_the_file() {
+fn m4_30_what_an_object_file_declares_is_searched_by_what_the_file_holds() {
     if !common::reference_rg() {
         return;
     }
     let fx = fixture();
+    for (f, plain) in m4_30_objects(&fx) {
+        let path = format!("m4/bin/{f}");
+        let started = std::time::Instant::now();
+        let s = run(&mut fx.s4(["-j1", "--flat", "needle", &path]));
+        let took = started.elapsed();
+        let what = format!("{f}: {:?} {}", s.status, stderr(&s));
+        assert_eq!((code(&s), stderr(&s).as_str()), (0, ""), "{what}");
+        // Goblin's iterator read a Mach-O name once per symbol: 32 768 times 64 KiB took 56 s.
+        assert!(took < std::time::Duration::from_secs(10), "{f}: {took:?}");
+        if plain {
+            let r = run(&mut fx.rg(["needle", &path]));
+            assert_eq!(stdout(&s), stdout(&r), "{what}");
+        } else {
+            assert!(stdout(&s).contains(" │ "), "{what}: {}", stdout(&s));
+        }
+        if f == "pe-exports" {
+            // The exports are still read: the name, cut to fit, names the needle.
+            assert!(stdout(&s).contains(" › nnnnnnnn"), "{what}");
+        }
+    }
+}
+
+/// The half of m4_30 that needs a memory limit: each file is searched, with the same output,
+/// in a data segment of 256 MiB.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn m4_30b_what_an_object_file_declares_costs_no_more_than_the_file() {
+    let fx = fixture();
+    for (f, _) in m4_30_objects(&fx) {
+        let path = format!("m4/bin/{f}");
+        let free = run(&mut fx.s4(["-j1", "--flat", "needle", &path]));
+        let s = run_limited(&mut fx.s4(["-j1", "--flat", "needle", &path]), 256);
+        let what = format!("{f}: {:?} {}", s.status, stderr(&s));
+        assert_eq!((code(&s), stderr(&s).as_str()), (0, ""), "{what}");
+        assert_eq!(stdout(&s), stdout(&free), "{what}");
+    }
+}
+
+/// The files of m4_30 under `m4/bin`, each with whether s4 prints for it what rg prints.
+fn m4_30_objects(fx: &Fixture) -> [(&'static str, bool); 8] {
     let d = fx.path().join("m4/bin");
     let w = |p: &str, b: &[u8]| std::fs::write(d.join(p), b).unwrap();
     // The fat file: 4096 arches over one image of 8000 symbols.
@@ -2073,7 +2113,7 @@ fn m4_30_what_an_object_file_declares_costs_no_more_than_the_file() {
         "pe-exports",
         &obj::pe_exports(l.file.clone(), l.starts[1], 0x2000, &shared),
     );
-    for (f, plain) in [
+    let objects = [
         ("fat-repeated", true),
         ("elf-names", false),
         ("mac-names", false),
@@ -2082,28 +2122,12 @@ fn m4_30_what_an_object_file_declares_costs_no_more_than_the_file() {
         ("pe-sections", true),
         ("pe-imports", false),
         ("pe-exports", false),
-    ] {
-        let path = format!("m4/bin/{f}");
-        let len = std::fs::metadata(fx.path().join(&path)).unwrap().len();
+    ];
+    for (f, _) in objects {
+        let len = std::fs::metadata(d.join(f)).unwrap().len();
         assert!(len <= 2 << 20, "{f}: {len} bytes");
-        let started = std::time::Instant::now();
-        let s = run_limited(&mut fx.s4(["-j1", "--flat", "needle", &path]), 256);
-        let took = started.elapsed();
-        let what = format!("{f}: {:?} {}", s.status, stderr(&s));
-        assert_eq!((code(&s), stderr(&s).as_str()), (0, ""), "{what}");
-        // Goblin's iterator read a Mach-O name once per symbol: 32 768 times 64 KiB took 56 s.
-        assert!(took < std::time::Duration::from_secs(10), "{f}: {took:?}");
-        if plain {
-            let r = run(&mut fx.rg(["needle", &path]));
-            assert_eq!(stdout(&s), stdout(&r), "{what}");
-        } else {
-            assert!(stdout(&s).contains(" │ "), "{what}: {}", stdout(&s));
-        }
-        if f == "pe-exports" {
-            // The exports are still read: the name, cut to fit, names the needle.
-            assert!(stdout(&s).contains(" › nnnnnnnn"), "{what}");
-        }
     }
+    objects
 }
 
 /// Codex M4 code r5 #3: a database with a cell that cannot be read is no empty database: one

@@ -1315,11 +1315,24 @@ fn on_a_tty(fx: &Fixture, cmd: &str) -> Option<String> {
 /// has no `script`; this is its terminal test (M5b plan, Task 3.3).
 #[cfg(windows)]
 fn on_a_console(fx: &Fixture, program: &std::path::Path, args: &[&str]) -> (u32, String) {
+    on_a_console_reading(fx, program, args, None)
+}
+
+/// `on_a_console`, with `stdin` (a file or a pipe's read end) as the child's stdin, the only
+/// handle it inherits, while its stdout and stderr stay the console's.
+#[cfg(windows)]
+fn on_a_console_reading(
+    fx: &Fixture,
+    program: &std::path::Path,
+    args: &[&str],
+    stdin: Option<std::os::windows::io::OwnedHandle>,
+) -> (u32, String) {
     use std::io::Read;
     use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::io::FromRawHandle;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
     use windows_sys::Win32::Foundation::{
-        CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+        CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+        WAIT_OBJECT_0,
     };
     use windows_sys::Win32::System::Console::{
         COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON,
@@ -1328,8 +1341,9 @@ fn on_a_console(fx: &Fixture, program: &std::path::Path, args: &[&str]) -> (u32,
     use windows_sys::Win32::System::Threading::{
         CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
         EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
-        PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
-        STARTUPINFOEXW, UpdateProcThreadAttribute, WaitForSingleObject,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+        PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW, UpdateProcThreadAttribute,
+        WaitForSingleObject,
     };
     let wide = |s: &std::ffi::OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
     // SAFETY: every call gets handles and buffers this function owns, alive for the call.
@@ -1361,14 +1375,41 @@ fn on_a_console(fx: &Fixture, program: &std::path::Path, args: &[&str]) -> (u32,
             let _ = output.read_to_end(&mut v);
             v
         });
+        // The redirected stdin is inheritable, and the attribute list names it as the only
+        // handle the child inherits: none of another test's handles leaks into it.
+        let input: [HANDLE; 1] = [stdin
+            .as_ref()
+            .map_or(INVALID_HANDLE_VALUE, |h| h.as_raw_handle())];
+        if stdin.is_some() {
+            assert_ne!(
+                SetHandleInformation(input[0], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT),
+                0
+            );
+        }
+        let count = if stdin.is_some() { 2 } else { 1 };
         let mut list_size = 0usize;
-        InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut list_size);
-        let mut list = vec![0u8; list_size];
+        InitializeProcThreadAttributeList(std::ptr::null_mut(), count, 0, &mut list_size);
+        // usize-aligned, as the opaque list it holds.
+        let mut list = vec![0usize; list_size.div_ceil(std::mem::size_of::<usize>())];
         let attrs = list.as_mut_ptr().cast();
         assert_ne!(
-            InitializeProcThreadAttributeList(attrs, 1, 0, &mut list_size),
+            InitializeProcThreadAttributeList(attrs, count, 0, &mut list_size),
             0
         );
+        if stdin.is_some() {
+            assert_ne!(
+                UpdateProcThreadAttribute(
+                    attrs,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                    input.as_ptr().cast(),
+                    std::mem::size_of_val(&input),
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                ),
+                0
+            );
+        }
         assert_ne!(
             UpdateProcThreadAttribute(
                 attrs,
@@ -1384,7 +1425,7 @@ fn on_a_console(fx: &Fixture, program: &std::path::Path, args: &[&str]) -> (u32,
         let mut si = STARTUPINFOEXW::default();
         si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
         si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-        si.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
+        si.StartupInfo.hStdInput = input[0];
         si.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
         si.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
         si.lpAttributeList = attrs;
@@ -1415,7 +1456,7 @@ fn on_a_console(fx: &Fixture, program: &std::path::Path, args: &[&str]) -> (u32,
             line.as_mut_ptr(),
             std::ptr::null(),
             std::ptr::null(),
-            0,
+            i32::from(stdin.is_some()),
             EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
             block.as_ptr().cast(),
             cwd.as_ptr(),
@@ -1441,6 +1482,7 @@ fn on_a_console(fx: &Fixture, program: &std::path::Path, args: &[&str]) -> (u32,
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
         DeleteProcThreadAttributeList(attrs);
+        drop(stdin);
         // Closing the console ends its output: the reader sees the end of the pipe.
         ClosePseudoConsole(hpc);
         CloseHandle(in_write);
@@ -1504,11 +1546,87 @@ fn m5b_console_output_equals_ripgrep() {
     }
 }
 
+/// `stdin_alone_on_a_tty_equals_ripgrep` on a Windows console: stdin alone, from a pipe or
+/// as `-`, is printed without line numbers, as rg 14.1.1; stdin with a file and `-c` as rg
+/// too. Windows has no `/dev/stdin`.
+#[test]
+#[cfg(windows)]
+fn m5b_console_stdin_alone_equals_ripgrep() {
+    use std::os::windows::io::OwnedHandle;
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let text = "first\nneedle 1\nthird\nneedle 2\n";
+    std::fs::write(fx.file("tty.txt"), text).unwrap();
+    let file = || OwnedHandle::from(std::fs::File::open(fx.file("tty.txt")).unwrap());
+    // An anonymous pipe, as a shell's `|` gives: both ends synchronous, neither inheritable.
+    let pipe = || {
+        use std::io::Write;
+        use std::os::windows::io::FromRawHandle;
+        let (mut read, mut write) = (std::ptr::null_mut(), std::ptr::null_mut());
+        // SAFETY: CreatePipe writes two new handles, each owned once here.
+        let (read, write) = unsafe {
+            assert_ne!(
+                windows_sys::Win32::System::Pipes::CreatePipe(
+                    &mut read,
+                    &mut write,
+                    std::ptr::null(),
+                    0
+                ),
+                0
+            );
+            (
+                OwnedHandle::from_raw_handle(read),
+                std::fs::File::from_raw_handle(write),
+            )
+        };
+        std::thread::spawn(move || {
+            let mut write = write;
+            let _ = write.write_all(text.as_bytes());
+        });
+        read
+    };
+    let s4 = assert_cmd::cargo::cargo_bin("s4");
+    let mut r = Report(Vec::new());
+    let cases: [(&[&str], bool); 4] = [
+        (&["--color", "never", "needle"], true),
+        (&["--color", "never", "needle", "-"], false),
+        // `-j1`: in command line order, as `stdin_alone_on_a_tty_equals_ripgrep`.
+        (
+            &["--color", "never", "-j1", "needle", "-", "tty.txt"],
+            false,
+        ),
+        (&["--color", "never", "-c", "needle", "-"], false),
+    ];
+    for (args, piped) in cases {
+        let input = || if piped { pipe() } else { file() };
+        let want = on_a_console_reading(&fx, &common::rg_path(), args, Some(input()));
+        assert!(
+            want.1.contains("needle"),
+            "{args:?}: the console gave {want:?}"
+        );
+        let mut s = vec!["--no-trail"];
+        s.extend_from_slice(args);
+        let got = on_a_console_reading(&fx, &s4, &s, Some(input()));
+        r.check(
+            format!(
+                "{args:?} (stdin {})",
+                if piped { "piped" } else { "a file" }
+            ),
+            (want.0 as i32, want.1),
+            (got.0 as i32, got.1),
+        );
+    }
+    r.assert_empty();
+}
+
 /// Code review r5, Fable #1: on a tty, stdin alone (piped, or `-`) is printed without line
 /// numbers, as rg 14.1.1; `/dev/stdin`, stdin with a file and `-c` as rg too. Without
 /// `script` the test returns at once and passes without testing anything (code review r6,
 /// Fable #2); `on_a_tty` prints a note, which `cargo test` shows only with `--nocapture`.
-/// Unix only: Windows has no pseudo-terminal through `script` (M5b plan, Task 3.3).
+/// Unix only: Windows has no pseudo-terminal through `script` (M5b plan, Task 3.3); its
+/// console runs the same cases but `/dev/stdin` in `m5b_console_stdin_alone_equals_ripgrep`.
 #[test]
 #[cfg(unix)]
 fn stdin_alone_on_a_tty_equals_ripgrep() {
