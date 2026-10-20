@@ -1225,7 +1225,16 @@ impl<'a> Ctx<'a> {
     fn outliner(
         &self,
         def: &formats::definition::FormatDefinition,
-    ) -> Option<&'static dyn Processor> {
+    ) -> Option<&dyn Processor> {
+        // A compiled-in Grammar: the run's treesitter, which prepares its file once. A Grammar
+        // that is not compiled in is never looked up here, so it warns only for a Match.
+        let grammar = def.params.get("grammar").and_then(|v| v.as_str());
+        if def.processor == "treesitter"
+            && grammar.is_some_and(|g| processors::treesitter::grammars::language(g).is_some())
+            && let Some(processors::ProcessorRef::BuiltIn(p)) = self.processors.for_definition(def)
+        {
+            return Some(p);
+        }
         let of = |d: &formats::definition::FormatDefinition| {
             processors::by_name(&d.processor)
                 .filter(|p| p.capability(&d.params) == processors::Capability::Native)
@@ -1235,8 +1244,8 @@ impl<'a> Ctx<'a> {
             defs.iter().map(|d| (d.name.clone(), of(d))).collect()
         });
         match known.get(def.name.as_str()) {
-            Some(p) => *p,
-            None => of(def),
+            Some(p) => p.map(|p| p as &dyn Processor),
+            None => of(def).map(|p| p as &dyn Processor),
         }
     }
 
@@ -4350,7 +4359,11 @@ mod tests {
         let syntax = |s: &str| toml::from_str::<toml::Table>(&format!("syntax = '{s}'")).unwrap();
         let of = |p: &str, params: &toml::Table| processors::by_name(p).unwrap().capability(params);
         assert_eq!(of("markdown", &none), Native);
-        assert_eq!(of("keypath", &syntax("yaml")), Model);
+        // YAML and TOML stream since plan Task 10.2.
+        assert_eq!(of("keypath", &syntax("yaml")), Native);
+        assert_eq!(of("keypath", &syntax("toml")), Native);
+        assert_eq!(of("markup", &syntax("html")), Native);
+        assert_eq!(of("subtitles", &none), Native);
         assert_eq!(of("object", &none), Model);
     }
 
