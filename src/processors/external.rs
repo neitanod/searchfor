@@ -153,8 +153,48 @@ impl TempFile {
 
 impl Drop for TempFile {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        remove_retrying(
+            &self.0,
+            REMOVE_ATTEMPTS,
+            REMOVE_PAUSE,
+            |p| std::fs::remove_file(p),
+            sharing_violation,
+        );
     }
+}
+
+/// Tries to remove a temporary file this many times, `REMOVE_PAUSE` apart, while a helper
+/// that already answered still holds it open (Windows refuses to remove a file opened without
+/// delete sharing, as Python and C open files): a file's end waits a quarter second at most.
+const REMOVE_ATTEMPTS: u32 = 6;
+const REMOVE_PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Removes `path` with `remove`, again after `pause` while the error is one `busy` accepts, at
+/// most `attempts` times in all. True when the file is gone; false leaves it where it is, a
+/// uniquely named file in the run's directory under the system's temporary directory, for the
+/// system to clean.
+fn remove_retrying(
+    path: &std::path::Path,
+    attempts: u32,
+    pause: std::time::Duration,
+    mut remove: impl FnMut(&std::path::Path) -> std::io::Result<()>,
+    busy: impl Fn(&std::io::Error) -> bool,
+) -> bool {
+    for attempt in 1..=attempts.max(1) {
+        match remove(path) {
+            Ok(()) => return true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
+            Err(e) if busy(&e) && attempt < attempts => std::thread::sleep(pause),
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+/// ERROR_SHARING_VIOLATION or ERROR_LOCK_VIOLATION: another process has the file open without
+/// sharing its deletion. Never on Unix, where removing an open file succeeds.
+fn sharing_violation(e: &std::io::Error) -> bool {
+    cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33))
 }
 
 impl RunTemp {
@@ -438,5 +478,124 @@ mod tests {
         assert_eq!(n[0].anchor, 1);
         assert_eq!(n[0].trail, vec![seg]);
         p.shutdown();
+    }
+
+    /// A remover that fails with a sharing violation `busy` times, then removes, counting calls.
+    fn flaky(
+        busy: usize,
+        calls: &std::cell::Cell<usize>,
+    ) -> impl FnMut(&Path) -> std::io::Result<()> + '_ {
+        move |_| {
+            calls.set(calls.get() + 1);
+            if calls.get() <= busy {
+                Err(std::io::Error::other("sharing violation"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn a_busy_temp_file_is_removed_once_its_helper_lets_go() {
+        let calls = std::cell::Cell::new(0);
+        let pause = Duration::from_millis(10);
+        let started = std::time::Instant::now();
+        let gone = remove_retrying(Path::new("x"), 8, pause, flaky(3, &calls), |_| true);
+        let took = started.elapsed();
+        assert!(gone);
+        assert_eq!(calls.get(), 4);
+        assert!(took >= pause * 3, "{took:?}");
+        assert!(took < Duration::from_secs(2), "{took:?}");
+    }
+
+    #[test]
+    fn a_temp_file_still_busy_is_left_after_bounded_attempts() {
+        let calls = std::cell::Cell::new(0);
+        let pause = Duration::from_millis(10);
+        let started = std::time::Instant::now();
+        let gone = remove_retrying(Path::new("x"), 5, pause, flaky(usize::MAX, &calls), |_| {
+            true
+        });
+        let took = started.elapsed();
+        assert!(!gone);
+        assert_eq!(calls.get(), 5);
+        assert!(took >= pause * 4, "{took:?}");
+        assert!(took < Duration::from_secs(2), "{took:?}");
+        // The real bound: a file a helper keeps open delays its file's end by a quarter second
+        // at most.
+        assert!(REMOVE_PAUSE * (REMOVE_ATTEMPTS - 1) <= Duration::from_millis(250));
+    }
+
+    #[test]
+    fn only_a_sharing_violation_is_retried() {
+        let calls = std::cell::Cell::new(0);
+        let started = std::time::Instant::now();
+        let gone = remove_retrying(
+            Path::new("x"),
+            8,
+            Duration::from_secs(1),
+            flaky(usize::MAX, &calls),
+            |_| false,
+        );
+        assert!(!gone);
+        assert_eq!(calls.get(), 1);
+        assert!(started.elapsed() < Duration::from_millis(500));
+        // A file already gone is gone.
+        let missing = |_: &Path| Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert!(remove_retrying(
+            Path::new("x"),
+            8,
+            Duration::ZERO,
+            missing,
+            |_| false
+        ));
+        #[cfg(not(windows))]
+        assert!(!sharing_violation(&std::io::Error::from_raw_os_error(32)));
+        #[cfg(windows)]
+        assert!(sharing_violation(&std::io::Error::from_raw_os_error(32)));
+    }
+
+    /// The Windows case itself: a file open without delete sharing, as a helper in Python or C
+    /// opens it, is removed once the helper closes it within the retries, and left in the
+    /// run's temporary directory when it does not.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_a_helper_holds_open_is_removed_when_it_closes() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 1;
+        const FILE_SHARE_WRITE: u32 = 2;
+        let t = RunTemp::new();
+        let hold = |p: &Path| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .open(p)
+                .unwrap()
+        };
+        let f = t.write(Path::new("a.ini"), b"x").unwrap();
+        let p = f.path().to_path_buf();
+        let held = hold(&p);
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            drop(held);
+        });
+        let started = std::time::Instant::now();
+        drop(f);
+        let took = started.elapsed();
+        release.join().unwrap();
+        assert!(!p.exists());
+        assert!(took >= Duration::from_millis(40), "{took:?}");
+        assert!(took < Duration::from_secs(2), "{took:?}");
+        // Held past the retries: left for the system, after a bounded wait.
+        let f = t.write(Path::new("b.ini"), b"x").unwrap();
+        let p = f.path().to_path_buf();
+        let held = hold(&p);
+        let started = std::time::Instant::now();
+        drop(f);
+        let took = started.elapsed();
+        assert!(p.exists());
+        assert!(took < Duration::from_secs(2), "{took:?}");
+        drop(held);
+        std::fs::remove_file(&p).unwrap();
     }
 }

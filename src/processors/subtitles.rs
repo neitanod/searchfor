@@ -1,7 +1,7 @@
 //! subtitles: the cues of SubRip (.srt) and WebVTT (.vtt) files (spec §5.6). One pass over the
 //! lines, as far as the last anchor; a cue is the block of a timing line.
-use super::Processor;
-use crate::model::{Input, Name, Segment, Trail};
+use super::{Capability, Cursor, Prepared, Processor};
+use crate::model::{Input, Name, Segment, SharedTrail, Trail};
 use std::ops::Range;
 
 pub struct Subtitles;
@@ -116,87 +116,189 @@ impl Cue {
 
 /// Calls `f` with every cue in file order until it returns false.
 fn cues(src: &[u8], mut f: impl FnMut(&Cue) -> bool) {
-    // The cue being read; its range ends after its last non-blank line.
-    let mut open: Option<Cue> = None;
-    // The previous line: (range without terminator, blank, its line number, a timing line);
-    // and whether the line before it was blank or absent.
-    let mut prev: Option<(Range<usize>, bool, u64, bool)> = None;
-    let mut before_prev_blank = true;
-    let mut ordinal = 0;
-    let mut pos = 0;
-    let mut line_no = 0u64;
-    // WebVTT (a file that starts with `WEBVTT`): its header and its NOTE, STYLE and REGION
-    // blocks hold no cue, even when a line in them looks like a timing line (M3 review r1,
-    // Codex #3). `excluded` is true inside one, up to the blank line that ends it.
-    let vtt = block_word(src, b"WEBVTT");
-    let mut excluded = false;
-    while pos < src.len() {
-        line_no += 1;
-        let nl = memchr::memchr(b'\n', &src[pos..]).map_or(src.len(), |k| pos + k);
-        let next = (nl + 1).min(src.len());
-        let content = pos..if nl > pos && src[nl - 1] == b'\r' {
-            nl - 1
-        } else {
-            nl
-        };
-        let line = &src[content.clone()];
-        let blank = line.iter().all(|b| matches!(b, b' ' | b'\t'));
-        let block_start = prev.as_ref().is_none_or(|(_, b, _, _)| *b);
-        if vtt
-            && !blank
-            && block_start
-            && (line_no == 1
-                || [&b"NOTE"[..], b"STYLE", b"REGION"]
-                    .iter()
-                    .any(|w| block_word(line, w)))
-        {
-            excluded = true;
+    for c in Cues::new(src) {
+        if !f(&c) {
+            return;
         }
-        let tm = if excluded { None } else { timing(line) };
-        if excluded {
-            excluded = !blank;
-        } else if let Some((a, b)) = tm.clone() {
-            // The line before is the identifier when it starts a block and is not a timing
-            // line itself (M3 review r1, Fable #4).
-            let id = prev
-                .as_ref()
-                .filter(|(_, pb, _, pt)| !pb && !pt && before_prev_blank)
-                .map(|(r, _, n, _)| (r.clone(), *n));
-            // A timing line right after a cue's text starts the next cue (a missing blank line).
-            if let Some(c) = open.take()
-                && !f(&c)
-            {
-                return;
-            }
-            ordinal += 1;
-            let (start, start_line) = match &id {
-                Some((r, n)) => (r.start, *n),
-                None => (pos, line_no),
-            };
-            open = Some(Cue {
-                range: start..next,
-                id: id.map(|(r, _)| r),
-                start: content.start + a.start..content.start + a.end,
-                end: content.start + b.start..content.start + b.end,
-                ordinal,
-                lines: (start_line, line_no),
-            });
-        } else if blank {
-            if let Some(c) = open.take()
-                && !f(&c)
-            {
-                return;
-            }
-        } else if let Some(c) = open.as_mut() {
-            c.range.end = next;
-            c.lines.1 = line_no;
-        }
-        before_prev_blank = prev.as_ref().is_none_or(|(_, b, _, _)| *b);
-        prev = Some((content, blank, line_no, tm.is_some()));
-        pos = next;
     }
-    if let Some(c) = open {
-        f(&c);
+}
+
+/// The cues of a file in file order, read one line at a time: a cue is given once the line
+/// that ends it is read, so the reader holds the open cue and the previous line only.
+struct Cues<'s> {
+    src: &'s [u8],
+    /// The cue being read; its range ends after its last non-blank line.
+    open: Option<Cue>,
+    /// The previous line: (range without terminator, blank, its line number, a timing line);
+    /// and whether the line before it was blank or absent.
+    prev: Option<(Range<usize>, bool, u64, bool)>,
+    before_prev_blank: bool,
+    ordinal: u64,
+    pos: usize,
+    line_no: u64,
+    /// WebVTT (a file that starts with `WEBVTT`): its header and its NOTE, STYLE and REGION
+    /// blocks hold no cue, even when a line in them looks like a timing line (M3 review r1,
+    /// Codex #3). `excluded` is true inside one, up to the blank line that ends it.
+    vtt: bool,
+    excluded: bool,
+}
+
+impl<'s> Cues<'s> {
+    fn new(src: &'s [u8]) -> Self {
+        Cues {
+            src,
+            open: None,
+            prev: None,
+            before_prev_blank: true,
+            ordinal: 0,
+            pos: 0,
+            line_no: 0,
+            vtt: block_word(src, b"WEBVTT"),
+            excluded: false,
+        }
+    }
+}
+
+impl Iterator for Cues<'_> {
+    type Item = Cue;
+
+    fn next(&mut self) -> Option<Cue> {
+        let src = self.src;
+        while self.pos < src.len() {
+            let pos = self.pos;
+            self.line_no += 1;
+            let line_no = self.line_no;
+            let nl = memchr::memchr(b'\n', &src[pos..]).map_or(src.len(), |k| pos + k);
+            let next = (nl + 1).min(src.len());
+            let content = pos..if nl > pos && src[nl - 1] == b'\r' {
+                nl - 1
+            } else {
+                nl
+            };
+            let line = &src[content.clone()];
+            let blank = line.iter().all(|b| matches!(b, b' ' | b'\t'));
+            let block_start = self.prev.as_ref().is_none_or(|(_, b, _, _)| *b);
+            if self.vtt
+                && !blank
+                && block_start
+                && (line_no == 1
+                    || [&b"NOTE"[..], b"STYLE", b"REGION"]
+                        .iter()
+                        .any(|w| block_word(line, w)))
+            {
+                self.excluded = true;
+            }
+            let tm = if self.excluded { None } else { timing(line) };
+            let mut done = None;
+            if self.excluded {
+                self.excluded = !blank;
+            } else if let Some((a, b)) = tm.clone() {
+                // The line before is the identifier when it starts a block and is not a timing
+                // line itself (M3 review r1, Fable #4).
+                let id = self
+                    .prev
+                    .as_ref()
+                    .filter(|(_, pb, _, pt)| !pb && !pt && self.before_prev_blank)
+                    .map(|(r, _, n, _)| (r.clone(), *n));
+                // A timing line right after a cue's text starts the next cue (a missing blank
+                // line).
+                done = self.open.take();
+                self.ordinal += 1;
+                let (start, start_line) = match &id {
+                    Some((r, n)) => (r.start, *n),
+                    None => (pos, line_no),
+                };
+                self.open = Some(Cue {
+                    range: start..next,
+                    id: id.map(|(r, _)| r),
+                    start: content.start + a.start..content.start + a.end,
+                    end: content.start + b.start..content.start + b.end,
+                    ordinal: self.ordinal,
+                    lines: (start_line, line_no),
+                });
+            } else if blank {
+                done = self.open.take();
+            } else if let Some(c) = self.open.as_mut() {
+                c.range.end = next;
+                c.lines.1 = line_no;
+            }
+            self.before_prev_blank = self.prev.as_ref().is_none_or(|(_, b, _, _)| *b);
+            self.prev = Some((content, blank, line_no, tm.is_some()));
+            self.pos = next;
+            if done.is_some() {
+                return done;
+            }
+        }
+        self.open.take()
+    }
+}
+
+/// A subtitle file prepared for its cursor (M5b spec §6.1): nothing is read ahead of time, the
+/// cursor reads the cues as the Matches reach them.
+struct SubtitlesPrepared<'a> {
+    input: Input<'a>,
+}
+
+impl Prepared for SubtitlesPrepared<'_> {
+    fn cursor(&self) -> Box<dyn Cursor + '_> {
+        Box::new(SubtitlesCursor {
+            src: self.input.bytes,
+            cues: Cues::new(self.input.bytes),
+            cue: None,
+            last: None,
+            at: 0,
+        })
+    }
+
+    fn names(&self) -> anyhow::Result<Vec<Name>> {
+        Subtitles.names(&self.input, &toml::Table::new())
+    }
+
+    fn streams(&self) -> bool {
+        true
+    }
+}
+
+/// The Trails of a subtitle file in file order: the cue that holds or follows the last offset
+/// asked, and the Trail last given, by its cue's position (0: no cue).
+struct SubtitlesCursor<'s> {
+    src: &'s [u8],
+    cues: Cues<'s>,
+    cue: Option<Cue>,
+    last: Option<(u64, SharedTrail)>,
+    at: usize,
+}
+
+impl Cursor for SubtitlesCursor<'_> {
+    fn trail_at(&mut self, byte: usize) -> anyhow::Result<SharedTrail> {
+        if byte < self.at {
+            // An offset before the last one reads the cues again.
+            self.cues = Cues::new(self.src);
+            self.cue = None;
+        }
+        self.at = byte;
+        while self.cue.as_ref().is_none_or(|c| c.range.end <= byte) {
+            match self.cues.next() {
+                Some(c) => self.cue = Some(c),
+                None => {
+                    self.cue = None;
+                    break;
+                }
+            }
+        }
+        let cue = self.cue.as_ref().filter(|c| c.range.start <= byte);
+        let ordinal = cue.map_or(0, |c| c.ordinal);
+        if let Some((o, t)) = &self.last
+            && *o == ordinal
+        {
+            return Ok(t.clone());
+        }
+        let t: SharedTrail = match cue {
+            Some(c) => std::rc::Rc::from(vec![c.segment(self.src)]),
+            None => std::rc::Rc::from(Vec::new()),
+        };
+        self.last = Some((ordinal, t.clone()));
+        Ok(t)
     }
 }
 
@@ -252,6 +354,19 @@ impl Processor for Subtitles {
             true
         });
         Ok(names)
+    }
+
+    /// The cues read as the Matches reach them (M5b spec §6.1).
+    fn prepare<'a>(
+        &'a self,
+        input: Input<'a>,
+        _: &'a toml::Table,
+    ) -> anyhow::Result<Box<dyn Prepared + 'a>> {
+        Ok(Box::new(SubtitlesPrepared { input }))
+    }
+
+    fn capability(&self, _: &toml::Table) -> Capability {
+        Capability::Native
     }
 }
 
@@ -381,5 +496,60 @@ mod tests {
             needles("needle\n\n00:00:01,000 --> 00:00:02,000\nx\n\nneedle\n"),
             [vec![], vec![]]
         );
+    }
+
+    #[test]
+    fn subtitle_preparation_has_ordered_shared_trails() {
+        use crate::processors::Processor;
+        let src = b"1\n00:00:01,000 --> 00:00:03,000\nneedle needle\n\n2\n00:00:04,000 --> 00:00:05,000\nneedle\n";
+        let params: toml::Table = toml::from_str("syntax = 'srt'").unwrap();
+        let input = crate::model::Input {
+            bytes: src,
+            path: std::path::Path::new("x.srt"),
+            format: "srt",
+            disk: None,
+        };
+        let anchors: Vec<_> = memchr::memmem::find_iter(src, b"needle").collect();
+        let expected = Subtitles.trails(&input, &params, &anchors).unwrap();
+        let prepared = Subtitles.prepare(input, &params).unwrap();
+        assert!(prepared.streams());
+        let mut c = prepared.cursor();
+        let mut last = None;
+        for (i, at) in anchors.into_iter().enumerate() {
+            let t = c.trail_at(at).unwrap();
+            assert_eq!(t.as_ref(), expected[i].as_slice());
+            if i == 1 {
+                assert!(std::rc::Rc::ptr_eq(last.as_ref().unwrap(), &t));
+            }
+            last = Some(t);
+        }
+    }
+
+    #[test]
+    fn the_subtitle_cursor_gives_the_trails_of_every_byte() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/subs");
+        let files = [
+            std::fs::read(dir.join("movie.srt")).unwrap(),
+            std::fs::read(dir.join("talk.vtt")).unwrap(),
+            b"1\r\n00:00:01,000 --> 00:00:02,000\r\na\r\n00:00:03,000 --> 00:00:04,000\r\nb\r\n\r\nx\n".to_vec(),
+            b"WEBVTT\n\nNOTE 00:00:01.000 --> 00:00:02.000\n\nid\n00:01.000 --> 00:02.000\ntext".to_vec(),
+        ];
+        for src in &files {
+            let input = Input {
+                bytes: src,
+                path: Path::new("x.srt"),
+                format: "srt",
+                disk: None,
+            };
+            let params = toml::Table::new();
+            let anchors: Vec<usize> = (0..src.len()).collect();
+            let expected = Subtitles.trails(&input, &params, &anchors).unwrap();
+            let prepared = Subtitles.prepare(input, &params).unwrap();
+            let mut c = prepared.cursor();
+            for (&at, t) in anchors.iter().zip(&expected) {
+                assert_eq!(c.trail_at(at).unwrap().as_ref(), t.as_slice(), "byte {at}");
+            }
+            assert_eq!(c.trail_at(0).unwrap().as_ref(), expected[0].as_slice());
+        }
     }
 }
