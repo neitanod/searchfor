@@ -1613,9 +1613,10 @@ impl<'a> Ctx<'a> {
     /// The writer of grep-printer's printers: one file's output, printed as it grows where
     /// `Ctx::spill` allows it (code review r3, Fable #3).
     fn spill_lines(&self) -> SpillLines<'_> {
+        let buf = self.out.buffer();
         SpillLines {
-            buf: self.out.buffer(),
-            out: self.spill.then_some(&self.out),
+            out: (self.spill && can_spill_bytes(&buf)).then_some(&self.out),
+            buf,
             line_end: 0,
             scanned: 0,
         }
@@ -3270,8 +3271,10 @@ struct Above {
     link: Option<(PathBuf, Resolved)>,
 }
 
-/// How a name resolves, part by part (`through_descriptors`).
+/// How a name resolves, part by part (`through_descriptors`). Outside Unix every name is
+/// `Unknown` (`resolve`).
 #[derive(Clone)]
+#[cfg_attr(not(unix), allow(dead_code))]
 enum Resolved {
     /// Through this process's descriptors.
     Descriptors,
@@ -3452,6 +3455,14 @@ impl WriteColor for Spill<'_> {
     }
 }
 
+/// Whether `buffer`'s output is all in its bytes, which `SpillLines` copies: true for a plain
+/// or an ANSI buffer; false for a Windows console-API buffer, which keeps its colours beside
+/// its bytes, and is printed whole, as rg prints it (M5b spec §4.2). termcolor 1.4 tells it
+/// only by its abilities: it colours, and cannot hold a hyperlink.
+fn can_spill_bytes(buffer: &termcolor::Buffer) -> bool {
+    !buffer.supports_color() || buffer.supports_hyperlinks()
+}
+
 /// A file's output from grep-printer's printers that, with `out`, prints the complete lines
 /// it held before a write once it holds `SPILL` bytes: the line being written stays until the
 /// next spill or the end of the file. Only where nothing can come between the pieces
@@ -3600,6 +3611,16 @@ fn run_stats(s: &Stats) -> RunStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M5b spec §4.2: `SpillLines` copies a file's output as bytes, which a console-API buffer
+    /// (Windows) would print without its colours: only plain and ANSI buffers spill.
+    #[test]
+    fn only_buffers_of_bytes_spill() {
+        assert!(can_spill_bytes(&termcolor::Buffer::no_color()));
+        assert!(can_spill_bytes(&termcolor::Buffer::ansi()));
+        #[cfg(windows)]
+        assert!(!can_spill_bytes(&termcolor::Buffer::console()));
+    }
 
     #[test]
     fn only_outline_processors_take_the_streaming_path() {

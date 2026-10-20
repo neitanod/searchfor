@@ -1270,19 +1270,36 @@ fn unicode_classes_equal_ripgrep() {
     r.assert_empty();
 }
 
-/// Runs `cmd` in `sh` on a pseudo-terminal from util-linux `script`, in the fixture copy, with
-/// `rg` and `s4` naming the reference and our binary. None, with a note, without `script`.
+/// Runs `cmd` in `sh` on a pseudo-terminal from `script`, in the fixture copy, with `rg` and
+/// `s4` naming the reference (`common::rg_path`) and our binary: util-linux's `script -qefc CMD
+/// /dev/null` on Linux, BSD's `script -q /dev/null sh -c CMD` on macOS. None, with a note,
+/// without `script`. Windows has no `script`: the tests that need it are Unix's.
+#[cfg(unix)]
 fn on_a_tty(fx: &Fixture, cmd: &str) -> Option<String> {
-    if Command::new("script").arg("--version").output().is_err() {
-        eprintln!("skipping: util-linux script not found, so this pty test tests nothing");
+    let script = |cmd: &str| {
+        let mut c = Command::new("script");
+        if cfg!(target_os = "linux") {
+            c.args(["-qefc", cmd, "/dev/null"]);
+        } else {
+            c.args(["-q", "/dev/null", "sh", "-c", cmd]);
+        }
+        c
+    };
+    if script("true").stdin(Stdio::null()).output().is_err() {
+        eprintln!("skipping: script not found, so this pty test tests nothing");
         return None;
     }
     let s4 = assert_cmd::cargo::cargo_bin("s4");
-    let cmd = cmd.replace("s4 ", &format!("{} --no-trail ", s4.display()));
-    let o = Command::new("script")
-        .args(["-qec", &cmd, "/dev/null"])
+    let rg = common::rg_path();
+    let cmd = cmd
+        .replace("rg ", &format!("'{}' ", rg.display()))
+        .replace("s4 ", &format!("'{}' --no-trail ", s4.display()));
+    let o = script(&cmd)
         .current_dir(fx.path())
         .env("SEARCHFOR_FORMATS_DIR", fx.formats.path())
+        .env("SEARCHFOR_GRAMMARS_DIR", fx.grammars.path())
+        .env("SEARCHFOR_GRAMMAR_INDEX", fx.no_index())
+        .env_remove("SEARCHFOR_CONFIG_PATH")
         .env_remove("RIPGREP_CONFIG_PATH")
         .stdin(Stdio::null())
         .output()
@@ -1290,11 +1307,210 @@ fn on_a_tty(fx: &Fixture, cmd: &str) -> Option<String> {
     Some(format!("exit {}\n{}", code(&o), stdout(&o)))
 }
 
+/// Windows's terminal is a console: runs `program` with `args` in a pseudo-console (ConPTY) of
+/// 200 × 50 cells, in the fixture copy, with the environment `Fixture::s4` gives, and returns
+/// its exit code and what it wrote, without the console's escape sequences, carriage returns,
+/// trailing blanks and empty last lines. The stdio handles are given as invalid, so the child
+/// takes the console's and not this test's redirected ones (what portable-pty does). Windows
+/// has no `script`; this is its terminal test (M5b plan, Task 3.3).
+#[cfg(windows)]
+fn on_a_console(fx: &Fixture, program: &std::path::Path, args: &[&str]) -> (u32, String) {
+    use std::io::Read;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    };
+    use windows_sys::Win32::System::Console::{
+        COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON,
+    };
+    use windows_sys::Win32::System::Pipes::CreatePipe;
+    use windows_sys::Win32::System::Threading::{
+        CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
+        EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
+        PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
+        STARTUPINFOEXW, UpdateProcThreadAttribute, WaitForSingleObject,
+    };
+    let wide = |s: &std::ffi::OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+    // SAFETY: every call gets handles and buffers this function owns, alive for the call.
+    unsafe {
+        let (mut in_read, mut in_write): (HANDLE, HANDLE) =
+            (std::ptr::null_mut(), std::ptr::null_mut());
+        let (mut out_read, mut out_write): (HANDLE, HANDLE) =
+            (std::ptr::null_mut(), std::ptr::null_mut());
+        assert_ne!(
+            CreatePipe(&mut in_read, &mut in_write, std::ptr::null(), 0),
+            0
+        );
+        assert_ne!(
+            CreatePipe(&mut out_read, &mut out_write, std::ptr::null(), 0),
+            0
+        );
+        let mut hpc: HPCON = 0;
+        let size = COORD { X: 200, Y: 50 };
+        assert_eq!(
+            CreatePseudoConsole(size, in_read, out_write, 0, &mut hpc),
+            0
+        );
+        // The console holds its own copies.
+        CloseHandle(in_read);
+        CloseHandle(out_write);
+        let mut output = std::fs::File::from_raw_handle(out_read);
+        let reader = std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let _ = output.read_to_end(&mut v);
+            v
+        });
+        let mut list_size = 0usize;
+        InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut list_size);
+        let mut list = vec![0u8; list_size];
+        let attrs = list.as_mut_ptr().cast();
+        assert_ne!(
+            InitializeProcThreadAttributeList(attrs, 1, 0, &mut list_size),
+            0
+        );
+        assert_ne!(
+            UpdateProcThreadAttribute(
+                attrs,
+                0,
+                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
+                hpc as *const std::ffi::c_void,
+                std::mem::size_of::<HPCON>(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            ),
+            0
+        );
+        let mut si = STARTUPINFOEXW::default();
+        si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        si.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
+        si.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
+        si.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
+        si.lpAttributeList = attrs;
+        let mut line = format!("\"{}\"", program.display());
+        for a in args {
+            line.push_str(&format!(" \"{a}\""));
+        }
+        let mut line = wide(std::ffi::OsStr::new(&line));
+        let mut env: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString> =
+            std::env::vars_os().collect();
+        env.remove(std::ffi::OsStr::new("RIPGREP_CONFIG_PATH"));
+        env.remove(std::ffi::OsStr::new("SEARCHFOR_CONFIG_PATH"));
+        env.insert("SEARCHFOR_FORMATS_DIR".into(), fx.formats.path().into());
+        env.insert("SEARCHFOR_GRAMMARS_DIR".into(), fx.grammars.path().into());
+        env.insert("SEARCHFOR_GRAMMAR_INDEX".into(), fx.no_index().into());
+        let mut block: Vec<u16> = Vec::new();
+        for (k, v) in &env {
+            block.extend(k.encode_wide());
+            block.push(u16::from(b'='));
+            block.extend(v.encode_wide());
+            block.push(0);
+        }
+        block.push(0);
+        let cwd = wide(fx.path().as_os_str());
+        let mut pi = PROCESS_INFORMATION::default();
+        let created = CreateProcessW(
+            std::ptr::null(),
+            line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+            block.as_ptr().cast(),
+            cwd.as_ptr(),
+            &si.StartupInfo,
+            &mut pi,
+        );
+        assert_ne!(
+            created,
+            0,
+            "CreateProcessW: {}",
+            std::io::Error::last_os_error()
+        );
+        let started = std::time::Instant::now();
+        let waited = WaitForSingleObject(pi.hProcess, 60_000);
+        assert_eq!(
+            waited,
+            WAIT_OBJECT_0,
+            "{program:?} {args:?} still ran after {:?}",
+            started.elapsed()
+        );
+        let mut code = 0u32;
+        assert_ne!(GetExitCodeProcess(pi.hProcess, &mut code), 0);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        DeleteProcThreadAttributeList(attrs);
+        // Closing the console ends its output: the reader sees the end of the pipe.
+        ClosePseudoConsole(hpc);
+        CloseHandle(in_write);
+        let raw = reader.join().unwrap();
+        (code, without_console_sequences(&raw))
+    }
+}
+
+/// What a console wrote, as the lines a reader sees: no escape sequences (CSI, OSC and the
+/// two-byte ones), no carriage returns, no blanks at a line's end and no empty lines at the end.
+#[cfg(windows)]
+fn without_console_sequences(raw: &[u8]) -> String {
+    let text = String::from_utf8_lossy(raw);
+    let csi = regex_lite::Regex::new(
+        r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[@-Z\\-_]",
+    )
+    .unwrap();
+    let plain = csi.replace_all(&text, "").replace('\r', "");
+    let mut lines: Vec<&str> = plain.lines().map(str::trim_end).collect();
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+/// On a Windows console, as on a Unix terminal (`stdin_alone_on_a_tty_equals_ripgrep`), s4
+/// prints what rg prints: the path heading and line numbers of a terminal, and `-c`.
+#[test]
+#[cfg(windows)]
+fn m5b_console_output_equals_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::write(fx.file("con-a.txt"), "first\nneedle 1\nthird\nneedle 2\n").unwrap();
+    std::fs::write(fx.file("con-b.txt"), "needle 3\n").unwrap();
+    let s4 = assert_cmd::cargo::cargo_bin("s4");
+    let cases: [&[&str]; 3] = [
+        &[
+            "--color",
+            "never",
+            "--sort",
+            "path",
+            "needle",
+            "con-a.txt",
+            "con-b.txt",
+        ],
+        &["--color", "never", "needle", "con-a.txt"],
+        &["--color", "never", "-c", "needle", "con-a.txt", "con-b.txt"],
+    ];
+    for args in cases {
+        let want = on_a_console(&fx, &common::rg_path(), args);
+        let mut s = vec!["--no-trail"];
+        s.extend_from_slice(args);
+        let got = on_a_console(&fx, &s4, &s);
+        assert!(
+            want.1.contains("needle"),
+            "{args:?}: the console gave {want:?}"
+        );
+        assert_eq!(got, want, "{args:?}");
+    }
+}
+
 /// Code review r5, Fable #1: on a tty, stdin alone (piped, or `-`) is printed without line
-/// numbers, as rg 14.1.1; `/dev/stdin`, stdin with a file and `-c` as rg too. Without util-linux
+/// numbers, as rg 14.1.1; `/dev/stdin`, stdin with a file and `-c` as rg too. Without
 /// `script` the test returns at once and passes without testing anything (code review r6,
 /// Fable #2); `on_a_tty` prints a note, which `cargo test` shows only with `--nocapture`.
+/// Unix only: Windows has no pseudo-terminal through `script` (M5b plan, Task 3.3).
 #[test]
+#[cfg(unix)]
 fn stdin_alone_on_a_tty_equals_ripgrep() {
     if !reference_rg() {
         return;
@@ -1375,12 +1591,16 @@ fn the_separator_with_one_thread_waits_for_a_line() {
             );
         }
     }
-    // On a tty the separator is an empty line before the path heading. Without util-linux
-    // `script` this case is skipped and tests nothing (code review r6, Fable #2).
-    let cmd = "{} --color never --sort path -C1 needle seq/plain.txt seq/nul8.txt seq/odd.txt";
-    if let Some(want) = on_a_tty(&fx, &cmd.replace("{}", "rg")) {
-        let got = on_a_tty(&fx, &cmd.replace("{}", "s4")).unwrap();
-        r.check(cmd.to_string(), (0, want), (0, got));
+    // On a tty the separator is an empty line before the path heading. Without `script`
+    // this case is skipped and tests nothing (code review r6, Fable #2); on Windows, which has
+    // no `script`, too.
+    #[cfg(unix)]
+    {
+        let cmd = "{} --color never --sort path -C1 needle seq/plain.txt seq/nul8.txt seq/odd.txt";
+        if let Some(want) = on_a_tty(&fx, &cmd.replace("{}", "rg")) {
+            let got = on_a_tty(&fx, &cmd.replace("{}", "s4")).unwrap();
+            r.check(cmd.to_string(), (0, want), (0, got));
+        }
     }
     for mode in [&["--no-trail"][..], &[], &["--json"]] {
         let want = rg(&fx, &["needle", "zzz"], In::Null);
@@ -2016,14 +2236,54 @@ fn within_detects_binary_data_where_ripgrep_does() {
     r.assert_empty();
 }
 
-/// The bytes of the printf format `fmt` (`\n`, `\000`), as `sh`'s printf writes them.
+/// The bytes of the printf format `fmt`, as `sh`'s printf writes them: `\n`, `\\` and the
+/// octal escapes (`\000`), which are all the formats here use. Written in Rust, so the tests
+/// that use it need no `sh` (M5b plan, Task 3.3).
 fn printf(fmt: &str) -> Vec<u8> {
-    let o = Command::new("sh")
-        .args(["-c", &format!("printf '{fmt}'")])
-        .output()
-        .unwrap();
-    assert!(o.status.success(), "printf '{fmt}'");
-    o.stdout
+    let b = fmt.as_bytes();
+    let (mut out, mut i) = (Vec::new(), 0);
+    while i < b.len() {
+        if b[i] != b'\\' || i + 1 == b.len() {
+            out.push(b[i]);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        match b[i] {
+            b'n' => {
+                out.push(b'\n');
+                i += 1;
+            }
+            b'0'..=b'7' => {
+                let end = (i..b.len().min(i + 3))
+                    .find(|&j| !(b'0'..=b'7').contains(&b[j]))
+                    .unwrap_or(b.len().min(i + 3));
+                let n = std::str::from_utf8(&b[i..end]).unwrap();
+                out.push(u8::from_str_radix(n, 8).unwrap());
+                i = end;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn printf_writes_what_sh_writes() {
+    assert_eq!(printf("# needle\\n"), b"# needle\n");
+    assert_eq!(printf("\\000\\n"), b"\0\n");
+    assert_eq!(printf("a\\101\\\\b"), b"aA\\b");
+    #[cfg(unix)]
+    for fmt in ["# needle\\n", "\\000\\n", "x\\n\\000\\n# **nee**dle 1\\n"] {
+        let o = Command::new("sh")
+            .args(["-c", &format!("printf '{fmt}'")])
+            .output()
+            .unwrap();
+        assert_eq!(printf(fmt), o.stdout, "{fmt}");
+    }
 }
 
 /// FIONREAD: the bytes waiting in a pipe.
@@ -2032,7 +2292,30 @@ const FIONREAD: std::ffi::c_ulong = 0x541B;
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 const FIONREAD: std::ffi::c_ulong = 0x4004_667F;
 
+/// The bytes written to the pipe of `end` and not read yet: `PeekNamedPipe` on Windows, whose
+/// anonymous pipes have a handle and no descriptor.
+#[cfg(windows)]
+fn unread(end: &std::io::PipeReader) -> usize {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+    let mut n: u32 = 0;
+    // SAFETY: the handle is `end`'s, open for the call; only the count is written, to `n`.
+    let r = unsafe {
+        PeekNamedPipe(
+            end.as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &mut n,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(r, 0, "PeekNamedPipe: {}", std::io::Error::last_os_error());
+    n as usize
+}
+
 /// The bytes written to the pipe of `end` and not read yet.
+#[cfg(unix)]
 fn unread(end: &std::io::PipeReader) -> usize {
     use std::os::fd::AsRawFd;
     unsafe extern "C" {
@@ -2069,7 +2352,13 @@ fn through_a_slow_pipe(mut c: Command, first: &str, then: &str) -> Output {
         s.spawn(|| {
             // A reader that exited, or stopped reading, gets EPIPE or nothing: both are fine.
             let _ = writer.write_all(&first);
-            while unread(&probe) > 0 && !exited.load(Ordering::SeqCst) {
+            // Bounded: a reader that never reads gets `then` after a minute, and its test
+            // fails on what it printed instead of hanging.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while unread(&probe) > 0
+                && !exited.load(Ordering::SeqCst)
+                && std::time::Instant::now() < deadline
+            {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             let _ = writer.write_all(&then);
@@ -2940,5 +3229,60 @@ fn m5b_parallel_workers_keep_each_files_block() {
             );
             assert_eq!(ba, bb, "{engine}/{j}");
         }
+    }
+}
+
+/// M5b spec §4.2: a file searched with `--mmap` and without it reports the binary data and the
+/// bytes searched that system's rg reports, also on macOS, where rg never maps a file.
+#[test]
+fn m5b_mmap_binary_stats_follow_the_native_reference() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::write(fx.file("mapped.bin"), b"needle\0x\nneedle\n").unwrap();
+    for flag in ["--mmap", "--no-mmap"] {
+        let args = ["--json", flag, "needle", "mapped.bin"];
+        let a = run(fx.s4(args).args(["--no-trail", "--no-docs"]));
+        let b = run(&mut fx.rg(args));
+        assert_eq!(code(&a), code(&b));
+        assert_eq!(
+            common::mask_json_times(&stdout(&a)),
+            common::mask_json_times(&stdout(&b))
+        );
+    }
+}
+
+/// M5b spec §4.2, hidden files on Windows: rg decides what the hidden attribute means (the
+/// `ignore` crate reads it), and s4 matches it with and without `--hidden`.
+#[test]
+#[cfg(windows)]
+fn m5b_windows_hidden_attribute_matches_the_reference() {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_HIDDEN, SetFileAttributesW};
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::write(fx.file("visible.txt"), "needle\n").unwrap();
+    std::fs::write(fx.file("attr-hidden.txt"), "needle\n").unwrap();
+    let wide: Vec<u16> = fx
+        .file("attr-hidden.txt")
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    assert_ne!(
+        unsafe { SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_HIDDEN) },
+        0
+    );
+    for extra in [&[][..], &["--hidden"][..]] {
+        let mut args = vec!["--no-heading", "--color=never", "--sort=path"];
+        args.extend_from_slice(extra);
+        args.extend(["needle", "."]);
+        let a = run(fx.s4(args.clone()).args(["--no-trail", "--no-docs"]));
+        let b = run(&mut fx.rg(args));
+        assert_eq!(code(&a), code(&b), "{extra:?}");
+        assert_eq!(a.stdout, b.stdout, "{extra:?}");
     }
 }

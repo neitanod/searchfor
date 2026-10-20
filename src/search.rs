@@ -26,7 +26,14 @@ pub fn matcher(args: &Args, patterns: &[String]) -> Result<PatternMatcher> {
 /// files, and through stdin (line 3, offset 18).
 ///
 /// `--mmap` maps every file searched, walked ones too, and `--no-mmap` none (M5a plan, D9).
+///
+/// On macOS grep-searcher never maps a file (mmap.rs), so rg searches every file with a reader,
+/// `--mmap` too, and so does s4 (M5b spec §4.2, plan D7): a `Source` of 8 MiB or more is still
+/// mapped, to be read, never to be searched as a slice.
 pub fn rg_in_memory(args: &Args, paths: &[PathBuf], stdin: bool) -> bool {
+    if cfg!(target_os = "macos") {
+        return false;
+    }
     match args.mmap_mode {
         MmapMode::Never => false,
         MmapMode::Always => true,
@@ -810,6 +817,22 @@ mod tests {
 
     fn args(v: &[&str]) -> Args {
         parse(v.iter().map(OsString::from).collect()).unwrap()
+    }
+
+    /// M5b spec §4.2 (M5a plan, D9): on macOS grep-searcher never maps a file for a search, so
+    /// no search s4 runs is a search in memory, with `--mmap` either: binary detection and
+    /// `bytes_searched` stay rg's.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_never_searches_a_source_as_a_memory_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("file");
+        std::fs::write(&p, "needle\n").unwrap();
+        for flag in ["--mmap", "--no-mmap"] {
+            let a = crate::cli::parse(["s4", flag, "needle"].into_iter().map(Into::into).collect())
+                .unwrap();
+            assert!(!rg_in_memory(&a, std::slice::from_ref(&p), false));
+        }
     }
 
     #[test]
