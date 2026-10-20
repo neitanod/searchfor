@@ -677,6 +677,12 @@ pub(super) fn spawn(spec: SpawnSpec, limits: Limits) -> io::Result<Child> {
     })
 }
 
+/// Windows: every child of s4 is in s4's kill-on-close Job, which the system closes when s4
+/// ends, so nothing needs watching.
+pub(super) fn orphan_dies(_expected_parent: u32) -> io::Result<()> {
+    Ok(())
+}
+
 pub(super) struct Process {
     handle: OwnedHandle,
     pid: u32,

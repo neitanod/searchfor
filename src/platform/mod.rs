@@ -5,6 +5,8 @@
 //! child nor anything it starts can outlive s4.
 
 mod batch;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
@@ -96,8 +98,50 @@ pub struct PipeWriter(io::PipeWriter);
 pub struct WaitToken(imp::WaitToken);
 
 /// Starts `spec`. An error means no process is left running.
-pub fn spawn(spec: SpawnSpec, limits: Limits) -> io::Result<Child> {
+pub fn spawn(mut spec: SpawnSpec, limits: Limits) -> io::Result<Child> {
+    without_parent_variable(&mut spec.env);
     imp::spawn(spec, limits)
+}
+
+/// The pid of the s4 process that started this one and that this one must not outlive: set
+/// for an MCP search (and the example helper's test wait knob), read by
+/// `initialize_parent_watch` before anything else runs. Document readers keep their own
+/// `SEARCHFOR_READER_OF`.
+pub const PROCESS_PARENT_ENV: &str = "SEARCHFOR_PROCESS_PARENT";
+
+/// Makes this process end when `expected_parent` ends (M5b spec §4.2): Linux has the kernel
+/// kill it (`PR_SET_PDEATHSIG`), macOS watches the parent with kqueue, and Windows relies on
+/// the parent's kill-on-close Job. A parent that is already gone, or is not this process's
+/// parent, ends this process at once. Register once in the child, before starting background
+/// work. On Linux the death signal follows the thread that started the child: start it from a
+/// thread that lives as long as the parent's interest in it.
+pub fn orphan_dies(expected_parent: u32) -> io::Result<()> {
+    imp::orphan_dies(expected_parent)
+}
+
+/// `orphan_dies` for the parent `PROCESS_PARENT_ENV` names, when it names one.
+pub fn initialize_parent_watch() -> io::Result<()> {
+    let Some(v) = std::env::var_os(PROCESS_PARENT_ENV) else {
+        return Ok(());
+    };
+    let pid = v
+        .to_str()
+        .and_then(|s| s.parse::<u32>().ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{PROCESS_PARENT_ENV} is not a process id: {v:?}"),
+            )
+        })?;
+    orphan_dies(pid)
+}
+
+/// A child never inherits `PROCESS_PARENT_ENV` unless its spec sets it: it names this
+/// process's parent, not the child's.
+fn without_parent_variable(env: &mut Vec<(OsString, Option<OsString>)>) {
+    if !env.iter().any(|(k, _)| k == PROCESS_PARENT_ENV) {
+        env.push((PROCESS_PARENT_ENV.into(), None));
+    }
 }
 
 impl Child {
@@ -217,5 +261,68 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "child entry invoked by the parent watch tests"]
+    fn parent_watch_probe() {
+        initialize_parent_watch().unwrap();
+        let out = std::env::var_os("SEARCHFOR_PLATFORM_ECHO").unwrap();
+        std::fs::write(out, "survived").unwrap();
+    }
+
+    /// Runs `parent_watch_probe` with PROCESS_PARENT_ENV set to `parent`; its status, and
+    /// whether it got past the watch.
+    #[cfg(unix)]
+    fn parent_watch(parent: &str) -> (std::process::ExitStatus, bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "platform::tests::parent_watch_probe",
+                "--ignored",
+            ])
+            .env(PROCESS_PARENT_ENV, parent)
+            .env("SEARCHFOR_PLATFORM_ECHO", &out)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        (status, out.exists())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_parent_watch_ends_a_child_whose_parent_is_another() {
+        let began = std::time::Instant::now();
+        let (status, survived) = parent_watch(&u32::MAX.to_string());
+        assert!(!status.success() && !survived, "{status:?}");
+        assert!(
+            began.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            began.elapsed()
+        );
+        let (status, survived) = parent_watch(&std::process::id().to_string());
+        assert!(status.success() && survived, "{status:?}");
+    }
+
+    /// A child never inherits the parent pid meant for s4 itself: a reader or a helper of an
+    /// MCP search would otherwise compare it with its own parent and exit.
+    #[test]
+    fn spawn_removes_the_parent_variable_unless_the_spec_sets_it() {
+        let mut env = vec![("A".into(), Some("1".into()))];
+        without_parent_variable(&mut env);
+        assert_eq!(
+            env,
+            vec![
+                ("A".into(), Some("1".into())),
+                (PROCESS_PARENT_ENV.into(), None)
+            ]
+        );
+        let mut env = vec![(PROCESS_PARENT_ENV.into(), Some("7".into()))];
+        without_parent_variable(&mut env);
+        assert_eq!(env, vec![(PROCESS_PARENT_ENV.into(), Some("7".into()))]);
     }
 }

@@ -25,6 +25,11 @@ pub fn run(args: Vec<std::ffi::OsString>) -> i32 {
     if docs::isolated::is_worker(&args) {
         return docs::isolated::child(&args);
     }
+    // An MCP search ends with the s4 that started it (M5b spec §4.2), before any other work.
+    if let Err(e) = platform::initialize_parent_watch() {
+        warn(format!("s4: cannot watch the parent process: {e}"));
+        return 2;
+    }
     let code = app::run(args);
     docs::isolated::finish();
     code

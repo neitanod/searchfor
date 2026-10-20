@@ -7,6 +7,43 @@ use std::os::fd::OwnedFd;
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "macos")]
+pub(super) use super::macos::orphan_dies;
+
+/// Linux: the kernel sends SIGKILL when the parent ends, and the parent is checked after the
+/// registration, in case it ended first (M4 plan r4, Codex #2).
+#[cfg(target_os = "linux")]
+pub(super) fn orphan_dies(expected_parent: u32) -> io::Result<()> {
+    // SAFETY: prctl with integer arguments, and getppid, have no memory effects.
+    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::getppid() } as u32 != expected_parent {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+/// Other Unix systems: the parent is polled.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(super) fn orphan_dies(expected_parent: u32) -> io::Result<()> {
+    // SAFETY: getppid has no memory effects.
+    let parent = || unsafe { libc::getppid() } as u32;
+    if parent() != expected_parent {
+        std::process::exit(2);
+    }
+    std::thread::Builder::new()
+        .name("parent watch".into())
+        .spawn(move || {
+            while parent() == expected_parent {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            // SAFETY: ends the process at once, as the other systems do.
+            unsafe { libc::_exit(2) }
+        })?;
+    Ok(())
+}
+
 pub(super) struct Process {
     child: std::process::Child,
     /// Set once `wait` or `try_wait` reaped it: its pid may then belong to another process.
@@ -177,5 +214,35 @@ mod tests {
         assert!(c.wait_token().unwrap().wait(Some(Duration::ZERO)).unwrap());
         // A kill after the reap signals nothing and is not an error.
         assert!(c.kill().is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "child entry for a parent mismatch; exits this process"]
+    fn orphan_probe() {
+        crate::platform::orphan_dies(u32::MAX).unwrap();
+        std::thread::sleep(Duration::from_secs(30));
+        panic!("an orphan survived registration");
+    }
+
+    /// Linux's half of Task 2.2: a parent that is not the expected one ends the child at once.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn already_dead_parent_is_detected_before_work() {
+        let began = Instant::now();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "platform::unix::tests::orphan_probe",
+                "--ignored",
+            ])
+            .status()
+            .unwrap();
+        assert!(!status.success());
+        assert!(
+            began.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            began.elapsed()
+        );
     }
 }
