@@ -887,11 +887,10 @@ fn match_rows<'a>(
             let (column, at) = if !o.look.multi_line || d.offsets {
                 (s as u64 + 1, off + s as u64)
             } else {
-                let ls = if o.look.null_data {
-                    memchr::memrchr(0, &bytes[..s]).map_or(0, |z| z + 1)
-                } else {
-                    ls
-                };
+                // The start of the record that holds the Match, found with its line: looking
+                // back for the NUL before each Match made a record of N lines cost N² (code
+                // review r3 of M5a, Codex #3).
+                let ls = if o.look.null_data { numbers[n].1 } else { ls };
                 ((s - ls) as u64 + 1, off + ls as u64)
             };
             let line = match &shared {
