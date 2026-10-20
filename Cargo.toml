@@ -107,6 +107,12 @@ signal-hook = "0.3"
 # The limits of the child that extracts a document (M4 plan, D30): setrlimit and kill.
 libc = "0.2"
 
+# The allocator the readers' memory counter wraps in the static Linux binary (M5b spec §8.1; plan
+# Task 11.2): musl's malloc measured at least 1.15 × glibc's under s4's threads, so there the
+# counter wraps jemalloc, as ripgrep's musl build does. Every other target keeps the system's.
+[target.'cfg(all(target_env = "musl", target_pointer_width = "64"))'.dependencies]
+tikv-jemallocator = "0.7"
+
 # The process layer on Windows (M5b spec §4.3; plan D3, D4, D5, D20, D22): suspended starts,
 # Job Objects, pipes, the console's Ctrl-C and the system directories a program is searched in.
 [target.'cfg(windows)'.dependencies]

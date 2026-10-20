@@ -1,5 +1,6 @@
 //! The readers' memory counter (M4 plan, D31): the allocator of every s4 process is the
-//! system's, with a count of the bytes a document reader holds. `isolated::child` arms it
+//! system's, with a count of the bytes a document reader holds; in the 64-bit musl build it is
+//! jemalloc instead, as ripgrep's (M5b spec §8.1; plan Task 11.2). `isolated::child` arms it
 //! with the reader's limit; past it an allocation is refused, the same on Linux, macOS and
 //! Windows, and the reader gives the memory warning, as one past `RLIMIT_DATA` gives it:
 //!
@@ -15,10 +16,18 @@
 //! Not armed, in s4's own process and in every test binary, each allocation and free costs
 //! one relaxed load of `limit`, a value no one writes there, and a branch: the count itself
 //! is never touched.
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering::Relaxed};
 
-/// The system's allocator, counting the live bytes once armed.
+// The allocator the counter wraps: jemalloc where musl's own malloc measured at least 1.15 ×
+// glibc's under s4's threads (M5b plan, Task 11.2; the dependency is under the same `cfg` in
+// Cargo.toml), the system's everywhere else.
+#[cfg(not(all(target_env = "musl", target_pointer_width = "64")))]
+use std::alloc::System as Backing;
+#[cfg(all(target_env = "musl", target_pointer_width = "64"))]
+use tikv_jemallocator::Jemalloc as Backing;
+
+/// The backing allocator, counting the live bytes once armed.
 pub struct Counter {
     /// The most bytes live at once; 0 until `arm`, and then nothing is counted.
     limit: AtomicUsize,
@@ -103,13 +112,13 @@ impl Counter {
         if !self.take(layout.size()) {
             return std::ptr::null_mut();
         }
-        // SAFETY: the caller's layout, as GlobalAlloc::alloc requires; calloc for zeroed
-        // blocks, whose pages come zeroed.
+        // SAFETY: the caller's layout, as GlobalAlloc::alloc requires; the backing's own
+        // zeroed allocation for zeroed blocks.
         let p = unsafe {
             if zeroed {
-                System.alloc_zeroed(layout)
+                Backing.alloc_zeroed(layout)
             } else {
-                System.alloc(layout)
+                Backing.alloc(layout)
             }
         };
         if p.is_null() {
@@ -126,8 +135,8 @@ impl Counter {
             // Refused: the block stays as it was, as a failed realloc leaves it.
             return std::ptr::null_mut();
         }
-        // SAFETY: `ptr` came from `System` with `layout`; `new_size` is the caller's.
-        let p = unsafe { System.realloc(ptr, layout, new_size) };
+        // SAFETY: `ptr` came from `Backing` with `layout`; `new_size` is the caller's.
+        let p = unsafe { Backing.realloc(ptr, layout, new_size) };
         if p.is_null() {
             if new_size > old {
                 self.give(new_size - old);
@@ -146,9 +155,9 @@ impl Default for Counter {
     }
 }
 
-// SAFETY: every block comes from `System` and goes back to it with the same layout; the
+// SAFETY: every block comes from `Backing` and goes back to it with the same layout; the
 // counter only refuses, it never changes a block. Not armed, each method is one load, one
-// branch and a jump to the system's own function, the last thing it does. `inline(never)`:
+// branch and a jump to the backing's own function, the last thing it does. `inline(never)`:
 // inlined at every allocation site by LTO, the counter made the release binary about 400 KB
 // larger (M4 plan, D31).
 unsafe impl GlobalAlloc for Counter {
@@ -159,7 +168,7 @@ unsafe impl GlobalAlloc for Counter {
             return unsafe { self.counted(layout, false) };
         }
         // SAFETY: the caller's layout, as GlobalAlloc::alloc requires.
-        unsafe { System.alloc(layout) }
+        unsafe { Backing.alloc(layout) }
     }
 
     #[inline(never)]
@@ -168,8 +177,8 @@ unsafe impl GlobalAlloc for Counter {
             // SAFETY: the caller's contract, passed on.
             return unsafe { self.counted(layout, true) };
         }
-        // SAFETY: as in alloc; the system's calloc.
-        unsafe { System.alloc_zeroed(layout) }
+        // SAFETY: as in alloc; the backing's zeroed allocation.
+        unsafe { Backing.alloc_zeroed(layout) }
     }
 
     #[inline(never)]
@@ -177,8 +186,8 @@ unsafe impl GlobalAlloc for Counter {
         if self.armed() {
             self.give(layout.size());
         }
-        // SAFETY: `ptr` came from `System` with `layout`.
-        unsafe { System.dealloc(ptr, layout) }
+        // SAFETY: `ptr` came from `Backing` with `layout`.
+        unsafe { Backing.dealloc(ptr, layout) }
     }
 
     #[inline(never)]
@@ -187,8 +196,8 @@ unsafe impl GlobalAlloc for Counter {
             // SAFETY: the caller's contract, passed on.
             return unsafe { self.counted_realloc(ptr, layout, new_size) };
         }
-        // SAFETY: `ptr` came from `System` with `layout`; `new_size` is the caller's.
-        unsafe { System.realloc(ptr, layout, new_size) }
+        // SAFETY: `ptr` came from `Backing` with `layout`; `new_size` is the caller's.
+        unsafe { Backing.realloc(ptr, layout, new_size) }
     }
 }
 
@@ -312,6 +321,37 @@ mod tests {
             c.dealloc(a, layout(MIB));
         }
         assert_eq!(c.live.load(Relaxed), 0);
+    }
+
+    /// M5b plan, Task 11.2 (spec §8.1): the counter wraps jemalloc in the 64-bit musl build,
+    /// whose own malloc measured at least 1.15 × glibc's under s4's threads, and the system's
+    /// allocator everywhere else.
+    #[test]
+    fn the_backing_is_jemalloc_on_musl_and_the_system_elsewhere() {
+        let name = std::any::type_name::<Backing>();
+        if cfg!(all(target_env = "musl", target_pointer_width = "64")) {
+            assert_eq!(name, "tikv_jemallocator::Jemalloc");
+        } else {
+            assert_eq!(name, "std::alloc::System");
+        }
+    }
+
+    /// M5b plan, Task 11.2, Step 3: the selected backing allocates, keeps a block's bytes
+    /// through a realloc, and frees.
+    #[test]
+    fn selected_backing_can_allocate_reallocate_and_free() {
+        let allocator = Counter::new();
+        let small = Layout::from_size_align(32, 8).unwrap();
+        // SAFETY: the block is freed once, with the layout of its last size.
+        unsafe {
+            let p = allocator.alloc(small);
+            assert!(!p.is_null());
+            p.write_bytes(0x5a, 32);
+            let q = allocator.realloc(p, small, 64);
+            assert!(!q.is_null());
+            assert_eq!(std::slice::from_raw_parts(q, 32), &[0x5a; 32]);
+            allocator.dealloc(q, Layout::from_size_align(64, 8).unwrap());
+        }
     }
 
     /// D31: the limit in MiB, as `child` arms it, saturates instead of overflowing.
