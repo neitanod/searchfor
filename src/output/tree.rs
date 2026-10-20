@@ -705,6 +705,34 @@ mod tests {
         );
     }
 
+    /// Code review r3 of M5a, Fable #3: with `--null-data`, the context bytes of a `\n` line
+    /// that holds several records are a row per record, without its NUL, numbered by its
+    /// record as a context record's row is.
+    #[test]
+    fn expand_prints_each_context_record_of_a_line_as_a_row() {
+        use crate::output::Look;
+        // Records `# H\na` (1), `b` (2) and `needle` (3), on two `\n` lines.
+        let s = b"# H\na\0b\0needle".to_vec();
+        let mut d = described(
+            &s,
+            vec![item(&s, 3, 8..14, (0, 6))],
+            vec![vec![vec![h(1, "H", 1, 2)]]],
+        );
+        d.sections = vec![vec![Some((1, 2))]];
+        let o = RenderOptions {
+            expand: true,
+            look: Look {
+                null_data: true,
+                ..Look::default()
+            },
+            ..opts()
+        };
+        assert_eq!(
+            plain(&d, &s, &o),
+            "docs/a.md\n  # H\n    1-# H\n    1-a\n    2-b\n    3:needle\n"
+        );
+    }
+
     /// Code review r2 of M5a, Fable #2: a file `--passthru` prints without a Match has no
     /// Section, so --expand prints its rows as without --expand.
     #[test]

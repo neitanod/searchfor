@@ -1271,6 +1271,9 @@ pub(crate) fn section_rows<'a>(
 pub(crate) struct SectionLines<'s> {
     src: &'s [u8],
     starts: OnceCell<Vec<usize>>,
+    /// With `--null-data`, the offset of every NUL of `src`, which numbers the records of the
+    /// context rows: made at the first context row that needs it.
+    nuls: OnceCell<Vec<usize>>,
 }
 
 impl<'s> SectionLines<'s> {
@@ -1278,6 +1281,7 @@ impl<'s> SectionLines<'s> {
         SectionLines {
             src,
             starts: OnceCell::new(),
+            nuls: OnceCell::new(),
         }
     }
 
@@ -1316,11 +1320,11 @@ impl<'s> SectionLines<'s> {
                 // The first Match whose item ends after `at`, if it starts in this line's rest.
                 let b = blocks.partition_point(|b| b.end <= at);
                 let Some(block) = blocks.get(b).filter(|b| b.start < le) else {
-                    rows.push(self.context_row(n, at, le, o));
+                    self.context_rows(n, at, le, o, &mut rows);
                     break;
                 };
                 if block.start > at {
-                    rows.push(self.context_row(n, at, block.start, o));
+                    self.context_rows(n, at, block.start, o, &mut rows);
                 }
                 rows.extend(block.rows.iter().cloned());
                 covered = block.end;
@@ -1330,7 +1334,27 @@ impl<'s> SectionLines<'s> {
         })
     }
 
-    /// The bytes `s..e` of line `n` as a context row.
+    /// The bytes `s..e` of line `n` as context rows: one, or with `--null-data` one per record
+    /// they hold, each without its NUL and numbered by its record, as a context record's row
+    /// (code review r3 of M5a, Fable #3).
+    fn context_rows(&self, n: u64, s: usize, e: usize, o: &RenderOptions, rows: &mut Vec<Row<'s>>) {
+        if !o.look.null_data {
+            rows.push(self.context_row(n, s, e, o));
+            return;
+        }
+        let nuls = self
+            .nuls
+            .get_or_init(|| memchr::memchr_iter(0, self.src).collect());
+        let mut at = s;
+        while at < e {
+            let end = memchr::memchr(0, &self.src[at..e]).map_or(e, |z| at + z + 1);
+            let record = 1 + nuls.partition_point(|&z| z < at) as u64;
+            rows.push(self.context_row(record, at, end, o));
+            at = end;
+        }
+    }
+
+    /// The bytes `s..e` as a context row numbered `n`.
     fn context_row(&self, n: u64, s: usize, e: usize, o: &RenderOptions) -> Row<'s> {
         let text = &self.src[s..e];
         let cut = if o.look.null_data && text.ends_with(b"\0") {
