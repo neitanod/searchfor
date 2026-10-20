@@ -119,6 +119,10 @@ gh attestation verify searchfor-x86_64-unknown-linux-musl.tar.xz --repo neitanod
 Imprime el workflow y el commit de los que salió el archivo, y falla si el archivo cambió
 después de armarse.
 
+El paquete npm no verifica ningún checksum: `npm install -g searchfor` baja el archivo de tu
+sistema por HTTPS desde el GitHub Release. Para verificar lo que instala, bajá el mismo archivo
+del release y comprobá su attestation con `gh attestation verify`, como arriba.
+
 ### Sistemas soportados
 
 `s4`, sus Helper Processors y toda su suite de tests compilan y pasan en Linux x86-64, macOS
