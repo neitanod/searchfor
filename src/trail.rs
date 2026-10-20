@@ -82,6 +82,9 @@ impl Outline {
     /// A Segment that starts inside another and ends after it is clamped to its parent's end,
     /// so a Processor bug can never break the tree.
     pub fn build(mut segments: Vec<OutlineSegment>, content: &[u8]) -> Self {
+        // An Outline lives for the whole search: without the room its Vec grew into (code
+        // review r1, Fable #3).
+        segments.shrink_to_fit();
         segments.sort_by(|a, b| {
             a.range
                 .start
@@ -133,28 +136,29 @@ impl Outline {
 /// the last byte asked: memory grows with the Segments, never with the lines of the file (M3
 /// review r1, Codex #2).
 fn fill_lines(segments: &mut [OutlineSegment], content: &[u8]) {
-    // (byte, Segment index, whether it is the end) for every line to compute.
-    let mut asks: Vec<(usize, usize, bool)> = Vec::new();
-    for (i, s) in segments.iter().enumerate() {
+    // The Segments are sorted by start: their first lines in one pass. Their ends are not:
+    // (byte, Segment index) of each, sorted, 16 bytes a Segment (code review r1, Fable #3).
+    let count = |at: &mut usize, line: &mut u64, byte: usize| {
+        let to = byte.min(content.len());
+        if to > *at {
+            *line += memchr::memchr_iter(b'\n', &content[*at..to]).count() as u64;
+            *at = to;
+        }
+        *line
+    };
+    let mut ends: Vec<(usize, usize)> = Vec::new();
+    let (mut at, mut line) = (0usize, 1u64);
+    for (i, s) in segments.iter_mut().enumerate() {
         if s.segment.line == 0 {
             let r = &s.range;
-            asks.push((r.start, i, false));
-            asks.push((r.end.saturating_sub(1).max(r.start), i, true));
+            ends.push((r.end.saturating_sub(1).max(r.start), i));
+            s.segment.line = count(&mut at, &mut line, r.start);
         }
     }
-    asks.sort_unstable();
+    ends.sort_unstable();
     let (mut at, mut line) = (0usize, 1u64);
-    for (byte, i, end) in asks {
-        let to = byte.min(content.len());
-        if to > at {
-            line += memchr::memchr_iter(b'\n', &content[at..to]).count() as u64;
-            at = to;
-        }
-        if end {
-            segments[i].segment.end_line = line;
-        } else {
-            segments[i].segment.line = line;
-        }
+    for (byte, i) in ends {
+        segments[i].segment.end_line = count(&mut at, &mut line, byte);
     }
 }
 
