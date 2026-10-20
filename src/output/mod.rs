@@ -453,6 +453,7 @@ fn write_preview(
 type Subs = Vec<(usize, usize)>;
 
 /// One line for tree or flat: a Match line under one of its Trails, or a context line.
+#[derive(Clone)]
 pub(crate) struct Row<'a> {
     pub trail: &'a [Segment],
     pub line_number: u64,
@@ -825,12 +826,18 @@ fn match_rows<'a>(
             // The first line the Match touches; rg's printer of several lines prints none for
             // an empty Match at a line's start (review r3 of the M5a plan, Codex #4). Past the
             // line that holds its start, a line touches it only if it starts before its end.
-            let Some((n, &(ls, le))) = lines
+            let touched = lines
                 .iter()
                 .enumerate()
                 .skip(line_at(&lines, s))
                 .take_while(|&(_, &(ls, _))| ls <= s || ls < e)
-                .find(|&(_, &(ls, le))| s < le && (e > ls || (s >= ls && !o.look.multi_line)))
+                .find(|&(_, &(ls, le))| s < le && (e > ls || (s >= ls && !o.look.multi_line)));
+            // A Match at the end of a last line without a terminator, as one whose replacement
+            // empties the line's end: rg's printer of one line prints it on that line (code
+            // review r1 of M5a, Codex #5).
+            let last = lines.len() - 1;
+            let at_end = !o.look.multi_line && s >= lines[last].1;
+            let Some((n, &(ls, le))) = touched.or_else(|| at_end.then(|| (last, &lines[last])))
             else {
                 continue;
             };
@@ -1150,14 +1157,41 @@ impl<'a> Iterator for Pieces<'a> {
     }
 }
 
-/// The submatches of the printed Match lines, by line number (for --expand).
-pub(crate) fn match_lines(d: &Described) -> HashMap<u64, Vec<(usize, usize)>> {
-    let mut map: HashMap<u64, Vec<(usize, usize)>> = HashMap::new();
-    for item in printed_items(d) {
-        if let Item::Match(m) = item {
-            map.entry(m.line_number)
-                .or_default()
-                .extend(subs_of(&m.submatches));
+/// The rows of the printed Match lines by line number, for --expand's Sections: each Match's
+/// rows made as any row's (`match_rows`), so a Section's Match lines take `-r`, `--column`,
+/// `-b`, `-o`, `--vimgrep` and the terminators as the rows do (code review r1 of M5a, Codex
+/// #3). The rows of a line under several Trails are one row with all their submatches, as a
+/// Section has one Trail; `-o` and `--vimgrep` keep a row per Match.
+pub(crate) fn section_rows<'a>(
+    d: &'a Described,
+    src: &'a [u8],
+    o: &RenderOptions,
+) -> HashMap<u64, Vec<Row<'a>>> {
+    let per_match = o.look.only_matching || o.look.per_match;
+    let mut map: HashMap<u64, Vec<Row<'a>>> = HashMap::new();
+    let matches = printed_items(d).iter().filter_map(|item| match item {
+        Item::Match(m) => Some(m),
+        Item::Context(_) => None,
+    });
+    for (i, m) in matches.enumerate() {
+        for r in match_rows(d, i, m, src, o) {
+            let rows = map.entry(r.line_number).or_default();
+            match rows.last_mut() {
+                Some(last) if !per_match && Rc::ptr_eq(&last.line, &r.line) => {
+                    last.subs.extend(r.subs);
+                    last.column = match (last.column, r.column) {
+                        (Some(a), Some(b)) => Some(a.min(b)),
+                        (a, b) => a.or(b),
+                    };
+                }
+                _ => rows.push(r),
+            }
+        }
+    }
+    // The submatches of a line's Trails, back in the line's order once, as each Trail's are.
+    for rows in map.values_mut() {
+        for r in rows {
+            r.subs.sort_unstable();
         }
     }
     map
@@ -1188,6 +1222,35 @@ impl<'s> SectionLines<'s> {
             .split_inclusive(|&b| b == b'\n')
             .zip(start.max(1)..)
             .map(|(l, n)| (n, l))
+    }
+
+    /// The rows of lines `start..=end`: a Match line's rows from `matches` (`section_rows`),
+    /// any other line a context row at its byte offset, its terminator left out as a row's.
+    pub(crate) fn rows<'m>(
+        &'m self,
+        start: u64,
+        end: u64,
+        matches: &'m HashMap<u64, Vec<Row<'s>>>,
+        o: &'m RenderOptions,
+    ) -> impl Iterator<Item = Row<'s>> + 'm {
+        self.lines(start, end).flat_map(move |(n, line)| {
+            if let Some(rows) = matches.get(&n) {
+                return rows.clone();
+            }
+            let starts = self.starts.get().expect("read by lines");
+            let at = starts[(n as usize - 1).min(starts.len() - 1)];
+            vec![Row {
+                trail: &[],
+                line_number: n,
+                offset: None,
+                line: Rc::new(LineText::with_cut(Cow::Borrowed(line), cut_of(line, o))),
+                subs: Vec::new(),
+                is_match: false,
+                gap_before: false,
+                column: None,
+                byte_offset: at as u64,
+            }]
+        })
     }
 }
 
@@ -1649,6 +1712,60 @@ pub(crate) mod tests {
         assert_eq!(columns(2, &[(0, 0)], true), []);
     }
 
+    /// Code review r1 of M5a, Codex #5: a Match whose replacement leaves a last line without a
+    /// terminator empty at its end keeps its row, as rg's: `printf 'a needle' | rg --vimgrep -b
+    /// -r '' needle` prints `<stdin>:1:3:2:a `, and `needle needle` prints `1:1:0:` and
+    /// `1:2:1:`. `-o` and `--column` print theirs too (rg: an empty line, `1:1:`).
+    #[test]
+    fn per_match_rows_of_an_emptied_last_line() {
+        use super::fixture::*;
+        let texts = |src: &[u8], subs: &[(usize, usize)], look: Look| -> Vec<Seen> {
+            let mut item = mat(src, 1);
+            if let Item::Match(l) = &mut item {
+                l.submatches = subs
+                    .iter()
+                    .map(|&(start, end)| Submatch { start, end })
+                    .collect();
+            }
+            let trails = vec![vec![seg("key", "A", 1, 1)]; subs.len()];
+            let d = described(src, vec![item], vec![trails]);
+            seen(&d, src, &with(look))
+        };
+        let row = |text: &str, column, at| {
+            (
+                1,
+                text.to_string(),
+                vec![],
+                Some(column),
+                at,
+                "A".to_string(),
+            )
+        };
+        let vimgrep = || Look {
+            per_match: true,
+            ..replacer("needle", b"")
+        };
+        assert_eq!(texts(b"needle", &[(0, 6)], vimgrep()), [row("", 1, 0)]);
+        assert_eq!(texts(b"a needle", &[(2, 8)], vimgrep()), [row("a ", 3, 2)]);
+        assert_eq!(
+            texts(b"needle needle", &[(0, 6), (7, 13)], vimgrep()),
+            [
+                (1, " ".into(), vec![(0, 0)], Some(1), 0, "A".into()),
+                row(" ", 2, 1)
+            ]
+        );
+        let only = Look {
+            only_matching: true,
+            ..replacer("needle", b"")
+        };
+        assert_eq!(texts(b"needle", &[(0, 6)], only), [row("", 1, 0)]);
+        let line = texts(b"needle", &[(0, 6)], replacer("needle", b""));
+        assert_eq!(
+            line,
+            [(1, String::new(), vec![(0, 0)], Some(1), 0, "A".into())]
+        );
+    }
+
     /// M5a plan, D6: a `-U` Match prints a row per line, numbered as rg numbers them, under
     /// its Trail; with `-o`, each line of the Match that is not empty.
     #[test]
@@ -1841,7 +1958,7 @@ pub(crate) mod tests {
     }
 
     /// A Replacer of `pattern` by `with`, as `-r` builds it.
-    fn replacer(pattern: &str, with: &[u8]) -> Look {
+    pub(crate) fn replacer(pattern: &str, with: &[u8]) -> Look {
         let a = crate::cli::parse(["s4", "x"].iter().map(Into::into).collect()).unwrap();
         let m = crate::matcher::build(&a, &[pattern.into()]).unwrap();
         let r = replace::Replacer::new(

@@ -463,3 +463,52 @@ fn m5_json_equals_ripgrep() {
         );
     }
 }
+
+/// Code review r1 of M5a, Codex #3: `--expand`'s Sections print their lines as the rows do. In
+/// the tree each Match line of a Section is `line:column:offset:text` with its Matches
+/// replaced, rg's `-n --column -b -r` line, and with `--crlf` no line keeps its `\r`.
+#[test]
+fn m5_expand_rows_equal_ripgreps_lines() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    write_m5_files(&fx);
+    std::fs::write(
+        fx.file("m5/crlf.md"),
+        b"# Install\r\n\r\nRun the needle here\r\nafter\r\n",
+    )
+    .unwrap();
+    // A Match row of the tree: three numbers, each followed by `:`.
+    let is_match_row = |l: &&str| {
+        let f: Vec<&str> = l.splitn(4, ':').collect();
+        f.len() == 4
+            && f[..3]
+                .iter()
+                .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    for (file, crlf) in [("m5/block.md", false), ("m5/crlf.md", true)] {
+        let mut a = vec!["--column", "-b", "-r", "X"];
+        if crlf {
+            a.push("--crlf");
+        }
+        a.extend(["needle", file]);
+        let mut want = vec!["-n", "--no-filename"];
+        want.extend(&a);
+        let want: std::collections::BTreeSet<String> = stdout(&rg(&fx, &want))
+            .lines()
+            .map(|l| l.trim_end_matches('\r').to_string())
+            .collect();
+        let mut got = vec!["--no-docs", "--tree", "--expand"];
+        got.extend(&a);
+        let out = stdout(&run(&mut fx.s4(&got)));
+        assert!(!out.contains('\r'), "{file}: {out:?}");
+        let got: std::collections::BTreeSet<String> = out
+            .lines()
+            .map(str::trim_start)
+            .filter(is_match_row)
+            .map(String::from)
+            .collect();
+        assert_eq!(got, want, "{file}:\n{out:?}");
+    }
+}
