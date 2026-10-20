@@ -389,7 +389,7 @@ jobs:
           print('five targets, four installers, only s4: PASS')
           PY
 
-      # release.yml is dist's output plus two patches (dist-workspace.toml): check that it still
+      # release.yml is dist's output plus four patches (dist-workspace.toml): check that it still
       # is, and that regeneration kept the conditions publication depends on.
       # To regenerate it locally: run this step's script with RELEASE_WORKFLOW_WRITE=1.
       - name: Release workflow (Linux)
@@ -412,6 +412,11 @@ jobs:
           finally:
               cfg.write_text(config, encoding='utf-8')
               wf.write_text(committed, encoding='utf-8')
+          # GitHub evaluates a dollar sign and two braces together, even in this script.
+          ex = '$' '{{'
+          # A release candidate tag (v1.0.0-rc.1) of version 1.0.0 is a pre-release of that
+          # version: dist plans it only with --force-tag, which the stable tag goes without.
+          force = "contains(github.ref_name, '-') && ' --force-tag' || ''"
           patches = [
               ("on:\n  pull_request:\n  push:\n    tags:\n      - '**[0-9]+.[0-9]+.[0-9]+*'\n",
                "# searchfor: only v<semver> tags release s4; grammars-v* tags belong to grammars.yml.\n"
@@ -419,6 +424,11 @@ jobs:
               ('name: Release\npermissions:\n  "contents": "write"\n',
                'name: Release\n# searchfor: read-only by default; the host job declares the write it needs.\n'
                'permissions:\n  "contents": "read"\n'),
+              (f"      tag-flag: {ex} !github.event.pull_request && format('--tag={{0}}', github.ref_name) || '' }}}}\n",
+               "      # searchfor: a release candidate of the Cargo version is planned with --force-tag.\n"
+               f"      tag-flag: {ex} !github.event.pull_request && format('--tag={{0}}{{1}}', github.ref_name, {force}) || '' }}}}\n"),
+              (f"dist {ex} (!github.event.pull_request && format('host --steps=create --tag={{0}}', github.ref_name)) || 'plan' }}}}",
+               f"dist {ex} (!github.event.pull_request && format('host --steps=create --tag={{0}}{{1}}', github.ref_name, {force})) || 'plan' }}}}"),
           ]
           expected = generated
           for old, new in patches:
@@ -432,7 +442,7 @@ jobs:
               sys.stdout.writelines(difflib.unified_diff(
                   expected.splitlines(True), committed.splitlines(True),
                   'dist generate + patches', 'release.yml'))
-              sys.exit('release.yml is not what dist generate and the two patches write')
+              sys.exit(f'release.yml is not what dist generate and the {len(patches)} patches write')
           # The conditions publication depends on, checked on the committed file.
           head, body = committed.split('\njobs:\n', 1)
           parts = re.split(r'(?m)^  ([A-Za-z0-9_-]+):\n', body)
@@ -441,6 +451,9 @@ jobs:
           assert 'workflow_dispatch' not in committed, 'a manual dispatch could publish'
           assert re.search(r'(?m)^permissions:\n  "contents": "read"\n(?!  )', head), 'permissions'
           assert 'secrets.' not in head and 'cargo publish' not in committed
+          # Every dist that takes the tag takes the pre-release's --force-tag with it.
+          assert committed.count('--force-tag') == 3 and committed.count(force) == 2, 'force-tag'
+          assert committed.count('needs.plan.outputs.tag-flag') == 3, 'tag-flag'
           for secret, owner in [('secrets.NPM_TOKEN', 'publish-npm'),
                                 ('secrets.HOMEBREW_TAP_TOKEN', 'publish-homebrew-formula')]:
               assert [j for j, b in jobs.items() if secret in b] == [owner], secret
@@ -457,15 +470,17 @@ jobs:
           attest = host.index('uses: actions/attest@')
           assert 'subject-path: |\n            artifacts/*\n' in host[attest:]
           assert attest < host.index('gh release create'), 'attest before the release exists'
-          # A release candidate publishes nothing to npm or Homebrew; the stable tag does.
+          # A release candidate publishes nothing to npm or Homebrew; the stable tag does. Each
+          # is planned with the flags release.yml gives it.
           def plan(tag):
-              out = subprocess.run([dist, 'plan', '--output-format=json', f'--tag={tag}', '--force-tag'],
+              flags = ['--force-tag'] if '-' in tag else []
+              out = subprocess.run([dist, 'plan', '--output-format=json', f'--tag={tag}', *flags],
                                    check=True, capture_output=True, text=True).stdout
               return json.loads(out)
           rc, stable = plan('v1.0.0-rc.1'), plan('v1.0.0')
           assert rc['announcement_is_prerelease'] is True and rc['publish_prereleases'] is False
           assert stable['announcement_is_prerelease'] is False
-          print('release.yml: dist generate + 2 patches; tags, secrets, permissions, guards: PASS')
+          print(f'release.yml: dist generate + {len(patches)} patches; tags, secrets, permissions, guards: PASS')
           PY
 
       # The archive of this runner's target, the installers and the checksums (Task 11.1).

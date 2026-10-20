@@ -1,10 +1,13 @@
 # The release of s4 (M5b spec §8, plan Task 11.1), built by axodotdev's `dist` from a `v*` tag.
 #
-# `.github/workflows/release.yml` is what `dist generate` writes from this file plus two
+# `.github/workflows/release.yml` is what `dist generate` writes from this file plus four
 # patches (`allow-dirty` below keeps dist from undoing them): the trigger is restricted to
-# `v<semver>` tags, because `grammars-v*` tags belong to grammars.yml, and the workflow-wide
+# `v<semver>` tags, because `grammars-v*` tags belong to grammars.yml; the workflow-wide
 # permission is `contents: read`, because only the `host` job, which carries its own
-# permissions, writes the GitHub Release. The `release workflow` step of ci.yml regenerates the
+# permissions, writes the GitHub Release; and the two places that hand the tag to dist add
+# `--force-tag` to a tag with a pre-release suffix, because dist plans `v1.0.0-rc.1` only when
+# it may take the tag's version over the Cargo version 1.0.0 (a stable tag must still match
+# it). The `release workflow` step of ci.yml regenerates the
 # file, applies the patches and fails when the result differs from the committed one. To
 # regenerate after changing this file, or after a dist upgrade: run that step's script with
 # `--write` (see ci.yml, job `package`).
@@ -56,5 +59,5 @@ publish-jobs = ["homebrew", "npm"]
 precise-builds = true
 install-path = "CARGO_HOME"
 install-updater = false
-# release.yml carries the two patches described at the top of this file.
+# release.yml carries the four patches described at the top of this file.
 allow-dirty = ["ci"]
