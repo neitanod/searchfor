@@ -1105,7 +1105,10 @@ pub(crate) enum Pieces<'a> {
 }
 
 pub(crate) fn pieces<'a>(d: &'a Described, src: &'a [u8], o: &'a RenderOptions) -> Pieces<'a> {
-    if !o.expand {
+    // A file without any Section, as one `--passthru` prints without a Match, prints its rows
+    // as without --expand (code review r2 of M5a, Fable #2).
+    let none = d.sections.iter().flatten().all(Option::is_none);
+    if !o.expand || none {
         return Pieces::Rows(rows(d, src, o));
     }
     Pieces::Expand {

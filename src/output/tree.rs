@@ -636,6 +636,17 @@ mod tests {
         );
     }
 
+    /// Code review r2 of M5a, Fable #2: a file `--passthru` prints without a Match has no
+    /// Section, so --expand prints its rows as without --expand.
+    #[test]
+    fn expand_without_sections_prints_the_rows() {
+        let s = src(&["# H", "nothing"]);
+        let d = described(&s, vec![ctx(&s, 1), ctx(&s, 2)], vec![]);
+        let o = |expand| RenderOptions { expand, ..opts() };
+        assert_eq!(plain(&d, &s, &o(true)), "docs/a.md\n  1-# H\n  2-nothing\n");
+        assert_eq!(plain(&d, &s, &o(true)), plain(&d, &s, &o(false)));
+    }
+
     #[test]
     fn expand_prints_both_sections_of_one_line() {
         let s = src(&["# A", "alpha", "## B", "needle and needle"]);

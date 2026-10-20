@@ -786,6 +786,20 @@ mod tests {
         assert_eq!(plain(&d, &s, &o), "docs/a.md:1-3: A\n# A\none X\nplain\n\n");
     }
 
+    /// Code review r2 of M5a, Fable #2: a file `--passthru` prints without a Match has no
+    /// Section, so --expand prints its rows as without --expand.
+    #[test]
+    fn expand_without_sections_prints_the_rows() {
+        let s = src(&["# H", "nothing"]);
+        let d = described(&s, vec![ctx(&s, 1), ctx(&s, 2)], vec![]);
+        let o = |expand| RenderOptions { expand, ..flat() };
+        assert_eq!(
+            plain(&d, &s, &o(true)),
+            "docs/a.md-1-# H\ndocs/a.md-2-nothing\n"
+        );
+        assert_eq!(plain(&d, &s, &o(true)), plain(&d, &s, &o(false)));
+    }
+
     #[test]
     fn binary_message_with_and_without_the_path() {
         let s = src(&["one needle", "two needle"]);
