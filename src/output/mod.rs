@@ -1170,25 +1170,36 @@ impl<'a> Iterator for Pieces<'a> {
     }
 }
 
-/// The rows of the printed Match lines by line number, for --expand's Sections: each Match's
-/// rows made as any row's (`match_rows`), so a Section's Match lines take `-r`, `--column`,
-/// `-b`, `-o`, `--vimgrep` and the terminators as the rows do (code review r1 of M5a, Codex
-/// #3). The rows of a line under several Trails are one row with all their submatches, as a
-/// Section has one Trail; `-o` and `--vimgrep` keep a row per Match.
+/// The rows of a printed Match, for --expand's Sections, with the bytes of the Source its item
+/// covers: a Section places them by those bytes and not by the numbers they show, which with
+/// `--null-data` are the record's and with `-r` may count lines the replacement made (code
+/// review r2 of M5a, Codex #1 and Fable #3).
+#[derive(Clone)]
+pub(crate) struct SectionBlock<'a> {
+    start: usize,
+    end: usize,
+    rows: Vec<Row<'a>>,
+}
+
+/// The rows of the printed Matches, in file order, for --expand's Sections: each Match's rows
+/// made as any row's (`match_rows`), so a Section's Match lines take `-r`, `--column`, `-b`,
+/// `-o`, `--vimgrep` and the terminators as the rows do (code review r1 of M5a, Codex #3). The
+/// rows of a line under several Trails are one row with all their submatches, as a Section has
+/// one Trail; `-o` and `--vimgrep` keep a row per Match (spec §8, `--expand`).
 pub(crate) fn section_rows<'a>(
     d: &'a Described,
     src: &'a [u8],
     o: &RenderOptions,
-) -> HashMap<u64, Vec<Row<'a>>> {
+) -> Vec<SectionBlock<'a>> {
     let per_match = o.look.only_matching || o.look.per_match;
-    let mut map: HashMap<u64, Vec<Row<'a>>> = HashMap::new();
     let matches = printed_items(d).iter().filter_map(|item| match item {
         Item::Match(m) => Some(m),
         Item::Context(_) => None,
     });
+    let mut blocks = Vec::new();
     for (i, m) in matches.enumerate() {
+        let mut rows: Vec<Row<'a>> = Vec::new();
         for r in match_rows(d, i, m, src, o) {
-            let rows = map.entry(r.line_number).or_default();
             match rows.last_mut() {
                 Some(last) if !per_match && Rc::ptr_eq(&last.line, &r.line) => {
                     last.subs.extend(r.subs);
@@ -1200,14 +1211,18 @@ pub(crate) fn section_rows<'a>(
                 _ => rows.push(r),
             }
         }
-    }
-    // The submatches of a line's Trails, back in the line's order once, as each Trail's are.
-    for rows in map.values_mut() {
-        for r in rows {
+        // The submatches of a line's Trails, back in the line's order once, as each Trail's are.
+        for r in &mut rows {
             r.subs.sort_unstable();
         }
+        let start = (m.absolute_offset as usize).min(src.len());
+        blocks.push(SectionBlock {
+            start,
+            end: start.saturating_add(m.len).min(src.len()),
+            rows,
+        });
     }
-    map
+    blocks
 }
 
 /// The lines of a file's Sections (--expand), found through the offsets of its lines, which
@@ -1237,33 +1252,63 @@ impl<'s> SectionLines<'s> {
             .map(|(l, n)| (n, l))
     }
 
-    /// The rows of lines `start..=end`: a Match line's rows from `matches` (`section_rows`),
-    /// any other line a context row at its byte offset, its terminator left out as a row's.
+    /// The rows of lines `start..=end`: where a printed Match's item covers a line, that Match's
+    /// rows (`section_rows`), once, and none for the rest of the bytes it covers; any other
+    /// bytes of a line a context row at its byte offset, its terminator left out as a row's (a
+    /// record's NUL too). A Match that starts before the Section prints its rows at the first
+    /// line it covers.
     pub(crate) fn rows<'m>(
         &'m self,
         start: u64,
         end: u64,
-        matches: &'m HashMap<u64, Vec<Row<'s>>>,
+        blocks: &'m [SectionBlock<'s>],
         o: &'m RenderOptions,
     ) -> impl Iterator<Item = Row<'s>> + 'm {
+        // The end of the bytes the rows printed so far cover.
+        let mut covered = 0;
         self.lines(start, end).flat_map(move |(n, line)| {
-            if let Some(rows) = matches.get(&n) {
-                return rows.clone();
-            }
             let starts = self.starts.get().expect("read by lines");
-            let at = starts[(n as usize - 1).min(starts.len() - 1)];
-            vec![Row {
-                trail: &[],
-                line_number: n,
-                offset: None,
-                line: Rc::new(LineText::with_cut(Cow::Borrowed(line), cut_of(line, o))),
-                subs: Vec::new(),
-                is_match: false,
-                gap_before: false,
-                column: None,
-                byte_offset: at as u64,
-            }]
+            let ls = starts[(n as usize - 1).min(starts.len() - 1)];
+            let le = ls + line.len();
+            let mut rows = Vec::new();
+            let mut at = ls.max(covered);
+            while at < le {
+                // The first Match whose item ends after `at`, if it starts in this line's rest.
+                let b = blocks.partition_point(|b| b.end <= at);
+                let Some(block) = blocks.get(b).filter(|b| b.start < le) else {
+                    rows.push(self.context_row(n, at, le, o));
+                    break;
+                };
+                if block.start > at {
+                    rows.push(self.context_row(n, at, block.start, o));
+                }
+                rows.extend(block.rows.iter().cloned());
+                covered = block.end;
+                at = covered;
+            }
+            rows
         })
+    }
+
+    /// The bytes `s..e` of line `n` as a context row.
+    fn context_row(&self, n: u64, s: usize, e: usize, o: &RenderOptions) -> Row<'s> {
+        let text = &self.src[s..e];
+        let cut = if o.look.null_data && text.ends_with(b"\0") {
+            1
+        } else {
+            cut_of(text, o)
+        };
+        Row {
+            trail: &[],
+            line_number: n,
+            offset: None,
+            line: Rc::new(LineText::with_cut(Cow::Borrowed(text), cut)),
+            subs: Vec::new(),
+            is_match: false,
+            gap_before: false,
+            column: None,
+            byte_offset: s as u64,
+        }
     }
 }
 

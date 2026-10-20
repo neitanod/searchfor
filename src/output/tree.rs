@@ -261,7 +261,7 @@ impl TreeState {
         w: &mut dyn WriteColor,
         (trail, start, end): (&[Segment], u64, u64),
         sections: &super::SectionLines<'s>,
-        kept: &std::collections::HashMap<u64, Vec<super::Row<'s>>>,
+        kept: &[super::SectionBlock<'s>],
         o: &RenderOptions,
     ) -> std::io::Result<()> {
         write_trail(w, &self.printed, trail, &Seen::new(), o)?;
@@ -633,6 +633,75 @@ mod tests {
         assert_eq!(
             plain(&d, &s, &o(look)),
             "docs/a.md\n  # A\n    1-# A\n    2:one needle\n    3-plain\n"
+        );
+    }
+
+    /// A Match item over `range` of `s`, its line `n`, with a submatch at `sub` in it.
+    fn item(s: &[u8], n: u64, range: std::ops::Range<usize>, sub: (usize, usize)) -> Item {
+        let mut l = crate::model::Line::owned(n, range.start as u64, &s[range]);
+        l.owned = None;
+        l.submatches = vec![crate::model::Submatch {
+            start: sub.0,
+            end: sub.1,
+        }];
+        Item::Match(l)
+    }
+
+    /// Code review r2 of M5a, Codex #1 and Fable #3: a Section places each Match's rows by the
+    /// bytes of the Source its item covers, apart from the numbers the rows show, and prints
+    /// them once; the lines the item covers are not printed again as context. A `--null-data`
+    /// record's rows keep the record's number, a `-U` block replaced by one line consumes the
+    /// lines of the block, and a replacement of several lines leaves the next line alone.
+    #[test]
+    fn expand_places_each_matchs_rows_by_its_bytes() {
+        use crate::output::Look;
+        let o = |look| RenderOptions {
+            expand: true,
+            look,
+            ..opts()
+        };
+        let section = |s: &[u8], m: Item| {
+            let mut d = described(s, vec![m], vec![vec![vec![h(1, "H", 1, 4)]]]);
+            d.sections = vec![vec![Some((1, 4))]];
+            d
+        };
+        // A record of three lines, the whole file.
+        let s = b"# H\nneedle\nplain\nafter\0".to_vec();
+        let d = section(&s, item(&s, 1, 0..s.len(), (4, 10)));
+        let look = Look {
+            null_data: true,
+            ..Look::default()
+        };
+        assert_eq!(
+            plain(&d, &s, &o(look)),
+            "docs/a.md\n  # H\n    1:# H\n    1:needle\n    1:plain\n    1:after\n"
+        );
+        // A `-U` block of lines 2 and 3, replaced by one line.
+        let s = src(&["# H", "needle", "plain", "after"]);
+        let d = section(&s, item(&s, 2, 4..17, (0, 12)));
+        let a = crate::cli::parse(["s4", "-U", "x"].iter().map(Into::into).collect()).unwrap();
+        let m = crate::matcher::build(&a, &["needle\nplain".into()]).unwrap();
+        let r = super::super::replace::Replacer::new(
+            m,
+            b"X".to_vec(),
+            grep_matcher::LineTerminator::byte(b'\n'),
+            true,
+        );
+        let look = Look {
+            multi_line: true,
+            replace: Some(std::sync::Arc::new(r)),
+            ..Look::default()
+        };
+        assert_eq!(
+            plain(&d, &s, &o(look)),
+            "docs/a.md\n  # H\n    1-# H\n    2:X\n    4-after\n"
+        );
+        // Line 2 replaced by two lines: line 3 is still printed.
+        let d = section(&s, item(&s, 2, 4..11, (0, 6)));
+        let look = crate::output::tests::replacer("needle", b"X\nY");
+        assert_eq!(
+            plain(&d, &s, &o(look)),
+            "docs/a.md\n  # H\n    1-# H\n    2:X\n    3:Y\n    3-plain\n    4-after\n"
         );
     }
 
