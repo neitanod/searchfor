@@ -4263,8 +4263,10 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2 * ROWS);
         let (first, second) = lines.split_at(ROWS);
+        // A row starts `<path>:<line>:`; the path may hold a drive letter's `:` on Windows.
+        let file_of = |row: &str| row[..row.find(".csv:").unwrap() + 4].to_string();
         for rows in [first, second] {
-            let file = &rows[0][..rows[0].find(':').unwrap()];
+            let file = &file_of(rows[0]);
             assert!(rows.iter().all(|l| l.starts_with(file)), "{file}");
             let bytes: usize = rows.iter().map(|l| l.len() + 1).sum();
             assert!(
@@ -4273,7 +4275,7 @@ mod tests {
             );
             assert!(rows[0].contains("row 1 ") && rows[ROWS - 1].contains(&format!("row {ROWS} ")));
         }
-        assert_ne!(first[0].split(':').next(), second[0].split(':').next());
+        assert_ne!(file_of(first[0]), file_of(second[0]));
         assert_eq!(probe.spilled.load(Relaxed), 2);
         assert_eq!(probe.described.load(Relaxed), 0);
         assert_eq!(std::fs::read_dir(spool.path()).unwrap().count(), 0);

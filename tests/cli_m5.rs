@@ -338,7 +338,13 @@ fn m5_10_debug_and_trace() {
     assert!(err.lines().all(|l| l.starts_with("s4: DEBUG|")), "{err}");
     assert!(err.contains("|globset|"), "{err}");
     let o = run(&mut fx.s4(["--trace", "-l", "needle-pkg", "md"]));
-    assert!(stderr(&o).contains("s4: TRACE|"), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("s4: TRACE|"),
+        "exit {:?}, stdout {:?}, stderr {:?}",
+        o.status,
+        String::from_utf8_lossy(&o.stdout),
+        stderr(&o)
+    );
     let o = run(&mut fx.s4(["-l", "needle-pkg", "md"]));
     assert_eq!(stderr(&o), "");
 }

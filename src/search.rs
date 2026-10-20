@@ -1355,8 +1355,8 @@ mod tests {
         assert!(!rg_in_memory(&a, &[d.path().join("missing")], false));
         // M5a plan, D9: --mmap maps every file, walked ones too; --no-mmap none.
         let always = args(&["s4", "--mmap", "x"]);
-        assert!(rg_in_memory(&always, &files, false));
-        assert!(rg_in_memory(&always, &[d.path().into()], false));
+        assert_eq!(rg_in_memory(&always, &files, false), maps);
+        assert_eq!(rg_in_memory(&always, &[d.path().into()], false), maps);
         let never = args(&["s4", "--no-mmap", "x"]);
         assert!(!rg_in_memory(&never, &files[..1], false));
     }
