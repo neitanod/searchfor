@@ -584,6 +584,8 @@ struct JsonCursor<'s> {
     /// The last Trail given, by the ids of its members.
     last: Option<(Vec<u64>, SharedTrail)>,
     ids: Vec<u64>,
+    /// Where the outermost member holding the last offset starts (`Cursor::open_from`).
+    open: usize,
 }
 
 impl<'s> JsonCursor<'s> {
@@ -598,6 +600,7 @@ impl<'s> JsonCursor<'s> {
             last_at: 0,
             last: None,
             ids: Vec::new(),
+            open: 0,
         }
     }
 
@@ -721,6 +724,7 @@ impl Cursor for JsonCursor<'_> {
         // The members holding `at` (start ≤ at < end), outermost first, and of them those of
         // the Trail: not hidden, and `at` not in their label (the key's own text).
         self.ids.clear();
+        self.open = at;
         let mut chain = Vec::new();
         for k in 0..self.main.stack.len() {
             let Some(m) = self.main.stack[k].member.as_ref() else {
@@ -735,9 +739,12 @@ impl Cursor for JsonCursor<'_> {
                 Some((e, _)) => e,
                 None => self.end_of(k),
             };
-            if start <= at && at < end && !hidden && !label.contains(&at) {
-                self.ids.push(id);
-                chain.push((k, end));
+            if start <= at && at < end {
+                self.open = self.open.min(start);
+                if !hidden && !label.contains(&at) {
+                    self.ids.push(id);
+                    chain.push((k, end));
+                }
             }
         }
         self.release();
@@ -783,5 +790,9 @@ impl Cursor for JsonCursor<'_> {
         let t: SharedTrail = trail.into();
         self.last = Some((self.ids.clone(), t.clone()));
         Ok(t)
+    }
+
+    fn open_from(&mut self) -> Option<usize> {
+        Some(self.open)
     }
 }

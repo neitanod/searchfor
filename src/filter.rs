@@ -1,5 +1,5 @@
 //! --within and the reshaping of a file's items after filtering (spec §8, grill #4).
-use crate::model::{ContextLine, Described, Item, Trail};
+use crate::model::{ContextLine, Described, Item, Segment};
 
 /// "Install › Linux", "Install > Linux" and "Install/Linux" → ["install", "linux"].
 pub fn parse_within(s: &str) -> Vec<String> {
@@ -12,7 +12,7 @@ pub fn parse_within(s: &str) -> Vec<String> {
 /// True when the Segment names contain every wanted name, in order, each as a
 /// case-insensitive substring; gaps are allowed ("install › bash" matches
 /// Install › Linux › bash).
-pub fn within(trail: &Trail, wanted: &[String]) -> bool {
+pub fn within(trail: &[Segment], wanted: &[String]) -> bool {
     let mut it = trail.iter();
     wanted
         .iter()
@@ -202,7 +202,7 @@ pub fn sections(d: &Described) -> Vec<Vec<Option<(u64, u64)>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{FileMatches, FileStats, Input, LineMatch, Segment, Submatch};
+    use crate::model::{FileMatches, FileStats, Input, LineMatch, Submatch, Trail};
     use crate::processors::Processor;
     use crate::processors::markdown::Markdown;
     use std::path::{Path, PathBuf};

@@ -158,8 +158,13 @@ impl OutlineProcessor for Markdown {
                         let r0 = segs[h.seg].range.start;
                         let hashes = text[r0..].bytes().take_while(|&b| b == b'#').count();
                         segs[h.seg].name_anchor = r0 + hashes;
-                        segs[h.seg].segment.name = h.text;
-                        segs[h.seg].name = Some(h.pieces);
+                        // Kept for the whole search: without the room they grew into (code
+                        // review r1, Fable #3).
+                        let (mut name, mut pieces) = (h.text, h.pieces);
+                        name.shrink_to_fit();
+                        pieces.shrink_to_fit();
+                        segs[h.seg].segment.name = name;
+                        segs[h.seg].name = Some(pieces);
                     }
                     // A heading is a whole line: it ends an item's first line too.
                     if let Some(it) = items.last_mut() {
@@ -395,6 +400,26 @@ mod tests {
     use std::path::Path;
 
     const GUIDE: &str = include_str!("../../tests/fixtures/md/guide.md");
+
+    /// Code review r1, Fable #3: an Outline lives for the whole search, so it keeps no room
+    /// its vectors and its headings' names grew into.
+    #[test]
+    fn an_outline_keeps_no_spare_room() {
+        use crate::processors::OutlineProcessor;
+        let mut doc = String::new();
+        for n in 0..100 {
+            doc.push_str(&format!("# Heading number {n}\ntext\n"));
+        }
+        let o = Markdown
+            .outline(doc.as_bytes(), &toml::Table::new())
+            .unwrap();
+        assert_eq!(o.segments.capacity(), o.segments.len());
+        for s in o.segments.iter().filter(|s| s.segment.kind == "heading") {
+            let pieces = s.name.as_ref().expect("a heading has a name");
+            assert_eq!(pieces.capacity(), pieces.len(), "{:?}", s.segment.name);
+            assert_eq!(s.segment.name.capacity(), s.segment.name.len());
+        }
+    }
     const D: &str = "document:Deploy guide";
     const I: &str = "heading:Install";
 

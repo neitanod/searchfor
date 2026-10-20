@@ -66,6 +66,14 @@ pub trait Cursor {
     /// a repeated offset allowed; an offset before the last one is answered too, never with a
     /// stale Trail. Consecutive equal Trails are the same `Rc`.
     fn trail_at(&mut self, byte: usize) -> anyhow::Result<SharedTrail>;
+
+    /// Where the outermost Segment that holds the last offset asked starts, a hidden one or
+    /// one whose label holds the offset included; the offset itself when none holds it. No
+    /// later Trail has a Segment that starts before it, so a stream may let go of the Matches
+    /// before it (--expand; code review r1, Codex #1). None: the cursor cannot tell.
+    fn open_from(&mut self) -> Option<usize> {
+        None
+    }
 }
 
 /// A file prepared once by its Processor (plan D9, D10): it owns or borrows what its cursors

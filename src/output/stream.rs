@@ -1,19 +1,40 @@
 //! Files printed row by row as the searcher reports them (code review r1, Fable #1): Plain
-//! files, and files whose Processor gives a native cursor (`processors::Prepared`), without
-//! structural flags. No model of the file is kept: each Trail is asked of the cursor as its row
-//! is printed, and only the context lines that open a group wait for the Match after them.
-//! Prints exactly what the printers print from a Described file.
+//! files, and files whose Processor gives a native cursor (`processors::Prepared`). No model of
+//! the file is kept: each Trail is asked of the cursor as its row is printed, and only the
+//! context lines that open a group wait for the Match after them. Prints exactly what the
+//! printers print from a Described file.
+//!
+//! The structural flags keep state, never the file (code review r1, Codex #1; M5b spec §6.1):
+//! --within filters each Match as it comes, holding only the context lines before it that a
+//! kept Match may still claim, and counts `-m` after the filter; --expand holds the Matches of
+//! the Sections still open and prints each Section once it is closed; --in-headings feeds the
+//! Matches of the Segment names in Source order (`heading_match`).
 use super::json::{JsonFile, JsonOptions, RunStats};
 use super::{Layout, LineText, RenderOptions, Row, flat, tree};
 use crate::matcher::PatternMatcher;
-use crate::model::{FileStats, Line, Segment, SharedTrail, Submatch};
+use crate::model::{
+    Described, FileMatches, FileStats, Item, Line, Segment, SharedTrail, Submatch, Trail,
+};
 use crate::processors::Cursor;
 use crate::search::{MaxCount, context_submatches_in, match_submatches_in};
 use grep_searcher::{Searcher, Sink, SinkContext, SinkFinish, SinkMatch};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Instant;
 use termcolor::WriteColor;
+
+/// A Section as 1-based inclusive lines (--expand), or None.
+pub type Section = Option<(u64, u64)>;
+
+/// --within over a streamed file: the names it wants, and the context and `-m` it applies
+/// after the filter, as `filter::retain` and `filter::limit` apply them to a model.
+pub struct WithinOptions {
+    pub wanted: Vec<String>,
+    pub max_count: Option<u64>,
+    pub before: u64,
+    pub after: u64,
+}
 
 /// What a file is printed from, besides the searcher's lines.
 pub struct StreamFile<'a> {
@@ -22,7 +43,7 @@ pub struct StreamFile<'a> {
     /// The Format's name (JSON's `format`), None for Plain.
     pub format: Option<&'a str>,
     /// The bytes the search runs over: needed with a cursor (the context lines that wait for
-    /// a Match are kept as ranges of it).
+    /// a Match are kept as ranges of it), and with the structural flags.
     pub src: Option<&'a [u8]>,
     /// The Trails of the file's Matches, in file order; None for Plain.
     pub cursor: Option<Box<dyn Cursor + 'a>>,
@@ -31,6 +52,14 @@ pub struct StreamFile<'a> {
     /// The flat layout's separator from the file before, written before the first row (see
     /// `flat::render`).
     pub lead: Option<&'a [u8]>,
+    /// --within.
+    pub within: Option<WithinOptions>,
+    /// Every Match is counted (`--stats` outside JSON), which the one-line layout alone does
+    /// not need.
+    pub count: bool,
+    /// The Matches come from Segment names (--in-headings, `heading_match`), each with its
+    /// Trail and Section, and not from the searcher.
+    pub named: bool,
 }
 
 /// A row of a Match line: its Trail and the submatches under it.
@@ -40,6 +69,60 @@ type RowGroup = (Rc<[Segment]>, Vec<(usize, usize)>);
 struct Pending {
     line: Line,
     gap_before: bool,
+}
+
+/// --within's state: the context lines a later kept Match may claim, and the window of the
+/// last one kept.
+struct Within {
+    o: WithinOptions,
+    /// Context lines, and Matches it dropped, that are near no kept Match yet: at most the
+    /// `before` lines before the next line.
+    held: VecDeque<Line>,
+    /// The last line of the after context of the last kept Match.
+    after_until: Option<u64>,
+    /// Matches kept so far.
+    kept: u64,
+    /// With `-m`: the end of the window of the `-m`th kept Match, past which nothing is
+    /// printed (`filter::limit`).
+    window_end: Option<u64>,
+}
+
+/// --expand in the tree and flat layouts (`output::Pieces`): whether the file prints Sections
+/// at all, and the Sections and rows waiting for the Sections before them to close.
+struct Expand {
+    mode: ExpandMode,
+    /// The Matches the waiting Sections may hold, and those of the Sections still open, in
+    /// file order; the rows of a Section are made from them (`section_rows`).
+    window: Described,
+    /// Matches dropped from the front of `window`.
+    base: usize,
+    /// Matches added to `window` so far.
+    next: usize,
+    queue: VecDeque<Queued>,
+    /// The Sections printed or waiting that a later Match may still name.
+    seen: HashSet<(u64, u64)>,
+}
+
+/// A file prints its Sections when one of its Matches has one; without any, its rows, as
+/// without --expand (`output::pieces`), which only its end tells.
+enum ExpandMode {
+    /// No Match with a Section yet: the lines so far.
+    Undecided(Vec<Buffered>),
+    Rows,
+    Sections,
+}
+
+enum Buffered {
+    Match(Line, Vec<SharedTrail>),
+    Context(Line),
+}
+
+/// What --expand prints next, in file order.
+enum Queued {
+    /// The rows of the `i`th Match, which has no Section.
+    Rows(usize),
+    /// A Section under its Trail, once the search is past its end.
+    Section(Trail, u64, u64),
 }
 
 pub struct StreamSink<'a, W: WriteColor> {
@@ -66,14 +149,29 @@ pub struct StreamSink<'a, W: WriteColor> {
     /// width of that path in characters.
     path_prefix: (Vec<u8>, usize),
     scratch: Vec<u8>,
+    /// The writer takes neither colour nor links: a flat row is made in `line_buf` first.
+    plain_out: bool,
+    line_buf: termcolor::NoColor<Vec<u8>>,
     /// Trail of the last row of the current group, once it has a Match.
     group: Option<Rc<[Segment]>>,
     pending: Vec<Pending>,
     /// The empty Trail of a Plain file's rows.
     empty: SharedTrail,
     started: Instant,
+    /// The lines go through --within or --expand (`structured_match`).
+    structured: bool,
+    within: Option<Within>,
+    expand: Option<Expand>,
+    /// The lines of the file, for --expand's Sections.
+    sections: super::SectionLines<'a>,
+    /// Where the outermost Segment holding the last Match starts (`Cursor::open_from`): with
+    /// --expand, the Matches before it are let go of. None: the cursor cannot tell.
+    open: Option<usize>,
     pub stats: FileStats,
+    /// A row was printed or is due: a Match the filters kept.
     pub has_match: bool,
+    /// The search found a Match, kept or not.
+    pub found: bool,
 }
 
 impl<'a, W: WriteColor> StreamSink<'a, W> {
@@ -89,6 +187,39 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             && o.max_columns.is_none()
             && file.cursor.is_none()
             && o.look.plain();
+        let plain_out = !w.supports_color() && !w.supports_hyperlinks();
+        let within = file.within.take().map(|o| Within {
+            o,
+            held: VecDeque::new(),
+            after_until: None,
+            kept: 0,
+            window_end: None,
+        });
+        let expand = (o.expand && o.layout != Layout::Json).then(|| Expand {
+            // A Plain file has no Section.
+            mode: if file.cursor.is_some() || file.named {
+                ExpandMode::Undecided(Vec::new())
+            } else {
+                ExpandMode::Rows
+            },
+            window: Described {
+                file: FileMatches {
+                    path: file.path.to_path_buf(),
+                    explicit: file.explicit,
+                    items: Vec::new(),
+                    stats: FileStats::default(),
+                },
+                format: file.format.map(Into::into),
+                trails: Vec::new(),
+                sections: Vec::new(),
+                offsets: false,
+                replacements: Vec::new(),
+            },
+            base: 0,
+            next: 0,
+            queue: VecDeque::new(),
+            seen: HashSet::new(),
+        });
         Self {
             w,
             matcher,
@@ -111,12 +242,20 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
                 (Vec::new(), 0)
             },
             scratch: Vec::new(),
+            plain_out,
+            line_buf: termcolor::NoColor::new(Vec::new()),
             group: None,
             pending: Vec::new(),
             empty: Rc::from(Vec::new()),
             started: Instant::now(),
+            structured: within.is_some() || o.expand,
+            within,
+            expand,
+            sections: super::SectionLines::local(file.src.unwrap_or_default()),
+            open: None,
             stats: FileStats::default(),
             has_match: false,
+            found: false,
             file,
         }
     }
@@ -129,6 +268,22 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             return Ok(self.empty.clone());
         };
         c.trail_at(at).map_err(std::io::Error::other)
+    }
+
+    /// One Trail per submatch of `line`, or for the line start of an inverted Match.
+    fn trails_of(&mut self, line: &Line) -> std::io::Result<Vec<SharedTrail>> {
+        let base = line.absolute_offset as usize;
+        if self.trails.is_none() {
+            return Ok(vec![self.empty.clone(); line.submatches.len().max(1)]);
+        }
+        let mut trails = Vec::with_capacity(line.submatches.len().max(1));
+        if line.submatches.is_empty() {
+            trails.push(self.trail_at(base)?);
+        }
+        for s in &line.submatches {
+            trails.push(self.trail_at(base + s.start)?);
+        }
+        Ok(trails)
     }
 
     /// Notes the line's place: true when it opens a new group after a gap, which ends the
@@ -178,9 +333,22 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
 
     /// One row in the tree or flat layout.
     fn row(&mut self, r: &Row) -> std::io::Result<()> {
+        self.row_of(r, None)
+    }
+
+    /// `row`, the row's Trail `shared` when it has its `Rc`. Without colour or links a flat
+    /// row is made in `line_buf` and written at once: the writer under it (`Spill`, a spool)
+    /// takes one write per row, not one per piece (code review r1, Fable #2).
+    fn row_of(&mut self, r: &Row, shared: Option<&SharedTrail>) -> std::io::Result<()> {
         if self.o.layout == Layout::Flat {
             self.lead()?;
-            return flat::write_row(self.w, &self.head, r, self.o);
+            if !self.plain_out {
+                return flat::write_row_shared(self.w, &self.head, r, shared, self.o);
+            }
+            let buf = &mut self.line_buf;
+            buf.get_mut().clear();
+            flat::write_row_shared(buf, &self.head, r, shared, self.o)?;
+            return self.w.write_all(buf.get_ref());
         }
         if !self.header {
             self.header = true;
@@ -200,7 +368,6 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         } else {
             false
         };
-        let outlined = self.trails.is_some();
         if self.json.is_none()
             && !self.binary
             && self.fast
@@ -212,20 +379,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             submatches: subs(),
             ..line
         };
-        // One Trail per submatch, or for the line start of an inverted Match.
-        let base = line.absolute_offset as usize;
-        let trails: Vec<Rc<[Segment]>> = if outlined {
-            let mut trails = Vec::with_capacity(line.submatches.len().max(1));
-            if line.submatches.is_empty() {
-                trails.push(self.trail_at(base)?);
-            }
-            for s in &line.submatches {
-                trails.push(self.trail_at(base + s.start)?);
-            }
-            trails
-        } else {
-            vec![self.empty.clone(); line.submatches.len().max(1)]
-        };
+        let trails = self.trails_of(&line)?;
         if let Some(j) = self.json.as_mut() {
             self.stats.matches += line.submatches.len() as u64;
             let refs: Vec<&[Segment]> = trails.iter().map(|t| &t[..]).collect();
@@ -234,8 +388,18 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         if self.binary {
             return Ok(());
         }
-        // The rows of the line, as `output::match_rows`: one per distinct Trail, or one under
-        // the first Trail when -M omits the line.
+        self.match_rows(&line, bytes, trails, gap)
+    }
+
+    /// The rows of a Match line, as `output::match_rows`: one per distinct Trail, or one under
+    /// the first Trail when -M omits the line. `gap`: the line opens a group (`step`).
+    fn match_rows(
+        &mut self,
+        line: &Line,
+        bytes: &[u8],
+        trails: Vec<SharedTrail>,
+        gap: bool,
+    ) -> std::io::Result<()> {
         let groups: Vec<RowGroup> = if line.submatches.is_empty() || super::omitted(bytes, self.o) {
             let subs = line.submatches.iter().map(|s| (s.start, s.end)).collect();
             vec![(trails[0].clone(), subs)]
@@ -250,21 +414,23 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         let gap_before = gap && self.o.context;
         // One text for every row of the line, which outlives none of the Trails it is under.
         let text = Rc::new(LineText::new(bytes));
-        for (n, (trail, subs)) in groups.iter().enumerate() {
+        let mut groups = groups;
+        for (n, (trail, subs)) in groups.iter_mut().enumerate() {
+            let subs = std::mem::take(subs);
             let row = Row {
                 offset: None,
                 trail,
                 line_number: line.line_number,
                 line: text.clone(),
                 column: subs.first().map(|s| s.0 as u64 + 1),
-                subs: subs.clone(),
+                subs,
                 is_match: true,
                 gap_before: gap_before && n == 0,
                 byte_offset: line.absolute_offset,
             };
-            self.row(&row)?;
-            self.group = Some(trail.clone());
+            self.row_of(&row, Some(trail))?;
         }
+        self.group = groups.pop().map(|g| g.0);
         Ok(())
     }
 
@@ -292,10 +458,15 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             submatches: subs(),
             ..line
         };
+        self.context_row(line, bytes, gap)
+    }
+
+    /// The row of a context line, or its wait for the Trail of its group's first Match.
+    fn context_row(&mut self, line: Line, bytes: &[u8], gap: bool) -> std::io::Result<()> {
         let gap_before = gap && self.o.context;
         match self.group.clone() {
             // The first lines of a group wait for the Trail of its first Match.
-            None if self.trails.is_some() => {
+            None if self.trails.is_some() || self.file.named => {
                 self.pending.push(Pending { line, gap_before });
                 Ok(())
             }
@@ -316,6 +487,328 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
                 self.row(&row)
             }
         }
+    }
+
+    /// --in-headings: a line with Matches in Segment names, with the Trail and the Section of
+    /// each (`Ctx::heading_file`), in file order. It goes through --within as a Match of the
+    /// search would.
+    pub fn heading_match(
+        &mut self,
+        line: Line,
+        trails: Vec<SharedTrail>,
+        sections: Vec<Section>,
+    ) -> std::io::Result<()> {
+        self.found = true;
+        self.filtered_match(line, trails, Some(sections))
+    }
+
+    /// --in-headings: a context line of `heading_match`'s lines.
+    pub fn heading_context(&mut self, line: Line) -> std::io::Result<()> {
+        self.filtered_context(line)
+    }
+
+    /// A Match line through --within (`filter::retain`, `filter::limit`): a Match with some
+    /// submatch under a wanted Trail keeps those, and claims the held context lines before it;
+    /// one with none is a context line. With `-m`, nothing past the window of the `-m`th
+    /// Match kept is printed.
+    fn filtered_match(
+        &mut self,
+        line: Line,
+        trails: Vec<SharedTrail>,
+        sections: Option<Vec<Section>>,
+    ) -> std::io::Result<()> {
+        let Some(w) = self.within.as_mut() else {
+            return self.structured_match(line, trails, sections);
+        };
+        let n = line.line_number;
+        if w.window_end.is_some_and(|e| n > e) {
+            return Ok(());
+        }
+        let keep: Vec<bool> = trails
+            .iter()
+            .map(|t| crate::filter::within(t, &w.o.wanted))
+            .collect();
+        if !keep.iter().any(|&k| k) {
+            return self.filtered_context(Line {
+                submatches: Vec::new(),
+                ..line
+            });
+        }
+        let (line, trails, sections) = if line.submatches.is_empty() {
+            (line, trails, sections)
+        } else {
+            let kept = |k: &usize| keep[*k];
+            let submatches = (0..line.submatches.len())
+                .filter(kept)
+                .map(|k| line.submatches[k])
+                .collect();
+            let trails = (0..trails.len())
+                .filter(kept)
+                .map(|k| trails[k].clone())
+                .collect();
+            let sections = sections.map(|s| (0..s.len()).filter(kept).map(|k| s[k]).collect());
+            (Line { submatches, ..line }, trails, sections)
+        };
+        let from = n.saturating_sub(w.o.before);
+        let held: Vec<Line> = w.held.drain(..).filter(|h| h.line_number >= from).collect();
+        w.after_until = Some(n.saturating_add(w.o.after));
+        w.kept += 1;
+        if w.o.max_count.is_some_and(|m| w.kept == m) {
+            w.window_end = Some(n.saturating_add(w.o.after));
+        }
+        for h in held {
+            self.structured_context(h)?;
+        }
+        self.structured_match(line, trails, sections)
+    }
+
+    /// A context line through --within: printed in the after context of a kept Match, held
+    /// while a later one may claim it, dropped otherwise.
+    fn filtered_context(&mut self, line: Line) -> std::io::Result<()> {
+        let Some(w) = self.within.as_mut() else {
+            return self.structured_context(line);
+        };
+        let n = line.line_number;
+        if w.window_end.is_some_and(|e| n > e) {
+            return Ok(());
+        }
+        if w.after_until.is_some_and(|a| n <= a) {
+            return self.structured_context(line);
+        }
+        // A later Match, past `n`, claims the lines from `n + 1 - before`.
+        while w
+            .held
+            .front()
+            .is_some_and(|h| h.line_number + w.o.before <= n)
+        {
+            w.held.pop_front();
+        }
+        if w.o.before > 0 {
+            w.held.push_back(line);
+        }
+        Ok(())
+    }
+
+    /// A Match line the filters kept: printed, or with --expand given to its Section.
+    /// `sections`: --in-headings' own, else those of the Trails.
+    fn structured_match(
+        &mut self,
+        line: Line,
+        trails: Vec<SharedTrail>,
+        sections: Option<Vec<Section>>,
+    ) -> std::io::Result<()> {
+        self.has_match = true;
+        let src = self.file.src.unwrap_or_default();
+        let sections = || {
+            sections.unwrap_or_else(|| {
+                trails
+                    .iter()
+                    .map(|t| t.last().map(|s| (s.line, s.end_line)))
+                    .collect()
+            })
+        };
+        if let Some(j) = self.json.as_mut() {
+            let bytes = line.bytes(src);
+            let refs: Vec<&[Segment]> = trails.iter().map(|t| &t[..]).collect();
+            if !self.o.expand {
+                return j.matched(self.w, &line, bytes, &refs, &[]);
+            }
+            // Each distinct Section of the line made once (`json::render_messages`).
+            let sections = sections();
+            let mut made: Vec<serde_json::Value> = Vec::new();
+            let mut at: HashMap<Section, usize> = HashMap::new();
+            let at_line = (line.line_number, line.absolute_offset as usize);
+            let index: Vec<usize> = sections
+                .iter()
+                .map(|&s| {
+                    *at.entry(s).or_insert_with(|| {
+                        made.push(section_value(src, at_line, s));
+                        made.len() - 1
+                    })
+                })
+                .collect();
+            let values: Vec<&serde_json::Value> = index.iter().map(|&k| &made[k]).collect();
+            return j.matched(self.w, &line, bytes, &refs, &values);
+        }
+        match self.expand.as_mut().map(|e| &mut e.mode) {
+            None | Some(ExpandMode::Rows) => {
+                let gap = self.step(line.line_number)?;
+                self.match_rows(&line, line.bytes(src), trails, gap)
+            }
+            Some(ExpandMode::Undecided(lines)) => {
+                let sections = sections();
+                if sections.iter().all(Option::is_none) {
+                    lines.push(Buffered::Match(line, trails));
+                    return Ok(());
+                }
+                // The file prints its Sections: the Matches before, none with a Section, print
+                // their rows; the context lines are the Sections' own.
+                let before = std::mem::take(lines);
+                self.expand.as_mut().expect("matched above").mode = ExpandMode::Sections;
+                for b in before {
+                    if let Buffered::Match(l, ts) = b {
+                        let none = vec![None; ts.len()];
+                        self.expand_match(l, ts, none)?;
+                    }
+                }
+                self.expand_match(line, trails, sections)
+            }
+            Some(ExpandMode::Sections) => {
+                let sections = sections();
+                self.expand_match(line, trails, sections)
+            }
+        }
+    }
+
+    /// A context line the filters kept.
+    fn structured_context(&mut self, line: Line) -> std::io::Result<()> {
+        let src = self.file.src.unwrap_or_default();
+        if let Some(j) = self.json.as_mut() {
+            return j.context(self.w, &line, line.bytes(src));
+        }
+        match self.expand.as_mut().map(|e| &mut e.mode) {
+            None | Some(ExpandMode::Rows) => {
+                let gap = self.step(line.line_number)?;
+                let bytes = in_src(src, &line);
+                self.context_row(line, bytes, gap)
+            }
+            Some(ExpandMode::Undecided(lines)) => {
+                lines.push(Buffered::Context(line));
+                Ok(())
+            }
+            // A Section prints its own context.
+            Some(ExpandMode::Sections) => Ok(()),
+        }
+    }
+
+    /// --expand: a Match line given to its Sections (`output::Pieces`): each Section not seen
+    /// yet waits for the search to pass its end, and a Match without one prints its rows in
+    /// turn. The Matches no waiting or open Section can hold are let go.
+    fn expand_match(
+        &mut self,
+        line: Line,
+        trails: Vec<SharedTrail>,
+        sections: Vec<Section>,
+    ) -> std::io::Result<()> {
+        let n = line.line_number;
+        self.print_ready(Some(n))?;
+        let open = self.open;
+        let e = self.expand.as_mut().expect("--expand");
+        // A Section holds its Matches (a cursor gives the Segments that hold an offset): one
+        // that ended before this line is named by no later Match.
+        if open.is_some() {
+            e.seen.retain(|&(_, end)| end >= n);
+        }
+        let index = e.next;
+        e.next += 1;
+        let mut any = false;
+        for (k, s) in sections.iter().enumerate() {
+            let Some((start, end)) = *s else { continue };
+            any = true;
+            if e.seen.insert((start, end)) {
+                let trail = trails.get(k).map_or_else(Vec::new, |t| t.to_vec());
+                e.queue.push_back(Queued::Section(trail, start, end));
+            }
+        }
+        if !any {
+            e.queue.push_back(Queued::Rows(index));
+        }
+        e.window.file.items.push(Item::Match(line));
+        e.window
+            .trails
+            .push(trails.iter().map(|t| t.to_vec()).collect());
+        e.window.sections.push(sections);
+        self.print_ready(Some(n))?;
+        // What a waiting Section or row holds stays, and so does what a later Section may
+        // hold: no later Segment starts before `open`.
+        let Some(open) = open else {
+            return Ok(());
+        };
+        let e = self.expand.as_mut().expect("--expand");
+        let mut bound = u64::MAX;
+        for q in &e.queue {
+            bound = bound.min(match q {
+                Queued::Section(_, start, _) => *start,
+                Queued::Rows(i) => item_line(&e.window.file.items[i - e.base]).line_number,
+            });
+        }
+        let gone = e
+            .window
+            .file
+            .items
+            .iter()
+            .take_while(|i| {
+                let l = item_line(i);
+                l.absolute_offset as usize + l.len <= open && l.line_number < bound
+            })
+            .count();
+        if gone > 0 {
+            e.window.file.items.drain(..gone);
+            e.window.trails.drain(..gone);
+            e.window.sections.drain(..gone);
+            e.base += gone;
+        }
+        Ok(())
+    }
+
+    /// --expand: prints what waits at the front of the queue, in turn: the rows of a Match
+    /// without a Section, and a Section the search is past (`upto`, the line the search
+    /// reached; None at the end of the file).
+    fn print_ready(&mut self, upto: Option<u64>) -> std::io::Result<()> {
+        let Some(e) = self.expand.as_mut() else {
+            return Ok(());
+        };
+        let src = self.file.src.unwrap_or_default();
+        let o = self.o;
+        let mut kept: Option<Vec<super::SectionBlock>> = None;
+        while let Some(q) = e.queue.pop_front() {
+            if let Queued::Section(_, _, end) = &q
+                && upto.is_some_and(|n| *end >= n)
+            {
+                e.queue.push_front(q);
+                break;
+            }
+            if let Some(l) = self.file.lead.take() {
+                self.w.write_all(l)?;
+                self.w.write_all(b"\n")?;
+            }
+            if o.layout == Layout::Tree && !self.header {
+                self.header = true;
+                self.tree.header(self.w, self.file.path, o)?;
+            }
+            match q {
+                Queued::Rows(i) => {
+                    let k = i - e.base;
+                    let Item::Match(m) = &e.window.file.items[k] else {
+                        unreachable!("the window holds Matches")
+                    };
+                    for r in super::match_rows(&e.window, k, m, src, o) {
+                        match o.layout {
+                            Layout::Flat => flat::write_row(self.w, &self.head, &r, o)?,
+                            _ => self.tree.row(self.w, &r, o)?,
+                        }
+                    }
+                }
+                Queued::Section(trail, start, end) => {
+                    let kept = kept.get_or_insert_with(|| super::section_rows(&e.window, src, o));
+                    let section = (&trail[..], start, end);
+                    match o.layout {
+                        Layout::Flat => flat::write_section(
+                            self.w,
+                            &self.head,
+                            section,
+                            &self.sections,
+                            kept,
+                            o,
+                        )?,
+                        _ => self
+                            .tree
+                            .section(self.w, section, &self.sections, kept, o)?,
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// What `flat::write_row` and `tree::write_row` print for a row without a Trail, when there
@@ -380,14 +873,33 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
 
     /// After the search: the waiting context lines, the tree's path line if no row wrote it,
     /// ripgrep's binary message, or JSON's `end`. Returns the file's JSON stats, for the
-    /// summary. Writes nothing for a file without a Match.
+    /// summary. Writes nothing for a file without a Match the filters kept; with --json, the
+    /// stats of a search whose Matches they dropped still count (spec §6.4).
     pub fn close(mut self) -> std::io::Result<Option<RunStats>> {
         if !self.has_match {
-            return Ok(None);
+            let counted = self.json.is_some() && self.found;
+            return Ok(counted.then(|| super::json::file_stats(&self.stats, 0)));
         }
         if let Some(j) = self.json.as_mut() {
             return j.end(self.w, &self.stats).map(Some);
         }
+        let mode = self.expand.as_mut().map(|e| &mut e.mode);
+        if let Some(ExpandMode::Undecided(lines)) = mode {
+            // No Match had a Section: the rows, as without --expand.
+            let lines = std::mem::take(lines);
+            self.expand.as_mut().expect("matched above").mode = ExpandMode::Rows;
+            let src = self.file.src.unwrap_or_default();
+            for l in lines {
+                match l {
+                    Buffered::Match(line, trails) => {
+                        let gap = self.step(line.line_number)?;
+                        self.match_rows(&line, line.bytes(src), trails, gap)?;
+                    }
+                    Buffered::Context(line) => self.structured_context(line)?,
+                }
+            }
+        }
+        self.print_ready(None)?;
         self.flush(None)?;
         if self.o.layout == Layout::Tree && !self.header {
             self.tree.header(self.w, self.file.path, self.o)?;
@@ -403,6 +915,86 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
     }
 }
 
+/// The bytes of `line`, a range of `src`.
+fn in_src<'s>(src: &'s [u8], line: &Line) -> &'s [u8] {
+    let start = (line.absolute_offset as usize).min(src.len());
+    &src[start..start.saturating_add(line.len).min(src.len())]
+}
+
+fn item_line(i: &Item) -> &Line {
+    match i {
+        Item::Match(l) | Item::Context(l) => l,
+    }
+}
+
+/// The starts of the lines of `src`, as `LineIndex::line_start` gives them (the end of `src`
+/// past its last line), found by the line terminators around the last one found: a walk over
+/// nearby lines costs those lines, and no index of the whole file is kept.
+pub(crate) struct LineSeek<'s> {
+    src: &'s [u8],
+    /// A line, 1-based, and where it starts.
+    line: u64,
+    at: usize,
+}
+
+impl<'s> LineSeek<'s> {
+    pub(crate) fn new(src: &'s [u8]) -> Self {
+        LineSeek {
+            src,
+            line: 1,
+            at: 0,
+        }
+    }
+
+    /// From line `known.0`, which starts at `known.1`.
+    pub(crate) fn from(src: &'s [u8], known: (u64, usize)) -> Self {
+        LineSeek {
+            src,
+            line: known.0,
+            at: known.1,
+        }
+    }
+
+    /// The line it stands at, and where that line starts.
+    pub(crate) fn position(&self) -> (u64, usize) {
+        (self.line, self.at)
+    }
+
+    /// The start of 1-based line `n`.
+    pub(crate) fn start(&mut self, n: u64) -> usize {
+        while self.line < n {
+            match memchr::memchr(b'\n', &self.src[self.at.min(self.src.len())..]) {
+                Some(i) => {
+                    self.at += i + 1;
+                    self.line += 1;
+                }
+                None => return self.src.len(),
+            }
+        }
+        while self.line > n && self.at > 0 {
+            self.at = memchr::memrchr(b'\n', &self.src[..self.at - 1]).map_or(0, |i| i + 1);
+            self.line -= 1;
+        }
+        self.at
+    }
+}
+
+/// JSON's `section` of a Match on the line `at` (its number and start), as
+/// `json::render_messages` makes it: lines `a..=b` and their text.
+fn section_value(src: &[u8], at: (u64, usize), s: Section) -> serde_json::Value {
+    let Some((a, b)) = s else {
+        return serde_json::Value::Null;
+    };
+    let mut lines = LineSeek::from(src, at);
+    let start = lines.start(a.max(1));
+    let end = lines.start(b + 1);
+    serde_json::json!({
+        "start_line": a,
+        "end_line": b,
+        "text": String::from_utf8_lossy(&src[start..end.max(start)]).into_owned(),
+    })
+}
+
 impl<W: WriteColor> Sink for StreamSink<'_, W> {
     type Error = std::io::Error;
 
@@ -415,7 +1007,7 @@ impl<W: WriteColor> Sink for StreamSink<'_, W> {
     fn matched(&mut self, s: &Searcher, m: &SinkMatch<'_>) -> Result<bool, Self::Error> {
         self.max_count.matched();
         self.stats.matched_lines += m.lines().count() as u64;
-        self.has_match = true;
+        self.found = true;
         let (matcher, invert) = (self.matcher, self.invert);
         let subs = || match_submatches_in(s, matcher, invert, m);
         let line = Line {
@@ -425,7 +1017,27 @@ impl<W: WriteColor> Sink for StreamSink<'_, W> {
             owned: None,
             submatches: Vec::new(),
         };
-        self.matched_line(line, m.bytes(), &subs)?;
+        if self.structured {
+            // The search's counts, before the filters (spec §6.4).
+            let line = Line {
+                submatches: subs(),
+                ..line
+            };
+            self.stats.matches += line.submatches.len() as u64;
+            let trails = self.trails_of(&line)?;
+            if self.expand.is_some() {
+                self.open = self.trails.as_mut().and_then(|c| c.open_from());
+            }
+            self.filtered_match(line, trails, None)?;
+        } else if self.file.count && self.json.is_none() {
+            let found = subs();
+            self.stats.matches += found.len() as u64;
+            self.has_match = true;
+            self.matched_line(line, m.bytes(), &|| found.clone())?;
+        } else {
+            self.has_match = true;
+            self.matched_line(line, m.bytes(), &subs)?;
+        }
         Ok(self.max_count.go_on())
     }
 
@@ -440,7 +1052,14 @@ impl<W: WriteColor> Sink for StreamSink<'_, W> {
             owned: None,
             submatches: Vec::new(),
         };
-        self.context_line(line, c.bytes(), &subs)?;
+        if self.structured {
+            self.filtered_context(Line {
+                submatches: subs(),
+                ..line
+            })?;
+        } else {
+            self.context_line(line, c.bytes(), &subs)?;
+        }
         Ok(self.max_count.go_on())
     }
 
@@ -530,6 +1149,9 @@ mod tests {
             cursor: prepared.as_ref().map(|p| p.cursor()),
             max_count: crate::search::max_count(&a),
             lead,
+            within: None,
+            count: false,
+            named: false,
         };
         let mut sink = StreamSink::new(&mut streamed, &m, a.invert_match, &ro, &jo, file);
         s.search_reader(&m, std::io::Cursor::new(src.bytes()), &mut sink)

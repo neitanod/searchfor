@@ -59,9 +59,10 @@ impl FileSpool {
     }
 
     /// Calls `f` with everything spooled, from the start, in pieces of at most 64 KiB
-    /// (`CHUNK`) that end at a line break, except a longer line, given whole, and the end.
-    /// A piece never splits a line, so a writer that converts text per piece (a Windows
-    /// console) never sees half a character. Returns how many bytes.
+    /// (`CHUNK`) plus the up to 3 bytes of a character the piece before left incomplete: a
+    /// piece never splits a UTF-8 character, so a writer that converts text per piece (a
+    /// Windows console) never sees half of one, and a line longer than a piece is never held
+    /// whole (code review r1, Codex #2). Returns how many bytes.
     pub fn each_piece(
         &mut self,
         f: &mut dyn FnMut(&[u8]) -> std::io::Result<()>,
@@ -75,38 +76,39 @@ impl FileSpool {
         file.flush()?;
         let file = file.get_mut();
         file.seek(SeekFrom::Start(0))?;
-        let mut held: Vec<u8> = Vec::with_capacity(CHUNK);
         let mut total = 0u64;
-        let mut scratch = vec![0u8; CHUNK];
+        // The bytes of a character the last piece left out, then the next read.
+        let mut scratch = vec![0u8; CHUNK + 3];
+        let mut carried = 0;
         loop {
-            let n = match file.read(&mut scratch) {
+            let n = match file.read(&mut scratch[carried..carried + CHUNK]) {
                 Ok(0) => break,
                 Ok(n) => n,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e),
             };
-            held.extend_from_slice(&scratch[..n]);
-            if held.len() >= CHUNK
-                && let Some(end) = memchr::memrchr(b'\n', &held)
-            {
-                f(&held[..=end])?;
-                total += end as u64 + 1;
-                held.drain(..=end);
-                // A long line grew it: give the memory back.
-                held.shrink_to(CHUNK);
+            let len = carried + n;
+            let cut = len - incomplete_tail(&scratch[..len]);
+            if cut > 0 {
+                f(&scratch[..cut])?;
+                total += cut as u64;
             }
+            scratch.copy_within(cut..len, 0);
+            carried = len - cut;
         }
-        if !held.is_empty() {
-            f(&held)?;
-            total += held.len() as u64;
+        if carried > 0 {
+            f(&scratch[..carried])?;
+            total += carried as u64;
         }
         // The file is written on after its end, if anything is written again.
         file.seek(SeekFrom::End(0))?;
         Ok(total)
     }
 
-    /// Empties the spool for the next file: the temporary file is closed, which deletes it,
-    /// and the memory keeps its capacity, at most the threshold.
+    /// Empties the spool for the next file: the temporary file is closed, which deletes it.
+    /// The memory keeps its capacity, at most the threshold, unless the output was spilled:
+    /// `spill` released it, and the next file's output grows it from nothing (code review r1,
+    /// Fable #9).
     pub fn clear(&mut self) {
         self.memory.clear();
         self.file = None;
@@ -121,6 +123,26 @@ impl FileSpool {
         }
         Ok(self.file.as_mut().expect("spilled above"))
     }
+}
+
+/// How many bytes at the end of `bytes` begin a UTF-8 character they do not complete: 0 to
+/// 3. Bytes that are no UTF-8 are not held back.
+fn incomplete_tail(bytes: &[u8]) -> usize {
+    for back in 1..=bytes.len().min(3) {
+        let b = bytes[bytes.len() - back];
+        if b & 0xC0 == 0x80 {
+            // A continuation byte: its lead is further back.
+            continue;
+        }
+        let needs = match b {
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF7 => 4,
+            _ => 1,
+        };
+        return if needs > back { back } else { 0 };
+    }
+    0
 }
 
 impl Write for FileSpool {
@@ -176,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn pieces_end_at_line_breaks_and_clear_starts_over() {
+    fn pieces_are_bounded_and_clear_starts_over() {
         let d = tempfile::tempdir().unwrap();
         let mut s = FileSpool::new(d.path()).unwrap();
         let line = b"0123456789abcdef0123456789abcdef0123456789abcdef012345678\n";
@@ -194,13 +216,8 @@ mod tests {
             })
             .unwrap();
         assert_eq!(total, (lines * line.len() + 6) as u64);
-        let (last, whole) = pieces.split_last().unwrap();
-        assert!(
-            whole
-                .iter()
-                .all(|p| p.ends_with(b"\n") && p.len() <= 2 * CHUNK)
-        );
-        assert!(last.ends_with(b"no end"));
+        assert!(pieces.iter().all(|p| p.len() <= CHUNK + 3));
+        assert!(pieces.last().unwrap().ends_with(b"no end"));
         // Copied again, the same bytes.
         let mut again = Vec::new();
         assert_eq!(s.copy_to(&mut again).unwrap(), total);
@@ -210,5 +227,41 @@ mod tests {
         s.write_all(b"next\n").unwrap();
         assert_eq!(s.in_memory(), Some(&b"next\n"[..]));
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 0);
+    }
+
+    /// Code review r1, Codex #2: a line far longer than the threshold is copied in pieces of
+    /// at most `CHUNK` bytes and the incomplete character a piece would end in, never held
+    /// whole, and no piece splits a UTF-8 character.
+    #[test]
+    fn a_line_longer_than_the_threshold_is_copied_in_bounded_pieces() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = FileSpool::new(d.path()).unwrap();
+        // Characters of 1, 2, 3 and 4 bytes, so that pieces end inside each of them.
+        let unit = "a\u{e9}\u{20ac}\u{1f600}".as_bytes();
+        let mut written = 0;
+        while written <= 3 * FILE_SPOOL_THRESHOLD {
+            s.write_all(unit).unwrap();
+            written += unit.len();
+        }
+        s.write_all(b"\n").unwrap();
+        assert!(s.is_spilled());
+        let (mut longest, mut whole) = (0, Vec::new());
+        let total = s
+            .each_piece(&mut |p| {
+                longest = longest.max(p.len());
+                assert!(std::str::from_utf8(p).is_ok(), "a piece splits a character");
+                whole.extend_from_slice(p);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(total, written as u64 + 1);
+        assert!(longest <= CHUNK + 3, "a piece of {longest} bytes");
+        assert_eq!(whole.len(), written + 1);
+        assert!(
+            whole
+                .chunks(unit.len())
+                .take(written / unit.len())
+                .all(|c| c == unit)
+        );
     }
 }

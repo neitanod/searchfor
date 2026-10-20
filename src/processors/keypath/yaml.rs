@@ -652,6 +652,7 @@ impl crate::processors::Prepared for YamlPrepared<'_> {
             at: 0,
             lines: (0, 1),
             last: None,
+            open: 0,
         })
     }
 
@@ -712,6 +713,8 @@ struct YamlCursor<'s> {
     lines: (usize, u64),
     /// The last Trail given, by the census places of its Segments.
     last: Option<(Vec<u32>, crate::model::SharedTrail)>,
+    /// Where the outermost Segment holding the last offset starts (`Cursor::open_from`).
+    open: usize,
 }
 
 impl YamlCursor<'_> {
@@ -758,6 +761,10 @@ impl YamlCursor<'_> {
 }
 
 impl crate::processors::Cursor for YamlCursor<'_> {
+    fn open_from(&mut self) -> Option<usize> {
+        Some(self.open)
+    }
+
     fn trail_at(&mut self, byte: usize) -> anyhow::Result<crate::model::SharedTrail> {
         if byte < self.at {
             // An offset before the last one walks again from the start.
@@ -767,6 +774,16 @@ impl crate::processors::Cursor for YamlCursor<'_> {
         }
         self.at = byte;
         self.reach(byte);
+        let census = self.census;
+        self.open = self
+            .follow
+            .segs
+            .iter()
+            .filter(|(k, seg, _)| {
+                seg.range.start <= byte && (census[*k as usize] & !HIDDEN) as usize > byte
+            })
+            .map(|(_, seg, _)| seg.range.start)
+            .fold(byte, usize::min);
         // The Segments that hold `byte`, in the order of `Outline::build`: by start, the longer
         // first, and of two equal ranges the inner one, which closed first, first.
         let mut held: Vec<(u32, usize, usize)> = self

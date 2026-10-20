@@ -2806,3 +2806,108 @@ fn m5b_dense_directory_keeps_each_file_whole_and_removes_its_spool() {
     let left: Vec<_> = std::fs::read_dir(&spool).unwrap().collect();
     assert!(left.is_empty(), "spool files left: {left:?}");
 }
+
+/// Code review r1, Codex #2: with several workers, a file's output past the 8 MiB that sends
+/// it to a spool file is copied to stdout in bounded pieces also when one line of it, a JSON
+/// message, is far longer than that: the copy holds no second or third copy of the line, and
+/// takes time linear in its length (the spool scanned everything held for a line break at each
+/// 64 KiB read). The other file makes the run parallel.
+#[test]
+#[ignore = "64 MiB line spooled by a worker; selected explicitly in Linux CI"]
+#[cfg(target_os = "linux")]
+fn m5b_a_spooled_line_longer_than_the_threshold_is_copied_in_bounded_pieces() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    const LINE: usize = 64 << 20;
+    let mut long = Vec::with_capacity(LINE + 1);
+    long.extend_from_slice(b"needle ");
+    long.resize(LINE, b'x');
+    long.push(b'\n');
+    std::fs::write(fx.file("long.txt"), &long).unwrap();
+    drop(long);
+    std::fs::write(fx.file("short.txt"), "needle\n").unwrap();
+    let args = |extra: [&'static str; 2]| {
+        let mut a = vec!["--no-docs", "--json"];
+        a.extend(extra);
+        a.extend(["long.txt", "short.txt"]);
+        a
+    };
+    let Some((tp, rp)) = measure_drained(&sfor_bin(), &fx, &args(["-j2", "needle"]), 0) else {
+        return;
+    };
+    // The same output written as it grows, by one thread: no spool.
+    let (ts, rs) = measure_drained(&sfor_bin(), &fx, &args(["-j1", "needle"]), 0).unwrap();
+    // The same bytes read, and nothing printed.
+    let (_, rn) = measure_drained(&sfor_bin(), &fx, &args(["-j2", "ABSENT_M5B"]), 1).unwrap();
+    eprintln!(
+        "64 MiB line: -j2 {tp:?}/{rp}, -j1 {ts:?}/{rs}, nothing printed {rn}; uptime {}",
+        uptime()
+    );
+    // The message is built once (`JsonFile`'s scratch, freed before the copy) and written to the
+    // spool file; the copy adds 64 KiB.
+    let message = LINE as u64 + 1024;
+    assert!(
+        rp <= rn + message + (16 << 20),
+        "-j2 peak RSS {rp} is more than {rn} + one message + 16 MiB"
+    );
+    assert!(
+        tp <= ts * 2 + Duration::from_millis(500),
+        "-j2 took {tp:?}, more than 2 × -j1's {ts:?} + 0.5 s"
+    );
+}
+
+/// Code review r1, Codex #1 (M5b spec §6.1): --within, --expand and --stats stream a dense
+/// file as the one-line layout does, keeping no model of its Matches: what a dense file costs
+/// over the same bytes with one Match is the same bounded amount at 2 MiB and at 8 MiB.
+#[test]
+#[ignore = "dense RSS of the structural modes; selected explicitly in Linux CI"]
+#[cfg(target_os = "linux")]
+fn m5b_structural_modes_keep_no_model_of_a_dense_file() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    for mib in [2usize, 8] {
+        let name = format!("dense{mib}.csv");
+        let mut bytes = b"ONCE_M5B,needle\n".to_vec();
+        while bytes.len() + 14 <= mib << 20 {
+            bytes.extend_from_slice(b"needle,needle\n");
+        }
+        std::fs::write(fx.file(&name), &bytes).unwrap();
+        drop(bytes);
+        // --within keeps the first column; its one Match, in the header, has no Trail.
+        let modes: [(&[&str], i32); 4] = [
+            (&["--within", "ONCE_M5B"], 1),
+            (&["--expand"], 0),
+            (&["--stats"], 0),
+            (&["--expand", "--within", "row"], 1),
+        ];
+        for (mode, once_code) in modes {
+            let run = |pattern: &'static str, code: i32| {
+                let mut args = vec!["--no-docs", "--flat", "-j1"];
+                args.extend_from_slice(mode);
+                args.extend([pattern, name.as_str()]);
+                measure_drained(&sfor_bin(), &fx, &args, code)
+            };
+            let Some((td, rd)) = run("needle|^", 0) else {
+                return;
+            };
+            let (tp, rp) = run("ONCE_M5B", once_code).unwrap();
+            eprintln!(
+                "{mib} MiB {mode:?}: dense {td:?}/{rd}, one Match {tp:?}/{rp}; uptime {}",
+                uptime()
+            );
+            assert!(
+                rd <= rp + (16 << 20),
+                "{mib} MiB {mode:?}: dense peak RSS {rd} is more than {rp} + 16 MiB"
+            );
+        }
+    }
+}
+
+/// The load averages the measurement ran under, for its report (`/proc/loadavg`).
+#[cfg(target_os = "linux")]
+fn uptime() -> String {
+    std::fs::read_to_string("/proc/loadavg")
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
+}

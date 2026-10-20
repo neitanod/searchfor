@@ -634,9 +634,11 @@ impl Prepared for CsvPrepared<'_> {
             row: 0,
             record: None,
             k: 0,
-            names: Default::default(),
+            names: Vec::new(),
             last_at: 0,
             last: None,
+            key: None,
+            row_name: String::new(),
         })
     }
 
@@ -661,20 +663,26 @@ struct CsvCursor<'p, 'a> {
     record: Option<(usize, usize, (u64, u64))>,
     /// The column of the last Match in the current record.
     k: usize,
-    names: std::collections::HashMap<usize, Option<String>>,
+    /// By column: its name once asked for (`Some`), None for a column without one.
+    names: Vec<Option<Option<String>>>,
     last_at: usize,
     last: Option<SharedTrail>,
+    /// The record and column of `last`.
+    key: Option<(u64, usize)>,
+    /// `row N` of the current record.
+    row_name: String,
 }
 
 impl CsvCursor<'_, '_> {
-    /// The Trail of `at`, as `Csv::trails` gives it for an anchor in file order.
-    fn trail(&mut self, at: usize) -> Trail {
+    /// The record and column of `at`, as `Csv::trails` finds them for an anchor in file order;
+    /// None where it gives no Trail.
+    fn locate(&mut self, at: usize) -> Option<(u64, usize)> {
         let pr = self.prepared;
         // Matches in the header row are in a column's name: no Trail (spec §5.5).
         if let Some(h) = &pr.header
             && at < h.fields.last().expect("a record has a field").end
         {
-            return Vec::new();
+            return None;
         }
         loop {
             if let Some((_, end, _)) = self.record
@@ -682,18 +690,22 @@ impl CsvCursor<'_, '_> {
             {
                 break;
             }
-            let Some((recs, lines)) = self.body.as_mut() else {
-                return Vec::new();
-            };
+            let (recs, lines) = self.body.as_mut()?;
             match recs.next(&mut self.fields, false) {
                 Next::End | Next::Unclosed => {
                     self.body = None;
                     self.record = None;
-                    return Vec::new();
+                    return None;
                 }
                 Next::Record => {}
             }
             self.row += 1;
+            let mut digits = [0u8; 20];
+            let n = crate::output::flat::decimal(self.row, &mut digits);
+            self.row_name.clear();
+            self.row_name.push_str("row ");
+            self.row_name
+                .push_str(std::str::from_utf8(n).expect("ASCII digits"));
             let (first, last) = (&self.fields[0], self.fields.last().unwrap());
             let lines_of = (
                 lines.of(first.raw.start),
@@ -702,28 +714,36 @@ impl CsvCursor<'_, '_> {
             self.record = Some((first.raw.start, last.end, lines_of));
             self.k = 0;
         }
-        let (start, _, lines_of) = self.record.expect("read above");
+        let (start, _, _) = self.record.expect("read above");
         if at < start {
-            return Vec::new();
+            return None;
         }
         while self.k + 1 < self.fields.len() && at >= self.fields[self.k].end {
             self.k += 1;
         }
-        let k = self.k;
+        Some((self.row, self.k))
+    }
+
+    /// The Trail of column `k` of the current record.
+    fn trail(&mut self, k: usize) -> Trail {
+        let pr = self.prepared;
+        let (_, _, lines_of) = self.record.expect("located");
         let src = pr.input.bytes;
         let col = pr
             .header
             .as_ref()
             .filter(|h| k < h.fields.len())
             .and_then(|h| {
-                self.names
-                    .entry(k)
-                    .or_insert_with(|| h.name(src, k, &pr.p).map(|n| n.text))
+                if self.names.len() <= k {
+                    self.names.resize(k + 1, None);
+                }
+                self.names[k]
+                    .get_or_insert_with(|| h.name(src, k, &pr.p).map(|n| n.text))
                     .clone()
             })
             .unwrap_or_else(|| format!("column {}", k + 1));
         vec![
-            seg("row", format!("row {}", self.row), lines_of),
+            seg("row", self.row_name.clone(), lines_of),
             seg("column", col, lines_of),
         ]
     }
@@ -737,10 +757,32 @@ impl Cursor for CsvCursor<'_, '_> {
             self.row = 0;
             self.record = None;
             self.k = 0;
+            self.key = None;
         }
         self.last_at = at;
-        let trail = self.trail(at);
+        // The same record and column as the last answer: its Trail, built once (code review
+        // r1, Fable #2).
+        let Some(key) = self.locate(at) else {
+            self.key = None;
+            return Ok(super::cursor::share(&mut self.last, Vec::new()));
+        };
+        if self.key == Some(key)
+            && let Some(t) = &self.last
+        {
+            return Ok(t.clone());
+        }
+        let trail = self.trail(key.1);
+        self.key = Some(key);
         Ok(super::cursor::share(&mut self.last, trail))
+    }
+
+    /// The current record's start when it holds the last offset: every Segment is a record's.
+    fn open_from(&mut self) -> Option<usize> {
+        let at = self.last_at;
+        Some(match self.record {
+            Some((start, end, _)) if at < end => start.min(at),
+            _ => at,
+        })
     }
 }
 

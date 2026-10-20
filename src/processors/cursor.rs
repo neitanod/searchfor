@@ -119,6 +119,10 @@ impl Cursor for OutlineCursor<'_> {
             }
         }
     }
+
+    fn open_from(&mut self) -> Option<usize> {
+        Some(self.trails.open_from())
+    }
 }
 
 #[cfg(test)]
