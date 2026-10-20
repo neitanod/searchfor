@@ -339,7 +339,7 @@ jobs:
       - name: Fetch the locked crates
         run: cargo fetch --locked
       # The npm package's one dependency (its npm-shrinkwrap.json pins detect-libc 2.1.2),
-      # cached here so that the install below runs --offline.
+      # cached here so that the install below takes it from the cache where it can.
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -651,7 +651,8 @@ jobs:
           echo 'checksums, and a flipped byte rejected: PASS'
 
       # The installers against this job's own archive, served on the loopback, with every other
-      # destination unreachable (dead proxies, and npm --offline from its cache): the shell
+      # destination unreachable (dead proxies), but for npm's registry, read only for the npm
+      # package's dependency (npm --offline missed it in the cache on Windows): the shell
       # script (Unix), the npm package (every system; the .cmd shim on Windows) and the Homebrew
       # formula (macOS). Each must print s4 1.0.0, fetch exactly the archive, and fail on a
       # damaged archive (plan Task 11.3, Step 3). dist 0.33.0's shell script checks the SHA-256;
@@ -734,8 +735,10 @@ jobs:
               tgz = copy / 'searchfor-1.0.0.tgz'
               assert tgz.is_file(), list(copy.iterdir())
               prefix = tmp / f'npm-{kind}'
-              r = run([npm, 'install', '--prefix', prefix, '--offline', '--no-audit', '--no-fund',
-                       '--foreground-scripts', '--logs-dir', tmp / 'npm-logs', tgz])
+              registry = '127.0.0.1,registry.npmjs.org'
+              r = run([npm, 'install', '--prefix', prefix, '--prefer-offline', '--no-audit',
+                       '--no-fund', '--foreground-scripts', '--logs-dir', tmp / 'npm-logs', tgz],
+                      env=dict(env, NO_PROXY=registry, no_proxy=registry))
               served(kind)
               shim = prefix / 'node_modules' / '.bin' / ('s4.cmd' if windows else 's4')
               if kind == 'good':
