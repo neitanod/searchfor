@@ -7,15 +7,18 @@
 //! lopdf's inside included: a worker past its memory dies, one past `WALL` on a document is
 //! killed, the document gets one warning, and the search goes on with a new worker.
 //!
+//! On Windows the worker starts through the platform layer (M5b spec §4.3) in s4's Job Object,
+//! and in a second Job of its own whose limit of committed memory is the second barrier there.
+//!
 //! The answer: a header line, then the text, then the Outline, each Segment as a few lines
 //! (`write_extracted`). At most `CHILDREN` workers run at once; a worker serves up to `SERVES`
 //! documents, so the memory one leaves behind does not decide the next one's.
 use super::{DocError, Extracted, Kind};
 use crate::model::Segment;
+use crate::platform::{Child, PipeReader, PipeWriter};
 use crate::trail::{Outline, OutlineSegment};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -29,11 +32,11 @@ const PARENT: &str = "SEARCHFOR_READER_OF";
 /// The most memory a worker may allocate (its heap, as `super::memory` counts it; a file it maps
 /// for reading does not count).
 pub const MEMORY_MIB: u64 = 1024;
-/// How far above the counter's limit `RLIMIT_DATA` stands, on Unix: room for what the counter
-/// does not see (the allocator's own pages, the threads' stacks), so that in most readers the
-/// counter cuts first. Where many small blocks spend more than this on the allocator's headers,
-/// `RLIMIT_DATA` cuts first, and the warning is the same (M4 plan, D31; r8, Fable #4).
-#[cfg(unix)]
+/// How far above the counter's limit the second barrier stands, `RLIMIT_DATA` on Unix and the
+/// reader's own Job on Windows: room for what the counter does not see (the allocator's own
+/// pages, the threads' stacks), so that in most readers the counter cuts first. Where many small
+/// blocks spend more than this on the allocator's headers, the second barrier cuts first, and the
+/// warning is the same (M4 plan, D31; r8, Fable #4; M5b spec §4.3).
 const HEADROOM_MIB: u64 = 64;
 /// The most workers at once: with `MEMORY_MIB` each, what all of them may take together.
 pub const CHILDREN: usize = 4;
@@ -55,9 +58,10 @@ struct Worker {
     /// Shared with the watchdog, which kills it past `WALL` (M4 plan r4, Fable #4), and with
     /// the Supervisor, which kills and reaps it on a signal: every kill and wait goes through
     /// this one `Child` (M4 plan r5, Codex #1).
+    /// On Windows it also holds the reader's own Job, idle or busy, until the worker is gone.
     child: Arc<Mutex<Child>>,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    stdin: PipeWriter,
+    stdout: BufReader<PipeReader>,
     /// The last bytes of its stderr: why it died.
     errors: Arc<Mutex<Vec<u8>>>,
     /// Disconnected when the thread that reads its stderr into `errors` has read it to the end.
@@ -101,15 +105,15 @@ fn start() -> std::io::Result<Child> {
         let (tx, rx) = std::sync::mpsc::channel::<Ask>();
         std::thread::spawn(move || {
             for reply in rx {
+                let mib = memory_mib();
                 let child = std::env::current_exe().and_then(|exe| {
-                    Command::new(exe)
-                        .arg(SUBCOMMAND)
-                        .arg(memory_mib().to_string())
-                        .env(PARENT, std::process::id().to_string())
-                        .stdin(Stdio::piped())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn()
+                    let mut spec = crate::platform::SpawnSpec::new(exe);
+                    spec.args = vec![SUBCOMMAND.into(), mib.to_string().into()];
+                    spec.env = vec![(PARENT.into(), Some(std::process::id().to_string().into()))];
+                    spec.stdin = crate::platform::Input::Piped;
+                    spec.stdout = crate::platform::Output::Piped;
+                    spec.stderr = crate::platform::Output::Piped;
+                    crate::platform::spawn(spec, reader_limits(mib))
                 });
                 let _ = reply.send(child);
             }
@@ -123,6 +127,16 @@ fn start() -> std::io::Result<Child> {
         .unwrap_or_else(|_| Err(std::io::Error::other("the reader's spawner ended")))
 }
 
+/// The limits of a worker whose counter allows `mib` MiB: on Windows its own Job, with
+/// `HEADROOM_MIB` more committed memory (or `SEARCHFOR_READER_RLIMIT_MIB`); elsewhere none, since
+/// the worker sets its own `RLIMIT_DATA`.
+fn reader_limits(mib: u64) -> crate::platform::Limits {
+    crate::platform::Limits {
+        process_memory_bytes: cfg!(windows)
+            .then(|| super::memory::bytes_of_mib(second_barrier_mib(mib))),
+    }
+}
+
 /// Whether `args` are a worker's: `SUBCOMMAND` first, `PARENT` set.
 pub fn is_worker(args: &[std::ffi::OsString]) -> bool {
     args.len() == 3
@@ -134,12 +148,13 @@ pub fn is_worker(args: &[std::ffi::OsString]) -> bool {
 /// Starts a worker inside the Supervisor's lifecycle (M2 plan, D42): a SIGINT or SIGTERM to
 /// s4 kills and reaps it, and no worker starts after one (M4 plan r4, Codex #2).
 fn spawn() -> std::io::Result<Worker> {
-    let started = crate::helper::host::cancel::GLOBAL.launch_reader(start);
+    let started = crate::helper::host::cancel::GLOBAL.launch_managed(start);
     let shared = match started {
         Ok(c) => c?,
         Err(_) => return Err(std::io::Error::other("s4 is ending")),
     };
-    let (stdin, stdout, mut stderr) = pipes(&shared)?;
+    let ending = crate::helper::host::cancel::GLOBAL.cancelled();
+    let (stdin, stdout, mut stderr) = pipes(&shared, ending)?;
     let errors = Arc::new(Mutex::new(Vec::new()));
     let keep = errors.clone();
     let (done, drained) = std::sync::mpsc::channel();
@@ -167,12 +182,15 @@ fn drain(stderr: &mut impl Read, errors: &Mutex<Vec<u8>>, done: std::sync::mpsc:
     drop(done);
 }
 
-/// The worker's pipes. A signal's `cancel` may have reaped it between its start and here, and
-/// `Child::wait` closes its stdin: then s4 is ending (M4 plan r6, Fable #6).
-fn pipes(child: &Mutex<Child>) -> std::io::Result<(ChildStdin, ChildStdout, ChildStderr)> {
+/// The worker's pipes. A signal's `cancel` may have reaped it between its start and here
+/// (`ending`, the Supervisor's word that it did): then s4 is ending (M4 plan r6, Fable #6).
+fn pipes(
+    child: &Mutex<Child>,
+    ending: bool,
+) -> std::io::Result<(PipeWriter, PipeReader, PipeReader)> {
     let mut c = child.lock().unwrap_or_else(|e| e.into_inner());
     match (c.stdin.take(), c.stdout.take(), c.stderr.take()) {
-        (Some(i), Some(o), Some(e)) => Ok((i, o, e)),
+        (Some(i), Some(o), Some(e)) if !ending => Ok((i, o, e)),
         _ => Err(std::io::Error::other("s4 is ending")),
     }
 }
@@ -183,7 +201,7 @@ pub fn extract(kind: Kind, path: &Path, max_text: usize) -> Result<Extracted, Do
     let _slot = Slot::take();
     // The path as its bytes, after their count: any path a file can have (M4 plan r4,
     // Codex #3).
-    let p = path_bytes(path);
+    let p = bytes_of(path);
     let mut fresh = false;
     loop {
         let idle = IDLE.lock().unwrap_or_else(|e| e.into_inner()).pop();
@@ -279,26 +297,53 @@ fn end(w: Worker) {
     let _ = child.lock().unwrap_or_else(|e| e.into_inner()).wait();
 }
 
+/// A path as the worker reads it: on Unix its bytes, on Windows its UTF-16 units, each as two
+/// bytes little-endian, so that no path is changed on the way (an unpaired surrogate included).
 #[cfg(unix)]
-fn path_bytes(p: &Path) -> Vec<u8> {
+fn bytes_of(path: &Path) -> Vec<u8> {
     use std::os::unix::ffi::OsStrExt;
-    p.as_os_str().as_bytes().to_vec()
+    path.as_os_str().as_bytes().to_vec()
 }
 
-#[cfg(not(unix))]
-fn path_bytes(p: &Path) -> Vec<u8> {
-    p.to_string_lossy().into_owned().into_bytes()
+#[cfg(windows)]
+fn bytes_of(path: &Path) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+    path.as_os_str()
+        .encode_wide()
+        .flat_map(u16::to_le_bytes)
+        .collect()
 }
 
+#[cfg(not(any(unix, windows)))]
+fn bytes_of(path: &Path) -> Vec<u8> {
+    path.to_string_lossy().into_owned().into_bytes()
+}
+
+/// What `bytes_of` wrote. On Windows the bytes come in pairs: `child` refuses an odd count.
 #[cfg(unix)]
-fn path_of(b: Vec<u8>) -> std::path::PathBuf {
+fn path_of(bytes: Vec<u8>) -> std::path::PathBuf {
     use std::os::unix::ffi::OsStringExt;
-    std::ffi::OsString::from_vec(b).into()
+    std::ffi::OsString::from_vec(bytes).into()
 }
 
-#[cfg(not(unix))]
-fn path_of(b: Vec<u8>) -> std::path::PathBuf {
-    String::from_utf8_lossy(&b).into_owned().into()
+#[cfg(windows)]
+fn path_of(bytes: Vec<u8>) -> std::path::PathBuf {
+    use std::os::windows::ffi::OsStringExt;
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    std::ffi::OsString::from_wide(&units).into()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn path_of(bytes: Vec<u8>) -> std::path::PathBuf {
+    String::from_utf8_lossy(&bytes).into_owned().into()
+}
+
+/// Whether the worker's path, `len` bytes of `bytes_of`, can be what it wrote.
+fn a_path_length(len: usize) -> bool {
+    !cfg!(windows) || len.is_multiple_of(2)
 }
 
 /// The worker's own limit for one document, as `own_watchdog` reads it.
@@ -317,10 +362,11 @@ fn memory_mib() -> u64 {
         .unwrap_or(MEMORY_MIB)
 }
 
-/// The worker's `RLIMIT_DATA` in MiB: `HEADROOM_MIB` above its counter's `mib`, or
-/// `SEARCHFOR_READER_RLIMIT_MIB`, for the test that the counter cuts where no `RLIMIT_DATA` would.
-#[cfg(unix)]
-fn rlimit_mib(mib: u64) -> u64 {
+/// The worker's second barrier in MiB, its `RLIMIT_DATA` on Unix and its Job's limit on
+/// Windows: `HEADROOM_MIB` above its counter's `mib`, or `SEARCHFOR_READER_RLIMIT_MIB`, for the
+/// tests that the counter cuts where no second barrier would, and that the second barrier holds
+/// where the counter would not.
+fn second_barrier_mib(mib: u64) -> u64 {
     std::env::var("SEARCHFOR_READER_RLIMIT_MIB")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -335,13 +381,25 @@ fn why(status: Option<std::process::ExitStatus>, errors: &str) -> DocError {
             reading_limit().as_secs()
         ));
     }
-    if errors.contains("memory allocation of") || errors.contains("out of memory") {
+    if errors.contains("memory allocation of")
+        || errors.contains("out of memory")
+        || refused_by_the_system(status.and_then(|s| s.code()))
+    {
         return warn_memory(memory_mib());
     }
     DocError::broken(match status {
         Some(s) => format!("its reader stopped ({s})"),
         None => "its reader stopped".to_string(),
     })
+}
+
+/// Whether a worker's exit `code` is Windows' for memory it was refused: `STATUS_NO_MEMORY` or
+/// `STATUS_COMMITMENT_LIMIT`, which its Job's limit of committed memory can end it with where
+/// the allocation is not Rust's (M5b spec §4.3). The Job refuses and never kills, so most such
+/// readers end as the counter's refusal does, through `memory allocation of` or `take_refused`;
+/// an exit code of a Unix process is never one of these.
+fn refused_by_the_system(code: Option<i32>) -> bool {
+    matches!(code.map(|c| c as u32), Some(0xC000_0017 | 0xC000_012D))
 }
 
 /// The worker: reads `KIND MAX_TEXT LEN` lines from stdin, each followed by the `LEN` bytes
@@ -376,7 +434,7 @@ pub fn child(args: &[std::ffi::OsString]) -> i32 {
             return 2;
         };
         let mut p = vec![0; len];
-        if input.read_exact(&mut p).is_err() {
+        if !a_path_length(len) || input.read_exact(&mut p).is_err() {
             return 2;
         }
         // A refusal before this document (reading the request) is not its own.
@@ -516,7 +574,10 @@ fn limit(mib: u64) {
         // SAFETY: setrlimit reads the struct it is given.
         unsafe { libc::setrlimit(what, &r) };
     };
-    set(libc::RLIMIT_DATA, rlimit_mib(mib).saturating_mul(1 << 20));
+    set(
+        libc::RLIMIT_DATA,
+        second_barrier_mib(mib).saturating_mul(1 << 20),
+    );
     // No core file and no crash report for a hostile document (M4 plan r4, Fable #3).
     set(libc::RLIMIT_CORE, 0);
     #[cfg(target_os = "linux")]
@@ -709,20 +770,48 @@ mod tests {
         read_extracted(&mut &buf[..])
     }
 
+    /// This test binary run as a child, with the pipes of a worker: `test` alone, the exact
+    /// name of a test of this module (none: a name that runs nothing, and the child exits 0).
+    fn this_binary(test: Option<&str>) -> Child {
+        let mut spec = crate::platform::SpawnSpec::new(std::env::current_exe().unwrap());
+        let name = format!(
+            "docs::isolated::tests::{}",
+            test.unwrap_or("no_test_has_this_name")
+        );
+        spec.args = vec![
+            "--exact".into(),
+            name.into(),
+            "--ignored".into(),
+            "--nocapture".into(),
+        ];
+        spec.stdin = crate::platform::Input::Piped;
+        spec.stdout = crate::platform::Output::Piped;
+        spec.stderr = crate::platform::Output::Piped;
+        crate::platform::spawn(spec, crate::platform::Limits::default()).unwrap()
+    }
+
+    /// The child of `a_dead_workers_stderr_is_read_to_its_end_before_why`: it writes what a
+    /// reader past its memory writes, and ends as an abort does.
+    #[test]
+    #[ignore = "child entry invoked by a_dead_workers_stderr_is_read_to_its_end_before_why"]
+    fn a_worker_dead_of_its_memory() {
+        let mut e = std::io::stderr().lock();
+        let _ = e.write_all(b"memory allocation of 8 bytes failed\n");
+        let _ = e.flush();
+        std::process::exit(134);
+    }
+
     /// Fable r6 #6: a worker that a signal's `cancel` reaped before `spawn` took its pipes (its
     /// stdin closed by `Child::wait`) is an error, never a panic.
-    #[cfg(unix)]
     #[test]
     fn a_worker_reaped_before_its_pipes_are_taken_is_an_error() {
-        let mut c = Command::new("true")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut c = this_binary(None);
         c.wait().unwrap();
         let reaped = Mutex::new(c);
-        let e = pipes(&reaped).expect_err("no pipes");
+        let e = pipes(&reaped, true).err().expect("no pipes");
+        assert_eq!(e.to_string(), "s4 is ending");
+        // Pipes taken already, as a std `Child::wait` took its stdin, are no pipes either.
+        let e = pipes(&reaped, false).err().expect("no pipes");
         assert_eq!(e.to_string(), "s4 is ending");
     }
 
@@ -733,22 +822,10 @@ mod tests {
     /// Codex r8 #2, Fable r8 #3: the warning of a worker that died of its memory never depends
     /// on whether the thread that reads its stderr ran before its stdout ended. Here that
     /// thread starts 300 ms late, after the worker wrote `memory allocation of …` and exited.
-    #[cfg(unix)]
     #[test]
     fn a_dead_workers_stderr_is_read_to_its_end_before_why() {
-        let shared = Arc::new(Mutex::new(
-            Command::new("sh")
-                .args([
-                    "-c",
-                    "echo 'memory allocation of 8 bytes failed' >&2; exit 134",
-                ])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .unwrap(),
-        ));
-        let (stdin, stdout, mut stderr) = pipes(&shared).unwrap();
+        let shared = Arc::new(Mutex::new(this_binary(Some("a_worker_dead_of_its_memory"))));
+        let (stdin, stdout, mut stderr) = pipes(&shared, false).unwrap();
         let errors = Arc::new(Mutex::new(Vec::new()));
         let keep = errors.clone();
         let (done, drained) = std::sync::mpsc::channel();
@@ -824,5 +901,58 @@ mod tests {
         }
         assert!(read_extracted(&mut &b"ok 10 0 0\nshort"[..]).is_none());
         assert!(read_extracted(&mut &b""[..]).is_none());
+    }
+
+    /// M5b spec §4.3: on Windows a reader's own Job allows its counter's budget plus
+    /// `HEADROOM_MIB`, the second barrier `RLIMIT_DATA` is on Unix, which sets its own.
+    #[test]
+    fn reader_job_has_the_counter_budget_plus_headroom() {
+        let limits = reader_limits(32);
+        #[cfg(windows)]
+        assert_eq!(
+            limits.process_memory_bytes,
+            Some((32 + HEADROOM_MIB as usize) << 20)
+        );
+        #[cfg(not(windows))]
+        assert!(limits.process_memory_bytes.is_none());
+    }
+
+    /// A Windows path reaches the reader as its UTF-16 units, an unpaired surrogate included.
+    #[test]
+    #[cfg(windows)]
+    fn reader_wire_path_roundtrips_unpaired_utf16() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        let units = [b'C' as u16, 58, 92, 0xD800, b'x' as u16];
+        let path = std::path::PathBuf::from(std::ffi::OsString::from_wide(&units));
+        let got = path_of(bytes_of(&path));
+        assert_eq!(got.as_os_str().encode_wide().collect::<Vec<_>>(), units);
+    }
+
+    /// A Unix path reaches the reader as its bytes, whatever they are.
+    #[test]
+    #[cfg(unix)]
+    fn reader_wire_path_keeps_unix_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = &b"m4/caf\xe9\nend\r.docx"[..];
+        let path = std::path::Path::new(std::ffi::OsStr::from_bytes(raw));
+        assert_eq!(bytes_of(path), raw);
+        assert_eq!(path_of(bytes_of(path)).as_os_str().as_bytes(), raw);
+    }
+
+    /// Windows: a reader the system refused committed memory (its Job's limit) and that ended
+    /// with the status of that refusal gives the memory warning, as one `RLIMIT_DATA` stopped.
+    #[test]
+    fn a_reader_the_system_refused_memory_is_recognized() {
+        assert!(refused_by_the_system(Some(0xC000_0017_u32 as i32)));
+        assert!(refused_by_the_system(Some(0xC000_012D_u32 as i32)));
+        assert!(!refused_by_the_system(Some(1)));
+        assert!(!refused_by_the_system(Some(0xC000_0409_u32 as i32)));
+        assert!(!refused_by_the_system(None));
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::ExitStatusExt;
+            let status = std::process::ExitStatus::from_raw(0xC000_0017);
+            assert_eq!(why(Some(status), ""), warn_memory(memory_mib()));
+        }
     }
 }

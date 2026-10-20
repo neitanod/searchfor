@@ -1434,6 +1434,42 @@ fn m4_22_the_readers_own_count_ends_it_at_its_limit() {
     assert_eq!(code(&o), 0);
 }
 
+/// M5b spec §4.3: the second barrier holds where the counter would not. With the counter far
+/// above it (`SEARCHFOR_READER_MIB`, 4 096 MiB) and the second barrier at 32 MiB
+/// (`SEARCHFOR_READER_RLIMIT_MIB`): on Linux the reader's `RLIMIT_DATA`, on Windows the limit of
+/// committed memory of the reader's own Job, which refuses the allocation and never kills; the
+/// workbook of `m4_16` gives the memory warning, and the other document is read. macOS keeps
+/// no such barrier (its allocator maps memory, which `RLIMIT_DATA` does not count there): the
+/// counter alone holds, as `m4_22` checks.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn m4_40_the_second_barrier_holds_above_a_permissive_counter() {
+    let fx = fixture();
+    let row: &[&str] = &["needle in a big sheet"];
+    let rows: Vec<&[&str]> = vec![row; 200_000];
+    std::fs::write(fx.path().join("m4/big.xlsx"), doc::xlsx(&[("S", &rows)])).unwrap();
+    let o = run(fx
+        .s4([
+            "--docs",
+            "--flat",
+            "-c",
+            "needle",
+            "m4/big.xlsx",
+            "m4/report.docx",
+        ])
+        .env("SEARCHFOR_READER_MIB", "4096")
+        .env("SEARCHFOR_READER_RLIMIT_MIB", "32"));
+    assert!(
+        stderr(&o).contains(
+            "m4/big.xlsx: xlsx: reading it needed more than the 4096 MiB a reader may use"
+        ),
+        "{}",
+        stderr(&o)
+    );
+    assert!(stdout(&o).contains("m4/report.docx:3"), "{}", stdout(&o));
+    assert_eq!(code(&o), 0);
+}
+
 /// Bits of a deflate stream, the first in the lowest bit of each byte (RFC 1951).
 #[derive(Default)]
 struct Bits {
