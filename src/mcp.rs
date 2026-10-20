@@ -65,11 +65,23 @@ const ARGUMENTS: &[&str] = &[
     "max_results",
 ];
 
-/// Serves MCP requests from stdin until it closes; `s4` is the binary each search runs.
+/// Serves MCP requests from stdin until it closes; `s4` is the binary each search runs. A
+/// search ends with the server: a SIGINT or SIGTERM kills and reaps it before the server dies
+/// by the signal, as rg (the Supervisor, M2 plan D42), and on Linux the kernel kills it when
+/// the server dies by any other (code review r1 of M5a, Codex #1). A client that closes
+/// stdout ends the search it waits for, and the server, with 0 (Fable #4).
 pub fn serve(s4: &Path) -> anyhow::Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    serve_io(stdin.lock(), stdout.lock(), &Child(s4.to_path_buf()))
+    #[cfg(unix)]
+    let client = Some(std::os::fd::AsRawFd::as_raw_fd(&stdout));
+    #[cfg(not(unix))]
+    let client = None;
+    let searcher = Child {
+        s4: s4.to_path_buf(),
+        client,
+    };
+    serve_io(stdin.lock(), stdout.lock(), &searcher)
 }
 
 /// What starts a search: `s4` in a child process, or a stand-in in the tests.
@@ -100,7 +112,8 @@ pub enum Ended {
 
 /// `serve` over any reader, writer and searcher. A request longer than `MAX_REQUEST_BYTES` is
 /// read to its end and refused, with its id when the part read holds it; a line that is not
-/// JSON (or not UTF-8) gets -32700; the server goes on after either.
+/// JSON (or not UTF-8) gets -32700; the server goes on after either. A writer whose reader
+/// closed ends the server as the end of the input does: no one is left to answer.
 pub fn serve_io(
     mut input: impl BufRead,
     mut output: impl Write,
@@ -120,8 +133,10 @@ pub fn serve_io(
             handle(&line, s)
         };
         if let Some(answer) = answer {
-            writeln!(output, "{answer}")?;
-            output.flush()?;
+            match writeln!(output, "{answer}").and_then(|()| output.flush()) {
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
+                written => written?,
+            }
         }
     }
     Ok(())
@@ -824,7 +839,12 @@ fn tool_error(message: &str) -> Value {
 }
 
 /// `s4` in a child process.
-struct Child(PathBuf);
+struct Child {
+    s4: PathBuf,
+    /// The server's stdout, watched while a search runs: once its reader closed it, the
+    /// search is stopped.
+    client: Option<i32>,
+}
 
 /// The command of a search: `s4 ARGS` with stdin closed, and neither `SEARCHFOR_CONFIG_PATH`
 /// nor `RIPGREP_CONFIG_PATH` in its environment (D17), besides `--no-config` in `ARGS`.
@@ -840,17 +860,119 @@ pub fn command(s4: &Path, args: &[OsString]) -> std::process::Command {
 }
 
 struct Running {
-    child: std::process::Child,
-    out: std::io::BufReader<std::process::ChildStdout>,
+    /// Shared with the Supervisor, which kills and reaps it on a signal: every kill and wait
+    /// goes through this lock, so a reaped pid is never signalled.
+    child: std::sync::Arc<std::sync::Mutex<std::process::Child>>,
+    out: std::io::BufReader<Watched>,
     errors: std::thread::JoinHandle<String>,
 }
 
+/// The search's stdout, read while the client still reads the server's: a client that closed
+/// it gets no answer, so the read fails (`BrokenPipe`) and `gone` says the search is to stop.
+struct Watched {
+    out: std::process::ChildStdout,
+    client: Option<i32>,
+    gone: bool,
+}
+
+impl Read for Watched {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        #[cfg(unix)]
+        if let Some(client) = self.client {
+            use std::os::fd::AsRawFd;
+            // A pipe or a socket whose reader closed is POLLERR or POLLHUP, asked or not.
+            let mut fds = [
+                libc::pollfd {
+                    fd: self.out.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: client,
+                    events: 0,
+                    revents: 0,
+                },
+            ];
+            // SAFETY: `fds` is an array of two valid pollfd.
+            while unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
+                let e = std::io::Error::last_os_error();
+                if e.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+            if fds[1].revents & (libc::POLLERR | libc::POLLHUP) != 0 {
+                self.gone = true;
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+        }
+        self.out.read(buf)
+    }
+}
+
+/// The search's `Child`, whatever a thread that held it did.
+fn lock(
+    c: &std::sync::Mutex<std::process::Child>,
+) -> std::sync::MutexGuard<'_, std::process::Child> {
+    c.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Waits until the child exited, without reaping it and without the lock, which the
+/// Supervisor may need meanwhile; `Child::wait` reaps it after.
+#[cfg(unix)]
+fn exited(c: &std::sync::Mutex<std::process::Child>) {
+    let pid = lock(c).id();
+    // SAFETY: an all-zero siginfo_t is valid, and waitid only writes into it. A child the
+    // Supervisor reaped already gives ECHILD at once.
+    unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        while libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOWAIT,
+        ) < 0
+            && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+        {}
+    }
+}
+
+#[cfg(not(unix))]
+fn exited(_: &std::sync::Mutex<std::process::Child>) {}
+
 impl Searcher for Child {
     fn start(&self, args: &[OsString]) -> Result<Box<dyn Search + '_>, String> {
-        let mut child = command(&self.0, args)
-            .spawn()
-            .map_err(|e| format!("s4 did not start: {e}"))?;
-        let mut stderr = child.stderr.take().expect("piped");
+        let mut c = command(&self.s4, args);
+        // The second barrier: the kernel kills the search when the thread that started it, the
+        // server's only one, ends, whatever ended the server (SIGHUP, SIGKILL); checked
+        // against the server's pid in case it ended before the prctl.
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            let server = std::process::id() as libc::pid_t;
+            // SAFETY: prctl, getppid and _exit are async-signal-safe.
+            unsafe {
+                c.pre_exec(move || {
+                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                    if libc::getppid() != server {
+                        libc::_exit(2);
+                    }
+                    Ok(())
+                });
+            }
+        }
+        let child = match crate::helper::host::cancel::GLOBAL.launch_reader(|| c.spawn()) {
+            Ok(Ok(child)) => child,
+            Ok(Err(e)) => return Err(format!("s4 did not start: {e}")),
+            Err(_) => return Err("s4 is ending".to_string()),
+        };
+        // A signal's `cancel` may have reaped it already, its pipes closed with it.
+        let pipes = {
+            let mut c = lock(&child);
+            (c.stdout.take(), c.stderr.take())
+        };
+        let (Some(stdout), Some(mut stderr)) = pipes else {
+            return Err("s4 is ending".to_string());
+        };
         // Read to its end so the child never blocks on it, keeping the first bytes.
         let errors = std::thread::spawn(move || {
             let mut kept = Vec::new();
@@ -864,7 +986,11 @@ impl Searcher for Child {
             }
             s
         });
-        let out = std::io::BufReader::new(child.stdout.take().expect("piped"));
+        let out = std::io::BufReader::new(Watched {
+            out: stdout,
+            client: self.client,
+            gone: false,
+        });
         Ok(Box::new(Running { child, out, errors }))
     }
 }
@@ -875,16 +1001,14 @@ impl Search for Running {
     }
 
     fn end(self: Box<Self>, stop: bool) -> (Ended, String) {
-        let Running {
-            mut child,
-            out,
-            errors,
-        } = *self;
-        if stop {
-            let _ = child.kill();
-        }
+        let Running { child, out, errors } = *self;
+        let stop = stop || out.get_ref().gone;
         drop(out);
-        let ended = match child.wait() {
+        if stop {
+            let _ = lock(&child).kill();
+        }
+        exited(&child);
+        let ended = match lock(&child).wait() {
             Err(e) => Ended::Other(format!("could not be waited for: {e}")),
             Ok(status) => match status.code() {
                 Some(c) => Ended::Code(c),
