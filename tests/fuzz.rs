@@ -3,7 +3,10 @@
 //! with lone CRs, CRLF, BOMs, multi-byte keys and values, and truncated files, looking for
 //! panics and for name pieces outside their text, outside their Source, or over other bytes.
 //! The generator is seeded, so a failure reproduces; `SEARCHFOR_FUZZ_SEED` and `SEARCHFOR_FUZZ_N` (inputs
-//! per Format) change the seed and the count.
+//! per Format) change the seed and the count. `SEARCHFOR_FUZZ_SECONDS` repeats rounds, round r
+//! with the seed plus r, until that many seconds have passed, one deadline for every test of
+//! this file (M5b plan, Task 4.2). A failure says how to replay it and is saved under
+//! `SEARCHFOR_FUZZ_ARTIFACT_DIR`.
 mod common;
 
 use searchfor::model::{Input, Name};
