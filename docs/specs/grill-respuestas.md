@@ -321,3 +321,26 @@ is a decision; the agent's measurements are the reasons given at the time.
   subcommand, `s4 mcp FILE` could not search for the word «mcp». Recommendation: a flag.
 - **Decision** (8837): «Usemos `s4 --mcp` o sea flag, no comando.» The MCP server starts with
   `s4 --mcp`; there is no `mcp` subcommand.
+
+---
+
+# Questionnaire 57 (Hilo 855, 20/10/2026): how v1.0 is published
+
+Answered by Sebastián on 20/10/2026, 06:09. The answers fix what M5b's plan prepares; every
+real publication still stops for his go-ahead at the moment it happens.
+
+| Id | Question | Answer |
+|---|---|---|
+| Q57.crate | Crate name on crates.io | `searchfor` (recommended) |
+| Q57.npm | npm package name | `searchfor`, unscoped (recommended) |
+| Q57.brew | Homebrew tap and formula | Repository `neitanod/homebrew-tap`, formula `searchfor` (recommended) |
+| Q57.plataformas | Release platforms | Linux x86-64, Linux arm64, macOS arm64, macOS x86-64, Windows x86-64 (recommended; Windows arm64 left for a 1.x) |
+| Q57.linux-static | Linux binaries | Static, musl (recommended) |
+| Q57.instaladores | Installers besides Homebrew, npm and crates.io | Shell script and PowerShell script (recommended; no MSI) |
+| Q57.firma | Signing | GitHub artifact attestations, Sigstore, keyless (recommended) |
+| Q57.codesign | Authenticode and Apple notarization | Not in v1.0 (recommended) |
+| Q57.grammar-host | Where the Grammar Helper binaries live | A release of their own, `grammars-v1` (recommended) |
+| Q57.gramaticas | Extra Grammars published as Grammar Helpers | c, cpp, java, ruby, c-sharp, elixir |
+| Q57.fuzz-ci | When the fuzz runs in CI | Short on every push and long every night (recommended). Comment: «Las noches que no hay commits no corren, no?» — the nightly run skips a night with no new commit on `main` since its last successful run |
+| Q57.cuando | When v1.0 is published | When M5b closes, with his go-ahead on each channel (recommended) |
+| Q57.olvido | What am I forgetting to ask? | Not answered |
