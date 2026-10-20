@@ -1,5 +1,6 @@
 //! Processors turn Match anchors into Trails (design note 6).
 pub mod csv;
+pub mod cursor;
 pub mod external;
 pub mod frontmatter;
 pub mod keypath;
@@ -9,7 +10,7 @@ pub mod object;
 pub mod subtitles;
 pub mod treesitter;
 
-use crate::model::{Input, Name, Trail};
+use crate::model::{Input, Name, SharedTrail, Trail};
 use crate::trail::{Outline, TrailCursor, names_of, trail_for};
 
 /// The public contract. M5's External Processors implement it over the protocol of spec §4.4,
@@ -32,6 +33,50 @@ pub trait Processor: Send + Sync {
     /// while the rows are printed. None: only `trails`.
     fn outline_of(&self, _input: &Input, _params: &toml::Table) -> Option<anyhow::Result<Outline>> {
         None
+    }
+    /// Prepares the file once for an ordered cursor (M5b spec §6.1). The default is the model
+    /// adapter (`cursor::ModelPrepared`, plan D11): its `streams` is false, and the pipeline
+    /// then takes the one-shot whole-file model. Native cursors override it.
+    fn prepare<'a>(
+        &'a self,
+        input: Input<'a>,
+        params: &'a toml::Table,
+    ) -> anyhow::Result<Box<dyn Prepared + 'a>> {
+        Ok(Box::new(cursor::ModelPrepared::new(self, input, params)))
+    }
+    /// Whether `prepare` gives a native cursor for files of a Definition with `params`, told
+    /// before the search without preparing anything (plan Task 9.1).
+    fn capability(&self, _params: &toml::Table) -> Capability {
+        Capability::Model
+    }
+}
+
+/// What `Processor::prepare` gives for a Definition (plan Task 9.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Capability {
+    /// An ordered cursor over a preparation made once: the rows stream.
+    Native,
+    /// The model fallback: the pipeline builds the whole file's model (plan D11).
+    Model,
+}
+
+/// The Trails of a prepared file in file order (M5b spec §6.1).
+pub trait Cursor {
+    /// The Trail of a Match whose first byte is `byte`. Offsets come in non-decreasing order,
+    /// a repeated offset allowed; an offset before the last one is answered too, never with a
+    /// stale Trail. Consecutive equal Trails are the same `Rc`.
+    fn trail_at(&mut self, byte: usize) -> anyhow::Result<SharedTrail>;
+}
+
+/// A file prepared once by its Processor (plan D9, D10): it owns or borrows what its cursors
+/// read. Worker-local: it never crosses threads.
+pub trait Prepared {
+    fn cursor(&self) -> Box<dyn Cursor + '_>;
+    /// Every searchable Segment name (`--in-headings`), as `Processor::names`.
+    fn names(&self) -> anyhow::Result<Vec<Name>>;
+    /// A native cursor; false for the model fallback (`cursor::ModelPrepared`).
+    fn streams(&self) -> bool {
+        false
     }
 }
 
@@ -62,6 +107,20 @@ impl<T: OutlineProcessor> Processor for T {
 
     fn names(&self, input: &Input, params: &toml::Table) -> anyhow::Result<Vec<Name>> {
         Ok(names_of(&self.outline(input.bytes, params)?))
+    }
+
+    /// The Outline built once, and the cursor over it (plan D10).
+    fn prepare<'a>(
+        &'a self,
+        input: Input<'a>,
+        params: &'a toml::Table,
+    ) -> anyhow::Result<Box<dyn Prepared + 'a>> {
+        let outline = self.outline(input.bytes, params)?;
+        Ok(Box::new(cursor::OutlinePrepared::new(outline)))
+    }
+
+    fn capability(&self, _params: &toml::Table) -> Capability {
+        Capability::Native
     }
 }
 
@@ -577,5 +636,49 @@ mod tests {
             "{}",
             s.path().display()
         );
+    }
+
+    #[test]
+    fn a_legacy_processor_gets_a_working_default_cursor() {
+        struct Legacy;
+        impl Processor for Legacy {
+            fn trails(
+                &self,
+                _: &Input,
+                _: &toml::Table,
+                a: &[usize],
+            ) -> anyhow::Result<Vec<Trail>> {
+                Ok(a.iter()
+                    .map(|_| {
+                        vec![crate::model::Segment {
+                            kind: "test".into(),
+                            name: "same".into(),
+                            line: 1,
+                            end_line: 2,
+                            level: None,
+                            signature: None,
+                        }]
+                    })
+                    .collect())
+            }
+            fn names(&self, _: &Input, _: &toml::Table) -> anyhow::Result<Vec<Name>> {
+                Ok(Vec::new())
+            }
+        }
+        let params = toml::Table::new();
+        let input = Input {
+            bytes: b"x\ny\n",
+            path: std::path::Path::new("x"),
+            format: "test",
+            disk: None,
+        };
+        let legacy = Legacy;
+        let prepared = legacy.prepare(input, &params).unwrap();
+        let mut cursor = prepared.cursor();
+        let a = cursor.trail_at(0).unwrap();
+        let b = cursor.trail_at(2).unwrap();
+        assert_eq!(a.as_ref(), b.as_ref());
+        assert!(std::rc::Rc::ptr_eq(&a, &b));
+        assert!(!prepared.streams());
     }
 }

@@ -22,6 +22,10 @@ pub struct Segment {
 
 pub type Trail = Vec<Segment>;
 
+/// A Trail shared by the consecutive rows that have it (M5b spec §6.1). Worker-local, as `Rc`:
+/// a prepared file and its cursor never leave the thread that searches it.
+pub type SharedTrail = std::rc::Rc<[Segment]>;
+
 /// Byte range of a submatch, relative to the start of its line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Submatch {

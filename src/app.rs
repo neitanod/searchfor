@@ -11,6 +11,7 @@ use crate::output::{
     json::JsonOptions,
     json::RunStats,
     replace::Replacer,
+    spool::FileSpool,
     stream::{StreamFile, StreamSink},
     summary,
 };
@@ -65,19 +66,29 @@ struct Messages {
     /// `--no-ignore-messages`: the errors of ignore files are not printed.
     ignore_silent: bool,
     errored: AtomicBool,
+    err: Stderr,
 }
 
 impl Messages {
+    fn new(args: &Args, err: Stderr) -> Self {
+        Messages {
+            silent: args.no_messages,
+            ignore_silent: args.no_ignore_messages,
+            errored: AtomicBool::new(false),
+            err,
+        }
+    }
+
     fn error(&self, msg: impl std::fmt::Display) {
         self.errored.store(true, Relaxed);
         if !self.silent && !stopped() {
-            crate::warn(format_args!("s4: {msg}"));
+            self.err.line(format_args!("s4: {msg}"));
         }
     }
 
     fn warn(&self, msg: impl std::fmt::Display) {
         if !self.silent && !stopped() {
-            crate::warn(msg);
+            self.err.line(msg);
         }
     }
 
@@ -86,8 +97,75 @@ impl Messages {
     /// as rg 14.1.1's `ignore_message!`.
     fn ignore(&self, msg: impl std::fmt::Display) {
         if !self.silent && !self.ignore_silent && !stopped() {
-            crate::warn(format_args!("s4: {msg}"));
+            self.err.line(format_args!("s4: {msg}"));
         }
+    }
+}
+
+/// Where a run's diagnostics go: stderr (`crate::warn`), or what the tests' engine keeps
+/// (`execute_file`).
+#[derive(Clone, Default)]
+struct Stderr(Option<std::sync::Arc<Mutex<Vec<u8>>>>);
+
+impl Stderr {
+    fn line(&self, msg: impl std::fmt::Display) {
+        match &self.0 {
+            None => crate::warn(msg),
+            Some(v) => {
+                let _ = writeln!(v.lock().unwrap_or_else(|e| e.into_inner()), "{msg}");
+            }
+        }
+    }
+}
+
+/// What a search reads of its surroundings besides its arguments: the current directory,
+/// whether stdout is a terminal, the user's Format and Grammar directories, and where its
+/// output and diagnostics go. `Env::real` is the process's; the tests' engine (`execute_file`)
+/// gives its own, so the same engine runs without touching the user's directories.
+struct Env {
+    cwd: PathBuf,
+    tty: bool,
+    user_formats: Option<PathBuf>,
+    grammars: Option<PathBuf>,
+    err: Stderr,
+    /// What would go to stdout, kept (`execute_file`); None: stdout.
+    #[cfg(test)]
+    out: Option<std::sync::Arc<Mutex<Vec<u8>>>>,
+    /// Every file through the whole-file model, as the oracle of the streaming path (plan
+    /// Task 9.3, `Pipeline::Model`); false in every run of s4.
+    model_only: bool,
+    /// Where a file's output past 8 MiB is spooled (`FileOut`): the system's temporary
+    /// directory.
+    spool: PathBuf,
+    /// What the tests' engine counts of a run (`Probe`).
+    #[cfg(test)]
+    probe: Option<std::sync::Arc<Probe>>,
+}
+
+/// What a run did, for the tests: files whose output was spooled to disk, and files that took
+/// the whole-file model (`Ctx::describe`).
+#[cfg(test)]
+#[derive(Default)]
+struct Probe {
+    spilled: std::sync::atomic::AtomicUsize,
+    described: std::sync::atomic::AtomicUsize,
+}
+
+impl Env {
+    fn real() -> std::io::Result<Self> {
+        Ok(Env {
+            cwd: std::env::current_dir()?,
+            tty: std::io::IsTerminal::is_terminal(&std::io::stdout()),
+            user_formats: formats::user_formats_dir(),
+            grammars: crate::grammars::grammars_dir(),
+            err: Stderr::default(),
+            #[cfg(test)]
+            out: None,
+            model_only: false,
+            spool: std::env::temp_dir(),
+            #[cfg(test)]
+            probe: None,
+        })
     }
 }
 
@@ -98,27 +176,30 @@ fn stopped() -> bool {
 }
 
 /// The built-in Definitions, those of the installed Grammar Helpers and the user's (D26).
-fn load_registry(msgs: &Messages, user_dir: Option<&Path>) -> Registry {
-    let (registry, warnings) = Registry::load_all(
-        user_dir,
-        crate::grammars::grammars_dir().as_deref(),
-        &processors::Processors::known,
-    );
+fn load_registry(msgs: &Messages, user_dir: Option<&Path>, grammars: Option<&Path>) -> Registry {
+    let (registry, warnings) =
+        Registry::load_all(user_dir, grammars, &processors::Processors::known);
     for w in warnings {
         msgs.warn(w);
     }
     registry
 }
 
-/// The Processors of one run (design note 3), warning on stderr unless `--no-messages`.
-fn run_processors(args: &Args, threads: usize) -> processors::Processors {
+/// The Processors of one run (design note 3), warning on `err` unless `--no-messages`, with
+/// the Grammar Helpers installed in `grammars`.
+fn run_processors(
+    args: &Args,
+    threads: usize,
+    err: Stderr,
+    grammars: Option<PathBuf>,
+) -> processors::Processors {
     let silent = args.no_messages;
     let warn: crate::helper::Warn = std::sync::Arc::new(move |m: String| {
         if !silent && !stopped() {
-            crate::warn(m);
+            err.line(m);
         }
     });
-    processors::Processors::new(threads, warn).with_grammars(crate::grammars::grammars_dir())
+    processors::Processors::new(threads, warn).with_grammars(grammars)
 }
 
 /// `--list-grammars` (spec §7): the compiled-in and installed Grammars, and those the index
@@ -185,11 +266,7 @@ fn printed(written: std::io::Result<()>) -> std::io::Result<()> {
 }
 
 fn main(args: &Args) -> anyhow::Result<i32> {
-    let msgs = Messages {
-        silent: args.no_messages,
-        ignore_silent: args.no_ignore_messages,
-        errored: AtomicBool::new(false),
-    };
+    let msgs = Messages::new(args, Stderr::default());
     // Actions (step 3). `--pcre2-version` is rg's special mode: it wins over everything.
     if args.pcre2_version {
         printed(writeln!(
@@ -218,10 +295,11 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     }
     if args.list_formats || args.export_formats.is_some() {
         let user_dir = formats::user_formats_dir();
-        let registry = load_registry(&msgs, user_dir.as_deref());
+        let grammars = crate::grammars::grammars_dir();
+        let registry = load_registry(&msgs, user_dir.as_deref(), grammars.as_deref());
         if args.list_formats {
             // Built for the listing only: it reads the Grammar directory and starts nothing.
-            let procs = run_processors(args, 1);
+            let procs = run_processors(args, 1, Stderr::default(), grammars);
             let list = registry.list_with(&|d| procs.available(d));
             printed(write!(std::io::stdout().lock(), "{list}"))?;
             return Ok(0);
@@ -262,10 +340,16 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     if args.files {
         return files(args, &msgs);
     }
+    search_main(args, msgs, &Env::real()?)
+}
 
+/// A search (steps 4 to 11), in `env`: the engine of every run of s4, and of the tests' engine
+/// (`execute_file`).
+fn search_main(args: &Args, msgs: Messages, env: &Env) -> anyhow::Result<i32> {
     // Patterns and paths (step 4).
     if args.pattern.is_none() && args.regexp.is_empty() && args.pattern_files.is_empty() {
-        crate::warn("s4: a pattern is required: give one, or use -e or -f");
+        env.err
+            .line("s4: a pattern is required: give one, or use -e or -f");
         return Ok(2);
     }
     let pats = args.patterns()?;
@@ -279,15 +363,16 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     // As ripgrep 14.1.1 (hiargs.rs), the file types, the globs and the `--pre-glob` globs are
     // validated in this order before a pattern is compiled (code review r3, Codex #4). The
     // walker is built once, here, and walks the paths (code review r4, Fable #1).
-    let cwd = std::env::current_dir()?;
-    let (walker, ignore_errors) = search::walker_with(args, &paths, &cwd)?;
-    let pre = Preprocess::new(args, &cwd)?;
+    let cwd = &env.cwd;
+    let (walker, ignore_errors) = search::walker_with(args, &paths, cwd)?;
+    let pre = Preprocess::new(args, cwd)?;
     // Nothing can match: ripgrep 14.1.1 searches nothing and exits 1, in every mode and without
     // a JSON summary, once its file types and globs are valid (an unknown type is still an
     // error); the patterns are not compiled. We validate our Formats as well.
     if pats.patterns.is_empty() || args.max_count == Some(0) {
         if !args.formats.is_empty() {
-            let registry = load_registry(&msgs, formats::user_formats_dir().as_deref());
+            let registry =
+                load_registry(&msgs, env.user_formats.as_deref(), env.grammars.as_deref());
             Detector::new(&registry, &args.formats)?;
         }
         return Ok(1);
@@ -306,7 +391,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     } else {
         args.vimgrep || !one_file
     };
-    let tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let tty = env.tty;
     let color = match args.color {
         ColorWhen::Never => ColorChoice::Never,
         ColorWhen::Auto if tty => ColorChoice::Auto,
@@ -379,19 +464,24 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         _ => None,
     };
     let separator = separator.filter(|_| line_separator.is_none());
-    let mut out = BufferWriter::stdout(color);
-    out.separator(separator.clone());
+    #[cfg(test)]
+    let target = match &env.out {
+        Some(v) => OutTarget::Captured(v.clone()),
+        None => OutTarget::Stdout(BufferWriter::stdout(color)),
+    };
+    #[cfg(not(test))]
+    let target = OutTarget::Stdout(BufferWriter::stdout(color));
     // rg flushes each line on a terminal and with --line-buffered (hiargs.rs `stdout`).
     let line_buffered = match args.buffer {
         cli::BufferMode::Line => true,
         cli::BufferMode::Block => false,
         cli::BufferMode::Auto => tty,
     };
-    let out = Out {
-        w: out,
-        bytes: AtomicU64::new(0),
-        spill_at: if line_buffered { 1 } else { SPILL },
-    };
+    let out = Out::new(
+        target,
+        separator.clone(),
+        if line_buffered { 1 } else { SPILL },
+    );
     let width = if tty && layout != Layout::Json {
         terminal_size::terminal_size().map_or(args.fragment_width, |(w, _)| w.0 as usize)
     } else {
@@ -405,7 +495,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     // Grammar's Definition claims no name as a document's (Fable M4 code r8 #3). Else loaded
     // here: the Trails need them for every file, an unknown override is an error before the
     // search, and a user's Definition may claim any name as a document, and warns first.
-    let user_formats = formats::user_formats_dir();
+    let user_formats = env.user_formats.clone();
     let registry = std::sync::OnceLock::new();
     let detector = std::sync::OnceLock::new();
     let lazy = args.docs
@@ -413,7 +503,8 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         && args.formats.is_empty()
         && !formats::any_user_definition(user_formats.as_deref());
     if (matches!(mode, Mode::Trail) || args.docs) && !lazy {
-        let r = registry.get_or_init(|| load_registry(&msgs, user_formats.as_deref()));
+        let r = registry
+            .get_or_init(|| load_registry(&msgs, user_formats.as_deref(), env.grammars.as_deref()));
         let _ = detector.set(Detector::new(r, &args.formats)?.with_docs(args.docs));
     }
     let ctx = Ctx {
@@ -453,7 +544,14 @@ fn main(args: &Args) -> anyhow::Result<i32> {
             } else {
                 search::walker_threads(args)
             },
+            env.err.clone(),
+            env.grammars.clone(),
         ),
+        grammars: env.grammars.clone(),
+        model_only: env.model_only,
+        spool: env.spool.clone(),
+        #[cfg(test)]
+        probe: env.probe.clone(),
     };
     match mode {
         Mode::Quiet => ctx.walk(
@@ -505,7 +603,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
                     stream: Lazy::new(|| search::streaming_searcher(args, false, false)),
                     unnumbered: Lazy::new(|| search::printing_searcher(args, false, false, false)),
                     source: Lazy::new(|| search::searcher(args, false, true)),
-                    buf: ctx.out.buffer(),
+                    buf: ctx.file_out(),
                     binary_quit: false,
                     failed: None,
                 },
@@ -798,7 +896,8 @@ struct TrailState<'a> {
     /// or whose lines are numbered afterwards (`search::number_lines`).
     unnumbered: Lazy<'a, Searcher>,
     source: Lazy<'a, Searcher>,
-    buf: Buffer,
+    /// The output of the file being searched (`FileOut`).
+    buf: FileOut,
     /// The last `describe`d file's search quit at binary data (`BinaryDetection::quit`).
     binary_quit: bool,
     /// The last `describe`d file's search failed, after what it found is printed.
@@ -1009,10 +1108,19 @@ struct Ctx<'a> {
     links: std::sync::RwLock<Links>,
     /// `links` is not empty.
     linked: AtomicBool,
-    /// Each built-in Processor of the run's Definitions, by its name, when it builds Outlines
-    /// (`builds_outline`): found once per run, not once per file (M5b plan, Task 3.2).
+    /// The built-in Processor of each of the run's Definitions, by the Definition's name, when
+    /// it gives a native cursor (`Ctx::outliner`): found once per run, not once per file (M5b
+    /// plan, Task 3.2).
     outliners:
         std::sync::OnceLock<std::collections::HashMap<String, Option<&'static dyn Processor>>>,
+    /// The Grammar directory (`Env::grammars`), for a Registry loaded once needed.
+    grammars: Option<PathBuf>,
+    /// `Env::model_only`.
+    model_only: bool,
+    /// `Env::spool`.
+    spool: PathBuf,
+    #[cfg(test)]
+    probe: Option<std::sync::Arc<Probe>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -1112,21 +1220,23 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// The built-in Processor of `def` when it builds Outlines, looked up in `Ctx::outliners`.
+    /// The built-in Processor of `def` when it gives a native cursor for its params
+    /// (`Processor::capability`), looked up in `Ctx::outliners` by the Definition's name.
     fn outliner(
         &self,
         def: &formats::definition::FormatDefinition,
     ) -> Option<&'static dyn Processor> {
-        let of = |name: &str| processors::by_name(name).filter(|p| builds_outline(*p));
+        let of = |d: &formats::definition::FormatDefinition| {
+            processors::by_name(&d.processor)
+                .filter(|p| p.capability(&d.params) == processors::Capability::Native)
+        };
         let known = self.outliners.get_or_init(|| {
             let defs = self.registry.get().map_or(&[][..], Registry::all);
-            defs.iter()
-                .map(|d| (d.processor.clone(), of(&d.processor)))
-                .collect()
+            defs.iter().map(|d| (d.name.clone(), of(d))).collect()
         });
-        match known.get(def.processor.as_str()) {
+        match known.get(def.name.as_str()) {
             Some(p) => *p,
-            None => of(&def.processor),
+            None => of(def),
         }
     }
 
@@ -1207,7 +1317,7 @@ impl<'a> Ctx<'a> {
         self.detector.get_or_init(|| {
             let r = self
                 .registry
-                .get_or_init(|| load_registry(&self.msgs, None));
+                .get_or_init(|| load_registry(&self.msgs, None, self.grammars.as_deref()));
             Detector::new(r, &self.args.formats)
                 .expect("without overrides")
                 .with_docs(self.args.docs)
@@ -1496,6 +1606,64 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// Prints one file's output (`FileOut`) and empties it for the next file.
+    fn print_file(&self, out: &mut FileOut) {
+        let printed = match out {
+            FileOut::Buffer(b) => {
+                self.print(b);
+                Ok(())
+            }
+            FileOut::Plain(w) => self.print_spooled(w.get_mut()),
+            FileOut::Ansi(w) => self.print_spooled(w.get_mut()),
+        };
+        if let Err(e) = printed
+            && e.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            self.msgs.error(e);
+        }
+        out.clear();
+    }
+
+    /// `print` for a spooled output: an error reading the temporary file is returned, one
+    /// writing stdout handled as `print` handles it.
+    fn print_spooled(&self, spool: &mut FileSpool) -> std::io::Result<()> {
+        if stopped() {
+            self.quit.store(true, Relaxed);
+            return Ok(());
+        }
+        if spool.is_empty() {
+            return Ok(());
+        }
+        self.printed.store(true, Relaxed);
+        #[cfg(test)]
+        if let Some(p) = &self.probe
+            && spool.is_spilled()
+        {
+            p.spilled.fetch_add(1, Relaxed);
+        }
+        if let Err(e) = self.out.print_spool(spool) {
+            self.quit.store(true, Relaxed);
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// A worker's output of one file at a time (`FileOut`): spooled past 8 MiB where other
+    /// threads search, so a dense file's output is not held in memory (M5b spec §6.2).
+    fn file_out(&self) -> FileOut {
+        let buf = self.out.buffer();
+        if self.spill || !can_spill_bytes(&buf) {
+            return FileOut::Buffer(buf);
+        }
+        // An unnamed file: the system deletes it however s4 ends.
+        let spool = FileSpool::new(&self.spool).expect("FileSpool::new creates nothing");
+        if buf.supports_color() {
+            FileOut::Ansi(termcolor::Ansi::new(spool))
+        } else {
+            FileOut::Plain(termcolor::NoColor::new(spool))
+        }
+    }
+
     fn print_summary(&self) {
         let mut stats = self.stats.lock().expect("stats").clone();
         stats.elapsed_total = self.started.elapsed();
@@ -1720,8 +1888,10 @@ impl<'a> Ctx<'a> {
         ro: &RenderOptions,
     ) {
         // Without structural flags, rows are printed as the searcher reports them: Plain files,
-        // and files on disk whose Processor builds an Outline (code review r1, Fable #1).
-        if !self.args.structural()
+        // and files on disk whose Processor gives a native cursor (code review r1, Fable #1; M5b
+        // spec §6.1). The tests' oracle takes the model's path for every file.
+        if !self.model_only
+            && !self.args.structural()
             && self.summary.is_none()
             && !self.args.quiet
             && t.through.is_none()
@@ -1731,7 +1901,7 @@ impl<'a> Ctx<'a> {
                 Some(None) if self.plain_file(matcher, st, t, ro, detector) => return,
                 Some(Some(def)) if t.regular => {
                     if let Some(p) = self.outliner(def)
-                        && self.outlined_file(matcher, st, t, ro, def, p)
+                        && self.prepared_file(matcher, st, t, ro, def, p)
                     {
                         return;
                     }
@@ -1791,7 +1961,7 @@ impl<'a> Ctx<'a> {
                 Ok(false) => {}
                 Err(e) => self.msgs.error(e),
             }
-            self.print(buf);
+            self.print_file(buf);
             return;
         }
         let Some((src, d)) = found else { return };
@@ -1811,26 +1981,23 @@ impl<'a> Ctx<'a> {
         let written = match ro.layout {
             Layout::Tree => output::tree::render(&d, src.bytes(), ro, buf),
             Layout::Flat => output::flat::render(&d, src.bytes(), ro, self.lead(), buf),
+            // Written straight into the file's bounded output (M5b spec §6.1).
             Layout::Json => {
                 let jo = self.json_options(ro);
-                let mut v = Vec::new();
-                output::json::render_with_stats(&d, src.bytes(), &jo, &mut v).and_then(
-                    |(_, stats)| {
-                        match failed {
-                            None => *self.stats.lock().expect("stats") += &stats,
-                            // rg's JSON printer writes `end` at the end of the search.
-                            Some(true) => without_end(&mut v),
-                            Some(false) => {}
-                        }
-                        buf.write_all(&v)
-                    },
-                )
+                // rg's JSON printer writes `end` at the end of the search, which a failed read
+                // never reaches.
+                let end = failed != Some(true);
+                output::json::render_messages(&d, src.bytes(), &jo, buf, end).map(|(_, stats)| {
+                    if let (None, Some(stats)) = (failed, stats) {
+                        *self.stats.lock().expect("stats") += &stats;
+                    }
+                })
             }
         };
         if let Err(e) = written {
             self.msgs.error(e);
         }
-        self.print(buf);
+        self.print_file(buf);
     }
 
     /// The after context `-m` lets run after the last Match allowed: none for -c,
@@ -1914,13 +2081,15 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// A file whose Processor builds an Outline, printed as `plain_file` with the Trail of each
-    /// row computed as it is printed. The Processor runs only for a file with a Match (spec
-    /// §3.1): a file searched with a reader is searched first, up to its first Match, and read
-    /// only when it has one; a file searched in memory is read, and its Source searched up to
-    /// its first Match. Then the search runs again over the Source. Returns false, printing nothing, for the files the model's path handles: one
-    /// with binary data (no Trails, step 7) or a BOM (whose reader search reads differently).
-    fn outlined_file(
+    /// A file whose Processor gives a native cursor (`Ctx::outliner`), printed as `plain_file`
+    /// with the Trail of each row asked of the cursor as it is printed (M5b spec §6.1). The
+    /// Processor prepares the file only when it has a Match (spec §3.1): a file searched with a
+    /// reader is searched first, up to its first Match, and read only when it has one; a file
+    /// searched in memory is read, and its Source searched up to its first Match. Then the
+    /// search runs again over the Source. Returns false, printing nothing, for the files the
+    /// model's path handles: one with binary data (no Trails, step 7) or a BOM (whose reader
+    /// search reads differently), and one whose preparation is the model fallback.
+    fn prepared_file(
         &self,
         matcher: &PatternMatcher,
         st: &mut TrailState,
@@ -1952,14 +2121,14 @@ impl<'a> Ctx<'a> {
             format: &def.name,
             disk: None,
         };
-        let outline_of = || p.outline_of(&input, &def.params);
-        let outline = if self.in_memory {
+        let prepare = || p.prepare(input, &def.params);
+        let prepared = if self.in_memory {
             // Searched in memory as ripgrep: the search first, here too (code review r2,
             // Fable #2 and Codex #4).
             st.source
                 .set_binary_detection(search::binary_detection(self.args, t.explicit));
             let invert = self.args.invert_match;
-            match if_matched(&mut st.source, matcher, invert, src.bytes(), outline_of) {
+            match if_matched(&mut st.source, matcher, invert, src.bytes(), prepare) {
                 Err(e) => {
                     self.msgs.error(format_args!("{}: {e}", t.path().display()));
                     return true;
@@ -1968,24 +2137,26 @@ impl<'a> Ctx<'a> {
                 Ok(Some(o)) => o,
             }
         } else {
-            outline_of()
+            prepare()
         };
-        // A failing Processor is a warning and leaves the file without Trails.
-        let outline = match outline {
-            Some(Ok(o)) => Some(o),
-            Some(Err(e)) => {
+        // A failing Processor is a warning and leaves the file Plain (D33).
+        let prepared = match prepared {
+            Ok(p) if p.streams() => Some(p),
+            Ok(_) => return false,
+            Err(e) => {
                 self.msgs
                     .warn(format_args!("s4: {}: {e:#}", src.path.display()));
                 None
             }
-            None => return false,
         };
         let how = if self.in_memory {
             Streamed::Source(&src)
         } else {
             Streamed::Again(&src)
         };
-        self.stream_file(matcher, st, t, ro, how, outline.as_ref(), Some(&def.name));
+        let format = prepared.as_ref().map(|_| def.name.as_str());
+        let cursor = prepared.as_ref().map(|p| p.cursor());
+        self.stream_file(matcher, st, t, ro, how, cursor, format);
         true
     }
 
@@ -1999,7 +2170,7 @@ impl<'a> Ctx<'a> {
         t: &Target,
         ro: &RenderOptions,
         how: Streamed,
-        outline: Option<&Outline>,
+        cursor: Option<Box<dyn processors::Cursor + '_>>,
         format: Option<&str>,
     ) {
         let jo = self.json_options(ro);
@@ -2018,7 +2189,7 @@ impl<'a> Ctx<'a> {
             explicit,
             format,
             src: src.map(Source::bytes),
-            outline,
+            cursor,
             max_count: search::max_count(self.args),
             lead: self.lead(),
         };
@@ -2066,7 +2237,7 @@ impl<'a> Ctx<'a> {
                 }
             }
         }
-        self.print(&st.buf);
+        self.print_file(&mut st.buf);
     }
 
     /// The search first, and the Source only for a file with Matches (spec §3.1). Explicit
@@ -2275,6 +2446,10 @@ impl<'a> Ctx<'a> {
         detector: &Detector,
         replace: Option<&Replacer>,
     ) -> Result<Option<(Source, Described)>, ()> {
+        #[cfg(test)]
+        if let Some(p) = &self.probe {
+            p.described.fetch_add(1, Relaxed);
+        }
         st.binary_quit = false;
         st.failed = None;
         let found = if self.args.in_headings {
@@ -2918,6 +3093,28 @@ impl<'a> Ctx<'a> {
         params: &toml::Table,
         fm: &FileMatches,
     ) -> Option<Vec<Vec<Trail>>> {
+        let warn = |e: anyhow::Error| {
+            if e.downcast_ref::<crate::helper::Unavailable>().is_none() {
+                self.msgs
+                    .warn(format_args!("s4: {}: {e:#}", input.path.display()));
+            }
+        };
+        // A native cursor, prepared once, gives each Match's Trails in file order, without the
+        // list of every anchor (M5b spec §6.1); the tests' oracle asks for the model's.
+        if !self.model_only && p.capability(params) == processors::Capability::Native {
+            let trails = p.prepare(*input, params).and_then(|prepared| {
+                let mut c = prepared.cursor();
+                fm.matches()
+                    .map(|m| {
+                        m.anchors()
+                            .into_iter()
+                            .map(|a| c.trail_at(a).map(|t| t.to_vec()))
+                            .collect()
+                    })
+                    .collect::<anyhow::Result<Vec<Vec<Trail>>>>()
+            });
+            return trails.map_err(warn).ok();
+        }
         let anchors: Vec<Vec<usize>> = fm.matches().map(|m| m.anchors()).collect();
         let all: Vec<usize> = anchors.iter().flatten().copied().collect();
         match p.trails(input, params, &all) {
@@ -2938,10 +3135,7 @@ impl<'a> Ctx<'a> {
                 None
             }
             Err(e) => {
-                if e.downcast_ref::<crate::helper::Unavailable>().is_none() {
-                    self.msgs
-                        .warn(format_args!("s4: {}: {e:#}", input.path.display()));
-                }
+                warn(e);
                 None
             }
         }
@@ -3154,20 +3348,6 @@ fn if_matched<T>(
         .then(then))
 }
 
-/// One empty Trail per submatch (one per inverted Match): Plain files and binary files.
-/// Whether the stateless built-in `p` builds Outlines (`Processor::outline_of`), asked on an
-/// empty Source: `outlined_file` would otherwise search and read a file with Matches whose
-/// Processor has none (keypath) only to hand it to `describe`, which does both again.
-fn builds_outline(p: &dyn Processor) -> bool {
-    let input = Input {
-        bytes: b"",
-        path: Path::new(""),
-        format: "",
-        disk: None,
-    };
-    p.outline_of(&input, &toml::Table::new()).is_some()
-}
-
 /// The canonical path of the file on disk whose bytes are exactly `src`'s: a regular file
 /// outside /dev and /proc, searched without a BOM or UTF-16 transcoding, whose length on disk
 /// is the Source's. The helper gets this resolved path, never the one typed: `stdin` typed in
@@ -3189,14 +3369,6 @@ fn disk_of(t: &Target, src: &Source) -> Option<PathBuf> {
     (m.is_file() && !src.had_bom && m.len() == src.bytes().len() as u64).then_some(real)
 }
 
-/// One file's JSON messages without the last, its `end`.
-fn without_end(v: &mut Vec<u8>) {
-    let body = v.strip_suffix(b"\n").unwrap_or(v);
-    let last = body.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
-    debug_assert!(v[last..].starts_with(br#"{"type":"end""#));
-    v.truncate(last);
-}
-
 /// `trails[i][k]` of the Matches of `fm` from an Outline, as `OutlineProcessor` gives them.
 fn outline_trails(o: &Outline, fm: &FileMatches) -> Vec<Vec<Trail>> {
     let mut c = crate::trail::TrailCursor::new(o);
@@ -3205,6 +3377,7 @@ fn outline_trails(o: &Outline, fm: &FileMatches) -> Vec<Vec<Trail>> {
         .collect()
 }
 
+/// One empty Trail per submatch (one per inverted Match): Plain files and binary files.
 fn empty_trails(fm: &FileMatches) -> Vec<Vec<Trail>> {
     fm.matches()
         .map(|m| vec![Vec::new(); m.submatches.len().max(1)])
@@ -3377,18 +3550,48 @@ fn rewindable(p: &Path) -> bool {
 /// What `Spill` holds before it prints: a file's output is printed in pieces of about this size.
 const SPILL: usize = 64 * 1024;
 
-/// stdout: the BufferWriter every output goes through, the bytes printed (for `--stats`), and
-/// how much `Spill` holds before it prints: `SPILL`, or with line buffering a byte, so each
-/// line goes out as it is written (M5a plan, D13).
+/// stdout: the BufferWriter every output goes through, the separator it prints between two
+/// non-empty outputs, the bytes printed (for `--stats`), and how much `Spill` holds before it
+/// prints: `SPILL`, or with line buffering a byte, so each line goes out as it is written (M5a
+/// plan, D13). The separator is printed here, not by the BufferWriter, so that a spooled file
+/// (`FileOut`) goes out after it under the same lock (M5b spec §6.2).
 struct Out {
-    w: BufferWriter,
+    w: OutTarget,
+    separator: Option<Vec<u8>>,
+    /// Something was printed: the separator goes before the next output.
+    printed: AtomicBool,
+    /// Held while one output, with its separator, is printed: no other comes between.
+    lock: Mutex<()>,
     bytes: AtomicU64,
     spill_at: usize,
 }
 
+/// Where `Out` prints.
+enum OutTarget {
+    Stdout(BufferWriter),
+    /// The tests' engine (`execute_file`): what would go to stdout, kept.
+    #[cfg(test)]
+    Captured(std::sync::Arc<Mutex<Vec<u8>>>),
+}
+
 impl Out {
+    fn new(w: OutTarget, separator: Option<Vec<u8>>, spill_at: usize) -> Self {
+        Out {
+            w,
+            separator,
+            printed: AtomicBool::new(false),
+            lock: Mutex::new(()),
+            bytes: AtomicU64::new(0),
+            spill_at,
+        }
+    }
+
     fn buffer(&self) -> Buffer {
-        self.w.buffer()
+        match &self.w {
+            OutTarget::Stdout(w) => w.buffer(),
+            #[cfg(test)]
+            OutTarget::Captured(_) => Buffer::no_color(),
+        }
     }
 
     /// An empty buffer, the output of most files, touches neither the shared byte count nor
@@ -3397,8 +3600,130 @@ impl Out {
         if buf.is_empty() {
             return Ok(());
         }
+        let _held = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.separate()?;
         self.bytes.fetch_add(buf.as_slice().len() as u64, Relaxed);
-        self.w.print(buf)
+        self.put(buf)?;
+        self.printed.store(true, Relaxed);
+        Ok(())
+    }
+
+    /// A spooled file's output, after the separator, under one hold of the lock: no other
+    /// output comes between its pieces (M5b spec §6.2).
+    fn print_spool(&self, spool: &mut FileSpool) -> std::io::Result<()> {
+        if spool.is_empty() {
+            return Ok(());
+        }
+        let _held = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.separate()?;
+        let mut piece = self.buffer();
+        let n = spool.each_piece(&mut |bytes| {
+            piece.clear();
+            piece.write_all(bytes)?;
+            self.put(&piece)
+        })?;
+        self.bytes.fetch_add(n, Relaxed);
+        if n > 0 {
+            self.printed.store(true, Relaxed);
+        }
+        Ok(())
+    }
+
+    /// The separator, before an output when something was printed (held: `lock`).
+    fn separate(&self) -> std::io::Result<()> {
+        if let Some(sep) = &self.separator
+            && self.printed.load(Relaxed)
+        {
+            let mut b = self.buffer();
+            b.write_all(sep)?;
+            b.write_all(b"\n")?;
+            self.put(&b)?;
+        }
+        Ok(())
+    }
+
+    fn put(&self, buf: &Buffer) -> std::io::Result<()> {
+        match &self.w {
+            OutTarget::Stdout(w) => w.print(buf),
+            #[cfg(test)]
+            OutTarget::Captured(v) => {
+                v.lock().unwrap().extend_from_slice(buf.as_slice());
+                Ok(())
+            }
+        }
+    }
+}
+
+/// One file's output in a Trail-mode worker, printed when the file ends (`Ctx::print_file`).
+/// Where nothing can come between pieces (`Ctx::spill`), and for a Windows console buffer,
+/// whose colours live beside its bytes (plan D12), a termcolor `Buffer`; otherwise the plain or
+/// ANSI bytes go to a `FileSpool`, which keeps 8 MiB in memory and the rest in a temporary file
+/// (M5b spec §6.2).
+enum FileOut {
+    Buffer(Buffer),
+    Plain(termcolor::NoColor<FileSpool>),
+    Ansi(termcolor::Ansi<FileSpool>),
+}
+
+impl FileOut {
+    fn clear(&mut self) {
+        match self {
+            FileOut::Buffer(b) => b.clear(),
+            FileOut::Plain(w) => w.get_mut().clear(),
+            FileOut::Ansi(w) => w.get_mut().clear(),
+        }
+    }
+
+    fn color(&mut self) -> &mut dyn WriteColor {
+        match self {
+            FileOut::Buffer(b) => b,
+            FileOut::Plain(w) => w,
+            FileOut::Ansi(w) => w,
+        }
+    }
+}
+
+impl Write for FileOut {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.color().write(bytes)
+    }
+
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.color().write_all(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl WriteColor for FileOut {
+    fn supports_color(&self) -> bool {
+        match self {
+            FileOut::Buffer(b) => b.supports_color(),
+            FileOut::Plain(w) => w.supports_color(),
+            FileOut::Ansi(w) => w.supports_color(),
+        }
+    }
+
+    fn supports_hyperlinks(&self) -> bool {
+        match self {
+            FileOut::Buffer(b) => b.supports_hyperlinks(),
+            FileOut::Plain(w) => w.supports_hyperlinks(),
+            FileOut::Ansi(w) => w.supports_hyperlinks(),
+        }
+    }
+
+    fn set_hyperlink(&mut self, link: &termcolor::HyperlinkSpec) -> std::io::Result<()> {
+        self.color().set_hyperlink(link)
+    }
+
+    fn set_color(&mut self, spec: &termcolor::ColorSpec) -> std::io::Result<()> {
+        self.color().set_color(spec)
+    }
+
+    fn reset(&mut self) -> std::io::Result<()> {
+        self.color().reset()
     }
 }
 
@@ -3406,7 +3731,7 @@ impl Out {
 /// file's output is not held in memory until the file ends (code review r2, Fable #3). Only
 /// where nothing can come between the pieces (`Ctx::spill`).
 struct Spill<'a> {
-    buf: &'a mut Buffer,
+    buf: &'a mut FileOut,
     out: Option<&'a Out>,
     printed: &'a AtomicBool,
 }
@@ -3415,15 +3740,16 @@ impl Write for Spill<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let n = self.buf.write(bytes)?;
         if let Some(out) = self.out
-            && self.buf.as_slice().len() >= out.spill_at
+            && let FileOut::Buffer(buf) = &mut *self.buf
+            && buf.as_slice().len() >= out.spill_at
         {
             if stopped() {
-                self.buf.clear();
+                buf.clear();
                 return Ok(n);
             }
             self.printed.store(true, Relaxed);
-            out.print(self.buf)?;
-            self.buf.clear();
+            out.print(buf)?;
+            buf.clear();
         }
         Ok(n)
     }
@@ -3612,6 +3938,347 @@ fn run_stats(s: &Stats) -> RunStats {
 mod tests {
     use super::*;
 
+    /// Which path files take (plan Task 9.3): the whole-file model, the oracle, or what s4
+    /// selects, streaming where a native cursor serves the file.
+    #[derive(Clone, Copy)]
+    enum Pipeline {
+        Model,
+        Stream,
+    }
+
+    struct Captured {
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+        code: i32,
+    }
+
+    /// A search run by the real engine (`search_main`) with its own directories.
+    struct FileCommand {
+        args: crate::cli::Args,
+        cwd: std::path::PathBuf,
+        formats: std::path::PathBuf,
+        grammars: std::path::PathBuf,
+        /// The Grammar index: only `--list-grammars` and `--install-grammar` read it, never a
+        /// search, so it is checked to be local and goes nowhere.
+        index: String,
+        /// The run's spool directory (`Env::spool`) and what it counts (`Probe`).
+        spool: std::path::PathBuf,
+        probe: Option<std::sync::Arc<Probe>>,
+    }
+
+    /// `command` through `search_main` with `pipeline`, its stdout and stderr written to
+    /// `stdout` and `stderr`: no terminal, the given Format and Grammar directories, nothing
+    /// of the process's environment changed (plan Task 9.3).
+    fn execute_file(
+        command: &FileCommand,
+        pipeline: Pipeline,
+        stdout: &mut dyn termcolor::WriteColor,
+        stderr: &mut dyn std::io::Write,
+    ) -> anyhow::Result<i32> {
+        assert!(command.index.starts_with("file://"), "{}", command.index);
+        let out: std::sync::Arc<Mutex<Vec<u8>>> = Default::default();
+        let err: std::sync::Arc<Mutex<Vec<u8>>> = Default::default();
+        let env = Env {
+            cwd: command.cwd.clone(),
+            tty: false,
+            user_formats: Some(command.formats.clone()),
+            grammars: Some(command.grammars.clone()),
+            err: Stderr(Some(err.clone())),
+            out: Some(out.clone()),
+            model_only: matches!(pipeline, Pipeline::Model),
+            spool: command.spool.clone(),
+            probe: command.probe.clone(),
+        };
+        let msgs = Messages::new(&command.args, env.err.clone());
+        let code = search_main(&command.args, msgs, &env);
+        stdout.write_all(&out.lock().unwrap())?;
+        stderr.write_all(&err.lock().unwrap())?;
+        code
+    }
+
+    fn compare_fixture_command(
+        path: &std::path::Path,
+        args: &[&str],
+        pipeline: Pipeline,
+    ) -> Captured {
+        let dir = tempfile::tempdir().unwrap();
+        let formats = dir.path().join("formats");
+        let grammars = dir.path().join("grammars");
+        std::fs::create_dir(&formats).unwrap();
+        std::fs::create_dir(&grammars).unwrap();
+        let mut argv: Vec<std::ffi::OsString> = vec!["s4".into(), "--no-config".into()];
+        argv.extend(args.iter().map(std::ffi::OsString::from));
+        argv.push(path.as_os_str().to_owned());
+        let args = match crate::cli::parse(argv) {
+            Ok(a) => a,
+            Err(e) => {
+                return Captured {
+                    stdout: Vec::new(),
+                    stderr: format!("{e}").into_bytes(),
+                    code: 2,
+                };
+            }
+        };
+        let command = FileCommand {
+            args,
+            cwd: std::env::current_dir().unwrap(),
+            formats,
+            grammars,
+            index: format!("file://{}", dir.path().join("missing-index").display()),
+            spool: dir.path().to_path_buf(),
+            probe: None,
+        };
+        let mut out = termcolor::Buffer::no_color();
+        let mut stderr = Vec::new();
+        let code = match execute_file(&command, pipeline, &mut out, &mut stderr) {
+            Ok(code) => code,
+            Err(e) => {
+                use std::io::Write;
+                writeln!(stderr, "{e}").unwrap();
+                2
+            }
+        };
+        Captured {
+            stdout: out.as_slice().to_vec(),
+            stderr,
+            code,
+        }
+    }
+
+    #[test]
+    fn m5b_stream_matches_model_for_every_fixture_and_mode() {
+        fn files(p: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(p).unwrap() {
+                let e = entry.unwrap();
+                if e.file_type().unwrap().is_dir() {
+                    files(&e.path(), out);
+                } else {
+                    out.push(e.path());
+                }
+            }
+        }
+        fn normalized(out: &[u8], json: bool) -> Vec<u8> {
+            if !json {
+                return out.to_vec();
+            }
+            fn times(v: &mut serde_json::Value) {
+                match v {
+                    serde_json::Value::Object(m) => {
+                        for (key, value) in m {
+                            if key == "elapsed" || key == "elapsed_total" {
+                                *value =
+                                    serde_json::json!({"secs":0,"nanos":0,"human":"0.000000s"});
+                            } else {
+                                times(value);
+                            }
+                        }
+                    }
+                    serde_json::Value::Array(a) => a.iter_mut().for_each(times),
+                    _ => {}
+                }
+            }
+            let mut result = Vec::new();
+            for line in out.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+                let mut v: serde_json::Value = serde_json::from_slice(line).unwrap();
+                times(&mut v);
+                serde_json::to_writer(&mut result, &v).unwrap();
+                result.push(b'\n');
+            }
+            result
+        }
+        let mut paths = Vec::new();
+        files(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures"),
+            &mut paths,
+        );
+        paths.sort();
+        // M5's synthetic cases besides the fixtures (plan Task 9.3, Step 4): multiline Matches,
+        // Latin-1, a BOM, CRLF, no final line break, an empty file, dense JSON Lines and CSV.
+        let synthetic = tempfile::tempdir().unwrap();
+        let cases: &[(&str, &[u8])] = &[
+            ("multi.md", b"# A\nneedle one\nneedle\ntwo\n## B\n\nneedle\nend\n"),
+            ("latin1.md", b"# Caf\xe9\nneedle \xe9t\xe9\n## Install\nneedle\n"),
+            ("bom.csv", b"\xef\xbb\xbfName,Plan\nfirst,needle\n"),
+            ("crlf.md", b"# Install\r\nneedle\r\n\r\n## Linux\r\nneedle\r\n"),
+            ("noeol.csv", b"Name,Plan\n\"two\nlines\",needle\nlast,needle"),
+            ("empty.json", b""),
+            (
+                "dense.jsonl",
+                b"{\"a\":\"needle\",\"b\":[\"needle\",{\"c\":\"needle\"}]}\n[\"needle\"]\n\"needle\"\n{\"d\":{\"e\":1}, \"needle\": 2}\n",
+            ),
+            ("dense.csv", b"Install,needle\nneedle,needle\n,\nneedle\n"),
+            ("broken.jsonl", b"{\"a\": {\"b\": \"needle\" x}}\n{\"c\": \"needle\"}\n"),
+        ];
+        for (name, bytes) in cases {
+            let p = synthetic.path().join(name);
+            std::fs::write(&p, bytes).unwrap();
+            paths.push(p);
+        }
+        let modes: &[&[&str]] = &[
+            &["--flat"],
+            &["--tree"],
+            &["--json"],
+            &["--flat", "--stats"],
+            &["--tree", "-C2"],
+            &["--flat", "-o"],
+            &["--flat", "--vimgrep"],
+            &["--flat", "-r", "X\nY"],
+            &["--tree", "--expand"],
+            &["--json", "--expand"],
+            &["--flat", "--within", "Install", "-m1", "-C1"],
+            &["--flat", "--in-headings"],
+            &["-c"],
+            &["--count-matches"],
+            &["-l"],
+            &["--flat", "--sort", "path"],
+            &["--tree", "-U", "-o"],
+            &["--flat", "--null-data"],
+            &["--tree", "--crlf"],
+            &["--flat", "--passthru"],
+            &["--flat", "-v"],
+        ];
+        let mut jobs = Vec::new();
+        for path in &paths {
+            for &mode in modes {
+                // `^`: an empty Match on every line.
+                for pattern in ["needle", "needle\\n[^\\n]*", "ABSENT_SENTINEL", "^"] {
+                    jobs.push((path, mode, pattern));
+                }
+            }
+        }
+        // The cases are independent: a few threads share them (the engine of each runs on its
+        // own thread, one file, so sequentially).
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let threads = std::thread::available_parallelism().map_or(2, |n| n.get().min(8));
+        std::thread::scope(|s| {
+            for _ in 0..threads {
+                s.spawn(|| {
+                    while let Some(&(path, mode, pattern)) = jobs.get(next.fetch_add(1, Relaxed)) {
+                        let mut args = mode.to_vec();
+                        args.extend(["--color=never", "--no-docs", "--regexp", pattern]);
+                        let a = compare_fixture_command(path, &args, Pipeline::Model);
+                        let b = compare_fixture_command(path, &args, Pipeline::Stream);
+                        assert_eq!(a.code, b.code, "{path:?} {args:?}");
+                        assert_eq!(a.stderr, b.stderr, "{path:?} {args:?}");
+                        let json = mode.contains(&"--json");
+                        let strip_stats = |bytes: &[u8]| {
+                            let s = String::from_utf8_lossy(bytes);
+                            s.lines()
+                                .filter(|l| {
+                                    !l.ends_with(" seconds")
+                                        && !l.ends_with(" seconds spent searching")
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                                .into_bytes()
+                        };
+                        let (ao, bo) = if mode.contains(&"--stats") {
+                            (strip_stats(&a.stdout), strip_stats(&b.stdout))
+                        } else {
+                            (a.stdout, b.stdout)
+                        };
+                        let text = |b: Vec<u8>| String::from_utf8_lossy(&b).into_owned();
+                        assert_eq!(
+                            text(normalized(&ao, json)),
+                            text(normalized(&bo, json)),
+                            "{path:?} {args:?}"
+                        );
+                    }
+                });
+            }
+        });
+    }
+
+    /// `argv` (paths included) through the real engine, as `compare_fixture_command`, with
+    /// `spool` as its spool directory and `probe` counting.
+    fn run_engine(
+        argv: &[std::ffi::OsString],
+        spool: &Path,
+        probe: &std::sync::Arc<Probe>,
+    ) -> Captured {
+        let dir = tempfile::tempdir().unwrap();
+        let (formats, grammars) = (dir.path().join("formats"), dir.path().join("grammars"));
+        std::fs::create_dir(&formats).unwrap();
+        std::fs::create_dir(&grammars).unwrap();
+        let mut all: Vec<std::ffi::OsString> = vec!["s4".into(), "--no-config".into()];
+        all.extend(argv.iter().cloned());
+        let command = FileCommand {
+            args: crate::cli::parse(all).unwrap(),
+            cwd: std::env::current_dir().unwrap(),
+            formats,
+            grammars,
+            index: format!("file://{}", dir.path().join("missing-index").display()),
+            spool: spool.to_path_buf(),
+            probe: Some(probe.clone()),
+        };
+        let mut out = termcolor::Buffer::no_color();
+        let mut stderr = Vec::new();
+        let code = execute_file(&command, Pipeline::Stream, &mut out, &mut stderr).unwrap();
+        Captured {
+            stdout: out.into_inner(),
+            stderr,
+            code,
+        }
+    }
+
+    /// M5b spec §6.1 and §6.2 (plan Task 9.4, Step 4): dense CSV files searched by several
+    /// workers stream through the CSV cursor, never the whole-file model, and each file's
+    /// output past 8 MiB is spooled and printed whole, the spool leaving nothing behind. The
+    /// spool directory is on disk when one is at hand (CARGO_TARGET_DIR): `/tmp` is a tmpfs on
+    /// the shared Linux machine (`df` shows it), where the spool lives in RAM. So this checks
+    /// the spill and its cleanup, not where the bytes live, and no memory.
+    #[test]
+    fn dense_files_of_several_workers_stream_and_spool_whole() {
+        let disk = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from);
+        let spool = match &disk {
+            Some(d) if std::fs::create_dir_all(d).is_ok() => tempfile::tempdir_in(d).unwrap(),
+            _ => tempfile::tempdir().unwrap(),
+        };
+        let data = tempfile::tempdir().unwrap();
+        const ROWS: usize = 200_000;
+        for name in ["a.csv", "b.csv"] {
+            let mut csv = b"Name,Plan\n".to_vec();
+            for i in 0..ROWS {
+                csv.extend_from_slice(format!("n{i},needle\n").as_bytes());
+            }
+            std::fs::write(data.path().join(name), csv).unwrap();
+        }
+        let argv: Vec<std::ffi::OsString> = [
+            "--flat",
+            "-H",
+            "--color=never",
+            "--no-docs",
+            "-j2",
+            "needle",
+        ]
+        .iter()
+        .map(Into::into)
+        .chain([data.path().as_os_str().to_owned()])
+        .collect();
+        let probe = std::sync::Arc::new(Probe::default());
+        let both = run_engine(&argv, spool.path(), &probe);
+        assert_eq!(both.code, 0, "{}", String::from_utf8_lossy(&both.stderr));
+        // Whole files, one after the other, in either order, each row with its Trail.
+        let text = String::from_utf8(both.stdout).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2 * ROWS);
+        let (first, second) = lines.split_at(ROWS);
+        for rows in [first, second] {
+            let file = &rows[0][..rows[0].find(':').unwrap()];
+            assert!(rows.iter().all(|l| l.starts_with(file)), "{file}");
+            let bytes: usize = rows.iter().map(|l| l.len() + 1).sum();
+            assert!(
+                bytes > crate::output::spool::FILE_SPOOL_THRESHOLD,
+                "{bytes}"
+            );
+            assert!(rows[0].contains("row 1 ") && rows[ROWS - 1].contains(&format!("row {ROWS} ")));
+        }
+        assert_ne!(first[0].split(':').next(), second[0].split(':').next());
+        assert_eq!(probe.spilled.load(Relaxed), 2);
+        assert_eq!(probe.described.load(Relaxed), 0);
+        assert_eq!(std::fs::read_dir(spool.path()).unwrap().count(), 0);
+    }
+
     /// M5b spec §4.2: `SpillLines` copies a file's output as bytes, which a console-API buffer
     /// (Windows) would print without its colours: only plain and ANSI buffers spill.
     #[test]
@@ -3622,10 +4289,67 @@ mod tests {
         assert!(!can_spill_bytes(&termcolor::Buffer::console()));
     }
 
+    /// M5b spec §6.2: a parallel run's file output past 8 MiB goes to an unnamed temporary
+    /// file and is copied whole after the separator; the next file starts empty.
     #[test]
-    fn only_outline_processors_take_the_streaming_path() {
-        assert!(builds_outline(processors::by_name("markdown").unwrap()));
-        assert!(!builds_outline(processors::by_name("keypath").unwrap()));
+    fn a_spooled_file_prints_whole_after_the_separator() {
+        use crate::output::spool::FILE_SPOOL_THRESHOLD;
+        let out = Out::new(
+            OutTarget::Captured(Default::default()),
+            Some(b"--".to_vec()),
+            SPILL,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = FileOut::Plain(termcolor::NoColor::new(FileSpool::new(dir.path()).unwrap()));
+        let line = b"a dense line with a needle\n";
+        let lines = FILE_SPOOL_THRESHOLD / line.len() + 2;
+        for _ in 0..lines {
+            file.write_all(line).unwrap();
+        }
+        // Colour changes of a plain output are no bytes.
+        file.set_color(termcolor::ColorSpec::new().set_bold(true))
+            .unwrap();
+        file.write_all(b"last\n").unwrap();
+        let FileOut::Plain(w) = &mut file else {
+            unreachable!()
+        };
+        assert!(w.get_ref().is_spilled());
+        assert!(w.get_ref().memory_len() == 0);
+        out.print_spool(w.get_mut()).unwrap();
+        file.clear();
+        file.write_all(b"second\n").unwrap();
+        let FileOut::Plain(w) = &mut file else {
+            unreachable!()
+        };
+        assert!(!w.get_ref().is_spilled());
+        out.print_spool(w.get_mut()).unwrap();
+        file.clear();
+        // An empty output prints nothing, not even the separator.
+        let FileOut::Plain(w) = &mut file else {
+            unreachable!()
+        };
+        out.print_spool(w.get_mut()).unwrap();
+        let OutTarget::Captured(v) = &out.w else {
+            unreachable!()
+        };
+        let v = v.lock().unwrap();
+        let first = lines * line.len() + 5;
+        assert_eq!(v.len(), first + 3 + 7);
+        assert!(v[..first - 5].chunks(line.len()).all(|c| c == line));
+        assert_eq!(&v[first - 5..], b"last\n--\nsecond\n");
+        assert_eq!(out.bytes.load(Relaxed), (first + 7) as u64);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn only_native_cursors_take_the_streaming_path() {
+        use processors::Capability::{Model, Native};
+        let none = toml::Table::new();
+        let syntax = |s: &str| toml::from_str::<toml::Table>(&format!("syntax = '{s}'")).unwrap();
+        let of = |p: &str, params: &toml::Table| processors::by_name(p).unwrap().capability(params);
+        assert_eq!(of("markdown", &none), Native);
+        assert_eq!(of("keypath", &syntax("yaml")), Model);
+        assert_eq!(of("object", &none), Model);
     }
 
     fn searcher_for(argv: &[&str]) -> (Searcher, PatternMatcher, bool) {

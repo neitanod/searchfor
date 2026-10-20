@@ -1,14 +1,14 @@
 //! Files printed row by row as the searcher reports them (code review r1, Fable #1): Plain
-//! files, and files whose Processor builds an Outline, without structural flags. No model of the
-//! file is kept: each Trail is computed as its row is printed, and only the context lines that
-//! open a group wait for the Match after them. Prints exactly what the printers print from a
-//! Described file.
+//! files, and files whose Processor gives a native cursor (`processors::Prepared`), without
+//! structural flags. No model of the file is kept: each Trail is asked of the cursor as its row
+//! is printed, and only the context lines that open a group wait for the Match after them.
+//! Prints exactly what the printers print from a Described file.
 use super::json::{JsonFile, JsonOptions, RunStats};
 use super::{Layout, LineText, RenderOptions, Row, flat, tree};
 use crate::matcher::PatternMatcher;
-use crate::model::{FileStats, Line, Segment, Submatch};
+use crate::model::{FileStats, Line, Segment, SharedTrail, Submatch};
+use crate::processors::Cursor;
 use crate::search::{MaxCount, context_submatches_in, match_submatches_in};
-use crate::trail::{Outline, TrailCursor};
 use grep_searcher::{Searcher, Sink, SinkContext, SinkFinish, SinkMatch};
 use std::path::Path;
 use std::rc::Rc;
@@ -21,10 +21,11 @@ pub struct StreamFile<'a> {
     pub explicit: bool,
     /// The Format's name (JSON's `format`), None for Plain.
     pub format: Option<&'a str>,
-    /// The bytes the search runs over: needed with an Outline (the context lines that wait for
+    /// The bytes the search runs over: needed with a cursor (the context lines that wait for
     /// a Match are kept as ranges of it).
     pub src: Option<&'a [u8]>,
-    pub outline: Option<&'a Outline>,
+    /// The Trails of the file's Matches, in file order; None for Plain.
+    pub cursor: Option<Box<dyn Cursor + 'a>>,
     /// `-m`, counted here (see `MaxCount`).
     pub max_count: Option<u64>,
     /// The flat layout's separator from the file before, written before the first row (see
@@ -47,7 +48,7 @@ pub struct StreamSink<'a, W: WriteColor> {
     invert: bool,
     o: &'a RenderOptions,
     file: StreamFile<'a>,
-    trails: Option<TrailCursor<'a>>,
+    trails: Option<Box<dyn Cursor + 'a>>,
     head: flat::FileHead,
     json: Option<JsonFile<'a>>,
     tree: tree::TreeState,
@@ -58,7 +59,7 @@ pub struct StreamSink<'a, W: WriteColor> {
     header: bool,
     /// Binary data was found: rows after it are not printed (design note 3).
     binary: bool,
-    /// No colour, no -M and no Outline: a short valid line can be written without the
+    /// No colour, no -M and no cursor: a short valid line can be written without the
     /// printers' machinery.
     fast: bool,
     /// The path and its separator for the flat layout (empty without file names), and the
@@ -68,9 +69,8 @@ pub struct StreamSink<'a, W: WriteColor> {
     /// Trail of the last row of the current group, once it has a Match.
     group: Option<Rc<[Segment]>>,
     pending: Vec<Pending>,
-    /// The last Trail computed, by its Segments' indices, to share it with the next rows.
-    last: (Vec<usize>, Rc<[Segment]>),
-    indices: Vec<usize>,
+    /// The empty Trail of a Plain file's rows.
+    empty: SharedTrail,
     started: Instant,
     pub stats: FileStats,
     pub has_match: bool,
@@ -83,18 +83,18 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         invert: bool,
         o: &'a RenderOptions,
         jo: &'a JsonOptions,
-        file: StreamFile<'a>,
+        mut file: StreamFile<'a>,
     ) -> Self {
         let fast = !w.supports_color()
             && o.max_columns.is_none()
-            && file.outline.is_none()
+            && file.cursor.is_none()
             && o.look.plain();
         Self {
             w,
             matcher,
             invert,
             o,
-            trails: file.outline.map(TrailCursor::new),
+            trails: file.cursor.take(),
             head: flat::FileHead::new(file.path, o),
             json: (o.layout == Layout::Json).then(|| JsonFile::new(file.path, file.format, jo)),
             tree: tree::TreeState::default(),
@@ -113,8 +113,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             scratch: Vec::new(),
             group: None,
             pending: Vec::new(),
-            last: (Vec::new(), Rc::from(Vec::new())),
-            indices: Vec::new(),
+            empty: Rc::from(Vec::new()),
             started: Instant::now(),
             stats: FileStats::default(),
             has_match: false,
@@ -122,16 +121,14 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         }
     }
 
-    /// The Trail of a Match at byte `at`, shared with the rows before it when it is the same.
-    fn trail_at(&mut self, at: usize) -> Rc<[Segment]> {
+    /// The Trail of a Match at byte `at`, shared with the rows before it when it is the same
+    /// (the cursor shares it). A cursor that fails fails the file: the built-in ones never do
+    /// once prepared.
+    fn trail_at(&mut self, at: usize) -> std::io::Result<SharedTrail> {
         let Some(c) = self.trails.as_mut() else {
-            return self.last.1.clone();
+            return Ok(self.empty.clone());
         };
-        c.indices(at, &mut self.indices);
-        if self.indices != self.last.0 {
-            self.last = (self.indices.clone(), Rc::from(c.segments(&self.indices)));
-        }
-        self.last.1.clone()
+        c.trail_at(at).map_err(std::io::Error::other)
     }
 
     /// Notes the line's place: true when it opens a new group after a gap, which ends the
@@ -220,14 +217,14 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         let trails: Vec<Rc<[Segment]>> = if outlined {
             let mut trails = Vec::with_capacity(line.submatches.len().max(1));
             if line.submatches.is_empty() {
-                trails.push(self.trail_at(base));
+                trails.push(self.trail_at(base)?);
             }
             for s in &line.submatches {
-                trails.push(self.trail_at(base + s.start));
+                trails.push(self.trail_at(base + s.start)?);
             }
             trails
         } else {
-            vec![self.last.1.clone(); line.submatches.len().max(1)]
+            vec![self.empty.clone(); line.submatches.len().max(1)]
         };
         if let Some(j) = self.json.as_mut() {
             self.stats.matches += line.submatches.len() as u64;
@@ -303,7 +300,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
                 Ok(())
             }
             group => {
-                let trail = group.unwrap_or_else(|| self.last.1.clone());
+                let trail = group.unwrap_or_else(|| self.empty.clone());
                 let subs = line.submatches.iter().map(|s| (s.start, s.end)).collect();
                 let row = Row {
                     offset: None,
@@ -510,12 +507,8 @@ mod tests {
             format: "markdown",
             disk: None,
         };
-        let outline = markdown.then(|| {
-            Markdown
-                .outline_of(&input, &toml::Table::new())
-                .unwrap()
-                .unwrap()
-        });
+        let params = toml::Table::new();
+        let prepared = markdown.then(|| Markdown.prepare(input, &params).unwrap());
         let format = markdown.then_some("markdown");
         let new_buf = || {
             if color {
@@ -534,7 +527,7 @@ mod tests {
             explicit,
             format,
             src: Some(src.bytes()),
-            outline: outline.as_ref(),
+            cursor: prepared.as_ref().map(|p| p.cursor()),
             max_count: crate::search::max_count(&a),
             lead,
         };
