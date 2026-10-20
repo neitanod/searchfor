@@ -8,6 +8,11 @@ use common::{Fixture, code, run, stderr, stdout};
 use searchfor::docs::fixture as doc;
 use searchfor::processors::object::fixture as obj;
 
+/// The example Helper, whose copies are native `--pre` commands (M5b plan, Task 2.2).
+fn example_helper() -> std::path::PathBuf {
+    common::workspace_bin("searchfor-example-helper", "searchfor-example-helper", &[])
+}
+
 /// The fixture copy plus M4's generated files under `m4/`.
 fn fixture() -> Fixture {
     let fx = Fixture::new();
@@ -350,18 +355,18 @@ fn m4_08_pre_and_z_as_ripgrep() {
     std::fs::create_dir_all(&d).unwrap();
     std::fs::write(d.join("a.txt"), "alpha needle\n").unwrap();
     std::fs::write(d.join("b.md"), "# B\ngamma needle\n").unwrap();
-    let script = |name: &str, body: &str| {
-        let p = d.join(name);
-        std::fs::write(&p, body).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+    // The commands are native programs on every system, by their full path (M5b plan, Task
+    // 5.2): copies of the example helper that, by their name, uppercase the file or print
+    // `oops` and exit 3. They live outside the directories searched.
+    let tools = fx.path().join("m4/tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    let native = |stem: &str| {
+        let p = tools.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
+        std::fs::copy(example_helper(), &p).unwrap();
         p.to_string_lossy().into_owned()
     };
-    let up = script("up.sh", "#!/bin/sh\ntr a-z A-Z < \"$1\"\n");
-    let fail = script("fail.sh", "#!/bin/sh\necho oops >&2\nexit 3\n");
+    let up = native("s4-test-pre-upper");
+    let fail = native("s4-test-pre-fail");
     let mut gz = std::process::Command::new("gzip");
     gz.arg("-k").arg(d.join("a.txt"));
     let have_gzip = gz.status().is_ok_and(|s| s.success());
@@ -467,12 +472,22 @@ fn m4_08_pre_and_z_as_ripgrep() {
     }
     // Walking the current directory, the command and the decompressor get the path rg prints,
     // without `./`, in their arguments and in rg's errors (code review r1, Fable #1).
-    let show = script("show.sh", "#!/bin/sh\nprintf 'ARG=%s\\n' \"$1\"\n");
     let mut walked: Vec<Vec<&str>> = vec![
-        vec!["--pre", &show, "--sort", "path", "ARG="],
         vec!["--pre", &fail, "--sort", "path", "needle"],
         vec!["--pre", "/nonexistent/pre", "--sort", "path", "needle"],
     ];
+    // Unix also prints the argument itself, from a shell script; elsewhere rg's error for
+    // the failing command above names it.
+    #[cfg(unix)]
+    let show = {
+        use std::os::unix::fs::PermissionsExt;
+        let p = tools.join("show.sh");
+        std::fs::write(&p, "#!/bin/sh\nprintf 'ARG=%s\\n' \"$1\"\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p.to_string_lossy().into_owned()
+    };
+    #[cfg(unix)]
+    walked.insert(0, vec!["--pre", &show, "--sort", "path", "ARG="]);
     if have_gzip {
         std::fs::write(d.join("bad.gz"), "not gzip, needle\n").unwrap();
         walked.push(vec!["-z", "--sort", "path", "needle"]);
@@ -607,6 +622,7 @@ fn m4_11_with_no_docs_documents_are_ripgreps() {
 }
 
 /// Runs `c` with `input` on its stdin, failing the test past 20 s instead of hanging.
+#[cfg(unix)]
 fn run_within(c: &mut std::process::Command, input: &[u8]) -> std::process::Output {
     use std::io::Write;
     use std::process::Stdio;
@@ -635,6 +651,7 @@ fn run_within(c: &mut std::process::Command, input: &[u8]) -> std::process::Outp
 
 /// Codex r1 #3: with --docs, a path that is not a regular file (stdin by name, a descriptor, a
 /// FIFO) is never a document: its bytes are read once, by the search, as rg reads them.
+// Unix only: it reads `/dev/stdin`, `/dev/fd/0` and a FIFO, which Windows does not have.
 #[cfg(unix)]
 #[test]
 fn m4_12_docs_reads_streams_once() {
@@ -678,6 +695,7 @@ fn m4_12_docs_reads_streams_once() {
 /// Code review r1, Codex #1: stdin redirected from a document, named `/dev/stdin`,
 /// `/dev/fd/0`, `/proc/self/fd/0` or through a link to one of them, is a regular file, yet no
 /// document: a reader would open it as its own stdin. It is searched as rg searches it.
+// Unix only: stdin by its `/dev` and `/proc` names, which Windows does not have.
 #[cfg(unix)]
 #[test]
 fn m4_24_stdin_redirected_from_a_document_is_no_document() {
@@ -718,6 +736,7 @@ fn m4_24_stdin_redirected_from_a_document_is_no_document() {
 /// `/proc/<pid>/fd`, `/dev/fd`, `/dev/stdin`), in any of its parts, itself or through a link,
 /// names no document: here stdin is a directory, and each file under it is searched as rg
 /// searches it. A regular file anywhere else, `/dev/shm` included, is a document.
+// Linux only: `/proc/<pid>/fd` and `/dev/shm`.
 #[cfg(target_os = "linux")]
 #[test]
 fn m4_27_only_names_through_descriptors_are_no_documents() {
@@ -1015,6 +1034,7 @@ fn m4_17_the_readers_flag_is_no_pattern() {
 
 /// Codex r4 #3: a document's path goes to its reader as bytes, whatever they are: not UTF-8,
 /// a line break, a carriage return at the end.
+// Linux only: names that are not UTF-8, which APFS and NTFS refuse.
 #[cfg(target_os = "linux")]
 #[test]
 fn m4_18_any_path_reaches_the_reader() {
@@ -1047,6 +1067,7 @@ fn m4_18_any_path_reaches_the_reader() {
 /// A PDF of `pages` pages sharing one content stream of `ops` operations: slow to read, so a
 /// signal arrives while its reader works. The stream is compressed, so the file is small and
 /// searching its bytes is quick.
+#[cfg(target_os = "linux")]
 fn slow_pdf(pages: usize, ops: usize) -> Vec<u8> {
     use lopdf::{Dictionary, Document, Object, Stream};
     let mut doc = Document::with_version("1.5");
@@ -1102,6 +1123,8 @@ fn children_of(parent: u32) -> Vec<u32> {
 /// searched as it is once its reader was killed, or refused one, would print its count; and
 /// a SIGINT is sent to s4 alone and to its group, as the terminal sends Ctrl-C (pending r1,
 /// lote A: s4 printed those counts before the signal ended it).
+// Linux only: the readers are found in `/proc`; Windows has no signals (its Ctrl-C test is
+// `m5b_console_ctrl_c_kills_and_reaps_managed_processes`).
 #[cfg(target_os = "linux")]
 #[test]
 fn m4_19_a_signal_to_sfor_ends_its_readers() {
@@ -1192,6 +1215,7 @@ fn m4_19_a_signal_to_sfor_ends_its_readers() {
 /// Code review r2, Fable #2: a signal s4 was started ignoring (`trap '' INT`, nohup, a
 /// background job) stays ignored while its readers work, as rg leaves it: the search goes on
 /// and ends as it would have without the signal.
+// Linux only: the readers are found in `/proc`; Windows has no signals.
 #[cfg(target_os = "linux")]
 #[test]
 fn m4_26_a_signal_ignored_by_its_parent_is_ignored() {
@@ -1260,6 +1284,7 @@ fn m4_26_a_signal_ignored_by_its_parent_is_ignored() {
 /// Code review r3, Codex #1: a SIGINT or SIGTERM that s4's parent blocked, and that is
 /// pending as s4 starts, never reaches it: a reader that fails, and a path that does not
 /// exist, are reported as without the signal, with the same output and exit code.
+// Linux only: signals blocked by the parent; Windows has no signals.
 #[cfg(target_os = "linux")]
 #[test]
 fn m4_28_a_signal_blocked_by_its_parent_is_no_stop() {
@@ -1354,6 +1379,7 @@ fn m4_20_the_readers_time_limit_is_per_document() {
 /// document's start on a monotonic clock: a reader idle for longer than the limit reads on,
 /// and one whose document never ends (a FIFO nobody writes) exits `LATE` (3) about the limit
 /// later.
+// Linux only: a FIFO keeps the reader on its document; Windows has no FIFO in its file system.
 #[cfg(target_os = "linux")]
 #[test]
 fn m4_21_a_document_past_the_readers_limit_ends_its_reader() {
@@ -1468,6 +1494,113 @@ fn m4_40_the_second_barrier_holds_above_a_permissive_counter() {
     );
     assert!(stdout(&o).contains("m4/report.docx:3"), "{}", stdout(&o));
     assert_eq!(code(&o), 0);
+}
+
+/// M5b spec §4.2: a reader limit the system refuses is one line of `--debug`, and the
+/// document is still read, under the counter. s4 runs with a hard `RLIMIT_DATA` of 4 096 MiB,
+/// so a reader asking for 8 192 MiB (`SEARCHFOR_READER_RLIMIT_MIB`) is refused, as macOS may
+/// refuse any; without `--debug` nothing is said.
+#[cfg(unix)]
+#[test]
+fn m4_41_a_refused_reader_limit_is_one_debug_line() {
+    let fx = fixture();
+    for debug in [true, false] {
+        let mut c = fx.s4(["--docs", "-c", "needle", "m4/report.docx"]);
+        if debug {
+            c.arg("--debug");
+        }
+        let o = run_limited(c.env("SEARCHFOR_READER_RLIMIT_MIB", "8192"), 4096);
+        let errors = stderr(&o);
+        let refused: Vec<&str> = errors
+            .lines()
+            .filter(|l| l.contains("the document reader could not set"))
+            .collect();
+        assert_eq!(refused.len(), debug as usize, "debug {debug}: {errors}");
+        for line in refused {
+            assert!(line.starts_with("s4: DEBUG|"), "{line}");
+            assert!(
+                line.contains("set RLIMIT_DATA to 8589934592 bytes"),
+                "{line}"
+            );
+        }
+        assert_eq!(stdout(&o), "3\n", "debug {debug}: {}", stderr(&o));
+        assert_eq!(code(&o), 0);
+    }
+}
+
+/// The pids whose parent is `parent`, as `ps` lists them on Linux and macOS.
+#[cfg(unix)]
+fn children_by_ps(parent: u32) -> Vec<u32> {
+    let o = std::process::Command::new("ps")
+        .args(["-A", "-o", "pid=", "-o", "ppid="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut w = l.split_whitespace().map(|n| n.parse::<u32>().ok());
+            Some((w.next()??, w.next()??))
+        })
+        .filter(|&(_, ppid)| ppid == parent)
+        .map(|(pid, _)| pid)
+        .collect()
+}
+
+/// M5b spec §4.2: a reader waiting in the pool between documents ends when s4 is killed by a
+/// SIGKILL, which s4 cannot see: the kernel's parent-death signal on Linux, its kqueue watch
+/// of the parent on macOS. s4 has read the document and waits on a FIFO the test opened and
+/// never writes, so its reader is idle.
+#[cfg(unix)]
+#[test]
+fn m4_42_an_idle_reader_ends_with_a_killed_s4() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::time::{Duration, Instant};
+    let fx = fixture();
+    let fifo = fx.path().join("m4/z-fifo");
+    let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    // SAFETY: mkfifo reads the path it is given.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let mut s4 = fx
+        .s4([
+            "--docs",
+            "-j1",
+            "--sort",
+            "path",
+            "-c",
+            "needle",
+            "m4/report.docx",
+            "m4/z-fifo",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    // Opened when s4 opens the FIFO, after the document: the reader is back in the pool.
+    let (opened, wait) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let w = std::fs::OpenOptions::new().write(true).open(fifo);
+        let _ = opened.send(w);
+    });
+    let writer = wait
+        .recv_timeout(Duration::from_secs(20))
+        .expect("s4 never reached the FIFO")
+        .unwrap();
+    let readers = children_by_ps(s4.id());
+    assert_eq!(readers.len(), 1, "{readers:?}");
+    // SAFETY: a signal to our own child.
+    unsafe { libc::kill(s4.id() as libc::pid_t, libc::SIGKILL) };
+    s4.wait().unwrap();
+    let killed = Instant::now();
+    // SAFETY: signal 0 only asks whether the pid exists.
+    while unsafe { libc::kill(readers[0] as libc::pid_t, 0) } == 0 {
+        assert!(
+            killed.elapsed() < Duration::from_secs(3),
+            "reader {} outlived s4",
+            readers[0]
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(writer);
 }
 
 /// Bits of a deflate stream, the first in the lowest bit of each byte (RFC 1951).
@@ -1592,6 +1725,8 @@ fn m4_23_a_reader_refused_memory_it_went_on_without_warns() {
 /// an error, exit 2, also where the search stops before the end of its output (-q, -m, -l); the
 /// lines it found before are printed as rg 14.1.1 prints them: with one thread, as they come,
 /// and with more, never (rg drops the file's buffer). The Trail layouts print them too.
+// Unix only: its command is a shell script that prints and then fails, which the native
+// test commands (the example helper's copies) cannot do.
 #[cfg(unix)]
 #[test]
 fn m4_25_a_command_that_fails_late_is_an_error_after_its_lines() {
@@ -1781,22 +1916,66 @@ fn m4_29_an_object_file_goblin_panics_on_is_searched_as_rg_searches_it() {
     }
 }
 
-/// `c` with its data segment limited to `mib` MiB (`RLIMIT_DATA`), so that an allocation past
-/// it fails and aborts s4.
-fn limited(c: &mut std::process::Command, mib: u64) -> &mut std::process::Command {
+/// Runs `c` with its memory limited to `mib` MiB, so that an allocation past it fails and
+/// aborts s4: on Unix its data segment (`RLIMIT_DATA`; macOS accepts the limit, which this
+/// installs or fails, and holds to it only what its allocator does not map), on Windows a Job
+/// Object's limit of committed memory (the platform layer's `Limits`).
+#[cfg(unix)]
+fn run_limited(c: &mut std::process::Command, mib: u64) -> std::process::Output {
     let bytes = mib << 20;
     // SAFETY: setrlimit() is async-signal-safe, as pre_exec asks.
     unsafe {
         std::os::unix::process::CommandExt::pre_exec(c, move || {
             let l = libc::rlimit {
-                rlim_cur: bytes,
-                rlim_max: bytes,
+                rlim_cur: bytes as libc::rlim_t,
+                rlim_max: bytes as libc::rlim_t,
             };
             if libc::setrlimit(libc::RLIMIT_DATA, &l) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
         })
+    };
+    run(c)
+}
+
+#[cfg(windows)]
+fn run_limited(c: &mut std::process::Command, mib: u64) -> std::process::Output {
+    use searchfor::platform::{Input, Limits, Output, SpawnSpec, spawn};
+    use std::io::Read;
+    let mut spec = SpawnSpec::new(c.get_program());
+    spec.args = c.get_args().map(Into::into).collect();
+    spec.cwd = c.get_current_dir().map(Into::into);
+    spec.env = c
+        .get_envs()
+        .map(|(k, v)| (k.into(), v.map(Into::into)))
+        .collect();
+    spec.stdin = Input::Null;
+    spec.stdout = Output::Piped;
+    spec.stderr = Output::Piped;
+    let limits = Limits {
+        process_memory_bytes: Some((mib as usize) << 20),
+    };
+    let mut child = spawn(spec, limits).unwrap();
+    let mut err = child.stderr.take().unwrap();
+    let errors = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        err.read_to_end(&mut v).unwrap();
+        v
+    });
+    let mut stdout = Vec::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_end(&mut stdout)
+        .unwrap();
+    let stderr = errors.join().unwrap();
+    let status = child.wait().unwrap();
+    std::process::Output {
+        status,
+        stdout,
+        stderr,
     }
 }
 
@@ -1903,7 +2082,7 @@ fn m4_30_what_an_object_file_declares_costs_no_more_than_the_file() {
         let len = std::fs::metadata(fx.path().join(&path)).unwrap().len();
         assert!(len <= 2 << 20, "{f}: {len} bytes");
         let started = std::time::Instant::now();
-        let s = run(limited(&mut fx.s4(["-j1", "--flat", "needle", &path]), 256));
+        let s = run_limited(&mut fx.s4(["-j1", "--flat", "needle", &path]), 256);
         let took = started.elapsed();
         let what = format!("{f}: {:?} {}", s.status, stderr(&s));
         assert_eq!((code(&s), stderr(&s).as_str()), (0, ""), "{what}");
@@ -2081,6 +2260,7 @@ fn on_a_terminal(c: &mut std::process::Command) -> (String, i32) {
 
 /// Grill, 8750: a pipe searches documents as a terminal does, and --no-docs turns that off in
 /// both.
+// Linux only: the terminal is a Linux pseudo-terminal (`posix_openpt`, `ptsname_r`).
 #[cfg(target_os = "linux")]
 #[test]
 fn m4_34_a_pipe_searches_documents_as_a_terminal_does() {
@@ -2123,6 +2303,7 @@ fn m4_34_a_pipe_searches_documents_as_a_terminal_does() {
 /// file) and through a link to the directory itself. Below a descriptor every file is searched
 /// as rg searches it, with one thread and with several; through the plain link they are
 /// documents.
+// Linux only: links to `/dev/fd` and `/proc`.
 #[cfg(target_os = "linux")]
 #[test]
 fn m4_35_with_follow_names_below_links_to_descriptors_are_no_documents() {

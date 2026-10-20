@@ -29,6 +29,11 @@ use std::time::Duration;
 pub const SUBCOMMAND: &str = "--__extract-document";
 /// The pid of the worker's parent, which the worker checks: it ends when the parent does.
 const PARENT: &str = "SEARCHFOR_READER_OF";
+/// Set when s4 runs with `--debug`: the worker then logs what it could not set up (a refused
+/// rlimit), and s4 passes those lines on (`drain`).
+const DEBUG: &str = "SEARCHFOR_READER_DEBUG";
+/// How a line of `--debug` starts (`crate::log`).
+const DEBUG_LINE: &[u8] = b"s4: DEBUG|";
 /// The most memory a worker may allocate (its heap, as `super::memory` counts it; a file it maps
 /// for reading does not count).
 pub const MEMORY_MIB: u64 = 1024;
@@ -109,7 +114,11 @@ fn start() -> std::io::Result<Child> {
                 let child = std::env::current_exe().and_then(|exe| {
                     let mut spec = crate::platform::SpawnSpec::new(exe);
                     spec.args = vec![SUBCOMMAND.into(), mib.to_string().into()];
-                    spec.env = vec![(PARENT.into(), Some(std::process::id().to_string().into()))];
+                    let debug = log::log_enabled!(log::Level::Debug);
+                    spec.env = vec![
+                        (PARENT.into(), Some(std::process::id().to_string().into())),
+                        (DEBUG.into(), debug.then(|| "1".into())),
+                    ];
                     spec.stdin = crate::platform::Input::Piped;
                     spec.stdout = crate::platform::Output::Piped;
                     spec.stderr = crate::platform::Output::Piped;
@@ -158,7 +167,7 @@ fn spawn() -> std::io::Result<Worker> {
     let errors = Arc::new(Mutex::new(Vec::new()));
     let keep = errors.clone();
     let (done, drained) = std::sync::mpsc::channel();
-    std::thread::spawn(move || drain(&mut stderr, &keep, done));
+    std::thread::spawn(move || drain(&mut stderr, &keep, pass_on, done));
     Ok(Worker {
         stdin,
         stdout: BufReader::new(stdout),
@@ -169,17 +178,43 @@ fn spawn() -> std::io::Result<Worker> {
     })
 }
 
-/// Reads the worker's stderr to its end, keeping its last 4 096 bytes in `errors`; `done`
-/// drops when it returns.
-fn drain(stderr: &mut impl Read, errors: &Mutex<Vec<u8>>, done: std::sync::mpsc::Sender<()>) {
-    let mut buf = [0u8; 4096];
-    while let Ok(n @ 1..) = stderr.read(&mut buf) {
+/// Reads the worker's stderr to its end: each line of `--debug` goes whole to `debug`, and the
+/// last 4 096 bytes of the rest stay in `errors`; `done` drops when it returns.
+fn drain(
+    stderr: &mut impl Read,
+    errors: &Mutex<Vec<u8>>,
+    mut debug: impl FnMut(&[u8]),
+    done: std::sync::mpsc::Sender<()>,
+) {
+    let keep = |bytes: &[u8]| {
         let mut e = errors.lock().unwrap_or_else(|e| e.into_inner());
-        e.extend_from_slice(&buf[..n]);
+        e.extend_from_slice(bytes);
         let over = e.len().saturating_sub(4096);
         e.drain(..over);
+    };
+    let mut buf = [0u8; 4096];
+    // The line read so far: at most 4 096 bytes before it is kept as it is.
+    let mut line = Vec::new();
+    while let Ok(n @ 1..) = stderr.read(&mut buf) {
+        for piece in buf[..n].split_inclusive(|&b| b == b'\n') {
+            line.extend_from_slice(piece);
+            if line.ends_with(b"\n") || line.len() > 4096 {
+                if line.starts_with(DEBUG_LINE) && line.ends_with(b"\n") {
+                    debug(&line);
+                } else {
+                    keep(&line);
+                }
+                line.clear();
+            }
+        }
     }
+    keep(&line);
     drop(done);
+}
+
+/// A worker's line of `--debug`, on s4's stderr: one write, as `crate::log` writes its own.
+fn pass_on(line: &[u8]) {
+    let _ = std::io::stderr().lock().write_all(line);
 }
 
 /// The worker's pipes. A signal's `cancel` may have reaped it between its start and here
@@ -411,8 +446,19 @@ pub fn child(args: &[std::ffi::OsString]) -> i32 {
         .unwrap_or(MEMORY_MIB);
     // First, so what the worker allocates from here on is counted (D31).
     super::memory::arm(super::memory::bytes_of_mib(mib));
+    if !orphan_dies() {
+        return 2;
+    }
+    // Only its setup logs: what the libraries a document goes through would log is no
+    // concern of `--debug`.
+    let debug = std::env::var_os(DEBUG).is_some();
+    if debug {
+        crate::log::init(Some(crate::cli::Logging::Debug));
+    }
     limit(mib);
-    orphan_dies();
+    if debug {
+        crate::log::init(None);
+    }
     let reading = own_watchdog();
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
@@ -513,33 +559,41 @@ fn warn_memory(mib: u64) -> DocError {
     ))
 }
 
-/// The worker ends with its parent, which holds its watchdog (M4 plan r4, Codex #2): on Linux
-/// the kernel kills it then (`PR_SET_PDEATHSIG`), checked against the parent's pid in case the
-/// parent ended first; elsewhere the worker's own watchdog (`own_watchdog`) ends an orphan at
-/// its document's `OWN_WALL`.
-#[cfg(target_os = "linux")]
-fn orphan_dies() {
-    // SAFETY: prctl with an integer argument, and getppid, have no memory effects.
-    unsafe {
-        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-        let parent = std::env::var(PARENT)
-            .ok()
-            .and_then(|p| p.parse::<i32>().ok());
-        if parent != Some(libc::getppid()) {
-            std::process::exit(2);
-        }
-    }
+/// The worker ends with its parent, which holds its watchdog (M4 plan r4, Codex #2;
+/// M5b spec §4.2): the platform layer's watch of the parent `SEARCHFOR_READER_OF` names, the
+/// kernel's `PR_SET_PDEATHSIG` on Linux, kqueue on macOS, s4's Job on Windows; a parent that
+/// ended first ends the worker at once, and its own watchdog (`own_watchdog`) still ends an
+/// orphan at its document's `OWN_WALL`. False, and the worker ends, when no parent is named
+/// or it cannot be watched.
+fn orphan_dies() -> bool {
+    reader_parent(std::env::var_os(PARENT))
+        .is_some_and(|parent| crate::platform::orphan_dies(parent).is_ok())
 }
 
-#[cfg(not(target_os = "linux"))]
-fn orphan_dies() {}
+/// The pid `SEARCHFOR_READER_OF` names, when it names one.
+fn reader_parent(v: Option<std::ffi::OsString>) -> Option<u32> {
+    v?.to_str()?.parse().ok()
+}
 
-/// The file's bytes: mapped when it is large, as `Source::open` reads it.
+/// The file's bytes: mapped when it is large, as `Source::open` reads it, on every system and
+/// whatever `--mmap` says, since this is a reading for the Extractor and not a search (M5b
+/// spec §4.2).
 fn read(path: &Path) -> std::io::Result<Bytes> {
+    // SAFETY: read-only map of a file the child only reads.
+    read_with(path, |file| unsafe { memmap2::Mmap::map(file) })
+}
+
+/// `read`, mapping with `map`. A file that cannot be mapped is read instead; an error opening
+/// or reading it is that error.
+fn read_with(
+    path: &Path,
+    map: impl FnOnce(&std::fs::File) -> std::io::Result<memmap2::Mmap>,
+) -> std::io::Result<Bytes> {
     let file = std::fs::File::open(path)?;
-    if file.metadata()?.len() >= 1 << 20 {
-        // SAFETY: read-only map of a file the child only reads.
-        return Ok(Bytes::Mapped(unsafe { memmap2::Mmap::map(&file)? }));
+    if file.metadata()?.len() >= 1 << 20
+        && let Ok(m) = map(&file)
+    {
+        return Ok(Bytes::Mapped(m));
     }
     let mut v = Vec::new();
     (&file).read_to_end(&mut v)?;
@@ -563,28 +617,52 @@ impl std::ops::Deref for Bytes {
 }
 
 /// The worker's limits: `RLIMIT_DATA` a little above its counter's `mib` (the counter is
-/// armed already), and no core file.
+/// armed already), and no core file. A limit the system refuses (macOS may) is one line of
+/// `--debug`, and the counter still holds (M5b spec §4.2).
 #[cfg(unix)]
 fn limit(mib: u64) {
-    let set = |what, n: u64| {
-        let r = libc::rlimit {
-            rlim_cur: n as libc::rlim_t,
-            rlim_max: n as libc::rlim_t,
-        };
-        // SAFETY: setrlimit reads the struct it is given.
-        unsafe { libc::setrlimit(what, &r) };
-    };
-    set(
-        libc::RLIMIT_DATA,
-        second_barrier_mib(mib).saturating_mul(1 << 20),
-    );
+    let data = second_barrier_mib(mib).saturating_mul(1 << 20);
     // No core file and no crash report for a hostile document (M4 plan r4, Fable #3).
-    set(libc::RLIMIT_CORE, 0);
+    for (name, resource, bytes) in [
+        ("RLIMIT_DATA", libc::RLIMIT_DATA as libc::c_int, data),
+        ("RLIMIT_CORE", libc::RLIMIT_CORE as libc::c_int, 0),
+    ] {
+        if let Err(e) = apply_limit(resource, bytes, set_rlimit) {
+            log::debug!("the document reader could not set {name} to {bytes} bytes: {e}");
+        }
+    }
     #[cfg(target_os = "linux")]
     // SAFETY: prctl with integer arguments.
     unsafe {
         libc::prctl(libc::PR_SET_DUMPABLE, 0);
     }
+}
+
+/// Sets `resource` to `bytes`, its soft and hard limits both, through `set`.
+#[cfg(unix)]
+fn apply_limit(
+    resource: libc::c_int,
+    bytes: u64,
+    set: impl FnOnce(libc::c_int, &libc::rlimit) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let n = bytes as libc::rlim_t;
+    set(
+        resource,
+        &libc::rlimit {
+            rlim_cur: n,
+            rlim_max: n,
+        },
+    )
+}
+
+/// `setrlimit`, its resource as this system's libc types it.
+#[cfg(unix)]
+fn set_rlimit(resource: libc::c_int, limit: &libc::rlimit) -> std::io::Result<()> {
+    // SAFETY: setrlimit reads the struct it is given.
+    if unsafe { libc::setrlimit(resource as _, limit) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
@@ -822,16 +900,20 @@ mod tests {
     /// Codex r8 #2, Fable r8 #3: the warning of a worker that died of its memory never depends
     /// on whether the thread that reads its stderr ran before its stdout ended. Here that
     /// thread starts 300 ms late, after the worker wrote `memory allocation of …` and exited.
+    /// The test harness writes its own first line on the child's stdout, which is no answer:
+    /// the worker is waited for first, so `answer` never kills it before it wrote.
     #[test]
     fn a_dead_workers_stderr_is_read_to_its_end_before_why() {
         let shared = Arc::new(Mutex::new(this_binary(Some("a_worker_dead_of_its_memory"))));
         let (stdin, stdout, mut stderr) = pipes(&shared, false).unwrap();
+        let token = shared.lock().unwrap().wait_token().unwrap();
+        assert!(token.wait(Some(Duration::from_secs(20))).unwrap());
         let errors = Arc::new(Mutex::new(Vec::new()));
         let keep = errors.clone();
         let (done, drained) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(300));
-            drain(&mut stderr, &keep, done);
+            drain(&mut stderr, &keep, |_| {}, done);
         });
         let w = Worker {
             child: shared,
@@ -954,5 +1036,92 @@ mod tests {
             let status = std::process::ExitStatus::from_raw(0xC000_0017);
             assert_eq!(why(Some(status), ""), warn_memory(memory_mib()));
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn refused_rlimit_is_observable_and_keeps_the_counter_path() {
+        let result = apply_limit(libc::RLIMIT_DATA as libc::c_int, 64 << 20, |_, _| {
+            Err(std::io::Error::from_raw_os_error(libc::EPERM))
+        });
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EPERM));
+        let ok = apply_limit(libc::RLIMIT_DATA as libc::c_int, 64 << 20, |_, r| {
+            assert_eq!(r.rlim_cur, 64 << 20);
+            assert_eq!(r.rlim_max, 64 << 20);
+            Ok(())
+        });
+        assert!(ok.is_ok());
+    }
+
+    #[test]
+    fn document_mapping_is_independent_of_search_mapping_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mapped-document");
+        std::fs::write(&path, vec![b'x'; (1 << 20) + 1]).unwrap();
+        let bytes = read(&path).unwrap();
+        assert!(matches!(&bytes, Bytes::Mapped(_)));
+        assert_eq!(bytes.len(), (1 << 20) + 1);
+    }
+
+    /// A document that cannot be mapped is read; a file that cannot be opened is still that
+    /// error, never a mapping's.
+    #[test]
+    fn a_mapping_that_fails_is_read_and_other_errors_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unmapped-document");
+        let content = vec![b'y'; (1 << 20) + 1];
+        std::fs::write(&path, &content).unwrap();
+        let bytes = read_with(&path, |_| Err(std::io::Error::other("no mapping"))).unwrap();
+        assert!(matches!(&bytes, Bytes::Owned(_)));
+        assert!(bytes[..] == content[..]);
+        let missing = read_with(&dir.path().join("missing"), |_| unreachable!());
+        let e = missing.err().expect("no such file");
+        assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    /// The worker's parent is the pid `SEARCHFOR_READER_OF` names; anything else is no parent,
+    /// and the worker ends before its first document.
+    #[test]
+    fn a_reader_parent_must_be_a_pid() {
+        assert_eq!(reader_parent(Some("4242".into())), Some(4242));
+        assert_eq!(reader_parent(None), None);
+        assert_eq!(reader_parent(Some("".into())), None);
+        assert_eq!(reader_parent(Some("-1".into())), None);
+        assert_eq!(reader_parent(Some("12 ".into())), None);
+        assert_eq!(reader_parent(Some("pid".into())), None);
+    }
+
+    /// Bytes a few at a time, as a pipe may give them.
+    struct Trickle<'a>(&'a [u8]);
+
+    impl Read for Trickle<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(self.0.len()).min(7);
+            buf[..n].copy_from_slice(&self.0[..n]);
+            self.0 = &self.0[n..];
+            Ok(n)
+        }
+    }
+
+    /// M5b spec §4.2: what a reader logs for `--debug` (its refused rlimits) reaches s4's
+    /// stderr, a whole line each, and stays out of the bytes `why` reads; the rest, a last
+    /// line without its end included, is kept for `why`.
+    #[test]
+    fn a_readers_debug_lines_are_passed_on_and_kept_apart() {
+        let debug = "s4: DEBUG|searchfor::docs::isolated|src/docs/isolated.rs:1: refused\n";
+        let rest = "memory allocation of 8 bytes failed\nno end";
+        let input = format!("{debug}{rest}");
+        let errors = Mutex::new(Vec::new());
+        let mut passed: Vec<Vec<u8>> = Vec::new();
+        let (done, drained) = std::sync::mpsc::channel();
+        drain(
+            &mut Trickle(input.as_bytes()),
+            &errors,
+            |line| passed.push(line.to_vec()),
+            done,
+        );
+        assert_eq!(passed, vec![debug.as_bytes().to_vec()]);
+        assert_eq!(errors.into_inner().unwrap(), rest.as_bytes());
+        assert!(drained.recv().is_err(), "drain is done");
     }
 }
