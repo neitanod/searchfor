@@ -541,10 +541,13 @@ jobs:
           echo "unstripped x86_64-unknown-linux-musl s4: $size bytes (cap 23000000)" | tee -a "$GITHUB_STEP_SUMMARY"
           [ "$size" -le 23000000 ]
 
-      # musl's malloc against glibc's under s4's threads (M5b spec §8.1; plan Task 11.2): the
-      # same release profile for both targets, built one after the other in this target dir,
-      # and scripts/bench-m5b.sh --compare alternating 40 pairs of each s4 mode over the M4
-      # text corpus (20,000 files) on this runner. The report and its raw samples are kept.
+      # The musl s4's allocator against glibc's under s4's threads (M5b spec §8.1; plan Task
+      # 11.2): the same release profile for both targets, built one after the other in this
+      # target dir, and scripts/bench-m5b.sh --compare alternating 40 pairs of each s4 mode over
+      # the M4 text corpus (20,000 files) on this runner. musl's own malloc measured 1.27 to
+      # 1.29 x glibc (run of 0f4f1af), so the counter wraps jemalloc on musl (Step 3): the
+      # musl s4 must link it and the glibc s4 must not, and this measures that binary (Step 4).
+      # The report and its raw samples are kept.
       - name: musl against glibc (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -552,15 +555,21 @@ jobs:
           uptime
           for t in x86_64-unknown-linux-gnu x86_64-unknown-linux-musl; do
             $PRIO cargo build --release --locked --offline -p searchfor --bin s4 --target "$t"
+            nm "target/$t/release/s4" > "$RUNNER_TEMP/symbols-$t.txt"
           done
+          grep -q ' T _rjem_mallocx$' "$RUNNER_TEMP/symbols-x86_64-unknown-linux-musl.txt" ||
+            { echo '::error::the musl s4 has no jemalloc behind its memory counter'; exit 1; }
+          if grep -q ' _rjem_' "$RUNNER_TEMP/symbols-x86_64-unknown-linux-gnu.txt"; then
+            echo '::error::the glibc s4 links jemalloc'; exit 1
+          fi
           SEARCHFOR_BENCH_REPORT="$RUNNER_TEMP/musl-vs-glibc.json" $PRIO bash scripts/bench-m5b.sh \
             --compare target/x86_64-unknown-linux-gnu/release/s4 \
             target/x86_64-unknown-linux-musl/release/s4 "$RUNNER_TEMP/m4-corpus"
           uptime
       # The rule, in this order (plan Task 11.2): a musl/glibc ratio of the medians of at most
-      # 1.05 keeps System; at least 1.15 means jemalloc behind the counter, a change this job
-      # cannot make, so it fails; in between it is Sebastián's decision, flagged as a warning.
-      # The worst of the three s4 modes decides.
+      # 1.05 passes; at least 1.15 called for jemalloc, which the musl s4 already has, so it
+      # fails for Sebastián to decide (Step 4); in between it is his decision too, flagged as a
+      # warning. The worst of the three s4 modes decides.
       - name: musl allocator decision (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -591,10 +600,12 @@ jobs:
               print(f"{mode} raw samples: {json.dumps(m['samples'])}")
           print(f'decision: {worst}')
           if worst == 'jemalloc':
-              print('::error::musl is at least 1.15 x glibc: s4 needs jemalloc behind the counter (plan Task 11.2, Step 3)')
+              print('::error::musl with jemalloc behind the counter is still at least 1.15 x glibc: report the samples to Sebastián (plan Task 11.2, Step 4)')
               sys.exit(1)
           if worst == 'ask':
-              print('::warning::musl/glibc is between 1.05 and 1.15: Sebastián decides System or jemalloc (plan Task 11.2, Step 2)')
+              print('::warning::musl with jemalloc is between 1.05 and 1.15 x glibc: Sebastián decides whether jemalloc stays (plan Task 11.2, Step 4)')
+          else:
+              print('jemalloc keeps musl within 1.05 x glibc: PASS')
           PY
       - name: Keep the musl measurement (Linux)
         if: runner.os == 'Linux' && (success() || failure())
@@ -603,7 +614,8 @@ jobs:
           name: musl-vs-glibc-${{ github.sha }}
           path: ${{ runner.temp }}/musl-vs-glibc.json
           if-no-files-found: ignore
-      # The counter's contract under musl: the memory unit tests and m4_22's warning.
+      # The counter's contract under musl, with jemalloc behind it: the memory unit tests and
+      # m4_22's warning.
       - name: Memory limits under musl (Linux)
         if: runner.os == 'Linux'
         run: |
