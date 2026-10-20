@@ -71,13 +71,13 @@ impl Messages {
     fn error(&self, msg: impl std::fmt::Display) {
         self.errored.store(true, Relaxed);
         if !self.silent && !stopped() {
-            eprintln!("s4: {msg}");
+            crate::warn(format_args!("s4: {msg}"));
         }
     }
 
     fn warn(&self, msg: impl std::fmt::Display) {
         if !self.silent && !stopped() {
-            eprintln!("{msg}");
+            crate::warn(msg);
         }
     }
 
@@ -86,7 +86,7 @@ impl Messages {
     /// as rg 14.1.1's `ignore_message!`.
     fn ignore(&self, msg: impl std::fmt::Display) {
         if !self.silent && !self.ignore_silent && !stopped() {
-            eprintln!("s4: {msg}");
+            crate::warn(format_args!("s4: {msg}"));
         }
     }
 }
@@ -115,7 +115,7 @@ fn run_processors(args: &Args, threads: usize) -> processors::Processors {
     let silent = args.no_messages;
     let warn: crate::helper::Warn = std::sync::Arc::new(move |m: String| {
         if !silent && !stopped() {
-            eprintln!("{m}");
+            crate::warn(m);
         }
     });
     processors::Processors::new(threads, warn).with_grammars(crate::grammars::grammars_dir())
@@ -265,7 +265,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
 
     // Patterns and paths (step 4).
     if args.pattern.is_none() && args.regexp.is_empty() && args.pattern_files.is_empty() {
-        eprintln!("s4: a pattern is required: give one, or use -e or -f");
+        crate::warn("s4: a pattern is required: give one, or use -e or -f");
         return Ok(2);
     }
     let pats = args.patterns()?;

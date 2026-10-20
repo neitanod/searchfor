@@ -28,3 +28,11 @@ pub fn run(args: Vec<std::ffi::OsString>) -> i32 {
     docs::isolated::finish();
     code
 }
+
+/// Writes one diagnostic line on stderr. A stderr that is closed, or a pipe nobody reads, loses
+/// the line and nothing else: `eprintln!` would panic there, and change the exit code or hang
+/// the walk (code review r3, Codex #4).
+pub(crate) fn warn(msg: impl std::fmt::Display) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{msg}");
+}

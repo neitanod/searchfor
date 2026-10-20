@@ -1465,3 +1465,100 @@ fn m5_26_the_version_is_0_5() {
     let v = ok(&fx, &["--version"]);
     assert!(v.starts_with("s4 0.5"), "{v}");
 }
+
+/// Code review r3, Codex #4: every diagnostic of a search or an action is written without a
+/// panic when stderr is a pipe without a reader, or closed: the exit code is the one s4 gives
+/// with stderr open, and the run ends (a panic in a walker thread used to hang it).
+#[test]
+fn m5_27_a_closed_stderr_keeps_the_exit_code_of_every_diagnostic() {
+    use std::os::unix::process::CommandExt;
+    use std::time::{Duration, Instant};
+    let fx = Fixture::new();
+    // A Format whose Grammar Helper cannot start, in a fixture of its own.
+    let helperless = Fixture::new();
+    std::fs::write(
+        helperless.formats.path().join("ini.toml"),
+        "name = 'ini'\nextensions = ['ini']\nprocessor = 'external'\n[params]\n\
+         command = ['/nonexistent-helper']\nmode = 'pool'\ntimeout_ms = 2000\n",
+    )
+    .unwrap();
+    // A user Definition that does not parse, in another.
+    let broken = Fixture::new();
+    std::fs::write(broken.formats.path().join("bad.toml"), "garbage = [\n").unwrap();
+    let missing = "/nonexistent-s4-test";
+    let cases = vec![
+        (
+            &fx,
+            vec!["--list-grammars"],
+            Some(("SEARCHFOR_GRAMMAR_INDEX", "file:///nonexistent")),
+            0,
+        ),
+        (
+            &fx,
+            vec!["--ignore-file", missing, "needle-pkg", "md"],
+            None,
+            0,
+        ),
+        (&fx, vec![], None, 2),
+        (&fx, vec!["needle-pkg", "md", missing], None, 2),
+        (
+            &fx,
+            vec!["needle-pkg", "md"],
+            Some(("SEARCHFOR_CONFIG_PATH", missing)),
+            0,
+        ),
+        (&broken, vec!["needle-pkg", "md"], None, 0),
+        (&helperless, vec!["needle", "ini"], None, 0),
+    ];
+    let limit = Duration::from_secs(30);
+    for (fx, args, env, want) in cases {
+        let command = |stderr: std::process::Stdio| {
+            let mut c = fx.s4(&args);
+            if let Some((k, v)) = env {
+                c.env(k, v);
+            }
+            c.stdout(std::process::Stdio::null()).stderr(stderr);
+            c
+        };
+        // With stderr open the case prints its diagnostic, and that is the exit code to keep.
+        let o = command(std::process::Stdio::piped()).output().unwrap();
+        assert_eq!(code(&o), want, "{args:?}: {}", stderr(&o));
+        assert!(!stderr(&o).is_empty(), "{args:?} prints no diagnostic");
+        for closed in ["a pipe without a reader", "closed"] {
+            let mut c = if closed == "closed" {
+                let mut c = command(std::process::Stdio::inherit());
+                // SAFETY: close(2) is async-signal-safe.
+                unsafe {
+                    c.pre_exec(|| {
+                        libc::close(2);
+                        Ok(())
+                    });
+                }
+                c
+            } else {
+                let (r, w) = std::io::pipe().unwrap();
+                drop(r);
+                command(w.into())
+            };
+            let start = Instant::now();
+            let mut child = c.spawn().unwrap();
+            let status = loop {
+                if let Some(s) = child.try_wait().unwrap() {
+                    break s;
+                }
+                if start.elapsed() > limit {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("{args:?} with stderr {closed}: still running after {limit:?}");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            assert_eq!(
+                status.code(),
+                Some(want),
+                "{args:?} with stderr {closed}, after {:?}",
+                start.elapsed()
+            );
+        }
+    }
+}

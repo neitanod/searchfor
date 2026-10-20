@@ -702,7 +702,7 @@ fn parse_with_config(
     }
     let (extra, msgs) = read();
     for m in msgs {
-        eprintln!("s4: {m}");
+        crate::warn(format_args!("s4: {m}"));
     }
     if extra.is_empty() {
         return Ok(alone);
