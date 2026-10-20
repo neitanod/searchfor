@@ -648,8 +648,16 @@ fn notyet_id(long: &str) -> String {
     format!("notyet--{long}")
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times `command()` ran on this thread, for the tests.
+    static COMMANDS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Args::command() plus every NotYet ripgrep flag, hidden, with its arity.
 pub fn command() -> clap::Command {
+    #[cfg(test)]
+    COMMANDS_BUILT.with(|n| n.set(n.get() + 1));
     let mut cmd = Args::command();
     for f in rg_flags::RG_FLAGS
         .iter()
@@ -686,7 +694,9 @@ fn parse_with_config(
     argv: Vec<OsString>,
     read: impl FnOnce() -> (Vec<OsString>, Vec<String>),
 ) -> Result<Args, CliError> {
-    let alone = parse(argv.clone())?;
+    // One `Command` for both parses (code review r1, Fable #3).
+    let mut cmd = command();
+    let alone = parse_with(&mut cmd, argv.clone())?;
     if alone.no_config || alone.pcre2_version || alone.mcp {
         return Ok(alone);
     }
@@ -700,11 +710,16 @@ fn parse_with_config(
     let mut all: Vec<OsString> = argv.iter().take(1).cloned().collect();
     all.extend(extra);
     all.extend(argv.into_iter().skip(1));
-    parse(all)
+    parse_with(&mut cmd, all)
 }
 
 pub fn parse(args: Vec<OsString>) -> Result<Args, CliError> {
-    let m = command().try_get_matches_from(args)?;
+    parse_with(&mut command(), args)
+}
+
+/// `parse` with the `Command` given, which can parse again.
+fn parse_with(cmd: &mut clap::Command, args: Vec<OsString>) -> Result<Args, CliError> {
+    let m = cmd.try_get_matches_from_mut(args)?;
     for f in rg_flags::RG_FLAGS
         .iter()
         .filter(|f| f.status == rg_flags::Status::NotYet)
@@ -1003,6 +1018,16 @@ mod tests {
 
     /// D3: the configuration file's arguments go before the command line's, and `--no-config`
     /// and `--mcp` read no file (review r1 of the M5a plan, Fable #1).
+    /// Code review r1, Fable #3: with a configuration file that has arguments, clap's
+    /// `Command` is built once for both parses.
+    #[test]
+    fn the_command_is_built_once_with_a_configuration_file() {
+        COMMANDS_BUILT.with(|n| n.set(0));
+        let a = parse_with_config(os(&["s4", "x"]), || (os(&["-i"]), Vec::new())).unwrap();
+        assert!(a.ignore_case);
+        assert_eq!(COMMANDS_BUILT.with(|n| n.get()), 1);
+    }
+
     #[test]
     fn the_configuration_file_is_not_read_for_mcp() {
         let file = || (os(&["--generate=man", "--pre=cat"]), Vec::new());
