@@ -2261,3 +2261,72 @@ fn benchmarks_run_isolated() {
         }
     }
 }
+
+/// Code review r3 of M5a, Codex #1 and #3 (`m5_22` in `tests/cli_m5.rs`, extended here): the
+/// Trail layouts of `--null-data` records cost time that grows with their Matches, not with
+/// their square. Each case runs over N and over 4 N, and the second must cost less than six
+/// times the first (CPU time of s4, best of three, `cpu_time`). `records`: N records `needle\n`, each Match
+/// ending at its NUL, so the search finds each Match's record at once and only the rows could
+/// cost more; `-r` replaces the NULs away, so looking back for the record's start from each
+/// Match read the item from its start (Codex #3). `sections`: one record of N Markdown
+/// Sections, each holding a Match, where each Section printed the record's rows of every
+/// other Section (Codex #1, and Fable #1 with `-o` and `--vimgrep`). Not ignored: it measures
+/// CPU time, which other tests running beside it do not change, and runs a few seconds.
+#[cfg(unix)]
+#[test]
+fn null_data_records_and_their_sections_cost_linear_time() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    for n in [1_000, 4_000, 10_000, 40_000] {
+        std::fs::write(fx.file(&format!("records{n}.txt")), b"needle\n\0".repeat(n)).unwrap();
+        let sections: String = (0..n).map(|i| format!("# H{i}\nneedle\n")).collect();
+        std::fs::write(fx.file(&format!("sections{n}.md")), format!("{sections}\0")).unwrap();
+    }
+    let record = ["-U", "--null-data", "needle\\n\\x00", "records@.txt"];
+    let cases: Vec<(usize, Vec<&str>)> = [
+        (&["--vimgrep"][..], &record[..]),
+        (&["--vimgrep", "-b"], &record),
+        (&["--vimgrep", "-P"], &record),
+        (&["--vimgrep", "-r", "X\n"], &record),
+        (&["--vimgrep", "-b", "-P", "-r", "X\n"], &record),
+        (&["--vimgrep", "-P", "--no-unicode", "-r", "X\n"], &record),
+    ]
+    .iter()
+    .map(|(f, a)| (10_000, [*f, *a].concat()))
+    .chain(
+        [
+            &["--tree"][..],
+            &["--flat"],
+            &["--tree", "-o"],
+            &["--flat", "--vimgrep"],
+            &["--tree", "-r", "X"],
+        ]
+        .iter()
+        .map(|f| {
+            let a: &[&str] = &["--expand", "--null-data", "needle", "sections@.md"];
+            (1_000, [*f, a].concat())
+        }),
+    )
+    .collect();
+    let mut slow = Vec::new();
+    for (n, case) in &cases {
+        let time = |n: usize| -> Duration {
+            let args: Vec<String> = case
+                .iter()
+                .map(|a| a.replace('@', &n.to_string()))
+                .collect();
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            (0..3).map(|_| cpu_time(&fx, &args, 0)).min().unwrap()
+        };
+        let (small, large) = (time(*n), time(4 * n));
+        eprintln!("{case:?}: {small:?} and {large:?}");
+        if large >= small * 6 {
+            slow.push(format!("{case:?}: {small:?} and {large:?}"));
+        }
+    }
+    assert!(
+        slow.is_empty(),
+        "4 N Matches cost six times N or more:\n{}",
+        slow.join("\n")
+    );
+}

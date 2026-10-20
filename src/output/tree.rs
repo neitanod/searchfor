@@ -705,6 +705,200 @@ mod tests {
         );
     }
 
+    /// Code review r3 of M5a, Codex #1 and Fable #1: each row of a Match keeps the bytes of the
+    /// Source it shows, and a Section prints only the rows of its own bytes, once; the bytes of
+    /// the item no row shows (the lines `-o` and `--vimgrep` leave out) are context rows.
+    #[test]
+    fn expand_gives_each_section_the_rows_of_its_own_bytes() {
+        use crate::output::Look;
+        let o = |look| RenderOptions {
+            expand: true,
+            look,
+            ..opts()
+        };
+        let null_data = |look: Look| Look {
+            null_data: true,
+            ..look
+        };
+        // One record of two Sections, a Match in each (Codex #1).
+        let s = b"# A\nneedle a\n# B\nneedle b\n\0".to_vec();
+        let (a, b) = (h(1, "A", 1, 2), h(1, "B", 3, 4));
+        let mut m = crate::model::Line::owned(1, 0, &s);
+        m.owned = None;
+        m.submatches = vec![
+            crate::model::Submatch { start: 4, end: 10 },
+            crate::model::Submatch { start: 17, end: 23 },
+        ];
+        let mut d = described(&s, vec![Item::Match(m)], vec![vec![vec![a], vec![b]]]);
+        d.sections = vec![vec![Some((1, 2)), Some((3, 4))]];
+        assert_eq!(
+            plain(&d, &s, &o(null_data(Look::default()))),
+            "docs/a.md\n  # A\n    1:# A\n    1:needle a\n  # B\n    1:# B\n    1:needle b\n"
+        );
+        let look = null_data(crate::output::tests::replacer("needle", b"X"));
+        assert_eq!(
+            plain(&d, &s, &o(look)),
+            "docs/a.md\n  # A\n    1:# A\n    1:X a\n  # B\n    1:# B\n    1:X b\n"
+        );
+        // A `-U` Match of lines 2 and 3 with --vimgrep: its row is line 2, and line 3 context.
+        let s = src(&["# T", "needle", "", "x"]);
+        let mut d = described(
+            &s,
+            vec![item(&s, 2, 4..12, (0, 8))],
+            vec![vec![vec![h(1, "T", 1, 4)]]],
+        );
+        d.sections = vec![vec![Some((1, 4))]];
+        let look = Look {
+            multi_line: true,
+            per_match: true,
+            ..Look::default()
+        };
+        assert_eq!(
+            plain(&d, &s, &o(look)),
+            "docs/a.md\n  # T\n    1-# T\n    2:needle\n    3-\n    4-x\n"
+        );
+        // A `-U` Match that goes on past its Section prints its lines there, the next
+        // Section's line too, and no line after it.
+        let s = src(&["# A", "x", "needle", "", "# C", "y"]);
+        let mut d = described(
+            &s,
+            vec![item(&s, 3, 6..18, (0, 11))],
+            vec![vec![vec![h(1, "A", 1, 4)]]],
+        );
+        d.sections = vec![vec![Some((1, 4))]];
+        let look = Look {
+            multi_line: true,
+            ..Look::default()
+        };
+        assert_eq!(
+            plain(&d, &s, &o(look)),
+            "docs/a.md\n  # A\n    1-# A\n    2-x\n    3:needle\n    4:\n    5:# C\n"
+        );
+        // A record with `-o`: its other lines are context, numbered by the record.
+        let s = b"# A\nneedle one\n\n## B\nx needle y needle\nplain\n".to_vec();
+        let (a, b) = (h(1, "A", 1, 6), h(2, "B", 4, 6));
+        let mut m = crate::model::Line::owned(1, 0, &s);
+        m.owned = None;
+        m.submatches = [(4, 10), (23, 29), (32, 38)]
+            .map(|(start, end)| crate::model::Submatch { start, end })
+            .to_vec();
+        let mut d = described(
+            &s,
+            vec![Item::Match(m)],
+            vec![vec![
+                vec![a.clone()],
+                vec![a.clone(), b.clone()],
+                vec![a, b],
+            ]],
+        );
+        d.sections = vec![vec![Some((1, 6)), Some((4, 6)), Some((4, 6))]];
+        let look = null_data(Look {
+            only_matching: true,
+            ..Look::default()
+        });
+        assert_eq!(
+            plain(&d, &s, &o(look)),
+            "docs/a.md\n  # A\n    1-# A\n    1:needle\n    1-\n    1-## B\n    1:needle\n    1:needle\n    1-plain\n    ## B\n      1-## B\n      1:needle\n      1:needle\n      1-plain\n"
+        );
+        // `-o -r ''`: an empty replacement at a line's start shows the whole line, which is
+        // not context.
+        let one = src(&["# A", "needle one", "x"]);
+        let mut d = described(&one, vec![mat(&one, 2)], vec![vec![vec![h(1, "A", 1, 3)]]]);
+        d.sections = vec![vec![Some((1, 3))]];
+        let look = Look {
+            only_matching: true,
+            ..crate::output::tests::replacer("needle", b"")
+        };
+        assert_eq!(
+            plain(&d, &one, &o(look)),
+            "docs/a.md\n  # A\n    1-# A\n    2:\n    3-x\n"
+        );
+        // `-U -r ''` of a whole line: its row is the empty text, and shows the line.
+        let gone = src(&["# H", "needle", "after"]);
+        let mut d = described(
+            &gone,
+            vec![item(&gone, 2, 4..11, (0, 7))],
+            vec![vec![vec![h(1, "H", 1, 3)]]],
+        );
+        d.sections = vec![vec![Some((1, 3))]];
+        let a = crate::cli::parse(["s4", "-U", "x"].iter().map(Into::into).collect()).unwrap();
+        let m = crate::matcher::build(&a, &["needle\n".into()]).unwrap();
+        let r = super::super::replace::Replacer::new(
+            m,
+            Vec::new(),
+            grep_matcher::LineTerminator::byte(b'\n'),
+            true,
+        );
+        let look = Look {
+            multi_line: true,
+            replace: Some(std::sync::Arc::new(r)),
+            ..Look::default()
+        };
+        assert_eq!(
+            plain(&d, &gone, &o(look)),
+            "docs/a.md\n  # H\n    1-# H\n    2:\n    3-after\n"
+        );
+        // `-U --vimgrep '^'`: no row for an empty Match at a line's start, so every line is
+        // context.
+        let mut m = crate::model::Line::owned(1, 0, &s);
+        m.owned = None;
+        m.submatches = [0, 4, 15, 16, 21, 39]
+            .map(|start| crate::model::Submatch { start, end: start })
+            .to_vec();
+        let (a, b) = (h(1, "A", 1, 6), h(2, "B", 4, 6));
+        let (ta, tb) = (vec![a.clone()], vec![a, b]);
+        let mut d = described(
+            &s,
+            vec![Item::Match(m)],
+            vec![vec![ta.clone(), ta.clone(), ta, tb.clone(), tb.clone(), tb]],
+        );
+        d.sections = vec![vec![
+            Some((1, 6)),
+            Some((1, 6)),
+            Some((1, 6)),
+            Some((4, 6)),
+            Some((4, 6)),
+            Some((4, 6)),
+        ]];
+        let look = Look {
+            multi_line: true,
+            per_match: true,
+            ..Look::default()
+        };
+        assert_eq!(
+            plain(&d, &s, &o(look)),
+            "docs/a.md\n  # A\n    1-# A\n    2-needle one\n    3-\n    4-## B\n    5-x needle y needle\n    6-plain\n    ## B\n      4-## B\n      5-x needle y needle\n      6-plain\n"
+        );
+    }
+
+    /// Code review r3 of M5a, Fable #3: with `--null-data`, the context bytes of a `\n` line
+    /// that holds several records are a row per record, without its NUL, numbered by its
+    /// record as a context record's row is.
+    #[test]
+    fn expand_prints_each_context_record_of_a_line_as_a_row() {
+        use crate::output::Look;
+        // Records `# H\na` (1), `b` (2) and `needle` (3), on two `\n` lines.
+        let s = b"# H\na\0b\0needle".to_vec();
+        let mut d = described(
+            &s,
+            vec![item(&s, 3, 8..14, (0, 6))],
+            vec![vec![vec![h(1, "H", 1, 2)]]],
+        );
+        d.sections = vec![vec![Some((1, 2))]];
+        let o = RenderOptions {
+            expand: true,
+            look: Look {
+                null_data: true,
+                ..Look::default()
+            },
+            ..opts()
+        };
+        assert_eq!(
+            plain(&d, &s, &o),
+            "docs/a.md\n  # H\n    1-# H\n    1-a\n    2-b\n    3:needle\n"
+        );
+    }
+
     /// Code review r2 of M5a, Fable #2: a file `--passthru` prints without a Match has no
     /// Section, so --expand prints its rows as without --expand.
     #[test]
