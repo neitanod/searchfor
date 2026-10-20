@@ -338,6 +338,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends musl-tools
       - name: Fetch the locked crates
         run: cargo fetch --locked
+      # The npm package's one dependency (its npm-shrinkwrap.json pins detect-libc 2.1.2),
+      # cached here so that the install below runs --offline.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Cache the npm package's dependency
+        run: npm cache add detect-libc@2.1.2
 
       # dist's plan: five targets, four installers, version 1.0.0, and only s4 (plan Task 11.1).
       - name: dist plan (Linux)
@@ -586,3 +593,167 @@ jobs:
         run: |
           $PRIO cargo test --release --locked --offline --target x86_64-unknown-linux-musl --lib memory
           $PRIO cargo test --release --locked --offline --target x86_64-unknown-linux-musl --test cli_m4 m4_22
+
+      # The checksums (spec §8.1): the archive's `.sha256` and `sha256.sum`, which lists every
+      # archive and the npm package, verified with the system's own tool; then a copy of the
+      # archive with one byte flipped must fail verification (plan Task 11.3, Step 3).
+      - name: Checksums
+        working-directory: target/distrib
+        run: |
+          set -euo pipefail
+          if command -v sha256sum > /dev/null; then sum=(sha256sum); else sum=(shasum -a 256); fi
+          archive="searchfor-$TARGET.tar.xz"
+          [ -f "$archive" ] || archive="searchfor-$TARGET.zip"
+          "${sum[@]}" -c "$archive.sha256"
+          "${sum[@]}" -c sha256.sum
+          for f in "$archive" searchfor-npm-package.tar.gz; do
+            grep -Eq "^[0-9a-f]{64} \*$f\$" sha256.sum || { echo "::error::sha256.sum lacks $f"; exit 1; }
+          done
+          bad="$RUNNER_TEMP/corrupt-checksum"
+          mkdir -p "$bad"
+          cp "$archive" "$archive.sha256" "$bad/"
+          python3 - "$bad/$archive" <<'PY'
+          import sys
+          from pathlib import Path
+          p = Path(sys.argv[1]); b = bytearray(p.read_bytes()); b[len(b) // 2] ^= 0x01; p.write_bytes(bytes(b))
+          PY
+          if (cd "$bad" && "${sum[@]}" -c "$archive.sha256"); then
+            echo "::error::a corrupt $archive passed its checksum"; exit 1
+          fi
+          echo 'checksums, and a flipped byte rejected: PASS'
+
+      # The installers against this job's own archive, served on the loopback, with every other
+      # destination unreachable (dead proxies, and npm --offline from its cache): the shell
+      # script (Unix), the npm package (every system; the .cmd shim on Windows) and the Homebrew
+      # formula (macOS). Each must print s4 1.0.0, fetch exactly the archive, and fail on a
+      # damaged archive (plan Task 11.3, Step 3). dist 0.33.0's shell script checks the SHA-256;
+      # its npm package does not, so for npm the damage is in the archive's own integrity data.
+      - name: Local installers
+        run: |
+          python3 - <<'PY'
+          import http.server, json, os, shutil, subprocess, sys, tarfile, threading
+          from pathlib import Path
+          distrib = Path('target/distrib').resolve()
+          target = os.environ['TARGET']
+          tmp = Path(os.environ['RUNNER_TEMP']) / 'installers'
+          windows, mac = os.name == 'nt', sys.platform == 'darwin'
+          ext = 'zip' if 'windows' in target else 'tar.xz'
+          archive = f'searchfor-{target}.{ext}'
+          good, bad = tmp / 'good', tmp / 'bad'
+          for d in (good, bad):
+              d.mkdir(parents=True)
+          shutil.copy(distrib / archive, good / archive)
+          data = bytearray((distrib / archive).read_bytes())
+          # The zip's end-of-central-directory signature; the xz stream's footer magic.
+          data[len(data) - 22 if ext == 'zip' else len(data) - 1] ^= 0xff
+          (bad / archive).write_bytes(bytes(data))
+
+          requests = []
+          class Handler(http.server.SimpleHTTPRequestHandler):
+              def __init__(self, *a, **k):
+                  super().__init__(*a, directory=str(tmp), **k)
+              def do_GET(self):
+                  requests.append(self.path)
+                  super().do_GET()
+              def log_message(self, *a):
+                  pass
+          server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+          threading.Thread(target=server.serve_forever, daemon=True).start()
+          base = f'http://127.0.0.1:{server.server_port}'
+          dead = 'http://127.0.0.1:9'
+          env = dict(os.environ, HTTP_PROXY=dead, HTTPS_PROXY=dead, ALL_PROXY=dead, http_proxy=dead,
+                     https_proxy=dead, all_proxy=dead, NO_PROXY='127.0.0.1', no_proxy='127.0.0.1',
+                     HOMEBREW_NO_AUTO_UPDATE='1',
+                     HOMEBREW_NO_ANALYTICS='1', HOMEBREW_NO_INSTALL_CLEANUP='1')
+
+          def run(cmd, **k):
+              print('+', ' '.join(map(str, cmd)), flush=True)
+              return subprocess.run([str(c) for c in cmd], env=k.pop('env', env), **k)
+          def version(exe):
+              out = run([exe, '--version'], capture_output=True, text=True)
+              assert out.returncode == 0, out
+              return out.stdout.strip()
+          def served(kind):
+              got = list(requests); requests.clear()
+              assert got == [f'/{kind}/{archive}'], got
+
+          if not windows:
+              for kind in ('good', 'bad'):
+                  home = tmp / f'sh-{kind}'
+                  r = run(['sh', distrib / 'searchfor-installer.sh', '--no-modify-path'],
+                          env=dict(env, HOME=str(home), CARGO_HOME=str(home / '.cargo'),
+                                   SEARCHFOR_DOWNLOAD_URL=f'{base}/{kind}'))
+                  served(kind)
+                  if kind == 'good':
+                      assert r.returncode == 0, r
+                      assert version(home / '.cargo' / 'bin' / 's4') == 's4 1.0.0'
+                  else:
+                      assert r.returncode != 0, 'the shell installer accepted a corrupt archive'
+              print('shell installer: PASS')
+
+          npm = shutil.which('npm')
+          src = tmp / 'npm-package'
+          with tarfile.open(distrib / 'searchfor-npm-package.tar.gz') as t:
+              t.extractall(src, filter='data')
+          [pkg] = [p.parent for p in src.rglob('package.json')]
+          for kind in ('good', 'bad'):
+              copy = tmp / f'npm-src-{kind}'
+              shutil.copytree(pkg, copy)
+              meta = json.loads((copy / 'package.json').read_text(encoding='utf-8'))
+              meta['artifactDownloadUrls'] = [f'{base}/{kind}']
+              (copy / 'package.json').write_text(json.dumps(meta, indent=2), encoding='utf-8')
+              assert run([npm, 'pack', '--ignore-scripts'], cwd=copy).returncode == 0
+              tgz = copy / 'searchfor-1.0.0.tgz'
+              assert tgz.is_file(), list(copy.iterdir())
+              prefix = tmp / f'npm-{kind}'
+              r = run([npm, 'install', '--prefix', prefix, '--offline', '--no-audit', '--no-fund',
+                       '--foreground-scripts', '--logs-dir', tmp / 'npm-logs', tgz])
+              served(kind)
+              shim = prefix / 'node_modules' / '.bin' / ('s4.cmd' if windows else 's4')
+              if kind == 'good':
+                  assert r.returncode == 0, r
+                  assert version(shim) == 's4 1.0.0'
+              else:
+                  assert r.returncode != 0, 'npm installed a corrupt archive'
+          print('npm package: PASS')
+
+          if mac:
+              # The generated formula stays as dist wrote it for the release; this copy, outside
+              # the repository, points at the job's archive.
+              formula = (distrib / 'searchfor.rb').read_text(encoding='utf-8')
+              release = 'https://github.com/neitanod/searchfor/releases/download/v1.0.0/'
+              assert release + archive in formula
+              (tmp / 'searchfor.rb').write_text(formula.replace(release, f'file://{good}/'), encoding='utf-8')
+              r = run(['brew', 'install', '--formula', './searchfor.rb'], cwd=tmp)
+              if r.returncode != 0:
+                  # Homebrew versions that install formulae only from a tap: a local one.
+                  run(['brew', 'tap-new', '--no-git', 'searchfor/smoke'], check=True)
+                  tap = run(['brew', '--repository', 'searchfor/smoke'], check=True,
+                            capture_output=True, text=True).stdout.strip()
+                  shutil.copy(tmp / 'searchfor.rb', Path(tap) / 'Formula' / 'searchfor.rb')
+                  run(['brew', 'install', '--formula', 'searchfor/smoke/searchfor'], check=True)
+              brew = run(['brew', '--prefix'], check=True, capture_output=True, text=True).stdout.strip()
+              assert version(Path(brew) / 'bin' / 's4') == 's4 1.0.0'
+              run(['brew', 'uninstall', '--formula', 'searchfor'], check=True)
+              print('Homebrew formula: PASS')
+          server.shutdown()
+          PY
+
+      # The crate (spec §8.4): the package, verified offline from the crates fetched above, and a
+      # publish rehearsal that uploads nothing. The rehearsal cannot run --offline: cargo 1.90
+      # discards its cached crates.io index configuration on every publish and reads it again,
+      # so it reads (never writes) crates.io; it skips the verification the package step did.
+      # This job never runs `cargo publish` itself.
+      - name: Crate (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          $PRIO cargo package --list --locked --offline --allow-dirty -p searchfor | tee "$RUNNER_TEMP/crate-files.txt"
+          for f in Cargo.toml LICENSE-MIT LICENSE-APACHE README.md README.es.md grammars/index.json \
+                   formats/markdown.toml src/main.rs src/rg_types.txt; do
+            grep -Fxq "$f" "$RUNNER_TEMP/crate-files.txt" || { echo "::error::the crate lacks $f"; exit 1; }
+          done
+          if grep -q '^tests/' "$RUNNER_TEMP/crate-files.txt"; then echo "::error::the crate carries tests/"; exit 1; fi
+          $PRIO cargo package --locked --offline --allow-dirty -p searchfor
+          $PRIO cargo publish --dry-run --locked --allow-dirty --no-verify -p searchfor
+          ls -l target/package/searchfor-1.0.0.crate
