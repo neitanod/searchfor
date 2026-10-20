@@ -10,6 +10,7 @@ use crate::output::{
     self, Layout, RenderOptions,
     json::JsonOptions,
     json::RunStats,
+    replace::Replacer,
     stream::{StreamFile, StreamSink},
     summary,
 };
@@ -19,10 +20,7 @@ use crate::search::{self, CollectSink, MaxCount};
 use crate::source::Source;
 use crate::trail::{LineIndex, Outline};
 use grep_matcher::Matcher;
-use grep_printer::{
-    ColorSpecs, JSON, JSONBuilder, Standard, StandardBuilder, Stats, Summary, SummaryBuilder,
-    SummaryKind,
-};
+use grep_printer::{JSON, JSONBuilder, Standard, Stats, Summary, SummaryKind};
 use grep_searcher::{BinaryDetection, Searcher, Sink, SinkContext, SinkFinish, SinkMatch};
 use ignore::{DirEntry, WalkBuilder, WalkState};
 use std::ffi::OsString;
@@ -30,7 +28,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 use termcolor::{Buffer, BufferWriter, ColorChoice, WriteColor};
 
@@ -46,6 +44,7 @@ pub fn run(argv: Vec<OsString>) -> i32 {
             return 2;
         }
     };
+    crate::log::init(args.logging);
     let code = match main(&args) {
         Ok(code) => code,
         Err(e) => {
@@ -173,7 +172,19 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         ignore_silent: args.no_ignore_messages,
         errored: AtomicBool::new(false),
     };
-    // Actions (step 3).
+    // Actions (step 3). `--pcre2-version` is rg's special mode: it wins over everything.
+    if args.pcre2_version {
+        println!("{}", crate::matcher::pcre2_version());
+        return Ok(0);
+    }
+    if let Some(kind) = &args.generate {
+        cli::generate::generate(kind, &mut std::io::stdout().lock())?;
+        return Ok(0);
+    }
+    if args.mcp {
+        crate::mcp::serve(&std::env::current_exe()?)?;
+        return Ok(0);
+    }
     if args.list_grammars {
         return Ok(list_grammars(&msgs));
     }
@@ -209,10 +220,17 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         let cwd = std::env::current_dir()?;
         search::walker(args, &[], &cwd)?;
         Preprocess::new(args, &cwd)?;
-        std::io::stdout()
-            .lock()
-            .write_all(search::RG_TYPES.as_bytes())?;
-        return Ok(0);
+        // The types as `--type-add` and `--type-clear` changed them, and exit 1 without any, as
+        // rg's `types` (review r2 of the M5a plan, Codex #3).
+        let defs = search::file_types(args)?.definitions();
+        let mut out = std::io::stdout().lock();
+        for d in &defs {
+            writeln!(out, "{}: {}", d.name(), d.globs().join(", "))?;
+        }
+        return Ok(if defs.is_empty() { 1 } else { 0 });
+    }
+    if args.files {
+        return files(args, &msgs);
     }
 
     // Patterns and paths (step 4).
@@ -256,7 +274,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     } else if args.no_filename {
         false
     } else {
-        !one_file
+        args.vimgrep || !one_file
     };
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
     let color = match args.color {
@@ -266,8 +284,11 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         ColorWhen::Always => ColorChoice::Always,
         ColorWhen::Ansi => ColorChoice::AlwaysAnsi,
     };
-    // ripgrep 14.1.1 runs `-v --count-matches` as `-v --count` (hiargs.rs:129).
-    let summary_mode = if args.count || (args.count_matches && args.invert_match) {
+    // ripgrep 14.1.1 runs `-v --count-matches` as `-v --count`, and `-o --count` as
+    // `--count-matches` (hiargs.rs:129).
+    let summary_mode = if args.count && args.only_matching {
+        Some(summary::Mode::CountMatches)
+    } else if args.count || (args.count_matches && args.invert_match) {
         Some(summary::Mode::Count)
     } else if args.count_matches {
         Some(summary::Mode::CountMatches)
@@ -279,7 +300,8 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         None
     };
     let context = args.before() > 0 || args.after() > 0;
-    let mode = if args.quiet && args.json && !args.structural() {
+    // `-q --stats` searches every file for its statistics, as `--json -q` (hiargs.rs:163).
+    let mode = if args.quiet && (args.json || args.stats) && !args.structural() {
         Mode::QuietJson
     } else if args.quiet && !args.structural() {
         Mode::Quiet
@@ -290,6 +312,9 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     };
     let layout = if args.json {
         Layout::Json
+    } else if args.vimgrep {
+        // rg's --vimgrep turns the heading off, whatever came before it.
+        Layout::Flat
     } else if args.tree {
         Layout::Tree
     } else if args.flat {
@@ -299,7 +324,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     } else {
         Layout::Flat
     };
-    let heading = tty;
+    let heading = output::rg::heading(args, tty);
     // The separator between files, which BufferWriter prints between two non-empty file
     // outputs, as ripgrep's. One file needs none, so its output is printed as it grows
     // (`Ctx::spill`), and a closed pipe stops the search as rg's (code review r4 replay).
@@ -307,10 +332,10 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         _ if one_file => None,
         Mode::Passthrough if args.json || summary_mode.is_some() => None,
         Mode::Passthrough if heading => Some(Vec::new()),
-        Mode::Passthrough if context => Some(b"--".to_vec()),
+        Mode::Passthrough if context => args.context_separator.clone(),
         Mode::Trail if summary_mode.is_some() || args.quiet => None,
         Mode::Trail if layout == Layout::Tree => Some(Vec::new()),
-        Mode::Trail if layout == Layout::Flat && context => Some(b"--".to_vec()),
+        Mode::Trail if layout == Layout::Flat && context => args.context_separator.clone(),
         _ => None,
     };
     // With one thread, ripgrep 14.1.1's printer writes it instead, before a file's first line
@@ -326,6 +351,17 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     let separator = separator.filter(|_| line_separator.is_none());
     let mut out = BufferWriter::stdout(color);
     out.separator(separator.clone());
+    // rg flushes each line on a terminal and with --line-buffered (hiargs.rs `stdout`).
+    let line_buffered = match args.buffer {
+        cli::BufferMode::Line => true,
+        cli::BufferMode::Block => false,
+        cli::BufferMode::Auto => tty,
+    };
+    let out = Out {
+        w: out,
+        bytes: AtomicU64::new(0),
+        spill_at: if line_buffered { 1 } else { SPILL },
+    };
     let width = if tty && layout != Layout::Json {
         terminal_size::terminal_size().map_or(args.fragment_width, |(w, _)| w.0 as usize)
     } else {
@@ -361,6 +397,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         linked: AtomicBool::new(false),
         msgs,
         pre,
+        searched: AtomicBool::new(false),
         decoding: crate::source::Decoding::of(args),
         mapping: crate::source::Mapping::of(args),
         in_memory: search::rg_in_memory(args, &paths, implicit_stdin),
@@ -397,7 +434,9 @@ fn main(args: &Args) -> anyhow::Result<i32> {
                 || search::streaming_searcher(args, false, ctx.in_memory),
                 |s, t| ctx.quiet_json_file(s, &t),
             )?;
-            ctx.print_summary();
+            if args.json {
+                ctx.print_summary();
+            }
         }
         Mode::Passthrough => {
             let line_number =
@@ -425,7 +464,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
                 context,
                 expand: args.expand,
                 binary: args.binary_choice,
-                look: output::Look::default(),
+                look: output::rg::look(args, &ctx.matcher),
             };
             ctx.walk(
                 || TrailState {
@@ -443,8 +482,165 @@ fn main(args: &Args) -> anyhow::Result<i32> {
             }
         }
     }
+    // rg's `eprint_nothing_searched`: the current directory was searched implicitly and every
+    // file was left out.
+    if ctx.strip_dot && !ctx.searched.load(Relaxed) {
+        ctx.msgs.error(
+            "No files were searched, which means s4 probably applied a filter you didn't \
+             expect.\nRunning with --debug will show why files are being skipped.",
+        );
+    }
+    if args.stats && !args.json {
+        ctx.print_stats_block();
+    }
     let matched = ctx.matched.load(Relaxed);
     let errored = ctx.msgs.errored.load(Relaxed);
+    Ok(if matched && (args.quiet || !errored) {
+        0
+    } else if errored {
+        2
+    } else {
+        1
+    })
+}
+
+/// `--files`: every file the search would read, printed as rg 14.1.1's `files` and
+/// `files_parallel` print them (main.rs): the positional arguments are all paths, the current
+/// directory without one (even with a readable stdin), each file by the path printer (`-0`,
+/// `--path-separator`, `--colors`, `--hyperlink-format`), from the walker's threads through
+/// one printing thread, or in `--sort`'s order from one thread. stdout is flushed per line on a
+/// terminal or with `--line-buffered`, else per block, as rg's. Exit 0 when a file was
+/// found; with `-q`, the first one stops the walk and nothing is printed.
+fn files(args: &Args, msgs: &Messages) -> anyhow::Result<i32> {
+    let mut paths: Vec<PathBuf> = args.pattern.iter().map(PathBuf::from).collect();
+    paths.extend(args.paths.iter().cloned());
+    let implicit = paths.is_empty();
+    if implicit {
+        paths.push(PathBuf::from("./"));
+    }
+    let cwd = std::env::current_dir()?;
+    let (walker, ignore_errors) = search::walker_with(args, &paths, &cwd)?;
+    Preprocess::new(args, &cwd)?;
+    for e in ignore_errors {
+        msgs.ignore(e);
+    }
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let color = match args.color {
+        ColorWhen::Never => ColorChoice::Never,
+        ColorWhen::Auto if tty => ColorChoice::Auto,
+        ColorWhen::Auto => ColorChoice::Never,
+        ColorWhen::Always => ColorChoice::Always,
+        ColorWhen::Ansi => ColorChoice::AlwaysAnsi,
+    };
+    let line = match args.buffer {
+        cli::BufferMode::Line => true,
+        cli::BufferMode::Block => false,
+        cli::BufferMode::Auto => tty,
+    };
+    let stdout: Box<dyn WriteColor + Send> = if line {
+        Box::new(termcolor::StandardStream::stdout(color))
+    } else {
+        Box::new(termcolor::BufferedStandardStream::stdout(color))
+    };
+    let mut printer = output::rg::path_printer(args, stdout);
+    // A file to list: named on the command line, or a file found by the walk.
+    let listed = |d: &DirEntry| {
+        if let Some(e) = d.error() {
+            msgs.ignore(e);
+        }
+        let is_dir = d.file_type().is_some_and(|t| t.is_dir());
+        (d.depth() == 0 && !is_dir) || d.file_type().is_some_and(|t| t.is_file())
+    };
+    let shown = |p: &Path| -> PathBuf {
+        if implicit {
+            p.strip_prefix("./").unwrap_or(p).to_path_buf()
+        } else {
+            p.to_path_buf()
+        }
+    };
+    let matched = AtomicBool::new(false);
+    let printed: std::io::Result<()> = match args.sort {
+        // Another order than the walker's: every file first, then sorted (rg's `sort`).
+        Some(sort) if !search::walker_sorts(args) => {
+            let mut entries: Vec<DirEntry> = Vec::new();
+            for r in walker.build() {
+                match r {
+                    Ok(d) if listed(&d) => entries.push(d),
+                    Ok(_) => {}
+                    Err(e) => msgs.error(e),
+                }
+            }
+            search::sort_entries(&mut entries, sort);
+            matched.store(!entries.is_empty(), Relaxed);
+            if args.quiet {
+                Ok(())
+            } else {
+                entries
+                    .iter()
+                    .try_for_each(|d| printer.write(&shown(d.path())))
+            }
+        }
+        // The walker's order (`--sort path`, or one thread): printed as found.
+        sort if sort.is_some() || search::walker_threads(args) == 1 => {
+            let mut r = Ok(());
+            for e in walker.build() {
+                match e {
+                    Ok(d) if listed(&d) => {
+                        matched.store(true, Relaxed);
+                        if args.quiet {
+                            break;
+                        }
+                        r = printer.write(&shown(d.path()));
+                        if r.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => msgs.error(e),
+                }
+            }
+            r
+        }
+        // The walker's threads, and one thread that prints (rg's `files_parallel`).
+        _ => {
+            let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
+            std::thread::scope(|scope| {
+                let printing = scope.spawn(move || -> std::io::Result<()> {
+                    for p in rx {
+                        printer.write(&p)?;
+                    }
+                    Ok(())
+                });
+                walker.build_parallel().run(|| {
+                    let tx = tx.clone();
+                    let (listed, shown, matched) = (&listed, &shown, &matched);
+                    Box::new(move |r| match r {
+                        Ok(d) if listed(&d) => {
+                            matched.store(true, Relaxed);
+                            if args.quiet || tx.send(shown(d.path())).is_err() {
+                                WalkState::Quit
+                            } else {
+                                WalkState::Continue
+                            }
+                        }
+                        Ok(_) => WalkState::Continue,
+                        Err(e) => {
+                            msgs.error(e);
+                            WalkState::Continue
+                        }
+                    })
+                });
+                drop(tx);
+                printing.join().expect("the printing thread does not panic")
+            })
+        }
+    };
+    match printed {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => return Err(e.into()),
+        _ => {}
+    }
+    let matched = matched.load(Relaxed);
+    let errored = msgs.errored.load(Relaxed);
     Ok(if matched && (args.quiet || !errored) {
         0
     } else if errored {
@@ -466,7 +662,7 @@ fn passthrough_line_number(args: &Args, summary: bool, tty: bool, paths: &[PathB
     } else if args.json {
         true
     } else {
-        !summary && tty && !only_stdin
+        !summary && ((tty && !only_stdin) || output::rg::column(args) || args.vimgrep)
     }
 }
 
@@ -647,7 +843,7 @@ struct Ctx<'a> {
     in_memory: bool,
     with_filename: bool,
     summary: Option<summary::Mode>,
-    out: BufferWriter,
+    out: Out,
     /// Set to stop every worker: `-q` found a Match, or stdout was closed.
     quit: AtomicBool,
     /// A file had a kept Match (or, for --files-without-match, was listed).
@@ -670,6 +866,9 @@ struct Ctx<'a> {
     processors: processors::Processors,
     /// `--pre` and `-z`.
     pre: Preprocess,
+    /// A file was searched: else, with the current directory searched implicitly, rg says
+    /// that no file was searched.
+    searched: AtomicBool,
     /// How files are decoded: by their BOM, or as `-E` says (M5a plan, D10).
     decoding: crate::source::Decoding,
     /// Whether a large file is mapped: never with `--no-mmap` (review r2 of the M5a plan,
@@ -737,6 +936,7 @@ impl<'a> Ctx<'a> {
                 match r {
                     Ok(d) => {
                         if let Some(t) = self.target(&d, &mut above) {
+                            self.searched.store(true, Relaxed);
                             visit(&mut state, self.prepare(t));
                         }
                     }
@@ -756,6 +956,7 @@ impl<'a> Ctx<'a> {
                         Ok(d) => {
                             self.entry_error(&d);
                             if let Some(t) = self.target(&d, &mut above) {
+                                self.searched.store(true, Relaxed);
                                 visit(&mut state, self.prepare(t));
                             }
                         }
@@ -1139,6 +1340,27 @@ impl<'a> Ctx<'a> {
         self.print(&buf);
     }
 
+    /// rg's `--stats` block after the output (main.rs `print_stats`): the statistics of every
+    /// file searched, the bytes printed being those s4 printed in the Trail layouts and grep-
+    /// printer's count with `--no-trail` (M5a plan, D14).
+    fn print_stats_block(&self) {
+        let mut stats = self.stats.lock().expect("stats").clone();
+        stats.elapsed_total = self.started.elapsed();
+        if self.counts_printed() {
+            stats.bytes_printed = self.out.bytes.load(Relaxed);
+        }
+        let mut buf = self.out.buffer();
+        let _ = buf.write_all(output::rg::stats_block(&stats).as_bytes());
+        self.print(&buf);
+    }
+
+    /// The Trail layouts' `--stats` count the bytes s4 prints; grep-printer counts its own.
+    fn counts_printed(&self) -> bool {
+        !self.args.quiet
+            && !self.args.no_trail
+            && (self.summary.is_none() || self.args.structural())
+    }
+
     fn quiet_file(&self, searcher: &mut Searcher, t: &Target) {
         let mut sink = CollectSink::new(&self.matcher, self.args.invert_match, true);
         match self.search_raw(searcher, t, &mut sink) {
@@ -1178,19 +1400,19 @@ impl<'a> Ctx<'a> {
         self.count_quiet_json(&sink.stats, sink.lines > 0);
     }
 
-    /// `--json -q`: adds a searched file to the summary.
+    /// `--json -q` and `--stats`: adds a searched file to the summary, whether it matched or
+    /// not, as grep-printer's sinks count every search.
     fn count_quiet_json(&self, s: &FileStats, matched: bool) {
-        if self.args.json && self.args.quiet {
+        if (self.args.json && self.args.quiet) || (self.args.stats && !self.args.json) {
             let mut stats = output::json::file_stats(s, 0);
             stats.searches_with_match = u64::from(matched);
             *self.stats.lock().expect("stats") += &stats;
         }
     }
 
-    /// grep-printer's printer for the mode, with ripgrep's defaults (design note 9) and its
-    /// `-m`, which grep-printer 0.2.2's printers count.
+    /// grep-printer's printer for the mode, configured as rg 14.1.1 configures it
+    /// (`output::rg`; design note 9), with its `-m`, which grep-printer 0.2.2's printers count.
     fn printer(&self, heading: bool) -> Printer<'_> {
-        let specs = ColorSpecs::new(&grep_printer::default_color_specs());
         let max = search::max_count(self.args);
         if let Some(mode) = self.summary {
             let kind = match mode {
@@ -1199,16 +1421,13 @@ impl<'a> Ctx<'a> {
                 summary::Mode::FilesWithMatches => SummaryKind::PathWithMatch,
                 summary::Mode::FilesWithoutMatch => SummaryKind::PathWithoutMatch,
             };
-            return Printer::Summary(
-                SummaryBuilder::new()
-                    .color_specs(specs)
-                    .kind(kind)
-                    .path(self.with_filename)
-                    .exclude_zero(true)
-                    .separator_field(b":".to_vec())
-                    .max_matches(max)
-                    .build(self.spill_lines()),
-            );
+            return Printer::Summary(output::rg::summary(
+                self.args,
+                kind,
+                self.with_filename,
+                max,
+                self.spill_lines(),
+            ));
         }
         if self.args.json {
             return Printer::Json(
@@ -1217,16 +1436,14 @@ impl<'a> Ctx<'a> {
                     .build(self.spill_lines()),
             );
         }
-        Printer::Standard(
-            StandardBuilder::new()
-                .color_specs(specs)
-                .heading(heading)
-                .path(self.with_filename)
-                .max_columns(self.args.max_columns)
-                .max_matches(max)
-                .separator_search(self.line_separator.clone())
-                .build(self.spill_lines()),
-        )
+        Printer::Standard(output::rg::standard(
+            self.args,
+            heading,
+            self.with_filename,
+            max,
+            self.line_separator.clone(),
+            self.spill_lines(),
+        ))
     }
 
     /// The writer of grep-printer's printers: one file's output, printed as it grows where
@@ -1248,6 +1465,7 @@ impl<'a> Ctx<'a> {
                 let mut sink = p.sink_with_path(&self.matcher, path);
                 let r = self.search_raw(searcher, t, &mut sink);
                 let m = sink.has_match();
+                self.count_stats(&r, sink.stats());
                 (r, m, &p.get_mut().buf)
             }
             Printer::Summary(p) => {
@@ -1255,6 +1473,7 @@ impl<'a> Ctx<'a> {
                 let mut sink = p.sink_with_path(&self.matcher, path);
                 let r = self.search_raw(searcher, t, &mut sink);
                 let m = sink.has_match();
+                self.count_stats(&r, sink.stats());
                 (r, m, &p.get_mut().buf)
             }
             Printer::Json(p) => {
@@ -1262,7 +1481,9 @@ impl<'a> Ctx<'a> {
                 let mut sink = p.sink_with_path(&self.matcher, path);
                 let r = self.search_raw(searcher, t, &mut sink);
                 let m = sink.has_match();
-                if m && r.is_ok() {
+                // grep-printer's JSON sink counts a search it printed a `begin` for: one with a
+                // Match, or with `--passthru` any (json.rs:802).
+                if sink.stats().searches() > 0 && r.is_ok() {
                     *self.stats.lock().expect("stats") += &run_stats(sink.stats());
                 }
                 (r, m, &p.get_mut().buf)
@@ -1293,6 +1514,14 @@ impl<'a> Ctx<'a> {
         self.print(buf);
     }
 
+    /// `--stats` with `--no-trail` or a summary: grep-printer's statistics of the file, for a
+    /// search that did not fail, as rg adds them (main.rs `search`).
+    fn count_stats(&self, r: &std::io::Result<()>, stats: Option<&Stats>) {
+        if let (Ok(()), Some(s)) = (r, stats) {
+            *self.stats.lock().expect("stats") += &run_stats(s);
+        }
+    }
+
     fn trail_file(&self, st: &mut TrailState, t: &Target, detector: &Detector, ro: &RenderOptions) {
         self.trail_file_printed(st, t, detector, ro);
         // A search that failed after its Matches: the error comes after them (`Failure`).
@@ -1317,6 +1546,7 @@ impl<'a> Ctx<'a> {
             && self.summary.is_none()
             && !self.args.quiet
             && t.through.is_none()
+            && output::rg::streams(&ro.look, self.args)
         {
             match detector.detect_by_path(&t.path) {
                 Some(None) if self.plain_file(st, t, ro, detector) => return,
@@ -1331,7 +1561,7 @@ impl<'a> Ctx<'a> {
                 _ => {}
             }
         }
-        let Ok(found) = self.describe(st, t, detector) else {
+        let Ok(found) = self.describe(st, t, detector, ro.look.replace.as_deref()) else {
             return;
         };
         let kept = found
@@ -1387,14 +1617,19 @@ impl<'a> Ctx<'a> {
             return;
         }
         let Some((src, d)) = found else { return };
-        if !kept {
+        // `--passthru` prints a file without a Match, its lines as context, as rg does; it
+        // does not count as matched.
+        let passthru = self.args.passthru && !d.file.items.is_empty();
+        if !kept && !passthru {
             // The summary counts the search's Matches, before the filters (spec §6.4).
             if ro.layout == Layout::Json && failed.is_none() {
                 *self.stats.lock().expect("stats") += &output::json::file_stats(&d.file.stats, 0);
             }
             return;
         }
-        matched();
+        if kept {
+            matched();
+        }
         let written = match ro.layout {
             Layout::Tree => output::tree::render(&d, src.bytes(), ro, buf),
             Layout::Flat => output::flat::render(&d, src.bytes(), ro, self.lead(), buf),
@@ -1843,12 +2078,13 @@ impl<'a> Ctx<'a> {
     /// Steps 6 to 8 for one file: its search (or with --in-headings its names), the Source of a
     /// file with Matches, Trails and filters. Err: an error, already reported. Ok(None):
     /// searched, nothing found. Ok(Some): the search found Matches; the filters may have left
-    /// none.
+    /// none. `replace`: `-r`'s, which an object file's search applies (`object`).
     fn describe(
         &self,
         st: &mut TrailState,
         t: &Target,
         detector: &Detector,
+        replace: Option<&Replacer>,
     ) -> Result<Option<(Source, Described)>, ()> {
         st.binary_quit = false;
         st.failed = None;
@@ -1876,7 +2112,7 @@ impl<'a> Ctx<'a> {
             // What a transform outputs is no object file nor document, whatever its bytes or
             // --format say: Plain (spec §5.9; code review of the M4 plan r1, Codex #11).
             let transformed = matches!(t.through, Some(Through::Pre | Through::Zip));
-            if !transformed && let Some(d) = self.object(st, detector, &src, &fm)? {
+            if !transformed && let Some(d) = self.object(st, detector, &src, &fm, replace)? {
                 return self.filter(st, t, src, d);
             }
             Some({
@@ -1968,13 +2204,14 @@ impl<'a> Ctx<'a> {
     /// Matches of a search of the whole file, each with the Trail of each Match. None: not an
     /// object file goblin reads, or `-v`, whose lines are the non-matching bytes. The search
     /// that found the file's first Match is rg's; this one reads on past the binary data, so it
-    /// costs only a file with a Match (8385).
+    /// costs only a file with a Match (8385). With `replace` (`-r`), its replacements too.
     fn object(
         &self,
         st: &mut TrailState,
         detector: &Detector,
         src: &Source,
         fm: &FileMatches,
+        replace: Option<&Replacer>,
     ) -> Result<Option<Described>, ()> {
         if self.args.invert_match {
             return Ok(None);
@@ -2000,30 +2237,72 @@ impl<'a> Ctx<'a> {
             self.msgs.error(format_args!("{}: {e}", fm.path.display()));
             return Err(());
         }
-        let hits: Vec<std::ops::Range<usize>> = sink
-            .items
-            .iter()
-            .filter_map(|i| match i {
+        let lines = || {
+            sink.items.iter().filter_map(|i| match i {
                 Item::Match(l) => Some(l),
                 Item::Context(_) => None,
             })
-            .flat_map(|l| {
-                let base = l.absolute_offset as usize;
-                l.submatches
-                    .iter()
-                    .map(move |s| base + s.start..base + s.end)
-            })
-            .collect();
+        };
+        // `-r`: the replacement of each Match, made in one pass over the line (with `-U`, the
+        // block) the search reported, as rg's printer makes it: each Match with the groups
+        // the search found, and a line of many strings read once (review r4 of the M5a plan,
+        // Codex #1 and #2).
+        let replacements = replace.map_or_else(Vec::new, |r| {
+            lines()
+                .flat_map(|l| {
+                    let at = l.absolute_offset as usize;
+                    r.replacements(src.bytes(), at..at + l.len)
+                })
+                .collect()
+        });
+        // A Match line without a submatch is a row too, as rg prints that line: a `-P` Match
+        // whose `\K` leaves the bytes its pattern read before the line, which the search of
+        // the line's own bytes cannot find again (review r5 of the M5a plan, Codex #2). Its
+        // hit is the line without its terminator, and its row the string it makes, without a
+        // submatch.
+        let term = search::line_terminator(self.args);
+        let mut hits: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut bare: Vec<std::ops::Range<usize>> = Vec::new();
+        for l in lines() {
+            let base = l.absolute_offset as usize;
+            if l.submatches.is_empty() {
+                let bytes = l.bytes(src.bytes());
+                let mut end = bytes.len();
+                if end > 0 && term.is_suffix(bytes) {
+                    end -= 1;
+                    if term.is_crlf() && end > 0 && bytes[end - 1] == b'\r' {
+                        end -= 1;
+                    }
+                }
+                bare.push(base..base + end);
+                hits.push(base..base + end);
+            }
+            hits.extend(l.submatches.iter().map(|s| base + s.start..base + s.end));
+        }
         let lines = LineIndex::new(src.bytes());
-        let rows = processors::object::rows::rows(
+        let mut rows = processors::object::rows::rows(
             src.bytes(),
             &hits,
             search::max_count(self.args),
             &lines,
         );
+        if !bare.is_empty() {
+            let mut bare = bare.iter().peekable();
+            for r in &mut rows {
+                let at = r.absolute_offset as usize;
+                r.submatches.retain(|s| {
+                    while bare.next_if(|b| b.start < at + s.start).is_some() {}
+                    bare.peek()
+                        .is_none_or(|b| b.start != at + s.start || b.end != at + s.end)
+                });
+            }
+        }
         let trails = rows
             .iter()
             .map(|r| {
+                if r.submatches.is_empty() {
+                    return vec![map.trail(r.absolute_offset as usize, &lines)];
+                }
                 r.submatches
                     .iter()
                     .map(|s| map.trail(r.absolute_offset as usize + s.start, &lines))
@@ -2050,7 +2329,7 @@ impl<'a> Ctx<'a> {
             trails,
             sections: Vec::new(),
             offsets: true,
-            replacements: Vec::new(),
+            replacements,
         }))
     }
 
@@ -2892,12 +3171,32 @@ fn rewindable(p: &Path) -> bool {
 /// What `Spill` holds before it prints: a file's output is printed in pieces of about this size.
 const SPILL: usize = 64 * 1024;
 
+/// stdout: the BufferWriter every output goes through, the bytes printed (for `--stats`), and
+/// how much `Spill` holds before it prints: `SPILL`, or with line buffering a byte, so each
+/// line goes out as it is written (M5a plan, D13).
+struct Out {
+    w: BufferWriter,
+    bytes: AtomicU64,
+    spill_at: usize,
+}
+
+impl Out {
+    fn buffer(&self) -> Buffer {
+        self.w.buffer()
+    }
+
+    fn print(&self, buf: &Buffer) -> std::io::Result<()> {
+        self.bytes.fetch_add(buf.as_slice().len() as u64, Relaxed);
+        self.w.print(buf)
+    }
+}
+
 /// A thread's output buffer that, with `out`, prints what it holds every `SPILL` bytes, so one
 /// file's output is not held in memory until the file ends (code review r2, Fable #3). Only
 /// where nothing can come between the pieces (`Ctx::spill`).
 struct Spill<'a> {
     buf: &'a mut Buffer,
-    out: Option<&'a BufferWriter>,
+    out: Option<&'a Out>,
     printed: &'a AtomicBool,
 }
 
@@ -2905,7 +3204,7 @@ impl Write for Spill<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let n = self.buf.write(bytes)?;
         if let Some(out) = self.out
-            && self.buf.as_slice().len() >= SPILL
+            && self.buf.as_slice().len() >= out.spill_at
         {
             if stopped() {
                 self.buf.clear();
@@ -2928,6 +3227,14 @@ impl WriteColor for Spill<'_> {
         self.buf.supports_color()
     }
 
+    fn supports_hyperlinks(&self) -> bool {
+        self.buf.supports_hyperlinks()
+    }
+
+    fn set_hyperlink(&mut self, link: &termcolor::HyperlinkSpec) -> std::io::Result<()> {
+        self.buf.set_hyperlink(link)
+    }
+
     fn set_color(&mut self, spec: &termcolor::ColorSpec) -> std::io::Result<()> {
         self.buf.set_color(spec)
     }
@@ -2943,7 +3250,7 @@ impl WriteColor for Spill<'_> {
 /// (`Ctx::spill`).
 struct SpillLines<'a> {
     buf: Buffer,
-    out: Option<&'a BufferWriter>,
+    out: Option<&'a Out>,
     /// The end of the last complete line found in `buf[..scanned]`. The line breaks are looked
     /// for only once `buf` holds `SPILL` bytes: grep-printer's JSON printer writes a message in
     /// many pieces (code review r4, Fable #1).
@@ -2968,14 +3275,20 @@ impl Write for SpillLines<'_> {
         let Some(out) = self.out else {
             return Ok(n);
         };
-        if self.buf.as_slice().len() < SPILL {
+        if self.buf.as_slice().len() < out.spill_at {
             return Ok(n);
         }
-        // What was written before this piece: the line being written stays.
-        if let Some(j) = memchr::memrchr(b'\n', &self.buf.as_slice()[self.scanned..start]) {
+        // What was written before this piece: the line being written stays. Line by line
+        // (`spill_at` 1), this piece's complete lines go too.
+        let upto = if out.spill_at == 1 {
+            self.buf.as_slice().len()
+        } else {
+            start
+        };
+        if let Some(j) = memchr::memrchr(b'\n', &self.buf.as_slice()[self.scanned..upto]) {
             self.line_end = self.scanned + j + 1;
         }
-        self.scanned = start;
+        self.scanned = upto;
         let flushable = self.line_end;
         if flushable > 0 && stopped() {
             self.clear();
@@ -3001,6 +3314,14 @@ impl Write for SpillLines<'_> {
 impl WriteColor for SpillLines<'_> {
     fn supports_color(&self) -> bool {
         self.buf.supports_color()
+    }
+
+    fn supports_hyperlinks(&self) -> bool {
+        self.buf.supports_hyperlinks()
+    }
+
+    fn set_hyperlink(&mut self, link: &termcolor::HyperlinkSpec) -> std::io::Result<()> {
+        self.buf.set_hyperlink(link)
     }
 
     fn set_color(&mut self, spec: &termcolor::ColorSpec) -> std::io::Result<()> {
