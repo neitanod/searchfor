@@ -73,9 +73,9 @@ merge. The owner is the chunk of the M5b plan that owns the file.
 | `a_signal_to_the_server_ends_its_search` | `tests/mcp_m5.rs` | macos-arm64, macos-x86_64, windows | POSIX signals, FIFOs and `/proc` (the whole file) | C6 |
 | `a_search_dies_with_its_server` | `tests/mcp_m5.rs` | macos-arm64, macos-x86_64, windows | POSIX signals, FIFOs and `/proc` (the whole file) | C6 |
 | `a_client_that_goes_away_ends_the_search` | `tests/mcp_m5.rs` | macos-arm64, macos-x86_64, windows | POSIX signals, FIFOs and `/proc` (the whole file) | C6 |
-| `files_without_an_extension_cost_by_default_what_they_cost_without_documents` | `tests/perf.rs` | windows | GNU time and `getrusage` | C10 |
-| `one_file_that_is_no_document_costs_what_it_costs_without_documents` | `tests/perf.rs` | windows | GNU time and `getrusage` | C10 |
-| `an_installed_grammar_leaves_a_search_without_documents_unloaded` | `tests/perf.rs` | windows | strace (Linux); on macOS it passes without strace, checking nothing | C10 |
+| `files_without_an_extension_cost_by_default_what_they_cost_without_documents` | `tests/perf.rs` | macos-arm64, macos-x86_64, windows | strace, Linux only, for the system calls it compares with --no-docs (Windows also lacks `getrusage` CPU time) | C10 |
+| `one_file_that_is_no_document_costs_what_it_costs_without_documents` | `tests/perf.rs` | macos-arm64, macos-x86_64, windows | strace, Linux only, for the system calls it compares with --no-docs (Windows also lacks `getrusage` CPU time) | C10 |
+| `an_installed_grammar_leaves_a_search_without_documents_unloaded` | `tests/perf.rs` | macos-arm64, macos-x86_64, windows | strace, Linux only, for the files s4 opens | C10 |
 | `null_data_records_and_their_sections_cost_linear_time` | `tests/perf.rs` | windows | `getrusage` CPU time | C10 |
 | `a_root_linked_to_a_directory_is_walked_as_ripgrep` | `tests/rg_compat.rs` | windows | symbolic links, which need a privilege on Windows | C3 |
 | `stdin_alone_on_a_tty_equals_ripgrep` | `tests/rg_compat.rs` | windows | a pseudo-terminal through `script`, and `/dev/stdin` (the console runs the other cases in `m5b_console_stdin_alone_equals_ripgrep`) | C3 |
@@ -136,8 +136,6 @@ the two sections below and prints what remains.
 | `pcre2_and_multiline_without_trails_are_as_fast_as_ripgrep` | `tests/perf.rs` | macos-arm64, macos-x86_64, windows | GNU time `-v` (peak RSS), Linux only | C10 |
 | `files_lists_as_fast_as_ripgrep` | `tests/perf.rs` | macos-arm64, macos-x86_64, windows | GNU time `-v` (peak RSS), Linux only | C10 |
 | `output_flags_in_the_trail_layouts_stay_under_the_ceilings` | `tests/perf.rs` | macos-arm64, macos-x86_64, windows | GNU time `-v` (peak RSS), Linux only | C10 |
-| `files_without_an_extension_cost_by_default_what_they_cost_without_documents` | `tests/perf.rs` | macos-arm64, macos-x86_64 | GNU time `-v` (peak RSS), Linux only | C10 |
-| `one_file_that_is_no_document_costs_what_it_costs_without_documents` | `tests/perf.rs` | macos-arm64, macos-x86_64 | GNU time `-v` (peak RSS), Linux only | C10 |
 | `rg_compat_doc` | `src/cli/rg_flags.rs` | linux, macos-arm64, macos-x86_64, windows | none: a generator that rewrites `docs/rg-compat.md`, run by hand | C8 |
 | `query_share_on_the_cargo_registry` | `src/processors/treesitter/mod.rs` | linux, macos-arm64, macos-x86_64, windows | none: a measurement over `$HOME/.cargo/registry`, run by hand | C10 |
 
