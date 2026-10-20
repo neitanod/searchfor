@@ -183,24 +183,7 @@ pub fn walker_with(
         w.add_custom_ignore_filename(".rgignore");
     }
     // The file types before the globs, as ripgrep 14.1.1 validates them (code review r3).
-    let mut tb = rg_types()?;
-    // In command-line order, as ripgrep (hiargs.rs `types`): the last selection of a type wins,
-    // and --type-add and --type-clear change the types the selections after them see.
-    for change in &args.type_changes {
-        match change {
-            TypeChange::Select(t) => {
-                tb.select(t);
-            }
-            TypeChange::Negate(t) => {
-                tb.negate(t);
-            }
-            TypeChange::Add(def) => tb.add_def(def)?,
-            TypeChange::Clear(t) => {
-                tb.clear(t);
-            }
-        }
-    }
-    w.types(tb.build()?);
+    w.types(file_types(args)?.build()?);
     // As ripgrep 14.1.1: every -g first, case-insensitive with --glob-case-insensitive, then
     // every --iglob (case-insensitive); the relative order of the two kinds on the command line
     // does not matter (measured in review r2).
@@ -218,8 +201,9 @@ pub fn walker_with(
         }
     }
     w.overrides(ob.build()?);
+    // As rg 14.1.1 (hiargs.rs `walk_builder`): siblings by name, which is the paths' order.
     if args.sort == Some(PATH) {
-        w.sort_by_file_path(|a, b| a.cmp(b));
+        w.sort_by_file_name(|a, b| a.cmp(b));
     }
     w.threads(walker_threads(args));
     Ok((w, errors))
@@ -287,6 +271,29 @@ pub fn walker_threads(args: &Args) -> usize {
 
 /// ripgrep 14.1.1's file types, as `rg --type-list` prints them: `name: glob, glob`.
 pub const RG_TYPES: &str = include_str!("rg_types.txt");
+
+/// The file types of a run: ripgrep 14.1.1's, changed in command-line order, as ripgrep
+/// (hiargs.rs `types`): the last selection of a type wins, and --type-add and --type-clear
+/// change the types the selections after them see, and the ones `--type-list` prints (review
+/// r2 of the M5a plan, Codex #3).
+pub fn file_types(args: &Args) -> anyhow::Result<TypesBuilder> {
+    let mut tb = rg_types()?;
+    for change in &args.type_changes {
+        match change {
+            TypeChange::Select(t) => {
+                tb.select(t);
+            }
+            TypeChange::Negate(t) => {
+                tb.negate(t);
+            }
+            TypeChange::Add(def) => tb.add_def(def)?,
+            TypeChange::Clear(t) => {
+                tb.clear(t);
+            }
+        }
+    }
+    Ok(tb)
+}
 
 /// A `TypesBuilder` with ripgrep 14.1.1's file types, which differ from the ignore crate's
 /// defaults.
@@ -545,35 +552,6 @@ pub fn context_submatches_in(
     }
 }
 
-/// `match_submatches_in` for a search with `\n` lines and no `-U`, M1–M4's: the streaming
-/// printer's until chunk 9 moves it to the searcher's terminator.
-pub fn match_submatches(
-    matcher: &PatternMatcher,
-    invert: bool,
-    m: &SinkMatch<'_>,
-) -> Vec<Submatch> {
-    if invert {
-        Vec::new()
-    } else {
-        lines_submatches(matcher, m.buffer(), m.bytes_range_in_buffer())
-    }
-}
-
-/// `context_submatches_in` as `match_submatches` is `match_submatches_in`.
-pub fn context_submatches(matcher: &PatternMatcher, invert: bool, bytes: &[u8]) -> Vec<Submatch> {
-    if invert {
-        lines_submatches(matcher, bytes, 0..bytes.len())
-    } else {
-        Vec::new()
-    }
-}
-
-/// `submatches_in` for `\n` lines without `-U`.
-fn lines_submatches(matcher: &PatternMatcher, buffer: &[u8], range: Range<usize>) -> Vec<Submatch> {
-    let searcher = SearcherBuilder::new().build();
-    submatches_in(&searcher, matcher, buffer, range)
-}
-
 impl Sink for CollectSink<'_> {
     type Error = std::io::Error;
 
@@ -810,7 +788,9 @@ fn search_with(
     }
     sink.stats.elapsed = started.elapsed();
     let stats = sink.stats.clone();
-    if !sink.items.iter().any(|i| matches!(i, Item::Match(_))) {
+    // `--passthru` prints a file without a Match too, every line a context line, as rg's.
+    let printed = searcher.passthru() && !sink.items.is_empty();
+    if !printed && !sink.items.iter().any(|i| matches!(i, Item::Match(_))) {
         return Ok((None, stats));
     }
     let fm = FileMatches {
@@ -1557,6 +1537,8 @@ mod tests {
         assert_eq!(subs(&["--crlf"], r"\s$", b"a \r\n"), [(1, 2)]);
         // Multi-line: one submatch across the lines of its block.
         assert_eq!(subs(&["-U"], r"a\nb", b"a\nb\n"), [(0, 3)]);
+        // A look-ahead past the block, as rg's printer sees it.
+        assert_eq!(subs(&["-U", "-P"], r"b(?=\nc)", b"a\nb\nc\n"), [(0, 1)]);
     }
 
     #[test]

@@ -327,6 +327,7 @@ pub fn render(
         Default::default()
     };
     let file = FileHead::new(&d.file.path, o);
+    let sections = super::SectionLines::new(src);
     let mut lead = lead;
     for piece in super::pieces(d, src, o) {
         if let Some(l) = lead.take() {
@@ -351,7 +352,7 @@ pub fn render(
                 w.write_all(b"\n")?;
                 // Each line as any other: whole, as Fragments, or -M's message (spec §6.3).
                 let no_prefix = |_: &mut dyn WriteColor| Ok(());
-                for (n, line) in super::section_lines(src, start, end) {
+                for (n, line) in sections.lines(start, end) {
                     let subs = kept.get(&n);
                     let s = subs.map_or(&[][..], |v| v.as_slice());
                     super::write_line(w, &no_prefix, line, s, subs.is_some(), o.width, o)?;

@@ -7,7 +7,7 @@ use super::json::{JsonFile, JsonOptions, RunStats};
 use super::{Layout, LineText, RenderOptions, Row, flat, tree};
 use crate::matcher::PatternMatcher;
 use crate::model::{FileStats, Line, Segment, Submatch};
-use crate::search::{MaxCount, context_submatches, match_submatches};
+use crate::search::{MaxCount, context_submatches_in, match_submatches_in};
 use crate::trail::{Outline, TrailCursor};
 use grep_searcher::{Searcher, Sink, SinkContext, SinkFinish, SinkMatch};
 use std::path::Path;
@@ -415,12 +415,12 @@ impl<W: WriteColor> Sink for StreamSink<'_, W> {
         Ok(true)
     }
 
-    fn matched(&mut self, _s: &Searcher, m: &SinkMatch<'_>) -> Result<bool, Self::Error> {
+    fn matched(&mut self, s: &Searcher, m: &SinkMatch<'_>) -> Result<bool, Self::Error> {
         self.max_count.matched();
         self.stats.matched_lines += m.lines().count() as u64;
         self.has_match = true;
         let (matcher, invert) = (self.matcher, self.invert);
-        let subs = || match_submatches(matcher, invert, m);
+        let subs = || match_submatches_in(s, matcher, invert, m);
         let line = Line {
             line_number: m.line_number().unwrap_or(0),
             absolute_offset: m.absolute_byte_offset(),
@@ -432,10 +432,10 @@ impl<W: WriteColor> Sink for StreamSink<'_, W> {
         Ok(self.max_count.go_on())
     }
 
-    fn context(&mut self, _s: &Searcher, c: &SinkContext<'_>) -> Result<bool, Self::Error> {
+    fn context(&mut self, s: &Searcher, c: &SinkContext<'_>) -> Result<bool, Self::Error> {
         self.max_count.context(c);
         let (matcher, invert) = (self.matcher, self.invert);
-        let subs = || context_submatches(matcher, invert, c.bytes());
+        let subs = || context_submatches_in(s, matcher, invert, c.bytes());
         let line = Line {
             line_number: c.line_number().unwrap_or(0),
             absolute_offset: c.absolute_byte_offset(),

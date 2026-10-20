@@ -178,7 +178,7 @@ fn encode(input: &[u8]) -> Vec<u8> {
 
 /// rg 14.1.1's `hostname`: the output of `--hostname-bin`, trimmed, when it runs and prints
 /// something; else the system's.
-fn hostname(bin: Option<&Path>) -> Option<String> {
+pub fn hostname(bin: Option<&Path>) -> Option<String> {
     if let Some(bin) = bin
         && let Ok(bin) = grep_cli::resolve_binary(bin)
     {
@@ -195,7 +195,7 @@ fn hostname(bin: Option<&Path>) -> Option<String> {
 }
 
 /// rg 14.1.1's `wsl_prefix`: `wsl$/<distro>` on Unix under WSL.
-fn wsl_prefix() -> Option<String> {
+pub fn wsl_prefix() -> Option<String> {
     if !cfg!(unix) {
         return None;
     }

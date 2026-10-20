@@ -4,6 +4,7 @@ pub mod fragment;
 pub mod hyperlink;
 pub mod json;
 pub mod replace;
+pub mod rg;
 pub mod stream;
 pub mod style;
 pub mod summary;
@@ -1162,17 +1163,42 @@ pub(crate) fn match_lines(d: &Described) -> HashMap<u64, Vec<(usize, usize)>> {
     map
 }
 
-/// Lines `start..=end` (1-based) of `src`, terminators included, with their numbers.
-pub(crate) fn section_lines(
-    src: &[u8],
-    start: u64,
-    end: u64,
-) -> impl Iterator<Item = (u64, &[u8])> {
-    src.split_inclusive(|&b| b == b'\n')
-        .zip(1u64..)
-        .skip_while(move |(_, n)| *n < start)
-        .take_while(move |(_, n)| *n <= end)
-        .map(|(l, n)| (n, l))
+/// The lines of a file's Sections (--expand), found through the offsets of its lines, which
+/// the first Section reads: reading the file from its start for each Section made a file of N
+/// Sections cost N × the file (review r5 of the M5a plan, the audit).
+pub(crate) struct SectionLines<'s> {
+    src: &'s [u8],
+    starts: OnceCell<Vec<usize>>,
+}
+
+impl<'s> SectionLines<'s> {
+    pub(crate) fn new(src: &'s [u8]) -> Self {
+        SectionLines {
+            src,
+            starts: OnceCell::new(),
+        }
+    }
+
+    /// Lines `start..=end` (1-based), terminators included, with their numbers.
+    pub(crate) fn lines(&self, start: u64, end: u64) -> impl Iterator<Item = (u64, &'s [u8])> {
+        let starts = self.starts.get_or_init(|| line_starts(self.src));
+        let at = |n: u64| starts[(n as usize).min(starts.len() - 1)];
+        let (s, e) = (at(start.saturating_sub(1)), at(end));
+        self.src[s..e.max(s)]
+            .split_inclusive(|&b| b == b'\n')
+            .zip(start.max(1)..)
+            .map(|(l, n)| (n, l))
+    }
+}
+
+/// The offset of the start of every line of `src`, and its end.
+pub(crate) fn line_starts(src: &[u8]) -> Vec<usize> {
+    let mut v = vec![0];
+    v.extend(memchr::memchr_iter(b'\n', src).map(|i| i + 1));
+    if *v.last().expect("non-empty") != src.len() {
+        v.push(src.len());
+    }
+    v
 }
 
 /// ripgrep's message for a binary file that had a Match (design note 3): `offset` is where the
@@ -1267,12 +1293,6 @@ pub fn link_end(w: &mut dyn WriteColor, started: bool) -> std::io::Result<()> {
         w.set_hyperlink(&termcolor::HyperlinkSpec::close())?;
     }
     Ok(())
-}
-
-pub fn write_path(w: &mut dyn WriteColor, p: &std::path::Path) -> std::io::Result<()> {
-    w.set_color(&style::spec("path"))?;
-    w.write_all(&path_bytes(p))?;
-    w.reset()
 }
 
 /// Hand-built Described values for the printers' tests.

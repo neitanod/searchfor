@@ -273,14 +273,14 @@ impl TreeState {
         &mut self,
         w: &mut dyn WriteColor,
         (trail, start, end): (&[Segment], u64, u64),
-        src: &[u8],
+        sections: &super::SectionLines,
         kept: &std::collections::HashMap<u64, Vec<(usize, usize)>>,
         o: &RenderOptions,
     ) -> std::io::Result<()> {
         write_trail(w, &self.printed, trail, &Seen::new(), o)?;
         self.printed = trail.to_vec();
         self.seen.clear();
-        for (n, line) in super::section_lines(src, start, end) {
+        for (n, line) in sections.lines(start, end) {
             let subs = kept.get(&n);
             let s = subs.map_or(&[][..], |v| v.as_slice());
             let numbers = Numbers {
@@ -307,11 +307,12 @@ pub fn render(
     } else {
         Default::default()
     };
+    let sections = super::SectionLines::new(src);
     for piece in super::pieces(d, src, o) {
         match piece {
             Piece::Row(r) => state.row(w, &r, o)?,
             Piece::Section { trail, start, end } => {
-                state.section(w, (trail, start, end), src, &kept, o)?
+                state.section(w, (trail, start, end), &sections, &kept, o)?
             }
         }
     }

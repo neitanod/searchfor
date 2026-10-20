@@ -3,6 +3,7 @@ use super::fragment::fragments;
 use crate::model::{Described, FileStats, Item, Line, Segment, Submatch};
 use crate::text;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::io::Write;
 
 /// Run-wide totals for the final `summary` message. Lives here; C9 accumulates it.
@@ -61,16 +62,13 @@ pub fn render_with_stats(
 ) -> std::io::Result<(u64, RunStats)> {
     let mut f = JsonFile::new(&d.file.path, d.format.as_deref(), o);
     f.begin(w)?;
-    let lines = o.expand.then(|| line_starts(src));
+    let lines = o.expand.then(|| super::line_starts(src));
     let mut i = 0;
     for item in &d.file.items {
         match item {
             Item::Match(m) => {
                 let trails: Vec<&[Segment]> = (0..m.submatches.len().max(1))
                     .map(|k| super::trail_of(d, i, k))
-                    .collect();
-                let sections: Vec<Option<(u64, u64)>> = (0..trails.len())
-                    .map(|k| d.sections.get(i).and_then(|v| v.get(k)).copied().flatten())
                     .collect();
                 let section = |s: Option<(u64, u64)>| match (s, &lines) {
                     (Some((a, b)), Some(starts)) => json!({
@@ -80,7 +78,21 @@ pub fn render_with_stats(
                     }),
                     _ => Value::Null,
                 };
-                let sections: Vec<Value> = sections.iter().map(|&s| section(s)).collect();
+                // Each distinct Section of the line made once, its submatches pointing at it:
+                // its text made for each submatch made a line of N Matches in one Section
+                // cost N × the Section (review r5 of the M5a plan, the audit).
+                let mut made: Vec<Value> = Vec::new();
+                let mut at: HashMap<Option<(u64, u64)>, usize> = HashMap::new();
+                let index: Vec<usize> = (0..trails.len())
+                    .map(|k| {
+                        let s = d.sections.get(i).and_then(|v| v.get(k)).copied().flatten();
+                        *at.entry(s).or_insert_with(|| {
+                            made.push(section(s));
+                            made.len() - 1
+                        })
+                    })
+                    .collect();
+                let sections: Vec<&Value> = index.iter().map(|&k| &made[k]).collect();
                 f.matched(w, m, m.bytes(src), &trails, &sections)?;
                 i += 1;
             }
@@ -200,7 +212,7 @@ impl<'a> JsonFile<'a> {
         m: &Line,
         bytes: &[u8],
         trails: &[&[Segment]],
-        sections: &[Value],
+        sections: &[&Value],
     ) -> std::io::Result<()> {
         self.begin(w)?;
         let expand = self.o.expand;
@@ -209,9 +221,9 @@ impl<'a> JsonFile<'a> {
             if differ {
                 s.extend_from_slice(b",\"trail\":");
                 put_json(s, trails[k]);
-                if expand && sections[k] != sections[0] {
+                if expand && !same(sections[k], sections[0]) {
                     s.extend_from_slice(b",\"section\":");
-                    put_json(s, &sections[k]);
+                    put_json(s, sections[k]);
                 }
             }
         });
@@ -229,7 +241,7 @@ impl<'a> JsonFile<'a> {
         }
         if expand {
             s.extend_from_slice(b",\"section\":");
-            put_json(s, sections.first().unwrap_or(&Value::Null));
+            put_json(s, sections.first().copied().unwrap_or(&Value::Null));
         }
         self.emit_scratch(w)
     }
@@ -278,6 +290,11 @@ pub fn file_stats(st: &FileStats, bytes_printed: u64) -> RunStats {
         matched_lines: st.matched_lines,
         matches: st.matches,
     }
+}
+
+/// Whether two Sections are equal: the same value for the submatches of one Section.
+fn same(a: &Value, b: &Value) -> bool {
+    std::ptr::eq(a, b) || a == b
 }
 
 /// One JSON Lines message; returns the bytes written.
@@ -392,16 +409,6 @@ fn fragment(bytes: &[u8], subs: &[Submatch], width: usize) -> Value {
         "omitted_before": f.omitted_before,
         "omitted_after": f.omitted_after,
     })
-}
-
-/// Byte offset of the start of every line, plus the end of `src`.
-fn line_starts(src: &[u8]) -> Vec<usize> {
-    let mut v = vec![0];
-    v.extend(memchr::memchr_iter(b'\n', src).map(|i| i + 1));
-    if *v.last().expect("non-empty") != src.len() {
-        v.push(src.len());
-    }
-    v
 }
 
 /// Lines `a..=b` (1-based) of `src`, terminators included.
@@ -529,7 +536,8 @@ mod tests {
                         let mut f = JsonFile::new(Path::new("dir/ä.md"), Some("markdown"), &o);
                         f.begun = true;
                         let mut got = Vec::new();
-                        f.matched(&mut got, &m, bytes, &trails, &sections).unwrap();
+                        let refs: Vec<&Value> = sections.iter().collect();
+                        f.matched(&mut got, &m, bytes, &trails, &refs).unwrap();
                         assert_eq!(String::from_utf8(got).unwrap(), want, "{bytes:?} {width}");
                     }
                 }
