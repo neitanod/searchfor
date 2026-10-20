@@ -2145,13 +2145,16 @@ impl<'a> Ctx<'a> {
         } else {
             prepare()
         };
-        // A failing Processor is a warning and leaves the file Plain (D33).
+        // A failing Processor is a warning and leaves the file Plain (D33); `Unavailable` has no
+        // warning of its own, as in `trails` (code review r1, Codex #3 and Fable #1).
         let prepared = match prepared {
             Ok(p) if p.streams() => Some(p),
             Ok(_) => return false,
             Err(e) => {
-                self.msgs
-                    .warn(format_args!("s4: {}: {e:#}", src.path.display()));
+                if e.downcast_ref::<crate::helper::Unavailable>().is_none() {
+                    self.msgs
+                        .warn(format_args!("s4: {}: {e:#}", src.path.display()));
+                }
                 None
             }
         };

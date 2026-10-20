@@ -1783,3 +1783,48 @@ fn m5b_expand_only_matching_keeps_a_row_after_a_gap_outside_section() {
     assert!(out.lines().any(|l| l.ends_with("5:last")), "{out}");
     assert!(out.lines().any(|l| l.ends_with("4-")), "{out}");
 }
+
+/// Code review r1 (Codex #3, Fable #1): files over a compiled-in Grammar's `max_bytes` give one
+/// warning for the run, also when they take the streaming path; the files after the first are
+/// `helper::Unavailable`, which has no warning of its own (D33).
+#[test]
+fn m5b_max_bytes_warns_once_on_the_streaming_path() {
+    let fx = Fixture::new();
+    let mut rust: toml::Table = toml::from_str(include_str!("../formats/rust.toml")).unwrap();
+    rust["params"]
+        .as_table_mut()
+        .unwrap()
+        .insert("max_bytes".into(), toml::Value::Integer(64));
+    std::fs::write(
+        fx.formats.path().join("rust.toml"),
+        toml::to_string(&rust).unwrap(),
+    )
+    .unwrap();
+    let body = format!(
+        "fn a() {{\n    let needle = 1;\n}}\n// {}\n",
+        "x".repeat(80)
+    );
+    for name in ["a.rs", "b.rs", "c.rs"] {
+        std::fs::write(fx.file(name), &body).unwrap();
+    }
+    for mode in [
+        &["--flat", "-j1"][..],
+        &["--json", "-j1"],
+        &["--flat", "-j2"],
+        &["--json", "-j2"],
+    ] {
+        let mut args = mode.to_vec();
+        args.extend(["--no-docs", "needle", "a.rs", "b.rs", "c.rs"]);
+        let o = run(&mut fx.s4(&args));
+        assert_eq!(code(&o), 0, "{args:?}: {}", stderr(&o));
+        let err = stderr(&o);
+        assert_eq!(err.lines().count(), 1, "{args:?}: {err}");
+        assert!(err.contains("max_bytes"), "{args:?}: {err}");
+        let rows = if args.contains(&"--json") {
+            stdout(&o).matches(r#""type":"match""#).count()
+        } else {
+            stdout(&o).matches("needle").count()
+        };
+        assert_eq!(rows, 3, "{args:?}");
+    }
+}
