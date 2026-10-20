@@ -410,7 +410,7 @@ mod tests {
     fn links_in_the_tree() {
         use crate::output::{Look, hyperlink::Hyperlinks};
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("a.md");
+        let path = dir.path().join("a #1.md");
         std::fs::write(&path, "x").unwrap();
         let s = src(&["# Install", "needle"]);
         let mut d = described(
@@ -429,7 +429,7 @@ mod tests {
         let mut w = Ansi::new(Vec::new());
         render(&d, &s, &o, &mut w).unwrap();
         let out = String::from_utf8(w.into_inner()).unwrap();
-        let url = format!("file://{}", path.canonicalize().unwrap().display());
+        let url = format!("file://{}", crate::output::hyperlink::rg_url_path(&path));
         assert!(
             out.starts_with(&format!("\x1b]8;;{url}:1\x1b\\")),
             "{out:?}"

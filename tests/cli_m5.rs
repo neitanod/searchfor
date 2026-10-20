@@ -556,34 +556,93 @@ fn m5_13_stats_in_the_trail_layouts() {
     );
 }
 
-/// `--colors` with the `trail` type, and `--hyperlink-format`, in the one-line layout.
+/// `--colors` with the `trail` type, and `--hyperlink-format`, in the one-line layout. Each
+/// link's target is the one rg gives with the same format (M5b plan, Task 1.3): its own path
+/// rules on each system (`/C:/…` on Windows), and its percent-encoding of a space, `%` and `#`.
 #[test]
 fn m5_14_colours_and_links() {
     let fx = Fixture::new();
+    let format = "file://{path}:{line}";
     let out = ok(
         &fx,
         &[
             "--flat",
             "--color",
-            "always",
+            "ansi",
             "--colors",
             "trail:fg:yellow",
             "--colors",
             "line:fg:blue",
             "--hyperlink-format",
-            "file://{path}:{line}",
+            format,
             "-H",
             "needle-pkg",
             "md/guide.md",
         ],
     );
-    let path = fx.file("md/guide.md").canonicalize().unwrap();
-    assert!(
-        out.starts_with(&format!("\x1b]8;;file://{}:12\x1b\\", path.display())),
-        "{out:?}"
-    );
+    assert!(out.starts_with("\x1b]8;;file://"), "{out:?}");
     assert!(out.contains("\x1b[34m12\x1b[0m"), "{out:?}");
     assert!(out.contains("\x1b[33mDeploy guide"), "{out:?}");
+    if !common::reference_rg() {
+        return;
+    }
+    let odd = "x y 100%#.md";
+    std::fs::write(fx.file(odd), "# Head needle\nneedle\n").unwrap();
+    let rg = |args: &[&str]| {
+        let mut all = vec!["--color", "ansi", "--hyperlink-format", format, "-H", "-n"];
+        all.extend_from_slice(args);
+        stdout(&run(&mut fx.rg(&all)))
+    };
+    let want = rg(&["needle-pkg", "md/guide.md"]);
+    assert_eq!(link_targets(&out), link_targets(&want), "{out:?}\n{want:?}");
+    let want = link_targets(&rg(&["needle", odd]));
+    assert_eq!(want.len(), 2, "{want:?}");
+    assert!(want[0].ends_with("/x%20y%20100%25%23.md:1"), "{want:?}");
+    let flat = ok(
+        &fx,
+        &[
+            "--flat",
+            "--color",
+            "ansi",
+            "--hyperlink-format",
+            format,
+            "-H",
+            "needle",
+            odd,
+        ],
+    );
+    assert_eq!(link_targets(&flat), want, "{flat:?}");
+    // The tree's header links the file at line 1, and each row its line.
+    let tree = ok(
+        &fx,
+        &[
+            "--tree",
+            "--color",
+            "ansi",
+            "--hyperlink-format",
+            format,
+            "needle",
+            odd,
+        ],
+    );
+    assert_eq!(link_targets(&tree), want, "{tree:?}");
+    assert!(
+        tree.starts_with(&format!("\x1b]8;;{}\x1b\\", want[0])),
+        "{tree:?}"
+    );
+}
+
+/// The targets of the OSC 8 links of `out`, in order, each once where links that follow each
+/// other open the same target; a link's end (an empty target) left out.
+fn link_targets(out: &str) -> Vec<String> {
+    let mut targets: Vec<String> = Vec::new();
+    for piece in out.split("\x1b]8;;").skip(1) {
+        let target = &piece[..piece.find("\x1b\\").unwrap_or(piece.len())];
+        if !target.is_empty() && targets.last().is_none_or(|t| t != target) {
+            targets.push(target.to_string());
+        }
+    }
+    targets
 }
 
 /// `-c`, `-0` and `--include-zero` with a structural flag, through s4's own summaries.

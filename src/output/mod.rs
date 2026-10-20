@@ -2659,7 +2659,7 @@ pub(crate) mod tests {
             b"a/b"
         );
         let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("f.md");
+        let p = d.path().join("f #1.md");
         std::fs::write(&p, "x").unwrap();
         let look = Look {
             hyperlinks: hyperlink::Hyperlinks::new("file://{path}:{line}", None)
@@ -2671,12 +2671,11 @@ pub(crate) mod tests {
         std::io::Write::write_all(&mut w, b"f.md").unwrap();
         link_end(&mut w, on).unwrap();
         let out = String::from_utf8(w.into_inner()).unwrap();
-        let canon = p.canonicalize().unwrap();
         assert_eq!(
             out,
             format!(
                 "\x1b]8;;file://{}:3\x1b\\f.md\x1b]8;;\x1b\\",
-                canon.display()
+                hyperlink::rg_url_path(&p)
             )
         );
         // No colour, no link.

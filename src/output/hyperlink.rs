@@ -135,26 +135,40 @@ fn encode_path(path: &Path) -> Option<Vec<u8>> {
     if !bytes.starts_with(b"/") {
         return None;
     }
-    Some(encode(bytes))
+    Some(encode_as(bytes, false))
 }
 
-/// On Windows (grep-printer's `from_path`): `\\?\C:\dir` becomes `/C:/dir` and `\\?\UNC\server\x`
-/// `//server/x`, separators as `/`.
-#[cfg(not(unix))]
+/// On Windows (grep-printer's `from_path`): the canonical path as `windows_url_path` gives it.
+#[cfg(windows)]
 fn encode_path(path: &Path) -> Option<Vec<u8>> {
-    let path = path.canonicalize().ok()?;
-    let s = path.to_str()?;
-    let s = if let Some(unc) = s.strip_prefix(r"\\?\UNC\") {
-        format!("//{unc}")
-    } else if let Some(local) = s.strip_prefix(r"\\?\") {
-        format!("/{local}")
-    } else {
-        return None;
-    };
-    Some(encode(s.as_bytes()))
+    windows_url_path(path.canonicalize().ok()?.to_str()?)
 }
 
-fn encode(input: &[u8]) -> Vec<u8> {
+/// Neither Unix nor Windows: grep-printer makes no link.
+#[cfg(not(any(unix, windows)))]
+fn encode_path(_path: &Path) -> Option<Vec<u8>> {
+    None
+}
+
+/// grep-printer's `from_path` on Windows, without the I/O: a canonical path, which starts with
+/// `\\?\`, becomes `/C:/dir` from `\\?\C:\dir` and `//server/x` from `\\?\UNC\server\x`,
+/// percent-encoded with `\` as `/`; any other string is not a canonical path, and gives None.
+/// Unix runs it too, so the conversion is tested on every system.
+#[cfg(any(windows, test))]
+fn windows_url_path(canonical: &str) -> Option<Vec<u8>> {
+    let rest = canonical.strip_prefix(r"\\?\")?;
+    // The UNC prefix goes, its `\` kept as the second slash.
+    let rest = rest
+        .strip_prefix("UNC")
+        .filter(|r| r.starts_with('\\'))
+        .unwrap_or(rest);
+    Some(encode_as(format!("/{rest}").as_bytes(), true))
+}
+
+/// grep-printer's `HyperlinkPath::encode`, with `\` written as `/` when `windows`, as
+/// grep-printer writes it on Windows.
+#[cfg(any(unix, windows, test))]
+fn encode_as(input: &[u8], windows: bool) -> Vec<u8> {
     const HEX: &[u8] = b"0123456789ABCDEF";
     let mut out = Vec::with_capacity(input.len());
     for &b in input {
@@ -169,7 +183,7 @@ fn encode(input: &[u8]) -> Vec<u8> {
             | b'_'
             | b'~'
             | 128.. => out.push(b),
-            b'\\' if cfg!(windows) => out.push(b'/'),
+            b'\\' if windows => out.push(b'/'),
             _ => out.extend_from_slice(&[b'%', HEX[(b >> 4) as usize], HEX[(b & 0xF) as usize]]),
         }
     }
@@ -203,6 +217,32 @@ pub fn wsl_prefix() -> Option<String> {
     Some(format!("wsl$/{}", distro.to_str()?))
 }
 
+/// Tests: the `{path}` rg 14.1.1 gives `path`, derived apart from `encode_path`: the canonical
+/// path, on Windows `/C:/…` or `//server/share/…` with `/` between its components, each byte
+/// percent-encoded but the unreserved ones, `/`, `:` and non-ASCII (M5b plan, Task 1.3).
+#[cfg(test)]
+pub(crate) fn rg_url_path(path: &Path) -> String {
+    let canonical = path.canonicalize().unwrap();
+    let canonical = canonical.to_str().unwrap();
+    let path = if cfg!(windows) {
+        let verbatim = canonical.strip_prefix(r"\\?\").unwrap();
+        match verbatim.strip_prefix(r"UNC\") {
+            Some(share) => format!("//{share}"),
+            None => format!("/{verbatim}"),
+        }
+        .replace('\\', "/")
+    } else {
+        canonical.to_string()
+    };
+    path.chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '/' | ':' | '-' | '.' | '_' | '~' => c.to_string(),
+            c if !c.is_ascii() => c.to_string(),
+            c => format!("%{:02X}", c as u32),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,12 +269,29 @@ mod tests {
     fn line_and_column_default_to_one() {
         let f = Hyperlinks::new("file://{path}:{line}:{column}", None).unwrap();
         let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("f");
+        let p = d.path().join("f 100%#.md");
         std::fs::write(&p, "x").unwrap();
-        let canon = p.canonicalize().unwrap();
         let url = String::from_utf8(f.url(&p, Some(7), None).unwrap()).unwrap();
-        assert_eq!(url, format!("file://{}:7:1", canon.display()));
+        assert_eq!(url, format!("file://{}:7:1", rg_url_path(&p)));
+        assert!(url.ends_with("/f%20100%25%23.md:7:1"), "{url}");
         assert!(f.url(&d.path().join("missing"), None, None).is_none());
+    }
+
+    #[test]
+    fn windows_urls_keep_drive_and_unc_prefixes() {
+        assert_eq!(
+            windows_url_path(r"\\?\C:\a b\f.md").unwrap(),
+            b"/C:/a%20b/f.md"
+        );
+        assert_eq!(
+            windows_url_path(r"\\?\UNC\server\share\a b.md").unwrap(),
+            b"//server/share/a%20b.md"
+        );
+        assert_eq!(
+            windows_url_path(r"\\?\D:\percent%\x#y").unwrap(),
+            b"/D:/percent%25/x%23y"
+        );
+        assert!(windows_url_path("relative/file").is_none());
     }
 
     #[test]

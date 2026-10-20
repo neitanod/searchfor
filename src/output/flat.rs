@@ -509,7 +509,7 @@ mod tests {
     fn colours_and_links() {
         use super::super::{Look, hyperlink::Hyperlinks, style::Palette};
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("a.md");
+        let path = dir.path().join("a #1.md");
         std::fs::write(&path, "x").unwrap();
         let (s, mut d) = m5_file();
         d.file.path = path.clone();
@@ -526,7 +526,7 @@ mod tests {
         let out = String::from_utf8(w.into_inner()).unwrap();
         let link = format!(
             "\x1b]8;;file://{}:2:7\x1b\\",
-            path.canonicalize().unwrap().display()
+            super::super::hyperlink::rg_url_path(&path)
         );
         assert!(out.starts_with(&link), "{out:?}");
         assert!(
