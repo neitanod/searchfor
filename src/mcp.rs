@@ -66,20 +66,18 @@ const ARGUMENTS: &[&str] = &[
 ];
 
 /// Serves MCP requests from stdin until it closes; `s4` is the binary each search runs. A
-/// search ends with the server: a SIGINT or SIGTERM kills and reaps it before the server dies
-/// by the signal, as rg (the Supervisor, M2 plan D42), and on Linux the kernel kills it when
-/// the server dies by any other (code review r1 of M5a, Codex #1). A client that closes
-/// stdout ends the search it waits for, and the server, with 0 (Fable #4).
+/// search ends with the server: a SIGINT or SIGTERM (on Windows, the console's Ctrl-C) kills
+/// and reaps it before the server dies by the signal, as rg (the Supervisor, M2 plan D42), and
+/// when the server dies by anything else the search watches it and ends too (M5b spec §4.2:
+/// Linux's `PR_SET_PDEATHSIG`, macOS's kqueue, Windows's Job Object; code review r1 of M5a,
+/// Codex #1). A client that closes stdout ends the search it waits for, and the server, with 0
+/// (Fable #4).
 pub fn serve(s4: &Path) -> anyhow::Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    #[cfg(unix)]
-    let client = Some(std::os::fd::AsRawFd::as_raw_fd(&stdout));
-    #[cfg(not(unix))]
-    let client = None;
     let searcher = Child {
         s4: s4.to_path_buf(),
-        client,
+        client: client_of(&stdout).map(std::sync::Arc::new),
     };
     serve_io(stdin.lock(), stdout.lock(), &searcher)
 }
@@ -843,124 +841,213 @@ struct Child {
     s4: PathBuf,
     /// The server's stdout, watched while a search runs: once its reader closed it, the
     /// search is stopped.
-    client: Option<i32>,
+    client: Option<std::sync::Arc<ClientHandle>>,
 }
 
-/// The command of a search: `s4 ARGS` with stdin closed, and neither `SEARCHFOR_CONFIG_PATH`
-/// nor `RIPGREP_CONFIG_PATH` in its environment (D17), besides `--no-config` in `ARGS`.
-pub fn command(s4: &Path, args: &[OsString]) -> std::process::Command {
-    let mut c = std::process::Command::new(s4);
-    c.args(args)
-        .env_remove(crate::cli::config::ENV)
-        .env_remove("RIPGREP_CONFIG_PATH")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    c
+/// The server's stdout as the client watch probes it (M5b plan, Task 6.1): its descriptor on
+/// Unix, a duplicate of its handle on Windows.
+#[cfg(unix)]
+type ClientHandle = std::os::fd::RawFd;
+#[cfg(windows)]
+type ClientHandle = std::os::windows::io::OwnedHandle;
+#[cfg(not(any(unix, windows)))]
+type ClientHandle = ();
+
+#[cfg(unix)]
+fn client_of(out: &std::io::Stdout) -> Option<ClientHandle> {
+    Some(std::os::fd::AsRawFd::as_raw_fd(out))
+}
+
+/// None when s4 has no stdout to duplicate.
+#[cfg(windows)]
+fn client_of(out: &std::io::Stdout) -> Option<ClientHandle> {
+    std::os::windows::io::AsHandle::as_handle(out)
+        .try_clone_to_owned()
+        .ok()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn client_of(_: &std::io::Stdout) -> Option<ClientHandle> {
+    None
+}
+
+/// Whether the client closed its end of the server's stdout. A pipe or a socket whose reader
+/// closed is POLLERR or POLLHUP, asked or not; a file or a terminal never is.
+#[cfg(unix)]
+fn client_gone(client: &ClientHandle) -> bool {
+    let mut fd = libc::pollfd {
+        fd: *client,
+        events: 0,
+        revents: 0,
+    };
+    // SAFETY: one valid pollfd, and a zero timeout.
+    let ready = unsafe { libc::poll(&mut fd, 1, 0) };
+    ready > 0 && fd.revents & (libc::POLLERR | libc::POLLHUP) != 0
+}
+
+/// Whether the client closed its end of the server's stdout: a write of zero bytes, which puts
+/// nothing on the pipe, fails with ERROR_BROKEN_PIPE or ERROR_NO_DATA once its reader closed.
+/// Any other outcome (a console, a file, a handle that refuses the probe) is a client still
+/// there.
+#[cfg(windows)]
+fn client_gone(client: &ClientHandle) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_NO_DATA, GetLastError};
+    use windows_sys::Win32::Storage::FileSystem::WriteFile;
+    let mut written = 0u32;
+    // SAFETY: a write of zero bytes from a valid pointer, on a handle the server owns, with
+    // no OVERLAPPED; GetLastError reads this thread's last error.
+    unsafe {
+        WriteFile(
+            client.as_raw_handle(),
+            [0u8; 0].as_ptr(),
+            0,
+            &mut written,
+            std::ptr::null_mut(),
+        ) == 0
+            && matches!(GetLastError(), ERROR_BROKEN_PIPE | ERROR_NO_DATA)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn client_gone(_: &ClientHandle) -> bool {
+    false
+}
+
+/// How often the client watch probes the server's stdout.
+const CLIENT_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// What a search runs as: `s4 ARGS` with stdin closed, and neither `SEARCHFOR_CONFIG_PATH` nor
+/// `RIPGREP_CONFIG_PATH` in its environment (D17), besides `--no-config` in `ARGS`. It names
+/// the server in `PROCESS_PARENT_ENV`, so it ends when the server ends (M5b spec §4.2).
+pub fn spawn_spec(s4: &Path, args: &[OsString]) -> crate::platform::SpawnSpec {
+    use crate::platform::{Input, Output, PROCESS_PARENT_ENV, SpawnSpec};
+    let mut s = SpawnSpec::new(s4.as_os_str());
+    s.args = args.to_vec();
+    s.env = vec![
+        (crate::cli::config::ENV.into(), None),
+        ("RIPGREP_CONFIG_PATH".into(), None),
+        (
+            PROCESS_PARENT_ENV.into(),
+            Some(std::process::id().to_string().into()),
+        ),
+    ];
+    s.stdin = Input::Null;
+    s.stdout = Output::Piped;
+    s.stderr = Output::Piped;
+    s
 }
 
 struct Running {
-    /// Shared with the Supervisor, which kills and reaps it on a signal: every kill and wait
-    /// goes through this lock, so a reaped pid is never signalled.
-    child: std::sync::Arc<std::sync::Mutex<std::process::Child>>,
-    out: std::io::BufReader<Watched>,
+    /// Shared with the Supervisor, which kills and reaps it on a signal, and with the client
+    /// watch: every kill and wait goes through this lock, so a reaped pid is never signalled.
+    child: std::sync::Arc<std::sync::Mutex<crate::platform::Child>>,
+    out: std::io::BufReader<crate::platform::PipeReader>,
     errors: std::thread::JoinHandle<String>,
+    watch: Option<Watched>,
 }
 
-/// The search's stdout, read while the client still reads the server's: a client that closed
-/// it gets no answer, so the read fails (`BrokenPipe`) and `gone` says the search is to stop.
+/// The client watch of a running search (M5b plan, Task 6.1): a thread probes the server's
+/// stdout every `CLIENT_POLL` and, once the client closed it, kills the search, whose output
+/// then ends. It holds the search's lock only for that kill, and no read waits on it.
 struct Watched {
-    out: std::process::ChildStdout,
-    client: Option<i32>,
-    gone: bool,
+    gone: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Dropped when the search ended: the thread then returns at its next probe.
+    _stop: std::sync::mpsc::Sender<()>,
 }
 
-impl Read for Watched {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        #[cfg(unix)]
-        if let Some(client) = self.client {
-            use std::os::fd::AsRawFd;
-            // A pipe or a socket whose reader closed is POLLERR or POLLHUP, asked or not.
-            let mut fds = [
-                libc::pollfd {
-                    fd: self.out.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-                libc::pollfd {
-                    fd: client,
-                    events: 0,
-                    revents: 0,
-                },
-            ];
-            // SAFETY: `fds` is an array of two valid pollfd.
-            while unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
-                let e = std::io::Error::last_os_error();
-                if e.kind() != std::io::ErrorKind::Interrupted {
-                    return Err(e);
+impl Watched {
+    fn start(
+        client: std::sync::Arc<ClientHandle>,
+        child: std::sync::Arc<std::sync::Mutex<crate::platform::Child>>,
+    ) -> Self {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        use std::sync::mpsc::RecvTimeoutError;
+        let gone = std::sync::Arc::new(AtomicBool::new(false));
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let flag = gone.clone();
+        // A thread that cannot start leaves the search unwatched, as a server whose stdout is
+        // a file: it still ends with the search's own end.
+        let _ = std::thread::Builder::new()
+            .name("mcp client watch".into())
+            .spawn(move || {
+                loop {
+                    if client_gone(&client) {
+                        flag.store(true, SeqCst);
+                        let _ = lock(&child).kill();
+                        return;
+                    }
+                    if !matches!(
+                        stopped.recv_timeout(CLIENT_POLL),
+                        Err(RecvTimeoutError::Timeout)
+                    ) {
+                        return;
+                    }
                 }
-            }
-            if fds[1].revents & (libc::POLLERR | libc::POLLHUP) != 0 {
-                self.gone = true;
-                return Err(std::io::ErrorKind::BrokenPipe.into());
-            }
-        }
-        self.out.read(buf)
+            });
+        Self { gone, _stop: stop }
+    }
+
+    /// Whether the client went away. The thread is not joined: a probe never takes longer
+    /// than `CLIENT_POLL` to notice the search ended.
+    fn gone(&self) -> bool {
+        self.gone.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
 /// The search's `Child`, whatever a thread that held it did.
-fn lock(
-    c: &std::sync::Mutex<std::process::Child>,
-) -> std::sync::MutexGuard<'_, std::process::Child> {
+fn lock<T>(c: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     c.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Waits until the child exited, without reaping it and without the lock, which the
-/// Supervisor may need meanwhile; `Child::wait` reaps it after.
-#[cfg(unix)]
-fn exited(c: &std::sync::Mutex<std::process::Child>) {
-    let pid = lock(c).id();
-    // SAFETY: an all-zero siginfo_t is valid, and waitid only writes into it. A child the
-    // Supervisor reaped already gives ECHILD at once.
-    unsafe {
-        let mut info: libc::siginfo_t = std::mem::zeroed();
-        while libc::waitid(
-            libc::P_PID,
-            pid as libc::id_t,
-            &mut info,
-            libc::WEXITED | libc::WNOWAIT,
-        ) < 0
-            && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
-        {}
+/// What a wait outside the lock captures under it: the platform's `WaitToken`.
+trait Waitable {
+    type Token;
+    fn wait_token(&self) -> Self::Token;
+}
+
+impl Waitable for crate::platform::Child {
+    type Token = std::io::Result<crate::platform::WaitToken>;
+    fn wait_token(&self) -> Self::Token {
+        crate::platform::Child::wait_token(self)
     }
 }
 
-#[cfg(not(unix))]
-fn exited(_: &std::sync::Mutex<std::process::Child>) {}
+/// The lock alone, for the test of the ordering.
+#[cfg(test)]
+impl Waitable for () {
+    type Token = ();
+    fn wait_token(&self) {}
+}
+
+/// Takes `child`'s lock only to capture its wait token, releases it, and then runs `wait`
+/// with the token: the Supervisor's cancel, or the client watch, can kill the search
+/// meanwhile (M5b plan, Task 6.1).
+fn wait_without_lock<T: Waitable, R>(
+    child: &std::sync::Mutex<T>,
+    wait: impl FnOnce(T::Token) -> R,
+) -> R {
+    let guard = lock(child);
+    let token = guard.wait_token();
+    drop(guard);
+    wait(token)
+}
+
+/// Waits until the child exited, without reaping it and without the lock, which the
+/// Supervisor may need meanwhile; `Child::wait` reaps it after. A child the Supervisor reaped
+/// already has ended.
+fn exited(token: &crate::platform::WaitToken) -> std::io::Result<()> {
+    token.wait(None).map(|_| ())
+}
 
 impl Searcher for Child {
     fn start(&self, args: &[OsString]) -> Result<Box<dyn Search + '_>, String> {
-        let mut c = command(&self.s4, args);
-        // The second barrier: the kernel kills the search when the thread that started it, the
-        // server's only one, ends, whatever ended the server (SIGHUP, SIGKILL); checked
-        // against the server's pid in case it ended before the prctl.
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::process::CommandExt;
-            let server = std::process::id() as libc::pid_t;
-            // SAFETY: prctl, getppid and _exit are async-signal-safe.
-            unsafe {
-                c.pre_exec(move || {
-                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-                    if libc::getppid() != server {
-                        libc::_exit(2);
-                    }
-                    Ok(())
-                });
-            }
-        }
-        let child = match crate::helper::host::cancel::GLOBAL.launch_reader(|| c.spawn()) {
+        let spec = spawn_spec(&self.s4, args);
+        // Started and registered under the Supervisor's lock (M5b plan, Task 6.1), through the
+        // platform layer: on Windows in s4's Job Object before it runs.
+        let started = crate::helper::host::cancel::GLOBAL
+            .launch_managed(|| crate::platform::spawn(spec, crate::platform::Limits::default()));
+        let child = match started {
             Ok(Ok(child)) => child,
             Ok(Err(e)) => return Err(format!("s4 did not start: {e}")),
             Err(_) => return Err("s4 is ending".to_string()),
@@ -986,12 +1073,16 @@ impl Searcher for Child {
             }
             s
         });
-        let out = std::io::BufReader::new(Watched {
-            out: stdout,
-            client: self.client,
-            gone: false,
-        });
-        Ok(Box::new(Running { child, out, errors }))
+        let watch = self
+            .client
+            .as_ref()
+            .map(|client| Watched::start(client.clone(), child.clone()));
+        Ok(Box::new(Running {
+            child,
+            out: std::io::BufReader::new(stdout),
+            errors,
+            watch,
+        }))
     }
 }
 
@@ -1001,15 +1092,28 @@ impl Search for Running {
     }
 
     fn end(self: Box<Self>, stop: bool) -> (Ended, String) {
-        let Running { child, out, errors } = *self;
-        let stop = stop || out.get_ref().gone;
+        let Running {
+            child,
+            out,
+            errors,
+            watch,
+        } = *self;
         drop(out);
         if stop {
             let _ = lock(&child).kill();
         }
-        exited(&child);
-        let ended = match lock(&child).wait() {
-            Err(e) => Ended::Other(format!("could not be waited for: {e}")),
+        let waited = wait_without_lock(&*child, |token| token.and_then(|t| exited(&t)));
+        // A client that went away had the search killed: the server stopped it.
+        let stop = stop || watch.as_ref().is_some_and(Watched::gone);
+        drop(watch);
+        let ended = match waited.and_then(|()| lock(&child).wait()) {
+            Err(e) => {
+                // Killed first, so this reap cannot keep the lock waiting.
+                let mut c = lock(&child);
+                let _ = c.kill();
+                let _ = c.wait();
+                Ended::Other(format!("could not be waited for: {e}"))
+            }
             Ok(status) => match status.code() {
                 Some(c) => Ended::Code(c),
                 None if stop => Ended::Stopped,
@@ -1432,14 +1536,18 @@ mod tests {
         let (args, _) = search_args(&json!({"pattern":"x"})).unwrap();
         assert_eq!(args[0], "--no-config");
         assert!(!args.iter().any(|a| a == "--pre" || a == "-z"));
-        let c = command(Path::new("s4"), &args);
-        let envs: Vec<_> = c.get_envs().collect();
+        let s = spawn_spec(Path::new("s4"), &args);
         for var in ["SEARCHFOR_CONFIG_PATH", "RIPGREP_CONFIG_PATH"] {
-            assert!(
-                envs.contains(&(std::ffi::OsStr::new(var), None)),
-                "{var}: {envs:?}"
-            );
+            assert!(s.env.contains(&(var.into(), None)), "{var}: {:?}", s.env);
         }
+        // The search ends with this server (M5b spec §4.2).
+        let server = Some(std::process::id().to_string().into());
+        assert!(
+            s.env
+                .contains(&(crate::platform::PROCESS_PARENT_ENV.into(), server)),
+            "{:?}",
+            s.env
+        );
     }
 
     /// Codex r1 #2, Fable r1 #2: a long line comes as s4's Fragment, or cut; a long Section and
@@ -1797,6 +1905,28 @@ mod tests {
             (&json!(true), &json!("s4: regex parse error"))
         );
         assert_eq!(s.stopped.get(), Some(false));
+    }
+
+    /// M5b plan, Task 6.1: the wait for a search's end holds no lock a cancel needs.
+    #[test]
+    fn waiting_for_exit_does_not_hold_the_cancel_lock() {
+        use std::sync::{Arc, Mutex, mpsc};
+        use std::time::Duration;
+        let lock = Arc::new(Mutex::new(()));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (cancel_tx, cancel_rx) = mpsc::channel();
+        let child = lock.clone();
+        let waiter = std::thread::spawn(move || {
+            wait_without_lock(&child, |()| {
+                started_tx.send(()).unwrap();
+                cancel_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            });
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let acquired = lock.try_lock().is_ok();
+        cancel_tx.send(()).unwrap();
+        waiter.join().unwrap();
+        assert!(acquired, "a cancel could not acquire the Child lock");
     }
 
     /// Codex r1 #7: a line or a path that is not UTF-8 comes decoded, with U+FFFD (`lossy`),
