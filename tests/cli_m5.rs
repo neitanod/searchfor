@@ -1296,3 +1296,42 @@ fn m5_24_the_last_mode_flag_wins_as_ripgrep() {
     );
     assert!(ok(&fx, &["-l", "--generate", "man"]).contains(".TH s4"));
 }
+
+/// Code review r1, Fable #1: a reader that closes stdout before the end ends `--type-list` and
+/// `--generate` with exit 0 and no message, as rg and s4's searches; and an error is still
+/// exit 2 with stderr closed, without a panic.
+#[test]
+fn m5_25_a_closed_stdout_ends_the_actions_quietly() {
+    let fx = Fixture::new();
+    let closed = || {
+        let (r, w) = std::io::pipe().unwrap();
+        drop(r);
+        w
+    };
+    for args in [
+        &["--type-list"][..],
+        &["--generate", "man"],
+        &["--generate", "complete-bash"],
+    ] {
+        let o = fx
+            .s4(args)
+            .stdout(closed())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .unwrap();
+        assert_eq!((code(&o), stderr(&o).as_str()), (0, ""), "{args:?}");
+        let o = fx
+            .s4(args)
+            .stdout(closed())
+            .stderr(closed())
+            .output()
+            .unwrap();
+        assert_eq!(code(&o), 0, "{args:?} with stderr closed");
+    }
+    let o = fx
+        .s4(["--type-list", "-t", "zzz"])
+        .stderr(closed())
+        .output()
+        .unwrap();
+    assert_eq!(code(&o), 2);
+}
