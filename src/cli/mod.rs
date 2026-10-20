@@ -676,7 +676,26 @@ pub fn command() -> clap::Command {
         };
         cmd = cmd.arg(a);
     }
-    cmd
+    cmd.help_template(help_template())
+}
+
+/// clap's default help template followed by the directories s4 reads its Format Definitions
+/// and Grammar Helpers from on this system, as `dirs` gives them (M5b spec §4.2; never a Linux
+/// path on Windows or macOS). The directories are literal template text, which clap writes
+/// unwrapped, so a path such as macOS's `Application Support` never breaks at its space.
+fn help_template() -> String {
+    let dir = |base: Option<std::path::PathBuf>, leaf: &str| {
+        base.map(|b| b.join("searchfor").join(leaf).display().to_string())
+            .unwrap_or_else(|| "(this system has none)".to_string())
+    };
+    format!(
+        "{{before-help}}{{about-with-newline}}\n{{usage-heading}} {{usage}}\n\n{{all-args}}{{after-help}}\n\n\
+         Directories:\n  \
+         Format Definitions (SEARCHFOR_FORMATS_DIR replaces it):\n    {}\n  \
+         Grammar Helpers (SEARCHFOR_GRAMMARS_DIR replaces it):\n    {}\n",
+        dir(dirs::config_dir(), "formats"),
+        dir(dirs::data_dir(), "grammars"),
+    )
 }
 
 /// The command line with the configuration file's arguments before it (`config`), as rg 14.1.1

@@ -21,9 +21,9 @@
       "required": ["name", "version", "source", "license", "definition", "binaries"],
       "properties": {
         "name": {
-          "description": "The Grammar's name, as in `--install-grammar <name>` and the Definition's `grammar`. It becomes a directory and a file name (M2 plan, D30).",
+          "description": "The Grammar's name, as in `--install-grammar <name>` and the Definition's `grammar`: lowercase letters and digits, with single inner `-` or `_` (`c-sharp`). It becomes a directory and a file name (M2 plan, D30; M5b plan, D17).",
           "type": "string",
-          "pattern": "^[a-z0-9_]+$"
+          "pattern": "^[a-z0-9]+([-_][a-z0-9]+)*$"
         },
         "version": {
           "description": "Version of the Grammar the helper carries.",
