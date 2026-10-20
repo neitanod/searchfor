@@ -23,7 +23,7 @@ iso=$(mktemp -d)
 trap 'rm -rf "$iso"' EXIT
 mkdir -p "$iso/formats" "$iso/grammars"
 export SEARCHFOR_FORMATS_DIR="$iso/formats" SEARCHFOR_GRAMMARS_DIR="$iso/grammars" SEARCHFOR_GRAMMAR_INDEX="file://$iso/none.json"
-unset RIPGREP_CONFIG_PATH
+unset RIPGREP_CONFIG_PATH SEARCHFOR_CONFIG_PATH
 # The code Formats of M2, for the parsing budget (Fable #7): rg's types for them.
 code_types=(-t php -t js -t ts -t sh -t go -t rust -t py -t json -t yaml -t toml)
 # ripgrep 14.1.1's default: the available parallelism, at most 12 (search.rs, walker_threads).

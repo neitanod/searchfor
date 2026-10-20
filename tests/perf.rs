@@ -2134,3 +2134,130 @@ fn an_installed_grammar_leaves_a_search_without_documents_unloaded() {
     let o = fx.s4(a).output().unwrap();
     assert_eq!(common::stdout(&o), "9\n", "{}", common::stderr(&o));
 }
+
+/// M5a plan, D7 and Task 10.1: PCRE2 and multi-line searches cost what rg's cost, with
+/// `--no-trail` over a 10 MB file (PCRE2's scratch space per thread: `matcher::Pcre2`).
+#[test]
+#[ignore]
+fn pcre2_and_multiline_without_trails_are_as_fast_as_ripgrep() {
+    let _alone = alone();
+    let Some(rg) = rg_bin() else {
+        return;
+    };
+    let fx = Fixture::new();
+    let line = "line 1234 of text here\n";
+    let file = repeated(&fx, "ten.txt", line, 10 * 1024 * 1024 / line.len());
+    for flags in [&["-P", r"of(?= text)"][..], &["-U", "here\\nline 1"]] {
+        let mut args = vec!["-c"];
+        args.extend(flags);
+        args.push(&file);
+        let Some((base, _)) = best_of_three_bin(&rg, &fx, &args, 0) else {
+            eprintln!("skipping: /usr/bin/time not found");
+            return;
+        };
+        args.splice(0..0, ["--no-docs", "--no-trail"]);
+        let (t, _) = best_of_three(&fx, &args, 0).unwrap();
+        eprintln!("10 MB {flags:?}: s4 {t:?}, rg {base:?}");
+        assert!(
+            t.as_secs_f64() <= base.as_secs_f64() * 1.25,
+            "{t:?} is more than 1.25 × the {base:?} of rg"
+        );
+    }
+}
+
+/// `--files` lists 20 000 files from the walker's threads, as rg does: within 1.25 × rg's
+/// time (the sequential walk of the probe's first version took 6 ×).
+#[test]
+#[ignore]
+fn files_lists_as_fast_as_ripgrep() {
+    let _alone = alone();
+    let Some(rg) = rg_bin() else {
+        return;
+    };
+    let fx = Fixture::new();
+    for a in 0..20 {
+        let d = fx.file(&format!("many/d{a}"));
+        std::fs::create_dir_all(&d).unwrap();
+        for b in 0..1000 {
+            std::fs::write(d.join(format!("f{b}.txt")), "x").unwrap();
+        }
+    }
+    let Some((base, _)) = best_of_three_drained(&rg, &fx, &["--files", "many"], 0) else {
+        eprintln!("skipping: /usr/bin/time not found");
+        return;
+    };
+    let (t, _) = best_of_three_drained(&sfor_bin(), &fx, &["--files", "many"], 0).unwrap();
+    eprintln!("--files over 20 000 files: s4 {t:?}, rg {base:?}");
+    assert!(t.as_secs_f64() <= base.as_secs_f64() * 1.25 + 0.01);
+}
+
+/// M5a plan, D4: the rows of rg's output flags in the Trail layouts cost about what the
+/// default rows cost: a 50 MB Markdown file with one Match in 1 000 lines, each of `--column
+/// -b`, `-o`, `--vimgrep`, `-r` and `--trim` within 1.25 × the default's time and its RSS
+/// plus 16 MiB (`-o`, `--vimgrep` and `-r` take the model's path, `output::rg::streams`).
+#[test]
+#[ignore]
+fn output_flags_in_the_trail_layouts_stay_under_the_ceilings() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let mut text = String::with_capacity(SIZE + 64);
+    let mut n = 0;
+    while text.len() < SIZE {
+        if n % 1000 == 0 {
+            text.push_str(&format!("# Section {n}\n\nthe needle of {n}\n"));
+        }
+        text.push_str("line of text here\n");
+        n += 1;
+    }
+    std::fs::write(fx.file("big.md"), text).unwrap();
+    let Some((base, base_rss)) = best_of_three(&fx, &["--flat", "needle", "big.md"], 0) else {
+        eprintln!("skipping: /usr/bin/time not found");
+        return;
+    };
+    for flags in [
+        &["--column", "-b"][..],
+        &["-o"],
+        &["--vimgrep"],
+        &["-r", "N"],
+        &["--trim"],
+    ] {
+        let mut args = vec!["--flat"];
+        args.extend(flags);
+        args.extend(["needle", "big.md"]);
+        let (t, rss) = best_of_three(&fx, &args, 0).unwrap();
+        eprintln!("{flags:?}: {t:?} {rss} B, default {base:?} {base_rss} B");
+        assert!(
+            t.as_secs_f64() <= base.as_secs_f64() * 1.25,
+            "{flags:?}: {t:?}"
+        );
+        assert!(rss <= base_rss + (16 << 20), "{flags:?}: {rss} B");
+    }
+}
+
+/// M5a plan, review r1, Codex #5: every benchmark runs isolated, hyperfine's runs too: its own
+/// Definitions, Grammars and index, and neither configuration file, so none reads `~/.config`
+/// or runs a `--pre` of the user's over the corpus.
+#[test]
+fn benchmarks_run_isolated() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts");
+    for name in [
+        "bench.sh",
+        "bench-code.sh",
+        "bench-m3.sh",
+        "bench-m4.sh",
+        "bench-m5.sh",
+    ] {
+        let script = std::fs::read_to_string(dir.join(name)).unwrap();
+        let first_run = script.find("hyperfine --ignore-failure").unwrap();
+        for wanted in [
+            "unset RIPGREP_CONFIG_PATH SEARCHFOR_CONFIG_PATH\n",
+            r#"export SEARCHFOR_FORMATS_DIR="$iso/formats" SEARCHFOR_GRAMMARS_DIR="$iso/grammars" SEARCHFOR_GRAMMAR_INDEX="file://$iso/none.json""#,
+        ] {
+            let at = script.find(wanted);
+            assert!(
+                at.is_some_and(|at| at < first_run),
+                "{name}: no `{wanted}` before its first run"
+            );
+        }
+    }
+}
