@@ -300,8 +300,10 @@ def compare():
         samples = series({"A": ma[k] + [text], "B": mb[k] + [text]}, pairs)
         med = medians(samples)
         r = ratio(med, "B", "A")
-        print(f"{k:<8} A {med['A']['wall']:.4f} s  B {med['B']['wall']:.4f} s  B/A {r:.3f}")
-        res[k] = {"uptime": up, "ratio_b_over_a": r, "medians": med, "samples": samples}
+        cpu = med["B"]["cpu"] / med["A"]["cpu"]
+        print(f"{k:<8} A {med['A']['wall']:.4f} s  B {med['B']['wall']:.4f} s  B/A {r:.3f}  (CPU B/A {cpu:.3f})")
+        res[k] = {"uptime": up, "ratio_b_over_a": r, "cpu_ratio_b_over_a": cpu, "medians": med,
+                  "samples": samples}
     out["modes"] = res
     out["uptime_end"] = uptime()
     return out

@@ -2848,3 +2848,97 @@ fn a_nul_past_the_head_of_a_file_without_an_extension_is_detected_as_ripgrep() {
     }
     r.assert_empty();
 }
+
+/// M5b plan, Task 3.2: each walker worker matches with its own clone of the matcher, which
+/// changes nothing printed, with either engine and any number of threads. Every variant
+/// carries `--sort=path`, which forces one worker; the next test checks several.
+#[test]
+fn m5b_worker_matchers_keep_reference_output() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    for i in 0..32 {
+        std::fs::write(fx.file(&format!("worker-{i}.txt")), "ñ needle\nother\n").unwrap();
+    }
+    for engine in ["default", "pcre2"] {
+        for j in ["1", "2", "4", "12"] {
+            let args = [
+                "--no-heading",
+                "--color=never",
+                "--sort=path",
+                "-j",
+                j,
+                "--engine",
+                engine,
+                "needle",
+                ".",
+            ];
+            let mut s = fx.s4(args);
+            s.args(["--no-docs", "--no-trail"]);
+            let a = run(&mut s);
+            let b = run(&mut fx.rg(args));
+            assert_eq!(code(&a), code(&b), "{engine}/{j}");
+            assert_eq!(a.stdout, b.stdout, "{engine}/{j}");
+        }
+    }
+}
+
+/// M5b plan, Task 3.2: without `--sort` the walker searches with several workers, each with
+/// its own matcher. Under `--heading` a file's output is one block and the blocks are separated
+/// by an empty line: their order may differ from rg's, the bytes inside each block may not.
+#[test]
+fn m5b_parallel_workers_keep_each_files_block() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir_all(fx.file("par")).unwrap();
+    for i in 0..64 {
+        let body = if i % 4 == 0 {
+            "nothing here\n".to_string()
+        } else {
+            format!("ñ needle {i}\nmiddle\nneedle again {i}\n")
+        };
+        std::fs::write(fx.file(&format!("par/par-{i:02}.txt")), body).unwrap();
+    }
+    fn split_blocks(stdout: &[u8]) -> Vec<String> {
+        let text = String::from_utf8(stdout.to_vec()).unwrap();
+        let text = text.strip_suffix('\n').unwrap_or(&text);
+        let mut v: Vec<String> = text.split("\n\n").map(str::to_owned).collect();
+        v.sort();
+        v
+    }
+    assert_eq!(
+        split_blocks(b"a\nL\n\nb\nL\n"),
+        split_blocks(b"b\nL\n\na\nL\n")
+    );
+    let blocks = |out: &std::process::Output| split_blocks(&out.stdout);
+    for engine in ["default", "pcre2"] {
+        for j in ["2", "4", "12"] {
+            let args = [
+                "--heading",
+                "--color=never",
+                "-j",
+                j,
+                "--engine",
+                engine,
+                "needle",
+                "par",
+            ];
+            let mut s = fx.s4(args);
+            s.args(["--no-docs", "--no-trail"]);
+            let a = run(&mut s);
+            let b = run(&mut fx.rg(args));
+            assert_eq!(code(&a), code(&b), "{engine}/{j}");
+            assert_eq!(a.stdout.len(), b.stdout.len(), "{engine}/{j}");
+            let (ba, bb) = (blocks(&a), blocks(&b));
+            assert_eq!(
+                ba.len(),
+                48,
+                "{engine}/{j}: one block per file with Matches"
+            );
+            assert_eq!(ba, bb, "{engine}/{j}");
+        }
+    }
+}
