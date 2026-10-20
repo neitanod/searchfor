@@ -3,7 +3,8 @@
 # job checks formatting (Linux), clippy, the release build and the whole suite against the
 # rg 14.1.1 its system's official archive provides, verified by the SHA-256 written below
 # (M5b plan, D16); then prints which tests did not run there and why (docs/platforms.md).
-# The packaging jobs of releases come later (M5b plan, Chunk 11); the job id `build` stays.
+# The job `package` builds the release's packages on the same four systems with dist and checks
+# them without publishing anything (M5b spec §8, plan Chunk 11).
 name: ci
 
 on:
@@ -253,3 +254,506 @@ jobs:
           name: fuzz-cases-ci-${{ github.sha }}
           path: ${{ runner.temp }}/fuzz-artifacts
           if-no-files-found: ignore
+
+  # The release's packages (M5b spec §8 and §12 #39; plan Chunk 11), built by the dist the
+  # release uses, for the target each runner releases natively. Nothing here publishes: no
+  # token is available to the job, and it never runs `cargo publish` or `npm publish`.
+  package:
+    name: package (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            prio: nice -n 19 ionice -c3
+          - name: macos-arm64
+            os: macos-15
+            target: aarch64-apple-darwin
+            prio: nice -n 19
+          - name: macos-x86_64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            prio: nice -n 19
+          - name: windows
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            prio: ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      PRIO: ${{ matrix.prio }}
+      SYSTEM: ${{ matrix.name }}
+      TARGET: ${{ matrix.target }}
+      DIST: dist
+    steps:
+      - name: Low priority (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: (Get-Process -Id $PID).Parent.PriorityClass = 'BelowNormal'
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.90.0'
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: package-${{ matrix.name }}-${{ matrix.target }}-${{ runner.arch }}-rust1.90.0-${{ hashFiles('Cargo.lock') }}
+
+      # The generator the release uses, at the version dist-workspace.toml pins.
+      - name: Install dist 0.33.0 (Unix)
+        if: runner.os != 'Windows'
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-installer.sh | sh
+      - name: Install dist 0.33.0 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: irm https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-installer.ps1 | iex
+      - name: Check dist
+        run: |
+          "$DIST" --version
+          [ "$("$DIST" --version)" = 'cargo-dist 0.33.0' ]
+      # The static Linux archive links musl, and PCRE2 and the Grammars are C.
+      - name: musl C toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Fetch the locked crates
+        run: cargo fetch --locked
+      # The npm package's one dependency (its npm-shrinkwrap.json pins detect-libc 2.1.2),
+      # cached here so that the install below runs --offline.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Cache the npm package's dependency
+        run: npm cache add detect-libc@2.1.2
+
+      # dist's plan: five targets, four installers, version 1.0.0, and only s4 (plan Task 11.1).
+      - name: dist plan (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          plan="$RUNNER_TEMP/dist-plan.json"
+          "$DIST" plan --output-format=json > "$plan"
+          python3 - "$plan" <<'PY'
+          import json, sys
+          p = json.load(open(sys.argv[1], encoding='utf-8'))
+          strings = []
+          def walk(x):
+              if isinstance(x, dict):
+                  for k, v in x.items():
+                      strings.append(str(k)); walk(v)
+              elif isinstance(x, list):
+                  for v in x: walk(v)
+              elif isinstance(x, str): strings.append(x)
+          walk(p)
+          text = '\n'.join(strings)
+          for target in ['x86_64-unknown-linux-musl', 'aarch64-unknown-linux-musl',
+                         'aarch64-apple-darwin', 'x86_64-apple-darwin', 'x86_64-pc-windows-msvc']:
+              assert target in text, target
+          # dist 0.33.0 names the formula's installer "Homebrew": compare without case.
+          for installer in ['shell', 'powershell', 'homebrew', 'npm']:
+              assert any(installer in s.lower() for s in strings), installer
+          assert not any('searchfor-example-helper' in s for s in strings)
+          assert not any('searchfor-grammar-' in s for s in strings)
+          assert '1.0.0' in text
+          # Stricter than the names: one app, and each archive holds s4 and the four documents.
+          assert [r['app_name'] for r in p['releases']] == ['searchfor'], p['releases']
+          installers = sorted(a['name'] for a in p['artifacts'].values() if a['kind'] == 'installer')
+          assert installers == ['searchfor-installer.ps1', 'searchfor-installer.sh',
+                                'searchfor-npm-package.tar.gz', 'searchfor.rb'], installers
+          archives = [a for a in p['artifacts'].values() if a['kind'] == 'executable-zip']
+          assert len(archives) == 5, [a['name'] for a in archives]
+          for a in archives:
+              names = sorted(x['path'] for x in a['assets'])
+              exe = 's4.exe' if 'windows' in a['name'] else 's4'
+              assert names == sorted(['LICENSE-APACHE', 'LICENSE-MIT', 'README.es.md', 'README.md', exe]), (a['name'], names)
+          print('five targets, four installers, only s4: PASS')
+          PY
+
+      # release.yml is dist's output plus two patches (dist-workspace.toml): check that it still
+      # is, and that regeneration kept the conditions publication depends on.
+      # To regenerate it locally: run this step's script with RELEASE_WORKFLOW_WRITE=1.
+      - name: Release workflow (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import difflib, json, os, re, subprocess, sys
+          from pathlib import Path
+          dist = os.environ.get('DIST', 'dist')
+          wf, cfg = Path('.github/workflows/release.yml'), Path('dist-workspace.toml')
+          committed = wf.read_text(encoding='utf-8')
+          config = cfg.read_text(encoding='utf-8')
+          allow = 'allow-dirty = ["ci"]\n'
+          assert config.count(allow) == 1, 'dist-workspace.toml must keep allow-dirty = ["ci"]'
+          try:
+              cfg.write_text(config.replace(allow, ''), encoding='utf-8')
+              subprocess.run([dist, 'generate', '--mode=ci'], check=True)
+              generated = wf.read_text(encoding='utf-8')
+          finally:
+              cfg.write_text(config, encoding='utf-8')
+              wf.write_text(committed, encoding='utf-8')
+          patches = [
+              ("on:\n  pull_request:\n  push:\n    tags:\n      - '**[0-9]+.[0-9]+.[0-9]+*'\n",
+               "# searchfor: only v<semver> tags release s4; grammars-v* tags belong to grammars.yml.\n"
+               "on:\n  pull_request:\n  push:\n    tags:\n      - 'v[0-9]+.[0-9]+.[0-9]+*'\n"),
+              ('name: Release\npermissions:\n  "contents": "write"\n',
+               'name: Release\n# searchfor: read-only by default; the host job declares the write it needs.\n'
+               'permissions:\n  "contents": "read"\n'),
+          ]
+          expected = generated
+          for old, new in patches:
+              n = expected.count(old)
+              assert n == 1, f'dist generate writes {old!r} {n} times, not once: review the patches'
+              expected = expected.replace(old, new)
+          if os.environ.get('RELEASE_WORKFLOW_WRITE') == '1':
+              wf.write_text(expected, encoding='utf-8')
+              committed = expected
+          elif committed != expected:
+              sys.stdout.writelines(difflib.unified_diff(
+                  expected.splitlines(True), committed.splitlines(True),
+                  'dist generate + patches', 'release.yml'))
+              sys.exit('release.yml is not what dist generate and the two patches write')
+          # The conditions publication depends on, checked on the committed file.
+          head, body = committed.split('\njobs:\n', 1)
+          parts = re.split(r'(?m)^  ([A-Za-z0-9_-]+):\n', body)
+          jobs = dict(zip(parts[1::2], parts[2::2]))
+          assert re.findall(r"(?m)^      - '([^']*)'$", head) == ['v[0-9]+.[0-9]+.[0-9]+*'], 'tags'
+          assert 'workflow_dispatch' not in committed, 'a manual dispatch could publish'
+          assert re.search(r'(?m)^permissions:\n  "contents": "read"\n(?!  )', head), 'permissions'
+          assert 'secrets.' not in head and 'cargo publish' not in committed
+          for secret, owner in [('secrets.NPM_TOKEN', 'publish-npm'),
+                                ('secrets.HOMEBREW_TAP_TOKEN', 'publish-homebrew-formula')]:
+              assert [j for j, b in jobs.items() if secret in b] == [owner], secret
+          for grant in ['"contents": "write"', '"id-token": "write"', '"attestations": "write"']:
+              assert [j for j, b in jobs.items() if grant in b] == ['host'], grant
+          guard = ('if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease'
+                   ' || fromJson(needs.plan.outputs.val).publish_prereleases }}')
+          for j in ['publish-npm', 'publish-homebrew-formula']:
+              assert guard in jobs[j] and '      - host\n' in jobs[j], j
+          host = jobs['host']
+          for built in ['build-local-artifacts', 'build-global-artifacts']:
+              assert f"needs.{built}.result == 'success'" in host, built
+          attest = host.index('uses: actions/attest@')
+          assert 'subject-path: |\n            artifacts/*\n' in host[attest:]
+          assert attest < host.index('gh release create'), 'attest before the release exists'
+          # A release candidate publishes nothing to npm or Homebrew; the stable tag does.
+          def plan(tag):
+              out = subprocess.run([dist, 'plan', '--output-format=json', f'--tag={tag}', '--force-tag'],
+                                   check=True, capture_output=True, text=True).stdout
+              return json.loads(out)
+          rc, stable = plan('v1.0.0-rc.1'), plan('v1.0.0')
+          assert rc['announcement_is_prerelease'] is True and rc['publish_prereleases'] is False
+          assert stable['announcement_is_prerelease'] is False
+          print('release.yml: dist generate + 2 patches; tags, secrets, permissions, guards: PASS')
+          PY
+
+      # The archive of this runner's target, the installers and the checksums (Task 11.1).
+      - name: dist build
+        run: |
+          $PRIO "$DIST" build --artifacts=all --target="$TARGET" --output-format=json > "$RUNNER_TEMP/dist-build.json"
+          ls -l target/distrib
+      - name: Unpack the archive
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/archive"
+          python3 - "target/distrib" "$TARGET" "$dir" <<'PY'
+          import sys, tarfile, zipfile
+          from pathlib import Path
+          distrib, target, out = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+          windows = 'windows' in target
+          archive = distrib / f"searchfor-{target}.{'zip' if windows else 'tar.xz'}"
+          out.mkdir(parents=True)
+          if windows:
+              zipfile.ZipFile(archive).extractall(out)
+          else:
+              with tarfile.open(archive, 'r:xz') as t:
+                  t.extractall(out, filter='tar')
+          print(archive, '->', out)
+          PY
+          echo "ARTIFACT_DIR=$dir" >> "$GITHUB_ENV"
+      # Run from the unpacked archive, never target/ or PATH (plan Task 11.3, Step 1).
+      - name: Archive smoke
+        working-directory: ${{ runner.temp }}
+        run: |
+          python3 - "$ARTIFACT_DIR" <<'PY'
+          from pathlib import Path
+          import os, subprocess, sys
+          root = Path(sys.argv[1])
+          files = [p for p in root.rglob('*') if p.is_file()]
+          for name in ['LICENSE-MIT', 'LICENSE-APACHE', 'README.md', 'README.es.md']:
+              assert any(p.name == name for p in files), name
+          exes = [p for p in files if p.name in ('s4', 's4.exe')]
+          assert len(exes) == 1
+          v = subprocess.check_output([str(exes[0]), '--version'], text=True).strip()
+          assert v == 's4 1.0.0', v
+          assert not any('grammar' in p.name or 'example-helper' in p.name for p in files)
+          print('native archive smoke: PASS')
+          PY
+
+      # The static Linux archive (Task 11.2, Step 4): no dynamic libc, and the unstripped s4
+      # within 23,000,000 bytes (grill 8612). A missed cap fails; it is never raised here.
+      - name: Static Linux s4 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          s4=$(find "$ARTIFACT_DIR" -type f -name s4)
+          file "$s4"
+          readelf -d "$s4" || true
+          if readelf -d "$s4" | grep -q NEEDED; then echo "::error::$s4 needs shared libraries"; exit 1; fi
+          if readelf -l "$s4" | grep -q INTERP; then echo "::error::$s4 asks for a dynamic loader"; exit 1; fi
+          size=$(stat -c %s "$s4")
+          echo "unstripped x86_64-unknown-linux-musl s4: $size bytes (cap 23000000)" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$size" -le 23000000 ]
+
+      # musl's malloc against glibc's under s4's threads (M5b spec §8.1; plan Task 11.2): the
+      # same release profile for both targets, built one after the other in this target dir,
+      # and scripts/bench-m5b.sh --compare alternating 40 pairs of each s4 mode over the M4
+      # text corpus (20,000 files) on this runner. The report and its raw samples are kept.
+      - name: musl against glibc (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          uptime
+          for t in x86_64-unknown-linux-gnu x86_64-unknown-linux-musl; do
+            $PRIO cargo build --release --locked --offline -p searchfor --bin s4 --target "$t"
+          done
+          SEARCHFOR_BENCH_REPORT="$RUNNER_TEMP/musl-vs-glibc.json" $PRIO bash scripts/bench-m5b.sh \
+            --compare target/x86_64-unknown-linux-gnu/release/s4 \
+            target/x86_64-unknown-linux-musl/release/s4 "$RUNNER_TEMP/m4-corpus"
+          uptime
+      # The rule, in this order (plan Task 11.2): a musl/glibc ratio of the medians of at most
+      # 1.05 keeps System; at least 1.15 means jemalloc behind the counter, a change this job
+      # cannot make, so it fails; in between it is Sebastián's decision, flagged as a warning.
+      # The worst of the three s4 modes decides.
+      - name: musl allocator decision (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python3 - "$RUNNER_TEMP/musl-vs-glibc.json" <<'PY'
+          import json, sys
+          def decide(musl, glibc):
+              ratio = musl / glibc
+              if ratio <= 1.05:
+                  return 'system'
+              if ratio >= 1.15:
+                  return 'jemalloc'
+              return 'ask'
+          assert decide(1.05, 1.0) == 'system'
+          assert decide(1.0501, 1.0) == 'ask'
+          assert decide(1.12, 1.0) == 'ask'
+          assert decide(1.1499, 1.0) == 'ask'
+          assert decide(1.15, 1.0) == 'jemalloc'
+          print('musl allocator rule (<=1.05 system, >=1.15 jemalloc, else ask): PASS')
+          report = json.load(open(sys.argv[1], encoding='utf-8'))
+          rank = {'system': 0, 'ask': 1, 'jemalloc': 2}
+          worst = 'system'
+          for mode, m in report['modes'].items():
+              glibc, musl = m['medians']['A']['wall'], m['medians']['B']['wall']
+              d = decide(musl, glibc)
+              worst = max(worst, d, key=rank.get)
+              print(f"{mode}: glibc {glibc:.4f} s, musl {musl:.4f} s, musl/glibc {musl / glibc:.4f} -> {d}"
+                    f" (uptime: {m['uptime']})")
+              print(f"{mode} raw samples: {json.dumps(m['samples'])}")
+          print(f'decision: {worst}')
+          if worst == 'jemalloc':
+              print('::error::musl is at least 1.15 x glibc: s4 needs jemalloc behind the counter (plan Task 11.2, Step 3)')
+              sys.exit(1)
+          if worst == 'ask':
+              print('::warning::musl/glibc is between 1.05 and 1.15: Sebastián decides System or jemalloc (plan Task 11.2, Step 2)')
+          PY
+      - name: Keep the musl measurement (Linux)
+        if: runner.os == 'Linux' && (success() || failure())
+        uses: actions/upload-artifact@v4
+        with:
+          name: musl-vs-glibc-${{ github.sha }}
+          path: ${{ runner.temp }}/musl-vs-glibc.json
+          if-no-files-found: ignore
+      # The counter's contract under musl: the memory unit tests and m4_22's warning.
+      - name: Memory limits under musl (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          $PRIO cargo test --release --locked --offline --target x86_64-unknown-linux-musl --lib memory
+          $PRIO cargo test --release --locked --offline --target x86_64-unknown-linux-musl --test cli_m4 m4_22
+
+      # The checksums (spec §8.1): the archive's `.sha256` and `sha256.sum`, which lists every
+      # archive and the npm package, verified with the system's own tool; then a copy of the
+      # archive with one byte flipped must fail verification (plan Task 11.3, Step 3).
+      - name: Checksums
+        working-directory: target/distrib
+        run: |
+          set -euo pipefail
+          if command -v sha256sum > /dev/null; then sum=(sha256sum); else sum=(shasum -a 256); fi
+          archive="searchfor-$TARGET.tar.xz"
+          [ -f "$archive" ] || archive="searchfor-$TARGET.zip"
+          "${sum[@]}" -c "$archive.sha256"
+          "${sum[@]}" -c sha256.sum
+          for f in "$archive" searchfor-npm-package.tar.gz; do
+            grep -Eq "^[0-9a-f]{64} \*$f\$" sha256.sum || { echo "::error::sha256.sum lacks $f"; exit 1; }
+          done
+          bad="$RUNNER_TEMP/corrupt-checksum"
+          mkdir -p "$bad"
+          cp "$archive" "$archive.sha256" "$bad/"
+          python3 - "$bad/$archive" <<'PY'
+          import sys
+          from pathlib import Path
+          p = Path(sys.argv[1]); b = bytearray(p.read_bytes()); b[len(b) // 2] ^= 0x01; p.write_bytes(bytes(b))
+          PY
+          if (cd "$bad" && "${sum[@]}" -c "$archive.sha256"); then
+            echo "::error::a corrupt $archive passed its checksum"; exit 1
+          fi
+          echo 'checksums, and a flipped byte rejected: PASS'
+
+      # The installers against this job's own archive, served on the loopback, with every other
+      # destination unreachable (dead proxies, and npm --offline from its cache): the shell
+      # script (Unix), the npm package (every system; the .cmd shim on Windows) and the Homebrew
+      # formula (macOS). Each must print s4 1.0.0, fetch exactly the archive, and fail on a
+      # damaged archive (plan Task 11.3, Step 3). dist 0.33.0's shell script checks the SHA-256;
+      # its npm package does not, so for npm the damage is in the archive's own integrity data.
+      - name: Local installers
+        run: |
+          python3 - <<'PY'
+          import http.server, json, os, shutil, subprocess, sys, tarfile, threading
+          from pathlib import Path
+          distrib = Path('target/distrib').resolve()
+          target = os.environ['TARGET']
+          tmp = Path(os.environ['RUNNER_TEMP']) / 'installers'
+          windows, mac = os.name == 'nt', sys.platform == 'darwin'
+          ext = 'zip' if 'windows' in target else 'tar.xz'
+          archive = f'searchfor-{target}.{ext}'
+          good, bad = tmp / 'good', tmp / 'bad'
+          for d in (good, bad):
+              d.mkdir(parents=True)
+          shutil.copy(distrib / archive, good / archive)
+          data = bytearray((distrib / archive).read_bytes())
+          # The zip's end-of-central-directory signature; the xz stream's footer magic.
+          data[len(data) - 22 if ext == 'zip' else len(data) - 1] ^= 0xff
+          (bad / archive).write_bytes(bytes(data))
+
+          requests = []
+          class Handler(http.server.SimpleHTTPRequestHandler):
+              def __init__(self, *a, **k):
+                  super().__init__(*a, directory=str(tmp), **k)
+              def do_GET(self):
+                  requests.append(self.path)
+                  super().do_GET()
+              def log_message(self, *a):
+                  pass
+          server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+          threading.Thread(target=server.serve_forever, daemon=True).start()
+          base = f'http://127.0.0.1:{server.server_port}'
+          dead = 'http://127.0.0.1:9'
+          env = dict(os.environ, HTTP_PROXY=dead, HTTPS_PROXY=dead, ALL_PROXY=dead, http_proxy=dead,
+                     https_proxy=dead, all_proxy=dead, NO_PROXY='127.0.0.1', no_proxy='127.0.0.1',
+                     HOMEBREW_NO_AUTO_UPDATE='1',
+                     HOMEBREW_NO_ANALYTICS='1', HOMEBREW_NO_INSTALL_CLEANUP='1')
+
+          def run(cmd, **k):
+              print('+', ' '.join(map(str, cmd)), flush=True)
+              return subprocess.run([str(c) for c in cmd], env=k.pop('env', env), **k)
+          def version(exe):
+              out = run([exe, '--version'], capture_output=True, text=True)
+              assert out.returncode == 0, out
+              return out.stdout.strip()
+          def served(kind):
+              got = list(requests); requests.clear()
+              assert got == [f'/{kind}/{archive}'], got
+
+          if not windows:
+              for kind in ('good', 'bad'):
+                  home = tmp / f'sh-{kind}'
+                  r = run(['sh', distrib / 'searchfor-installer.sh', '--no-modify-path'],
+                          env=dict(env, HOME=str(home), CARGO_HOME=str(home / '.cargo'),
+                                   SEARCHFOR_DOWNLOAD_URL=f'{base}/{kind}'))
+                  served(kind)
+                  if kind == 'good':
+                      assert r.returncode == 0, r
+                      assert version(home / '.cargo' / 'bin' / 's4') == 's4 1.0.0'
+                  else:
+                      assert r.returncode != 0, 'the shell installer accepted a corrupt archive'
+              print('shell installer: PASS')
+
+          npm = shutil.which('npm')
+          src = tmp / 'npm-package'
+          with tarfile.open(distrib / 'searchfor-npm-package.tar.gz') as t:
+              t.extractall(src, filter='data')
+          [pkg] = [p.parent for p in src.rglob('package.json')]
+          for kind in ('good', 'bad'):
+              copy = tmp / f'npm-src-{kind}'
+              shutil.copytree(pkg, copy)
+              meta = json.loads((copy / 'package.json').read_text(encoding='utf-8'))
+              meta['artifactDownloadUrls'] = [f'{base}/{kind}']
+              (copy / 'package.json').write_text(json.dumps(meta, indent=2), encoding='utf-8')
+              assert run([npm, 'pack', '--ignore-scripts'], cwd=copy).returncode == 0
+              tgz = copy / 'searchfor-1.0.0.tgz'
+              assert tgz.is_file(), list(copy.iterdir())
+              prefix = tmp / f'npm-{kind}'
+              r = run([npm, 'install', '--prefix', prefix, '--offline', '--no-audit', '--no-fund',
+                       '--foreground-scripts', '--logs-dir', tmp / 'npm-logs', tgz])
+              served(kind)
+              shim = prefix / 'node_modules' / '.bin' / ('s4.cmd' if windows else 's4')
+              if kind == 'good':
+                  assert r.returncode == 0, r
+                  assert version(shim) == 's4 1.0.0'
+              else:
+                  assert r.returncode != 0, 'npm installed a corrupt archive'
+          print('npm package: PASS')
+
+          if mac:
+              # The generated formula stays as dist wrote it for the release; this copy, outside
+              # the repository, points at the job's archive.
+              formula = (distrib / 'searchfor.rb').read_text(encoding='utf-8')
+              release = 'https://github.com/neitanod/searchfor/releases/download/v1.0.0/'
+              assert release + archive in formula
+              (tmp / 'searchfor.rb').write_text(formula.replace(release, f'file://{good}/'), encoding='utf-8')
+              r = run(['brew', 'install', '--formula', './searchfor.rb'], cwd=tmp)
+              if r.returncode != 0:
+                  # Homebrew versions that install formulae only from a tap: a local one.
+                  run(['brew', 'tap-new', '--no-git', 'searchfor/smoke'], check=True)
+                  tap = run(['brew', '--repository', 'searchfor/smoke'], check=True,
+                            capture_output=True, text=True).stdout.strip()
+                  shutil.copy(tmp / 'searchfor.rb', Path(tap) / 'Formula' / 'searchfor.rb')
+                  run(['brew', 'install', '--formula', 'searchfor/smoke/searchfor'], check=True)
+              brew = run(['brew', '--prefix'], check=True, capture_output=True, text=True).stdout.strip()
+              assert version(Path(brew) / 'bin' / 's4') == 's4 1.0.0'
+              run(['brew', 'uninstall', '--formula', 'searchfor'], check=True)
+              print('Homebrew formula: PASS')
+          server.shutdown()
+          PY
+
+      # The crate (spec §8.4): the package, verified offline from the crates fetched above, and a
+      # publish rehearsal that uploads nothing. The rehearsal cannot run --offline: cargo 1.90
+      # discards its cached crates.io index configuration on every publish and reads it again,
+      # so it reads (never writes) crates.io; it skips the verification the package step did.
+      # This job never runs `cargo publish` itself.
+      - name: Crate (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          $PRIO cargo package --list --locked --offline --allow-dirty -p searchfor | tee "$RUNNER_TEMP/crate-files.txt"
+          for f in Cargo.toml LICENSE-MIT LICENSE-APACHE README.md README.es.md grammars/index.json \
+                   formats/markdown.toml src/main.rs src/rg_types.txt; do
+            grep -Fxq "$f" "$RUNNER_TEMP/crate-files.txt" || { echo "::error::the crate lacks $f"; exit 1; }
+          done
+          if grep -q '^tests/' "$RUNNER_TEMP/crate-files.txt"; then echo "::error::the crate carries tests/"; exit 1; fi
+          $PRIO cargo package --locked --offline --allow-dirty -p searchfor
+          $PRIO cargo publish --dry-run --locked --allow-dirty --no-verify -p searchfor
+          ls -l target/package/searchfor-1.0.0.crate

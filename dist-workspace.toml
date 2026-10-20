@@ -1,0 +1,60 @@
+# The release of s4 (M5b spec §8, plan Task 11.1), built by axodotdev's `dist` from a `v*` tag.
+#
+# `.github/workflows/release.yml` is what `dist generate` writes from this file plus two
+# patches (`allow-dirty` below keeps dist from undoing them): the trigger is restricted to
+# `v<semver>` tags, because `grammars-v*` tags belong to grammars.yml, and the workflow-wide
+# permission is `contents: read`, because only the `host` job, which carries its own
+# permissions, writes the GitHub Release. The `release workflow` step of ci.yml regenerates the
+# file, applies the patches and fails when the result differs from the committed one. To
+# regenerate after changing this file, or after a dist upgrade: run that step's script with
+# `--write` (see ci.yml, job `package`).
+[workspace]
+members = ["cargo:."]
+
+[dist]
+# The generator, pinned: CI installs exactly this version.
+cargo-dist-version = "0.33.0"
+ci = "github"
+hosting = "github"
+# Shell and PowerShell scripts, the Homebrew formula and the npm package; no MSI (Q57.instaladores).
+installers = ["shell", "powershell", "homebrew", "npm"]
+# Static Linux, both macOS and Windows x86-64 (Q57.plataformas, Q57.linux-static).
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+unix-archive = ".tar.xz"
+windows-archive = ".zip"
+# Each archive carries s4, both licenses and both READMEs, named here so that no other file
+# dist would pick up on its own enters it.
+auto-includes = false
+include = ["LICENSE-MIT", "LICENSE-APACHE", "README.md", "README.es.md"]
+# One `.sha256` per archive plus the `sha256.sum` of them all.
+checksum = "sha256"
+# The release is the archives, their checksums and the installers; GitHub already serves the
+# tag's source.
+source-tarball = false
+# Keyless Sigstore attestations bound to the workflow and commit (Q57.firma, spec §8.5). In the
+# `host` phase they cover every file of the release: the archives and their `.sha256`, the
+# installer scripts, the formula, the npm package and `sha256.sum`. The default phase attests
+# only each target's archive and checksum.
+github-attestations = true
+github-attestations-phase = "host"
+# A release candidate (`v1.0.0-rc.1`) makes a GitHub pre-release and publishes nothing to npm
+# or Homebrew (spec §8.6, step 2). crates.io is never published by the workflow (step 5).
+publish-prereleases = false
+# Homebrew: `brew install neitanod/tap/searchfor` (Q57.brew), pushed with HOMEBREW_TAP_TOKEN.
+tap = "neitanod/homebrew-tap"
+formula = "searchfor"
+# npm: the unscoped package `searchfor` (Q57.npm), published with NPM_TOKEN.
+npm-package = "searchfor"
+publish-jobs = ["homebrew", "npm"]
+# Build only s4, never the Helper crates of the workspace.
+precise-builds = true
+install-path = "CARGO_HOME"
+install-updater = false
+# release.yml carries the two patches described at the top of this file.
+allow-dirty = ["ci"]

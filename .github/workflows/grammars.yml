@@ -1,0 +1,321 @@
+# The Grammar Helpers of v1.0 (M5b spec §9; plan Task 11.4): c, cpp, java, ruby, c-sharp and
+# elixir (Q57.gramaticas), each built alone (`--no-default-features --features <lang>`, D17) by
+# scripts/build-grammar-helper.sh for the five release targets, on a runner of that system, so
+# that each binary is installed and run there before anything is published. The merge job
+# assembles the new grammars/index.json from the thirty entries and validates it with the
+# repository's own schema test.
+#
+# Publication (the `grammars-v1` GitHub Release, Q57.grammar-host) happens only on a push of
+# the tag grammars-v1, which needs Sebastián's OK (spec §8.6, step 3). Every other run builds and
+# checks only, without write permission: a push to a branch that changes what the helpers are
+# built from, or a manual dispatch. The index is never committed here: it is an artifact, and
+# committing it is a later, separate step (plan Task 11.5).
+name: grammars
+
+on:
+  push:
+    tags:
+      - 'grammars-v*'
+    branches:
+      - '**'
+    paths:
+      - '.github/workflows/grammars.yml'
+      - 'scripts/build-grammar-helper.sh'
+      - 'helpers/grammar/**'
+      - 'grammars/**'
+      - 'docs/grammar-index.schema.json'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: grammars-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CARGO_BUILD_JOBS: '8'
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+  PCRE2_SYS_STATIC: '1'
+  # The release every index URL points at; the publish job runs only for this tag.
+  RELEASE_TAG: grammars-v1
+
+jobs:
+  build:
+    name: build (${{ matrix.grammar }}, ${{ matrix.system }})
+    strategy:
+      fail-fast: false
+      matrix:
+        grammar: [c, cpp, java, ruby, c-sharp, elixir]
+        system: [linux-x86_64, linux-aarch64, macos-aarch64, macos-x86_64, windows-x86_64]
+        include:
+          # The index key is <os>-<arch> as s4 computes it; Linux helpers are static (musl),
+          # like s4's Linux archives.
+          - system: linux-x86_64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            prio: nice -n 19 ionice -c3
+          - system: linux-aarch64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            prio: nice -n 19 ionice -c3
+          - system: macos-aarch64
+            os: macos-15
+            target: aarch64-apple-darwin
+            prio: nice -n 19
+          - system: macos-x86_64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            prio: nice -n 19
+          - system: windows-x86_64
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            prio: ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      PRIO: ${{ matrix.prio }}
+      GRAMMAR: ${{ matrix.grammar }}
+      SYSTEM: ${{ matrix.system }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Low priority (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: (Get-Process -Id $PID).Parent.PriorityClass = 'BelowNormal'
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.90.0'
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The registry only: thirty target directories would outgrow the repository's cache.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: grammars-registry-${{ matrix.system }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: musl C toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Fetch the locked crates
+        run: cargo fetch --locked
+
+      # The binary and its index entry, with the URL it will have in the release.
+      - name: Build the Grammar Helper
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/out"
+          mkdir -p "$out"
+          $PRIO bash scripts/build-grammar-helper.sh "$GRAMMAR" "$out" \
+            "https://github.com/${{ github.repository }}/releases/download/$RELEASE_TAG" "$TARGET" \
+            > "$out/$GRAMMAR-$SYSTEM.json"
+          cat "$out/$GRAMMAR-$SYSTEM.json"
+          [ "$(jq -r '.binaries | keys | join(",")' "$out/$GRAMMAR-$SYSTEM.json")" = "$SYSTEM" ]
+          ls -l "$out"
+
+      # On this system: s4 installs the helper from a file:// index made of this job's binary,
+      # with no other source, and gives the fixture's `needle` the Trail the helper's own test
+      # expects (helpers/grammar/tests/protocol.rs, SAMPLE), each Segment named and signed.
+      - name: Install and search with s4
+        run: |
+          set -euo pipefail
+          $PRIO cargo build --release --locked --offline -p searchfor --bin s4 --target "$TARGET"
+          python3 - "$RUNNER_TEMP/out/$GRAMMAR-$SYSTEM.json" "target/$TARGET/release/s4" <<'PY'
+          import json, os, subprocess, sys, tempfile
+          from pathlib import Path
+          entry = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          s4 = Path(sys.argv[2] + ('.exe' if os.name == 'nt' else '')).resolve()
+          lang, system = entry['name'], os.environ['SYSTEM']
+          expected = {
+              'c': ('sample.c', ['sample']),
+              'cpp': ('sample.cpp', ['demo', 'Sample', 'run']),
+              'java': ('Sample.java', ['Sample', 'run']),
+              'ruby': ('sample.rb', ['Demo', 'Sample', 'run']),
+              'c-sharp': ('sample.cs', ['Demo', 'Sample', 'Run']),
+              'elixir': ('sample.ex', ['Sample', 'run']),
+          }
+          fixture, trail = expected[lang]
+          fixture = Path('helpers/grammar/tests/fixtures', fixture).resolve()
+          binary = Path(sys.argv[1]).parent / entry['binaries'][system]['url'].rsplit('/', 1)[1]
+          entry['binaries'][system]['url'] = binary.resolve().as_uri()
+          iso = Path(tempfile.mkdtemp(dir=os.environ['RUNNER_TEMP']))
+          index = iso / 'index.json'
+          index.write_text(json.dumps({'version': 1, 'grammars': [entry]}), encoding='utf-8')
+          env = {k: v for k, v in os.environ.items()
+                 if k not in ('SEARCHFOR_CONFIG_PATH', 'RIPGREP_CONFIG_PATH')}
+          env.update(SEARCHFOR_FORMATS_DIR=str(iso / 'formats'), SEARCHFOR_GRAMMARS_DIR=str(iso / 'grammars'),
+                     SEARCHFOR_GRAMMAR_INDEX=index.as_uri())
+          r = subprocess.run([str(s4), '--install-grammar', lang], env=env, capture_output=True, text=True)
+          print(r.stdout, r.stderr)
+          assert r.returncode == 0, r.returncode
+          r = subprocess.run([str(s4), '--json', 'needle', str(fixture)], env=env,
+                             capture_output=True, text=True)
+          print(r.stdout, r.stderr)
+          assert r.returncode == 0, r.returncode
+          matches = [m['data'] for m in map(json.loads, r.stdout.splitlines()) if m['type'] == 'match']
+          assert matches, 'no match'
+          for m in matches:
+              assert m['format'] == lang, m['format']
+              assert [s['name'] for s in m['trail']] == trail, m['trail']
+              for s in m['trail']:
+                  assert s['name'] and isinstance(s.get('signature'), str) and s['signature'], s
+          print(f'{lang} on {system}: installed from file://, Trail {trail}: PASS')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: grammar-${{ matrix.grammar }}-${{ matrix.system }}
+          path: ${{ runner.temp }}/out/
+          if-no-files-found: error
+
+  # The thirty entries become one index, sorted by name and by system, refusing a missing or
+  # duplicated key, with every binary's SHA-256 checked again after the copy.
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.90.0'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: grammar-*
+          path: ${{ runner.temp }}/parts
+          merge-multiple: true
+      - name: Merge the index
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/parts" "$RUNNER_TEMP/grammars-release" <<'PY'
+          import hashlib, json, shutil, sys
+          from pathlib import Path
+          parts, out = Path(sys.argv[1]), Path(sys.argv[2])
+          out.mkdir()
+          names = ['c', 'cpp', 'java', 'ruby', 'c-sharp', 'elixir']
+          systems = ['linux-x86_64', 'linux-aarch64', 'macos-aarch64', 'macos-x86_64', 'windows-x86_64']
+          merged = {}
+          for f in sorted(parts.glob('*.json')):
+              e = json.loads(f.read_text(encoding='utf-8'))
+              [(system, b)] = e['binaries'].items()
+              file = b['url'].rsplit('/', 1)[1]
+              shutil.copy(parts / file, out / file)
+              got = hashlib.sha256((out / file).read_bytes()).hexdigest()
+              assert got == b['sha256'], (file, got, b['sha256'])
+              m = merged.setdefault(e['name'], {**e, 'binaries': {}})
+              for k in ('version', 'source', 'license', 'definition'):
+                  assert m[k] == e[k], (e['name'], k)
+              assert system not in m['binaries'], f"{e['name']}: {system} twice"
+              m['binaries'][system] = b
+          assert sorted(merged) == sorted(names), sorted(merged)
+          grammars = []
+          for name in sorted(merged):
+              m = merged[name]
+              assert sorted(m['binaries']) == sorted(systems), (name, sorted(m['binaries']))
+              m['binaries'] = {s: m['binaries'][s] for s in sorted(m['binaries'])}
+              grammars.append(m)
+          index = json.dumps({'version': 1, 'grammars': grammars}, indent=2, ensure_ascii=False) + '\n'
+          (out / 'index.json').write_text(index, encoding='utf-8')
+          sums = ''.join(f"{b['sha256']}  {b['url'].rsplit('/', 1)[1]}\n"
+                         for g in grammars for b in g['binaries'].values())
+          (out / 'SHA256SUMS').write_text(sums, encoding='utf-8')
+          print(index)
+          print(sums)
+          PY
+          echo "GRAMMAR_ARTIFACT_DIR=$RUNNER_TEMP/grammars-release" >> "$GITHUB_ENV"
+      - name: Validate the index
+        run: |
+          python3 - "$GRAMMAR_ARTIFACT_DIR/index.json" <<'PY'
+          import json, re, sys
+          x = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert x['version'] == 1
+          names = {'c','cpp','java','ruby','c-sharp','elixir'}
+          systems = {'linux-x86_64','linux-aarch64','macos-aarch64','macos-x86_64','windows-x86_64'}
+          assert {e['name'] for e in x['grammars']} == names
+          for e in x['grammars']:
+              assert set(e['binaries']) == systems
+              assert e['name'] in e['definition']
+              for system, b in e['binaries'].items():
+                  assert re.fullmatch('[0-9a-f]{64}', b['sha256'])
+                  assert '/releases/download/grammars-v1/' in b['url']
+                  assert b['url'].endswith('.exe') == system.startswith('windows-')
+          print('six grammars, thirty target binaries: PASS')
+          PY
+      # docs/grammar-index.schema.json and s4's own parser, through the repository's test of
+      # the committed index, run on this checkout's copy (never committed from here).
+      - name: Schema
+        run: |
+          set -euo pipefail
+          trap 'git checkout -- grammars/index.json' EXIT
+          cp "$GRAMMAR_ARTIFACT_DIR/index.json" grammars/index.json
+          cargo test --locked -p searchfor-grammar --test protocol \
+            the_committed_index_is_valid_and_empty_or_the_six 2>&1 | tee "$RUNNER_TEMP/schema.txt"
+          grep -q '^test result: ok. 1 passed' "$RUNNER_TEMP/schema.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: grammars-release
+          path: ${{ runner.temp }}/grammars-release/
+          if-no-files-found: error
+
+  # Only the tag grammars-v1, after every build and the merge passed (spec §8.6, step 3). The
+  # index stays an artifact: committing it is a separate step, after the assets exist.
+  publish:
+    needs: merge
+    if: github.event_name == 'push' && github.ref == 'refs/tags/grammars-v1'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: grammars-release
+          path: ${{ runner.temp }}/grammars-release
+      - name: Check the binaries
+        working-directory: ${{ runner.temp }}/grammars-release
+        run: |
+          sha256sum -c SHA256SUMS
+          [ "$(wc -l < SHA256SUMS)" -eq 30 ]
+      - name: Create the release
+        working-directory: ${{ runner.temp }}/grammars-release
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Grammar Helpers v1" \
+            --notes "The Grammar Helpers that \`s4 --install-grammar\` installs: c, cpp, java, ruby, c-sharp and elixir for five systems. SHA256SUMS lists every binary." \
+            searchfor-grammar-* SHA256SUMS index.json
+      # The bytes the index points at are the bytes that were checked.
+      - name: Check the published assets
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/published"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$dir" --pattern 'searchfor-grammar-*'
+          cp "$RUNNER_TEMP/grammars-release/SHA256SUMS" "$dir/"
+          cd "$dir" && sha256sum -c SHA256SUMS
