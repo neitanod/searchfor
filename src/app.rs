@@ -1931,7 +1931,9 @@ impl<'a> Ctx<'a> {
             ) {
                 Ok((fm, stats)) => {
                     st.binary_quit = self.quit_at_binary(t, &stats);
-                    self.count_quiet_json(&stats, fm.is_some());
+                    // With `--passthru` a file without a Match has a model too.
+                    let found = fm.as_ref().is_some_and(|f| f.matches().next().is_some());
+                    self.count_quiet_json(&stats, found);
                     Ok(fm.map(|fm| (src, fm)))
                 }
                 Err(e) => {
@@ -2021,7 +2023,10 @@ impl<'a> Ctx<'a> {
             self.count_quiet_json(&stats, found);
         }
         st.failed = failed;
-        if !found {
+        // `--passthru` prints an input without a Match too, every line a context line, as rg's
+        // (code review r1, Codex #2); `found` stays the flag of a Match.
+        let printed = st.unnumbered.passthru() && !sink.items.is_empty();
+        if !found && !printed {
             return Ok(None);
         }
         let src = match (kept, &t.fs) {

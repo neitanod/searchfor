@@ -1189,3 +1189,50 @@ fn m5_21_mcp_memory_of_a_line_with_many_trails() {
         .unwrap();
     assert!(peak < 64 * 1024, "{peak} kB");
 }
+
+/// s4 with `input` on stdin.
+fn piped(fx: &Fixture, args: &[&str], input: &[u8]) -> std::process::Output {
+    let mut child = fx
+        .s4(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+/// Code review r1, Codex #2: `--passthru` prints an input without a Match, its lines as
+/// context, as rg does, whether it is read with a reader (stdin, a walked file) or in memory
+/// (an explicit file); and it is no Match: exit 1, and `--stats` counts no file with Matches.
+#[test]
+fn m5_23_passthru_prints_an_input_without_a_match() {
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("pt")).unwrap();
+    std::fs::write(fx.file("pt/c.txt"), "nothing\n").unwrap();
+    // The tree heads stdin and indents its lines, with a Match or without.
+    for (layout, want) in [
+        ("--flat", "1-nothing\n"),
+        ("--tree", "<stdin>\n  1-nothing\n"),
+    ] {
+        let o = piped(&fx, &[layout, "--passthru", "needle"], b"nothing\n");
+        assert_eq!((code(&o), stdout(&o).as_str()), (1, want), "{layout}");
+    }
+    let o = run(&mut fx.s4(["--flat", "--passthru", "needle", "pt"]));
+    assert_eq!((code(&o), stdout(&o).as_str()), (1, "pt/c.txt-1-nothing\n"));
+    let o = run(&mut fx.s4(["--tree", "--passthru", "needle", "pt"]));
+    assert_eq!(
+        (code(&o), stdout(&o).as_str()),
+        (1, "pt/c.txt\n  1-nothing\n")
+    );
+    for path in ["pt", "pt/c.txt"] {
+        let o = run(&mut fx.s4(["--flat", "--stats", "--passthru", "needle", path]));
+        assert_eq!(code(&o), 1, "{path}");
+        assert!(
+            stdout(&o).contains("\n0 files contained matches\n"),
+            "{path}: {}",
+            stdout(&o)
+        );
+    }
+}
