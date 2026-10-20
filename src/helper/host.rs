@@ -769,9 +769,6 @@ pub(crate) mod cancel {
 
         /// `launch_reader` for a process of the platform layer (M5b plan, Task 2.1): started
         /// under the lock and registered, so a signal either comes first or sees it.
-        // Its callers outside the tests, the readers and the MCP searches, move to it in tanda 2;
-        // its one test is Unix's.
-        #[cfg_attr(any(not(test), not(unix)), allow(dead_code))]
         pub(crate) fn launch_managed(
             &self,
             start: impl FnOnce() -> std::io::Result<crate::platform::Child>,

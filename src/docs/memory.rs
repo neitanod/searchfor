@@ -291,6 +291,29 @@ mod tests {
         assert!(!c.take_refused(), "what fits refuses nothing");
     }
 
+    /// M5b spec §4.3: a block the system refuses under an armed counter, as Windows refuses
+    /// memory past a reader's Job, is remembered as a refusal and gives its bytes back to the
+    /// count, the same as a block the count refuses.
+    #[test]
+    fn a_refusal_by_the_system_is_remembered_and_uncounted() {
+        let c = Counter::new();
+        c.arm(usize::MAX);
+        let huge = layout(isize::MAX as usize & !7);
+        // SAFETY: each block is freed once, with the layout of its last size.
+        unsafe {
+            assert!(c.alloc(huge).is_null(), "no system lends isize::MAX bytes");
+            assert!(c.take_refused());
+            assert_eq!(c.live.load(Relaxed), 0);
+            let a = c.alloc(layout(MIB));
+            assert!(!a.is_null());
+            assert!(c.realloc(a, layout(MIB), huge.size()).is_null());
+            assert!(c.take_refused());
+            assert_eq!(c.live.load(Relaxed), MIB as isize);
+            c.dealloc(a, layout(MIB));
+        }
+        assert_eq!(c.live.load(Relaxed), 0);
+    }
+
     /// D31: the limit in MiB, as `child` arms it, saturates instead of overflowing.
     #[test]
     fn a_limit_in_mib_saturates() {
