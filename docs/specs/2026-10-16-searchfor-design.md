@@ -1224,7 +1224,7 @@ v0.3 release binary, which adds `markup`, `csv` (with `csv-core`) and `subtitles
 | Flag | Meaning |
 |---|---|
 | `--within <TRAIL>` | keep Matches whose Trail contains these Segment names, in order; `›`, `>` or `/` separate them; each name is a case-insensitive substring |
-| `--expand` | print the whole Section of the last Segment of each Match, once per Section |
+| `--expand` | print the whole Section of the last Segment of each Match, once per Section; a Match line in it is printed as its rows (`-r`, `--column`, `-b`, the terminators), once, and with `-o` or `--vimgrep` once per Match, as their rows are; in the one-line layout a Section's lines are verbatim under `path:start-end: Trail`, with a row's prefix where `--column`, `-b` or `--vimgrep` ask for coordinates (`--vimgrep`'s header is `path:start:1: Trail`); a file without a Section prints its rows (code review r2 of M5a) |
 | `--in-headings` | match only inside Segment names (headings, keys, function names) |
 | `--format <F>` / `--format <GLOB>=<F>` | force a Format |
 | `--flat` / `--tree` | force an output layout |

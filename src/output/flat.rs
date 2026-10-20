@@ -337,25 +337,51 @@ pub fn render(
         match piece {
             Piece::Row(r) => write_row(w, &file, &r, o)?,
             Piece::Section { trail, start, end } => {
-                let head = Head::new(&file, None, true, o);
-                head.write(w, o)?;
-                let range = format!("{start}-{end}");
+                // The header: `path:start-end: Trail`; with --vimgrep `path:line:column:` at
+                // the Section's first line, as its rows (spec §8; code review r2 of M5a, Codex
+                // #2).
                 let p = &o.look.palette;
-                style::write_in(w, p, "line", range.as_bytes())?;
-                w.write_all(&o.look.sep_match)?;
+                let (head, range) = if o.look.per_match {
+                    let head = Head {
+                        line: Some(start),
+                        column: Some(1),
+                        ..Head::new(&file, None, true, o)
+                    };
+                    (head, String::new())
+                } else {
+                    (Head::new(&file, None, true, o), format!("{start}-{end}"))
+                };
+                head.write(w, o)?;
+                if !range.is_empty() {
+                    style::write_in(w, p, "line", range.as_bytes())?;
+                    w.write_all(&o.look.sep_match)?;
+                }
                 if !trail.is_empty() {
-                    let fixed = head.width() + range.len() + o.look.sep_match.len() + 1;
+                    let sep = if range.is_empty() {
+                        0
+                    } else {
+                        o.look.sep_match.len()
+                    };
+                    let fixed = head.width() + range.len() + sep + 1;
                     w.write_all(b" ")?;
                     let fitted = fit_trail(trail, o.width.saturating_sub(fixed));
                     style::write_in(w, p, "trail", fitted.as_bytes())?;
                 }
                 w.write_all(b"\n")?;
-                // Each line as any other: whole, as Fragments, or -M's message (spec §6.3).
+                // Each line verbatim (M1 plan), or where --column, -b or --vimgrep ask for a
+                // row's coordinates a row of this layout, its prefix as any row's, without the
+                // Trail its header has: whole, as Fragments, or -M's message (spec §6.3).
+                let prefixed = o.look.column || o.look.byte_offset || o.look.per_match;
                 let no_prefix = |_: &mut dyn WriteColor| Ok(());
-                for r in sections.rows(start, end, &kept, o) {
-                    super::write_line_text(
-                        w, &no_prefix, &r.line, &r.subs, r.is_match, o.width, o,
-                    )?;
+                for mut r in sections.rows(start, end, &kept, o) {
+                    if prefixed {
+                        r.trail = &[];
+                        write_row(w, &file, &r, o)?;
+                    } else {
+                        super::write_line_text(
+                            w, &no_prefix, &r.line, &r.subs, r.is_match, o.width, o,
+                        )?;
+                    }
                 }
                 w.write_all(b"\n")?;
             }
@@ -784,6 +810,57 @@ mod tests {
             ..flat()
         };
         assert_eq!(plain(&d, &s, &o), "docs/a.md:1-3: A\n# A\none X\nplain\n\n");
+    }
+
+    /// Code review r2 of M5a, Codex #2: a Section's lines are verbatim (M1 plan), but where
+    /// `--column`, `-b` or `--vimgrep` ask for a row's coordinates each line takes the prefix
+    /// of the one-line layout's rows: the path and line number, `--column` and `-b` after it,
+    /// and with `--vimgrep` each Match's `path:line:column:`, the header's too at the Section's
+    /// first line (spec §8).
+    #[test]
+    fn expand_rows_take_the_rows_prefixes() {
+        let s = src(&["# A", "one needle", "plain"]);
+        let mut d = described(&s, vec![mat(&s, 2)], vec![vec![vec![h(1, "A", 1, 3)]]]);
+        d.sections = vec![vec![Some((1, 3))]];
+        let o = |look| RenderOptions {
+            expand: true,
+            look,
+            ..flat()
+        };
+        let look = super::super::Look {
+            column: true,
+            byte_offset: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            plain(&d, &s, &o(look)),
+            "docs/a.md:1-3: A\ndocs/a.md-1-0-# A\ndocs/a.md:2:5:4: one needle\n\
+             docs/a.md-3-15-plain\n\n"
+        );
+        let look = super::super::Look {
+            column: true,
+            per_match: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            plain(&d, &s, &o(look)),
+            "docs/a.md:1:1: A\ndocs/a.md-1-# A\ndocs/a.md:2:5: one needle\n\
+             docs/a.md-3-plain\n\n"
+        );
+    }
+
+    /// Code review r2 of M5a, Fable #2: a file `--passthru` prints without a Match has no
+    /// Section, so --expand prints its rows as without --expand.
+    #[test]
+    fn expand_without_sections_prints_the_rows() {
+        let s = src(&["# H", "nothing"]);
+        let d = described(&s, vec![ctx(&s, 1), ctx(&s, 2)], vec![]);
+        let o = |expand| RenderOptions { expand, ..flat() };
+        assert_eq!(
+            plain(&d, &s, &o(true)),
+            "docs/a.md-1-# H\ndocs/a.md-2-nothing\n"
+        );
+        assert_eq!(plain(&d, &s, &o(true)), plain(&d, &s, &o(false)));
     }
 
     #[test]

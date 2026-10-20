@@ -466,7 +466,8 @@ fn m5_json_equals_ripgrep() {
 
 /// Code review r1 of M5a, Codex #3: `--expand`'s Sections print their lines as the rows do. In
 /// the tree each Match line of a Section is `line:column:offset:text` with its Matches
-/// replaced, rg's `-n --column -b -r` line, and with `--crlf` no line keeps its `\r`.
+/// replaced, rg's `-n --column -b -r` line, and with `--crlf` no line keeps its `\r`; in the
+/// one-line layout `line:column:offset: text` (code review r2, Codex #2).
 #[test]
 fn m5_expand_rows_equal_ripgreps_lines() {
     if !reference_rg() {
@@ -499,16 +500,109 @@ fn m5_expand_rows_equal_ripgreps_lines() {
             .lines()
             .map(|l| l.trim_end_matches('\r').to_string())
             .collect();
-        let mut got = vec!["--no-docs", "--tree", "--expand"];
-        got.extend(&a);
-        let out = stdout(&run(&mut fx.s4(&got)));
-        assert!(!out.contains('\r'), "{file}: {out:?}");
-        let got: std::collections::BTreeSet<String> = out
-            .lines()
-            .map(str::trim_start)
-            .filter(is_match_row)
-            .map(String::from)
-            .collect();
-        assert_eq!(got, want, "{file}:\n{out:?}");
+        // Code review r2 of M5a, Codex #2: the one-line layout's too, whose rows put a space
+        // before the text.
+        for layout in ["--tree", "--flat"] {
+            let mut got = vec!["--no-docs", layout, "--expand"];
+            got.extend(&a);
+            let out = stdout(&run(&mut fx.s4(&got)));
+            assert!(!out.contains('\r'), "{file} {layout}: {out:?}");
+            let got: std::collections::BTreeSet<String> = out
+                .lines()
+                .map(str::trim_start)
+                .filter(is_match_row)
+                .map(|l| {
+                    let f: Vec<&str> = l.splitn(4, ':').collect();
+                    let text = if layout == "--flat" {
+                        f[3].strip_prefix(' ').unwrap_or(f[3])
+                    } else {
+                        f[3]
+                    };
+                    format!("{}:{text}", f[..3].join(":"))
+                })
+                .collect();
+            assert_eq!(got, want, "{file} {layout}:\n{out:?}");
+        }
     }
+}
+
+/// Code review r2 of M5a, Codex #3: `--vimgrep -b` in the one-line layout prints the column and
+/// offset rg prints, chosen by the search's mode and not by how many lines a Match holds: a
+/// search that can match a line break (`-U` with `-P`, or with a pattern of `\n`) prints the
+/// offset of the Match's line (of its record with `--null-data`), one that cannot the offset of
+/// the Match. Each row is compared by its `path:line:column:offset:` and, without
+/// `--null-data`, its text: s4 prints a space before the text, and of a record the line that
+/// holds the Match where rg prints the record (spec §8).
+#[test]
+fn m5_vimgrep_offsets_equal_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    write_m5_files(&fx);
+    std::fs::write(
+        fx.file("m5/vim.txt"),
+        b"xx needle\none\nxx needle two\nthree\n",
+    )
+    .unwrap();
+    std::fs::write(fx.file("m5/vim.dat"), b"a\nb needle\0c\0").unwrap();
+    let mut cases: Vec<(Vec<&str>, bool)> = Vec::new();
+    for engine in [&[][..], &["-P"][..]] {
+        for multi in [&[][..], &["-U"][..]] {
+            let mut a = engine.to_vec();
+            a.extend(multi);
+            a.extend(["needle", "m5/vim.txt"]);
+            cases.push((a, false));
+            for file in ["m5/records.dat", "m5/vim.dat"] {
+                let mut a = engine.to_vec();
+                a.extend(multi);
+                a.extend(["--null-data", "-a", "needle", file]);
+                cases.push((a, true));
+            }
+        }
+        for pattern in ["needle|two\\n", "needle two\\nthree"] {
+            let mut a = engine.to_vec();
+            a.extend(["-U", pattern, "m5/vim.txt"]);
+            cases.push((a, false));
+        }
+    }
+    // Each row's four fields and, without `--null-data`, its text; rg ends a record with its
+    // NUL.
+    let rows = |out: &str, null: bool, space: bool| -> Vec<String> {
+        let term = if null && !space { '\0' } else { '\n' };
+        out.split_terminator(term)
+            .map(|l| {
+                let f: Vec<&str> = l.splitn(5, ':').collect();
+                let text = f.last().copied().unwrap_or_default();
+                let text = if null { "" } else { text };
+                let text = if space {
+                    text.strip_prefix(' ').unwrap_or(text)
+                } else {
+                    text
+                };
+                format!("{}:{}", f[..f.len() - 1].join(":"), text)
+            })
+            .collect()
+    };
+    let mut diffs = Vec::new();
+    for (case, null) in &cases {
+        let mut want = vec!["--vimgrep", "-b"];
+        want.extend(case);
+        let mut got = vec!["--no-docs", "--flat", "--vimgrep", "-b"];
+        got.extend(case);
+        let (want, got) = (rg(&fx, &want), run(&mut fx.s4(&got)));
+        let (want, got) = (
+            rows(&stdout(&want), *null, false),
+            rows(&stdout(&got), *null, true),
+        );
+        if want != got {
+            diffs.push(format!("== {case:?}\n-- rg:\n{want:?}\n-- s4:\n{got:?}"));
+        }
+    }
+    assert!(
+        diffs.is_empty(),
+        "{} case(s) differ:\n{}",
+        diffs.len(),
+        diffs.join("\n")
+    );
 }
