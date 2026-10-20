@@ -166,7 +166,7 @@ fn names_list_sections_and_keys() {
 /// `cargo test --release -p searchfor-example-helper -- --ignored`.
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore]
+#[ignore = "perf: 158 s in debug; RSS is read from /proc, so it runs on Linux alone"]
 fn memory_stays_flat_over_five_thousand_requests() {
     let big = std::env::temp_dir().join(format!("big-{}.ini", std::process::id()));
     let mut s = String::new();

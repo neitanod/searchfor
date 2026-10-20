@@ -14,8 +14,14 @@
 //! (a file to append `begin <pid> <path>` and `end <pid> <path>` to around each request, the
 //! `end` before the answer), `SEARCHFOR_EXAMPLE_NOEXIT` (when set, keep running after the EOF of
 //! stdin, until killed), `SEARCHFOR_EXAMPLE_STDERR`
-//! (a line to write to stderr), `SEARCHFOR_EXAMPLE_FORK` (when set, start `sleep 30` with this
-//! process's stdout and stderr, as a careless helper's child would).
+//! (a line to write to stderr), `SEARCHFOR_EXAMPLE_FORK` (when set, start a copy of this binary
+//! in `--test-hold-pipes` mode with this process's stdout and stderr, as a careless helper's
+//! child would).
+//!
+//! M5b's test controls (`test_modes`, `Hold`): `--test-echo-args`, `--test-hold-pipes`,
+//! `--test-pre-upper`, `--test-pre-fail`, `--test-console-driver` (Windows),
+//! `SEARCHFOR_EXAMPLE_ACT_AS`, `SEARCHFOR_EXAMPLE_PIDS`, `SEARCHFOR_EXAMPLE_WAIT_READY` and
+//! `SEARCHFOR_EXAMPLE_WAIT_RELEASE`.
 //!
 //! Two knobs coordinate requests through the trace, so a test of concurrency depends on what
 //! s4 sends and not on the scheduler (M3 code review r2, Codex #5 and Fable #1); each needs
@@ -25,6 +31,9 @@
 //!   requests are in flight, or all of the `total` that have not ended.
 //! - `SEARCHFOR_EXAMPLE_OVERTAKE` (a substring of paths): the first request whose path holds it
 //!   waits until a request that began after it has ended.
+#[cfg(windows)]
+mod console;
+
 use anyhow::Context;
 use searchfor::helper::protocol::{MatchPos, WireName};
 use searchfor::helper::serve::{Handler, Info, serve};
@@ -58,7 +67,8 @@ impl Knobs {
 
     /// Misbehaves as the knobs that match `path` say; an error is the request's answer.
     fn apply(&self, path: &Path) -> anyhow::Result<()> {
-        let p = path.to_string_lossy();
+        // Knobs name paths with `/` (`/gen/`); Windows paths have `\` between components.
+        let p = path.to_string_lossy().replace('\\', "/");
         let hit = |k: &Option<String>| k.as_deref().is_some_and(|s| p.contains(s));
         if hit(&self.slow) {
             std::thread::sleep(Duration::from_millis(300));
@@ -167,6 +177,69 @@ struct Ini {
     barrier: Option<(usize, usize)>,
     /// `SEARCHFOR_EXAMPLE_OVERTAKE`.
     overtake: Option<String>,
+    /// `SEARCHFOR_EXAMPLE_WAIT_READY` and `SEARCHFOR_EXAMPLE_WAIT_RELEASE`.
+    hold: Hold,
+}
+
+/// The wait knobs (M5b plan, Task 2.3): at its first `trails` request the copy appends
+/// `{"search_pid":…,"helper_pid":…}` to the `ready` file, in one write, watches s4 (the pid in
+/// `PROCESS_PARENT_ENV`) so it dies with it, and every `trails` answer waits until the `release`
+/// file exists, at most `RELEASE_LIMIT`.
+struct Hold {
+    ready: Option<std::path::PathBuf>,
+    release: Option<std::path::PathBuf>,
+    logged: std::sync::Once,
+}
+
+/// The longest a `trails` answer waits for the release file.
+const RELEASE_LIMIT: Duration = Duration::from_secs(30);
+
+impl Hold {
+    fn from_env() -> Self {
+        Self {
+            ready: std::env::var_os("SEARCHFOR_EXAMPLE_WAIT_READY").map(Into::into),
+            release: std::env::var_os("SEARCHFOR_EXAMPLE_WAIT_RELEASE").map(Into::into),
+            logged: std::sync::Once::new(),
+        }
+    }
+
+    fn before_trails(&self) {
+        if let Some(ready) = &self.ready {
+            self.logged.call_once(|| {
+                let search = std::env::var(searchfor::platform::PROCESS_PARENT_ENV)
+                    .ok()
+                    .and_then(|p| p.parse::<u32>().ok());
+                let line = format!(
+                    "{{\"search_pid\":{},\"helper_pid\":{}}}\n",
+                    search.map_or("null".to_string(), |p| p.to_string()),
+                    std::process::id()
+                );
+                append(ready, &line);
+                if let Some(pid) = search
+                    && let Err(e) = searchfor::platform::orphan_dies(pid)
+                {
+                    eprintln!("searchfor-example-helper: cannot watch s4: {e}");
+                }
+            });
+        }
+        if let Some(release) = &self.release {
+            let deadline = std::time::Instant::now() + RELEASE_LIMIT;
+            while !release.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+}
+
+/// Appends `text` to `path` in one write, so the lines of concurrent copies never interleave.
+fn append(path: &Path, text: &str) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = f.write_all(text.as_bytes());
+    }
 }
 
 /// The longest a request waits at a barrier: far more than a loaded machine needs to send the
@@ -255,6 +328,7 @@ impl Ini {
 
 impl Handler for Ini {
     fn trails(&self, path: &Path, matches: &[MatchPos]) -> anyhow::Result<Vec<Trail>> {
+        self.hold.before_trails();
         self.traced(path, || {
             let src = self.read(path)?;
             let o = outline(&src);
@@ -279,25 +353,73 @@ impl Handler for Ini {
 
 fn start_up() {
     if let Ok(log) = std::env::var("SEARCHFOR_EXAMPLE_LOG") {
-        let f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log);
         // One write: `writeln!` may write in pieces, which the appends of concurrent copies
         // interleave (one `start` line lost in 20 runs of h02 under load).
-        if let Ok(mut f) = f {
-            let _ = f.write_all(format!("start {}\n", std::process::id()).as_bytes());
-        }
+        append(Path::new(&log), &format!("start {}\n", std::process::id()));
     }
     if let Ok(line) = std::env::var("SEARCHFOR_EXAMPLE_STDERR") {
         eprintln!("{line}");
     }
     if std::env::var_os("SEARCHFOR_EXAMPLE_FORK").is_some() {
         // Left running on purpose: it holds stdout and stderr open after this process exits.
-        let _ = std::process::Command::new("sleep")
-            .arg("30")
+        fork_holder();
+    }
+}
+
+/// Starts one descendant of this binary in `--test-hold-pipes` mode, with this process's
+/// stdout and stderr and without `SEARCHFOR_EXAMPLE_FORK`, so it starts none of its own. A
+/// copy acting as another program (`SEARCHFOR_EXAMPLE_ACT_AS`) passes that on: its descendant
+/// acts the same way.
+fn fork_holder() {
+    if let Ok(me) = std::env::current_exe() {
+        let _ = std::process::Command::new(me)
+            .arg("--test-hold-pipes")
+            .env_remove("SEARCHFOR_EXAMPLE_FORK")
             .stdin(std::process::Stdio::null())
             .spawn();
+    }
+}
+
+/// `--test-hold-pipes` (M5b plan, Task 2.3): a careless helper's child, portable. It sleeps
+/// `secs` with the stdout and stderr it inherited, answers nothing, and appends its pid to
+/// `SEARCHFOR_EXAMPLE_PIDS` when set; with `SEARCHFOR_EXAMPLE_FORK` it first starts one
+/// descendant in the same mode.
+fn hold_pipes(secs: u64) -> ! {
+    if let Some(pids) = std::env::var_os("SEARCHFOR_EXAMPLE_PIDS") {
+        append(Path::new(&pids), &format!("{}\n", std::process::id()));
+    }
+    if std::env::var_os("SEARCHFOR_EXAMPLE_FORK").is_some() {
+        fork_holder();
+    }
+    std::thread::sleep(Duration::from_secs(secs));
+    std::process::exit(0);
+}
+
+/// The `--pre` fixtures (M5b plan, Task 2.3), without a shell: `upper` writes the file's bytes
+/// with ASCII letters uppercased and exits 0; `fail` writes `oops` on stderr and exits 3.
+fn pre(mode: &str, path: Option<std::ffi::OsString>) -> ! {
+    let Some(path) = path else {
+        eprintln!("searchfor-example-helper: --test-pre-{mode} needs a file");
+        std::process::exit(2);
+    };
+    if mode == "fail" {
+        eprintln!("oops");
+        std::process::exit(3);
+    }
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let mut out = std::io::stdout().lock();
+            let _ = out.write_all(&bytes.to_ascii_uppercase());
+            let _ = out.flush();
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!(
+                "searchfor-example-helper: {}: {e}",
+                Path::new(&path).display()
+            );
+            std::process::exit(2);
+        }
     }
 }
 
@@ -318,11 +440,35 @@ fn echo_args(mut args: impl Iterator<Item = std::ffi::OsString>) -> ! {
     std::process::exit(0);
 }
 
-/// The test controls given as switches, before the normal protocol service.
+/// The test controls, before the normal protocol service. `SEARCHFOR_EXAMPLE_ACT_AS=hold-pipes`
+/// wins over any argument, so a copy can stand in for a program s4 starts with fixed arguments
+/// (a `--hostname-bin` program, a `gzip` on PATH): it holds its pipes for 300 s, longer than any
+/// test waits. A copy named `s4-test-pre-upper` or `s4-test-pre-fail` is that `--pre` fixture
+/// without a switch, since `--pre` takes a single executable.
 fn test_modes() {
-    let mut args = std::env::args_os().skip(1);
-    if args.next().as_deref() == Some(std::ffi::OsStr::new("--test-echo-args")) {
-        echo_args(args);
+    if std::env::var("SEARCHFOR_EXAMPLE_ACT_AS").as_deref() == Ok("hold-pipes") {
+        hold_pipes(300);
+    }
+    let mut args = std::env::args_os();
+    let stem = args.next().and_then(|a| {
+        Path::new(&a)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+    });
+    match stem.as_deref() {
+        Some("s4-test-pre-upper") => pre("upper", args.next()),
+        Some("s4-test-pre-fail") => pre("fail", args.next()),
+        _ => {}
+    }
+    let Some(mode) = args.next() else { return };
+    match mode.to_str() {
+        Some("--test-echo-args") => echo_args(args),
+        Some("--test-hold-pipes") => hold_pipes(30),
+        Some("--test-pre-upper") => pre("upper", args.next()),
+        Some("--test-pre-fail") => pre("fail", args.next()),
+        #[cfg(windows)]
+        Some("--test-console-driver") => console::driver(args.collect()),
+        _ => {}
     }
 }
 
@@ -338,6 +484,7 @@ fn main() {
             Some((n.parse().ok()?, total.parse().ok()?))
         });
     let overtake = std::env::var("SEARCHFOR_EXAMPLE_OVERTAKE").ok();
+    let hold = Hold::from_env();
     let info = Info {
         name: "searchfor-example-helper",
         version: env!("CARGO_PKG_VERSION"),
@@ -348,6 +495,7 @@ fn main() {
             trace,
             barrier,
             overtake,
+            hold,
         })
     }) {
         eprintln!("searchfor-example-helper: {e:#}");

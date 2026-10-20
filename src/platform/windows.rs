@@ -16,6 +16,7 @@ use std::os::windows::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
     DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ACCESS_DENIED, GENERIC_READ, GENERIC_WRITE,
@@ -28,7 +29,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::Console::{
-    GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    CTRL_BREAK_EVENT, CTRL_C_EVENT, GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE, STD_INPUT_HANDLE,
+    STD_OUTPUT_HANDLE, SetConsoleCtrlHandler,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -38,11 +40,12 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
-    EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetExitCodeProcess, INFINITE,
-    InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION,
-    ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW, TerminateProcess,
-    UpdateProcThreadAttribute, WaitForSingleObject,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateEventW, CreateProcessW,
+    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, ExitProcess, GetCurrentProcess,
+    GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES,
+    STARTUPINFOEXW, STARTUPINFOW, SetEvent, TerminateProcess, UpdateProcThreadAttribute,
+    WaitForSingleObject,
 };
 
 /// `ResumeThread`'s failure value.
@@ -681,6 +684,90 @@ pub(super) fn spawn(spec: SpawnSpec, limits: Limits) -> io::Result<Child> {
 /// ends, so nothing needs watching.
 pub(super) fn orphan_dies(_expected_parent: u32) -> io::Result<()> {
     Ok(())
+}
+
+/// How long the console callback waits for the coordinator's cleanup: `SHUTDOWN_WAIT` of the
+/// helper host (1 s, the grace every helper copy gets in parallel) plus a margin.
+const CLEANUP_WAIT_MS: u32 = 2_000;
+/// The exit status of a process an unhandled Ctrl-C ends, and of rg's.
+const STATUS_CONTROL_C_EXIT: u32 = 0xC000_013A;
+
+/// What the console callback needs, set once before the handler is installed. The events are
+/// manual-reset and live as long as s4.
+struct Console {
+    stopped: &'static AtomicBool,
+    /// Set by the callback: wakes the coordinator.
+    cancel: isize,
+    /// Set by the coordinator once the run is cancelled.
+    done: isize,
+}
+
+static CONSOLE: OnceLock<Console> = OnceLock::new();
+
+pub(super) fn watch_console(stopped: &'static AtomicBool, cancel: fn()) -> io::Result<()> {
+    static INSTALLED: OnceLock<Result<(), i32>> = OnceLock::new();
+    let installed = INSTALLED.get_or_init(|| {
+        install_console(stopped, cancel).map_err(|e| e.raw_os_error().unwrap_or(0))
+    });
+    match installed {
+        Ok(()) => Ok(()),
+        Err(code) => Err(io::Error::from_raw_os_error(*code)),
+    }
+}
+
+fn manual_event() -> io::Result<isize> {
+    // SAFETY: an unnamed, non-inheritable, manual-reset event, initially unset.
+    let h = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    if h.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(h as isize)
+}
+
+fn install_console(stopped: &'static AtomicBool, cancel: fn()) -> io::Result<()> {
+    let console = Console {
+        stopped,
+        cancel: manual_event()?,
+        done: manual_event()?,
+    };
+    let (wake, done) = (console.cancel, console.done);
+    if CONSOLE.set(console).is_err() {
+        return Err(io::Error::other("the console handler is installed already"));
+    }
+    std::thread::Builder::new()
+        .name("console cancel".into())
+        .spawn(move || {
+            // SAFETY: both events live as long as s4.
+            unsafe {
+                WaitForSingleObject(wake as HANDLE, INFINITE);
+                cancel();
+                SetEvent(done as HANDLE);
+                ExitProcess(STATUS_CONTROL_C_EXIT);
+            }
+        })?;
+    // SAFETY: installs a handler that only touches the atomics and events set above.
+    check(unsafe { SetConsoleCtrlHandler(Some(console_control), 1) })
+}
+
+/// The console's callback, on a thread the system starts. It never spawns a thread or takes a
+/// lock: it stops output, wakes the coordinator and waits for it, bounded.
+unsafe extern "system" fn console_control(kind: u32) -> i32 {
+    if kind != CTRL_C_EVENT && kind != CTRL_BREAK_EVENT {
+        return 0;
+    }
+    let Some(console) = CONSOLE.get() else {
+        return 0;
+    };
+    console.stopped.store(true, Ordering::SeqCst);
+    // SAFETY: the events live as long as s4.
+    unsafe {
+        SetEvent(console.cancel as HANDLE);
+        // Bounded: a hung cleanup must not make Ctrl-C a no-op.
+        if WaitForSingleObject(console.done as HANDLE, CLEANUP_WAIT_MS) != WAIT_OBJECT_0 {
+            ExitProcess(STATUS_CONTROL_C_EXIT);
+        }
+    }
+    1
 }
 
 pub(super) struct Process {

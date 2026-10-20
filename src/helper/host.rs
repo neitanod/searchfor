@@ -60,6 +60,11 @@ impl Launcher for CommandLauncher {
             .ok_or_else(|| std::io::Error::other("empty command"))?;
         let mut spec = SpawnSpec::new(prog);
         spec.args = args.iter().map(Into::into).collect();
+        // The helper's s4: the example helper's wait knob watches it (M5b plan, Task 2.3).
+        spec.env = vec![(
+            crate::platform::PROCESS_PARENT_ENV.into(),
+            Some(std::process::id().to_string().into()),
+        )];
         spec.stdin = Input::Piped;
         spec.stdout = Output::Piped;
         spec.stderr = Output::Piped;
@@ -92,8 +97,8 @@ struct Conn {
     counted: AtomicBool,
     closed: AtomicBool,
     /// D42: set by `abort`; silences the stderr relay.
-    // Only the Unix signal watcher cancels a run: Windows builds would warn (Fable r1 #10).
-    #[cfg_attr(not(unix), allow(dead_code))]
+    // Only the signal and console watchers cancel a run (Fable r1 #10).
+    #[cfg_attr(not(any(unix, windows)), allow(dead_code))]
     aborted: Arc<AtomicBool>,
     /// Reaped already: `abort` and `close` may both run (Ctrl-C during a failure).
     reaped: Arc<AtomicBool>,
@@ -233,7 +238,7 @@ impl Conn {
     }
 
     /// D42: kill and reap now, without the grace or the pipe wait of `close` (Ctrl-C).
-    #[cfg_attr(not(unix), allow(dead_code))]
+    #[cfg_attr(not(any(unix, windows)), allow(dead_code))]
     fn abort(&self) {
         self.aborted.store(true, SeqCst);
         self.alive.store(false, SeqCst);
@@ -802,8 +807,8 @@ pub(crate) mod cancel {
         /// Marks the lifecycle cancelled — every later `launch` is refused — and kills and reaps
         /// every registered process, in parallel. Processes being started hold the lock, so
         /// they finish registering first and are in the list. Called by the Unix signal
-        /// watcher alone (`watch`).
-        #[cfg_attr(not(unix), allow(dead_code))]
+        /// watcher and the Windows console's coordinator alone (`watch`).
+        #[cfg_attr(not(any(unix, windows)), allow(dead_code))]
         pub(crate) fn cancel(&self) {
             if self.signals {
                 STOPPED.store(true, SeqCst);
@@ -843,7 +848,7 @@ pub(crate) mod cancel {
 
     /// Kills and reaps the readers, through their `Child`: one already reaped is not
     /// signalled again (`Child::kill` after `wait` does nothing).
-    #[cfg_attr(not(unix), allow(dead_code))]
+    #[cfg_attr(not(any(unix, windows)), allow(dead_code))]
     fn reap(readers: &[Arc<Mutex<std::process::Child>>]) {
         for r in readers {
             let mut c = r.lock().unwrap_or_else(|e| e.into_inner());
@@ -853,7 +858,7 @@ pub(crate) mod cancel {
     }
 
     /// `reap` for the processes of the platform layer.
-    #[cfg_attr(not(unix), allow(dead_code))]
+    #[cfg_attr(not(any(unix, windows)), allow(dead_code))]
     fn reap_managed(managed: &[Arc<Mutex<crate::platform::Child>>]) {
         for m in managed {
             let mut c = m.lock().unwrap_or_else(|e| e.into_inner());
@@ -864,7 +869,7 @@ pub(crate) mod cancel {
 
     #[cfg(unix)]
     fn watch() {
-        // Here, not at the top: Windows builds have no watcher and would warn (Fable r4 #6).
+        // Here, not at the top: other systems' builds would warn (Fable r4 #6).
         use std::sync::OnceLock;
         static WATCHER: OnceLock<()> = OnceLock::new();
         WATCHER.get_or_init(|| {
@@ -910,8 +915,21 @@ pub(crate) mod cancel {
         }
     }
 
-    /// Windows' console Ctrl-C is M5's.
-    #[cfg(not(unix))]
+    /// Windows (M5b spec §4.2; plan D5): the console's Ctrl-C or Ctrl-Break sets `STOPPED` and
+    /// wakes a coordinator thread started here, which cancels the run — every helper and reader
+    /// killed and reaped — and ends s4 with STATUS_CONTROL_C_EXIT (0xC000013A), the status of
+    /// an unhandled Ctrl-C and of rg's. If the handler cannot be installed, Ctrl-C keeps the
+    /// system's default, and s4's Job Object still ends every process s4 started.
+    #[cfg(windows)]
+    fn watch() {
+        use std::sync::OnceLock;
+        static WATCHER: OnceLock<()> = OnceLock::new();
+        WATCHER.get_or_init(|| {
+            let _ = crate::platform::watch_console(&STOPPED, || GLOBAL.cancel());
+        });
+    }
+
+    #[cfg(not(any(unix, windows)))]
     fn watch() {}
 }
 

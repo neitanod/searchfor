@@ -136,6 +136,19 @@ pub fn initialize_parent_watch() -> io::Result<()> {
     orphan_dies(pid)
 }
 
+/// Windows (plan D5): on the console's Ctrl-C or Ctrl-Break, sets `stopped` and wakes a
+/// coordinator thread started now, which runs `cancel` — outside the console's callback, which
+/// takes no lock — and then ends s4 with STATUS_CONTROL_C_EXIT (0xC000013A), as an unhandled
+/// Ctrl-C does. The callback waits for that cleanup at most two seconds, then ends s4 anyway:
+/// Ctrl-C always ends s4, as it ends rg, and s4's Job Object ends what is left. Installed once;
+/// later calls return the first outcome. Unix does nothing here: signals are the Supervisor's.
+pub fn watch_console(
+    stopped: &'static std::sync::atomic::AtomicBool,
+    cancel: fn(),
+) -> io::Result<()> {
+    imp::watch_console(stopped, cancel)
+}
+
 /// A child never inherits `PROCESS_PARENT_ENV` unless its spec sets it: it names this
 /// process's parent, not the child's.
 fn without_parent_variable(env: &mut Vec<(OsString, Option<OsString>)>) {

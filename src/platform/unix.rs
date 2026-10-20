@@ -44,6 +44,14 @@ pub(super) fn orphan_dies(expected_parent: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// Unix: Ctrl-C is a signal, which the Supervisor's own watcher handles.
+pub(super) fn watch_console(
+    _stopped: &'static std::sync::atomic::AtomicBool,
+    _cancel: fn(),
+) -> io::Result<()> {
+    Ok(())
+}
+
 pub(super) struct Process {
     child: std::process::Child,
     /// Set once `wait` or `try_wait` reaped it: its pid may then belong to another process.
