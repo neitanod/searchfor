@@ -126,7 +126,9 @@ impl<'r> Detector<'r> {
         };
         !self.overrides.is_empty()
             || self.doc_names.contains(name)
-            || self.doc_extensions.contains(&ext.to_ascii_lowercase())
+            || self
+                .doc_extensions
+                .contains(normalized_extension(ext).as_ref())
     }
 
     /// Whether `detect` may find a document Format in `head`, the first bytes of a name
@@ -207,15 +209,10 @@ impl<'r> Detector<'r> {
         {
             return Some(&defs[i]);
         }
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            let i = if ext.bytes().any(|b| b.is_ascii_uppercase()) {
-                self.by_extension.get(&ext.to_ascii_lowercase())
-            } else {
-                self.by_extension.get(ext)
-            };
-            if let Some(&i) = i {
-                return Some(&defs[i]);
-            }
+        if let Some(ext) = path.extension().and_then(|e| e.to_str())
+            && let Some(&i) = self.by_extension.get(normalized_extension(ext).as_ref())
+        {
+            return Some(&defs[i]);
         }
         // Magic bytes and shebangs decide only for a name without extension (M2 plan, D15).
         if path.extension().is_some() {
@@ -249,7 +246,18 @@ pub fn builtin_may_be_document(path: &Path) -> bool {
         return true;
     };
     BUILTIN_DOC_NAMES.contains(&name)
-        || BUILTIN_DOC_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
+        || BUILTIN_DOC_EXTENSIONS.contains(&normalized_extension(ext).as_ref())
+}
+
+/// `ext` in lowercase, as the Detector keys extensions: borrowed unless it holds an ASCII
+/// uppercase letter, so the common lowercase extension costs no copy per file (M5b plan,
+/// Task 3.2).
+fn normalized_extension(ext: &str) -> std::borrow::Cow<'_, str> {
+    if ext.bytes().any(|b| b.is_ascii_uppercase()) {
+        std::borrow::Cow::Owned(ext.to_ascii_lowercase())
+    } else {
+        std::borrow::Cow::Borrowed(ext)
+    }
 }
 
 /// `#!/usr/bin/env bash -e` → "bash"; `#!/bin/sh` → "sh".
@@ -270,6 +278,15 @@ fn shebang_interpreter(head: &[u8]) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lowercase_extensions_borrow_the_existing_bytes() {
+        use std::borrow::Cow;
+        assert!(matches!(normalized_extension("txt"), Cow::Borrowed("txt")));
+        assert!(matches!(normalized_extension(""), Cow::Borrowed("")));
+        assert_eq!(normalized_extension("TXT"), "txt");
+        assert_eq!(normalized_extension("DocX"), "docx");
+    }
 
     /// Code review r7, Codex #3: before the Registry is loaded, the built-in document Formats'
     /// exact names and extensions tell which names may be documents, as the Detector of the

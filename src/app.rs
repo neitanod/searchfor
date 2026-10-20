@@ -425,6 +425,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         follow: args.follow && !args.no_follow,
         links: Default::default(),
         linked: AtomicBool::new(false),
+        outliners: Default::default(),
         msgs,
         pre,
         searched: AtomicBool::new(false),
@@ -457,12 +458,12 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     match mode {
         Mode::Quiet => ctx.walk(
             || search::streaming_searcher(args, false, ctx.in_memory),
-            |s, t| ctx.quiet_file(s, &t),
+            |w, t| ctx.quiet_file(&w.matcher, &mut w.state, &t),
         )?,
         Mode::QuietJson => {
             ctx.walk(
                 || search::streaming_searcher(args, false, ctx.in_memory),
-                |s, t| ctx.quiet_json_file(s, &t),
+                |w, t| ctx.quiet_json_file(&w.matcher, &mut w.state, &t),
             )?;
             if args.json {
                 ctx.print_summary();
@@ -477,7 +478,10 @@ fn main(args: &Args) -> anyhow::Result<i32> {
                         search::printing_searcher(args, false, ctx.in_memory, line_number);
                     (searcher, ctx.printer(heading))
                 },
-                |(s, p), t| ctx.passthrough_file(s, p, &t),
+                |w, t| {
+                    let (s, p) = &mut w.state;
+                    ctx.passthrough_file(&w.matcher, s, p, &t)
+                },
             )?;
             if args.json {
                 ctx.print_summary();
@@ -498,14 +502,14 @@ fn main(args: &Args) -> anyhow::Result<i32> {
             };
             ctx.walk(
                 || TrailState {
-                    stream: search::streaming_searcher(args, false, false),
-                    unnumbered: search::printing_searcher(args, false, false, false),
-                    source: search::searcher(args, false, true),
+                    stream: Lazy::new(|| search::streaming_searcher(args, false, false)),
+                    unnumbered: Lazy::new(|| search::printing_searcher(args, false, false, false)),
+                    source: Lazy::new(|| search::searcher(args, false, true)),
                     buf: ctx.out.buffer(),
                     binary_quit: false,
                     failed: None,
                 },
-                |st, t| ctx.trail_file(st, &t, detector, &ro),
+                |w, t| ctx.trail_file(&w.matcher, &mut w.state, &t, detector, &ro),
             )?;
             if layout == Layout::Json && summary_mode.is_none() {
                 ctx.print_summary();
@@ -709,12 +713,16 @@ enum Mode {
     Trail,
 }
 
-/// One file to search: its printed path, its path on disk (None for stdin), whether it was
-/// named on the command line (design note 3), and whether the path is a regular file, which
-/// can be opened again and read the same (not stdin, `/dev/stdin` or a FIFO).
+/// One file to search: its path on disk (`<stdin>` for stdin), of which the end is the path
+/// printed, whether it was named on the command line (design note 3), and whether the path is a
+/// regular file, which can be opened again and read the same (not stdin, `/dev/stdin` or a
+/// FIFO).
 struct Target {
-    path: PathBuf,
-    fs: Option<PathBuf>,
+    /// The path on disk, the only one allocated per file (M5b plan, Task 3.2); `<stdin>`.
+    name: PathBuf,
+    /// The bytes at the start of `name` the printed path leaves out (`./` of an implicit `.`).
+    shown_from: usize,
+    stdin: bool,
     explicit: bool,
     /// False also for a file read through `--pre`, `-z` or an Extractor: what is searched is
     /// not the file's bytes, and can be read only once, as a pipe (M4 plan, design note 3).
@@ -747,6 +755,24 @@ struct HeadThen {
     rest: File,
 }
 
+impl Target {
+    /// The path printed.
+    fn path(&self) -> &Path {
+        let bytes = self.name.as_os_str().as_encoded_bytes();
+        // SAFETY: `shown_from` is where a suffix `Path::strip_prefix` returned of `name` starts,
+        // right after an ASCII separator or `.`, a boundary `from_encoded_bytes_unchecked`
+        // accepts.
+        Path::new(unsafe {
+            std::ffi::OsStr::from_encoded_bytes_unchecked(&bytes[self.shown_from..])
+        })
+    }
+
+    /// The path on disk: None for stdin.
+    fn fs(&self) -> Option<&Path> {
+        (!self.stdin).then_some(self.name.as_path())
+    }
+}
+
 impl Read for HeadThen {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = (self.head.len() - self.at).min(buf.len());
@@ -766,17 +792,50 @@ impl Read for HeadThen {
 
 /// What a Trail-mode thread keeps between files: a searcher for files and stdin (BOM sniffing
 /// on, a reader), one for Sources (already decoded), and the output buffer.
-struct TrailState {
-    stream: Searcher,
+struct TrailState<'a> {
+    stream: Lazy<'a, Searcher>,
     /// `stream` without line numbers: a search that only finds out whether a file has a Match,
     /// or whose lines are numbered afterwards (`search::number_lines`).
-    unnumbered: Searcher,
-    source: Searcher,
+    unnumbered: Lazy<'a, Searcher>,
+    source: Lazy<'a, Searcher>,
     buf: Buffer,
     /// The last `describe`d file's search quit at binary data (`BinaryDetection::quit`).
     binary_quit: bool,
     /// The last `describe`d file's search failed, after what it found is printed.
     failed: Option<Failure>,
+}
+
+/// A value built on its first use. A Trail worker built its three searchers, 72 KiB of
+/// buffers each, when it started; a worker that searches only files without a Match uses one
+/// of them (M5b plan, Task 3.2: 1.2 ms of a run's start with 12 threads).
+struct Lazy<'a, T> {
+    value: std::cell::OnceCell<T>,
+    make: Box<dyn Fn() -> T + Send + Sync + 'a>,
+}
+
+impl<'a, T> Lazy<'a, T> {
+    fn new(make: impl Fn() -> T + Send + Sync + 'a) -> Self {
+        Lazy {
+            value: std::cell::OnceCell::new(),
+            make: Box::new(make),
+        }
+    }
+}
+
+impl<T> std::ops::Deref for Lazy<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.value.get_or_init(&self.make)
+    }
+}
+
+impl<T> std::ops::DerefMut for Lazy<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        if self.value.get().is_none() {
+            let _ = self.value.set((self.make)());
+        }
+        self.value.get_mut().expect("set above")
+    }
 }
 
 /// What `stream_file` searches: the file or stdin as it is; the Source, in memory as ripgrep
@@ -804,9 +863,29 @@ impl<R: Read> Read for Tee<R> {
     }
 }
 
+/// A file on disk as `Ctx::reader` reads it: from its first bytes `Ctx::document` read, the
+/// whole file (`Head`) or the file after them (`HeadThen`), or opened by its name (`File`).
+enum FileReader {
+    File(File),
+    Head(std::io::Cursor<Vec<u8>>),
+    HeadThen(HeadThen),
+}
+
+impl Read for FileReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            FileReader::File(f) => f.read(buf),
+            FileReader::Head(c) => c.read(buf),
+            FileReader::HeadThen(h) => h.read(buf),
+        }
+    }
+}
+
 /// What `Ctx::open_input` gives: the output of `--pre` or of a decompressor, which is closed
 /// after the search, or any other input.
 enum Opened<'t> {
+    /// A file on disk, read directly, with no box (M5b plan, Task 3.2).
+    File(FileReader),
     Read(Box<dyn Read + 't>),
     Transformed(Transformed),
 }
@@ -815,7 +894,7 @@ impl Opened<'_> {
     /// The transform's failure, past the search (`Transformed::close`).
     fn close(&mut self) -> std::io::Result<()> {
         match self {
-            Opened::Read(_) => Ok(()),
+            Opened::File(_) | Opened::Read(_) => Ok(()),
             Opened::Transformed(t) => t.close(),
         }
     }
@@ -831,6 +910,7 @@ impl Opened<'_> {
 impl Read for Opened<'_> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
+            Opened::File(r) => r.read(buf),
             Opened::Read(r) => r.read(buf),
             Opened::Transformed(t) => t.read(buf),
         }
@@ -853,6 +933,15 @@ struct Failure {
     /// The search's own read failed: rg's printers never reached the file's end, so a summary
     /// line and a JSON `end` are not printed. False: the close failed, after the search.
     in_search: bool,
+}
+
+/// A walker worker's own state (M5b plan, Task 3.2): its clone of the run's matcher, made once
+/// per worker as rg's `SearchWorker` holds its own (Rust's engine keeps a cache pool per clone,
+/// so the workers never share one; PCRE2 keeps its clone per thread, `matcher::Pcre2`), and the
+/// searchers and output scratch it reuses from file to file.
+struct Worker<S> {
+    matcher: PatternMatcher,
+    state: S,
 }
 
 enum Printer<'a> {
@@ -920,20 +1009,24 @@ struct Ctx<'a> {
     links: std::sync::RwLock<Links>,
     /// `links` is not empty.
     linked: AtomicBool,
+    /// Each built-in Processor of the run's Definitions, by its name, when it builds Outlines
+    /// (`builds_outline`): found once per run, not once per file (M5b plan, Task 3.2).
+    outliners:
+        std::sync::OnceLock<std::collections::HashMap<String, Option<&'static dyn Processor>>>,
 }
 
 impl<'a> Ctx<'a> {
     /// Walks the paths, sequentially where ripgrep 14.1.1 uses one thread (`--sort path`, `-j1`,
-    /// one file), else in parallel with one state per thread (design note 11), and calls `visit`
-    /// for every file to search.
+    /// one file), else in parallel with one `Worker` per thread (design note 11), and calls
+    /// `visit` for every file to search.
     fn walk<S: Send>(
         &self,
         init: impl Fn() -> S + Sync,
-        visit: impl Fn(&mut S, Target) + Sync,
+        visit: impl Fn(&mut Worker<S>, Target) + Sync,
     ) -> anyhow::Result<()> {
         let w = &self.walker;
         if self.sequential {
-            let mut state = init();
+            let mut state = self.worker(init());
             let mut above = Above::default();
             // `--sort` other than by path, and `--sortr`: every entry first, then in order, as
             // rg 14.1.1 sorts its haystacks (M5a plan, D8).
@@ -966,7 +1059,7 @@ impl<'a> Ctx<'a> {
                 match r {
                     Ok(d) => {
                         if let Some(t) = self.target(&d, &mut above) {
-                            self.searched.store(true, Relaxed);
+                            self.searched_one();
                             visit(&mut state, self.prepare(t));
                         }
                     }
@@ -976,7 +1069,7 @@ impl<'a> Ctx<'a> {
         } else {
             let (init, visit) = (&init, &visit);
             w.build_parallel().run(|| {
-                let mut state = init();
+                let mut state = self.worker(init());
                 let mut above = Above::default();
                 Box::new(move |r| {
                     if self.quit.load(Relaxed) {
@@ -986,7 +1079,7 @@ impl<'a> Ctx<'a> {
                         Ok(d) => {
                             self.entry_error(&d);
                             if let Some(t) = self.target(&d, &mut above) {
-                                self.searched.store(true, Relaxed);
+                                self.searched_one();
                                 visit(&mut state, self.prepare(t));
                             }
                         }
@@ -1003,6 +1096,40 @@ impl<'a> Ctx<'a> {
         Ok(())
     }
 
+    /// A file is searched: `searched` is written once, not by every worker for every file,
+    /// which would keep moving its cache line between them (M5b plan, Task 3.2).
+    fn searched_one(&self) {
+        if !self.searched.load(Relaxed) {
+            self.searched.store(true, Relaxed);
+        }
+    }
+
+    /// A walker worker with `state`, and its own clone of the run's matcher.
+    fn worker<S>(&self, state: S) -> Worker<S> {
+        Worker {
+            matcher: self.matcher.clone(),
+            state,
+        }
+    }
+
+    /// The built-in Processor of `def` when it builds Outlines, looked up in `Ctx::outliners`.
+    fn outliner(
+        &self,
+        def: &formats::definition::FormatDefinition,
+    ) -> Option<&'static dyn Processor> {
+        let of = |name: &str| processors::by_name(name).filter(|p| builds_outline(*p));
+        let known = self.outliners.get_or_init(|| {
+            let defs = self.registry.get().map_or(&[][..], Registry::all);
+            defs.iter()
+                .map(|d| (d.processor.clone(), of(&d.processor)))
+                .collect()
+        });
+        match known.get(def.processor.as_str()) {
+            Some(p) => *p,
+            None => of(&def.processor),
+        }
+    }
+
     /// The error of an ignore file the walker read for this entry (a glob it cannot parse),
     /// printed as rg 14.1.1's `Haystack::build` prints it.
     fn entry_error(&self, d: &DirEntry) {
@@ -1016,8 +1143,9 @@ impl<'a> Ctx<'a> {
     fn target(&self, d: &DirEntry, above: &mut Above) -> Option<Target> {
         if d.is_stdin() {
             return Some(Target {
-                path: PathBuf::from("<stdin>"),
-                fs: None,
+                name: PathBuf::from("<stdin>"),
+                shown_from: 0,
+                stdin: true,
                 explicit: true,
                 regular: false,
                 through: None,
@@ -1059,9 +1187,11 @@ impl<'a> Ctx<'a> {
                 .then(|| self.document(d, &mut held, above))
                 .flatten()
         });
+        let shown_from = p.as_os_str().len() - shown.as_os_str().len();
         Some(Target {
-            path: shown.to_path_buf(),
-            fs: Some(p.to_path_buf()),
+            name: p.to_path_buf(),
+            shown_from,
+            stdin: false,
             explicit,
             regular: regular && through.is_none(),
             through,
@@ -1230,7 +1360,10 @@ impl<'a> Ctx<'a> {
         };
         let name = name.clone();
         let kind = docs::Kind::from_name(extractor).expect("checked by `document`");
-        let fs = t.fs.clone().expect("only files are documents");
+        let fs = t
+            .fs()
+            .map(Path::to_path_buf)
+            .expect("only files are documents");
         let as_is = |mut t: Target| {
             t.through = None;
             t.regular = rewindable(&fs);
@@ -1247,7 +1380,7 @@ impl<'a> Ctx<'a> {
                 if e.cut {
                     self.msgs.warn(format_args!(
                         "s4: {}: {name}: the text is cut at {} MiB",
-                        t.path.display(),
+                        t.path().display(),
                         docs::MAX_TEXT >> 20
                     ));
                 }
@@ -1262,7 +1395,7 @@ impl<'a> Ctx<'a> {
                 // A Ctrl-C that ended the reader before s4 saw it stops s4 here.
                 crate::helper::host::cancel::GLOBAL.settle();
                 self.msgs
-                    .warn(format_args!("s4: {}: {name}: {e}", t.path.display()));
+                    .warn(format_args!("s4: {}: {name}: {e}", t.path().display()));
                 as_is(t)
             }
         }
@@ -1271,7 +1404,7 @@ impl<'a> Ctx<'a> {
     /// What is searched for `t`: stdin, a document's text, the output of `--pre` or of a
     /// decompressor, or the file.
     fn open_input<'t>(&'t self, t: &'t Target) -> std::io::Result<Opened<'t>> {
-        let Some(p) = &t.fs else {
+        let Some(p) = t.fs() else {
             return Ok(Opened::Read(Box::new(std::io::stdin().lock())));
         };
         if let Some(doc) = &t.doc {
@@ -1283,26 +1416,26 @@ impl<'a> Ctx<'a> {
             // The path printed, as rg 14.1.1 gives the command and the decompressor (`./a.txt`
             // walked is `a.txt`): the same file (code review r1, Fable #1).
             Some(how @ (Through::Pre | Through::Zip)) => {
-                self.pre.open(how, &t.path).map(Opened::Transformed)
+                self.pre.open(how, t.path()).map(Opened::Transformed)
             }
-            _ => Ok(Opened::Read(self.reader(t, p)?)),
+            _ => Ok(Opened::File(self.reader(t, p)?)),
         }
     }
 
     /// A reader of the file at `p`: the first time, from the bytes `Ctx::document` read of it
     /// and on through the file it opened (`Held`), else the file opened by its name.
-    fn reader<'t>(&self, t: &'t Target, p: &Path) -> std::io::Result<Box<dyn Read + 't>> {
+    fn reader(&self, t: &Target, p: &Path) -> std::io::Result<FileReader> {
         Ok(match t.held.take() {
-            Some(Held { head, rest: None }) => Box::new(std::io::Cursor::new(head)),
+            Some(Held { head, rest: None }) => FileReader::Head(std::io::Cursor::new(head)),
             Some(Held {
                 head,
                 rest: Some(f),
-            }) => Box::new(HeadThen {
+            }) => FileReader::HeadThen(HeadThen {
                 head,
                 at: 0,
                 rest: f,
             }),
-            None => Box::new(File::open(p)?),
+            None => FileReader::File(File::open(p)?),
         })
     }
 
@@ -1324,13 +1457,14 @@ impl<'a> Ctx<'a> {
     /// searched in memory is mapped.
     fn search_raw<S: Sink<Error = std::io::Error>>(
         &self,
+        matcher: &PatternMatcher,
         searcher: &mut Searcher,
         t: &Target,
         sink: S,
     ) -> std::io::Result<()> {
         searcher.set_binary_detection(search::binary_detection(self.args, t.explicit));
-        let m = &self.matcher;
-        match &t.fs {
+        let m = matcher;
+        match t.fs() {
             // The first bytes `Ctx::document` read, when they are the whole file, are what the
             // memory map would hold (code review r7, Fable #3).
             Some(p) if self.in_memory && t.through.is_none() => match t.held.take() {
@@ -1391,10 +1525,10 @@ impl<'a> Ctx<'a> {
             && (self.summary.is_none() || self.args.structural())
     }
 
-    fn quiet_file(&self, searcher: &mut Searcher, t: &Target) {
-        let mut sink = CollectSink::new(&self.matcher, self.args.invert_match, true);
-        match self.search_raw(searcher, t, &mut sink) {
-            Err(e) => self.msgs.error(format_args!("{}: {e}", t.path.display())),
+    fn quiet_file(&self, matcher: &PatternMatcher, searcher: &mut Searcher, t: &Target) {
+        let mut sink = CollectSink::new(matcher, self.args.invert_match, true);
+        match self.search_raw(matcher, searcher, t, &mut sink) {
+            Err(e) => self.msgs.error(format_args!("{}: {e}", t.path().display())),
             Ok(()) => {
                 if sink.items.iter().any(|i| matches!(i, Item::Match(_))) {
                     self.matched.store(true, Relaxed);
@@ -1408,17 +1542,17 @@ impl<'a> Ctx<'a> {
     /// printer (summary.rs:648 and 726) counts them: every Match line and Match, up to `-m`, and
     /// every file searched. A walked file whose binary data stopped the search counts its
     /// Matches but has none (summary.rs:760).
-    fn quiet_json_file(&self, searcher: &mut Searcher, t: &Target) {
+    fn quiet_json_file(&self, matcher: &PatternMatcher, searcher: &mut Searcher, t: &Target) {
         let mut sink = StatsSink {
-            matcher: &self.matcher,
+            matcher,
             invert: self.args.invert_match,
             max: MaxCount::summary(search::max_count(self.args)),
             stats: FileStats::default(),
             lines: 0,
             started: Instant::now(),
         };
-        if let Err(e) = self.search_raw(searcher, t, &mut sink) {
-            self.msgs.error(format_args!("{}: {e}", t.path.display()));
+        if let Err(e) = self.search_raw(matcher, searcher, t, &mut sink) {
+            self.msgs.error(format_args!("{}: {e}", t.path().display()));
             return;
         }
         let quit = search::binary_detection(self.args, t.explicit)
@@ -1479,37 +1613,44 @@ impl<'a> Ctx<'a> {
     /// The writer of grep-printer's printers: one file's output, printed as it grows where
     /// `Ctx::spill` allows it (code review r3, Fable #3).
     fn spill_lines(&self) -> SpillLines<'_> {
+        let buf = self.out.buffer();
         SpillLines {
-            buf: self.out.buffer(),
-            out: self.spill.then_some(&self.out),
+            out: (self.spill && can_spill_bytes(&buf)).then_some(&self.out),
+            buf,
             line_end: 0,
             scanned: 0,
         }
     }
 
-    fn passthrough_file(&self, searcher: &mut Searcher, printer: &mut Printer, t: &Target) {
-        let path = t.path.as_path();
+    fn passthrough_file(
+        &self,
+        matcher: &PatternMatcher,
+        searcher: &mut Searcher,
+        printer: &mut Printer,
+        t: &Target,
+    ) {
+        let path = t.path();
         let (result, has_match, buf) = match printer {
             Printer::Standard(p) => {
                 p.get_mut().clear();
-                let mut sink = p.sink_with_path(&self.matcher, path);
-                let r = self.search_raw(searcher, t, &mut sink);
+                let mut sink = p.sink_with_path(matcher, path);
+                let r = self.search_raw(matcher, searcher, t, &mut sink);
                 let m = sink.has_match();
                 self.count_stats(&r, sink.stats());
                 (r, m, &p.get_mut().buf)
             }
             Printer::Summary(p) => {
                 p.get_mut().clear();
-                let mut sink = p.sink_with_path(&self.matcher, path);
-                let r = self.search_raw(searcher, t, &mut sink);
+                let mut sink = p.sink_with_path(matcher, path);
+                let r = self.search_raw(matcher, searcher, t, &mut sink);
                 let m = sink.has_match();
                 self.count_stats(&r, sink.stats());
                 (r, m, &p.get_mut().buf)
             }
             Printer::Json(p) => {
                 p.get_mut().clear();
-                let mut sink = p.sink_with_path(&self.matcher, path);
-                let r = self.search_raw(searcher, t, &mut sink);
+                let mut sink = p.sink_with_path(matcher, path);
+                let r = self.search_raw(matcher, searcher, t, &mut sink);
                 let m = sink.has_match();
                 // grep-printer's JSON sink counts a search it printed a `begin` for: one with a
                 // Match, or with `--passthru` any (json.rs:802).
@@ -1552,12 +1693,19 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn trail_file(&self, st: &mut TrailState, t: &Target, detector: &Detector, ro: &RenderOptions) {
-        self.trail_file_printed(st, t, detector, ro);
+    fn trail_file(
+        &self,
+        matcher: &PatternMatcher,
+        st: &mut TrailState,
+        t: &Target,
+        detector: &Detector,
+        ro: &RenderOptions,
+    ) {
+        self.trail_file_printed(matcher, st, t, detector, ro);
         // A search that failed after its Matches: the error comes after them (`Failure`).
         if let Some(f) = st.failed.take() {
             self.msgs
-                .error(format_args!("{}: {}", t.path.display(), f.error));
+                .error(format_args!("{}: {}", t.path().display(), f.error));
         }
     }
 
@@ -1565,6 +1713,7 @@ impl<'a> Ctx<'a> {
     /// none of them: no Match for the exit code nor for the JSON summary.
     fn trail_file_printed(
         &self,
+        matcher: &PatternMatcher,
         st: &mut TrailState,
         t: &Target,
         detector: &Detector,
@@ -1578,12 +1727,11 @@ impl<'a> Ctx<'a> {
             && t.through.is_none()
             && output::rg::streams(&ro.look, self.args)
         {
-            match detector.detect_by_path(&t.path) {
-                Some(None) if self.plain_file(st, t, ro, detector) => return,
+            match detector.detect_by_path(t.path()) {
+                Some(None) if self.plain_file(matcher, st, t, ro, detector) => return,
                 Some(Some(def)) if t.regular => {
-                    if let Some(p) = processors::by_name(&def.processor)
-                        && builds_outline(p)
-                        && self.outlined_file(st, t, ro, def, p)
+                    if let Some(p) = self.outliner(def)
+                        && self.outlined_file(matcher, st, t, ro, def, p)
                     {
                         return;
                     }
@@ -1591,7 +1739,7 @@ impl<'a> Ctx<'a> {
                 _ => {}
             }
         }
-        let Ok(found) = self.describe(st, t, detector, ro.look.replace.as_deref()) else {
+        let Ok(found) = self.describe(matcher, st, t, detector, ro.look.replace.as_deref()) else {
             return;
         };
         let kept = found
@@ -1638,7 +1786,7 @@ impl<'a> Ctx<'a> {
                 return;
             }
             let (look, zero) = (&ro.look, self.args.include_zero);
-            match summary::render(mode, &t.path, d, self.with_filename, look, zero, buf) {
+            match summary::render(mode, t.path(), d, self.with_filename, look, zero, buf) {
                 Ok(true) => matched(),
                 Ok(false) => {}
                 Err(e) => self.msgs.error(e),
@@ -1720,39 +1868,46 @@ impl<'a> Ctx<'a> {
     /// name said Plain, but it may be an object file (spec §4.1, M4 plan D5).
     fn plain_file(
         &self,
+        matcher: &PatternMatcher,
         st: &mut TrailState,
         t: &Target,
         ro: &RenderOptions,
         detector: &Detector,
     ) -> bool {
         let object = |head: &[u8]| !self.args.invert_match && detector.object(head).is_some();
-        match &t.fs {
+        match t.fs() {
             Some(p) if self.in_memory && t.through.is_none() => match self.source(t, p) {
                 Ok(src) if object(src.head()) => return false,
-                Ok(src) => self.stream_file(st, t, ro, Streamed::Source(&src), None, None),
-                Err(e) => self.msgs.error(format_args!("{}: {e}", t.path.display())),
+                Ok(src) => self.stream_file(matcher, st, t, ro, Streamed::Source(&src), None, None),
+                Err(e) => self.msgs.error(format_args!("{}: {e}", t.path().display())),
             },
             // A file without Matches costs what it costs ripgrep: no line is counted (grill 8385).
-            Some(p) if t.regular && self.probe(st, t, p) != Some(true) => {}
+            Some(p) if t.regular && self.probe(matcher, st, t, p) != Some(true) => {}
             // Its first bytes are read only once it has a Match.
             Some(p) if t.regular && object(&head_of(p)) => return false,
-            _ => self.stream_file(st, t, ro, Streamed::Raw, None, None),
+            _ => self.stream_file(matcher, st, t, ro, Streamed::Raw, None, None),
         }
         true
     }
 
     /// Whether the file on disk at `path` has a Match, searched up to its first one without
     /// counting lines. None: an error, already reported.
-    fn probe(&self, st: &mut TrailState, t: &Target, path: &Path) -> Option<bool> {
-        let mut probe = CollectSink::new(&self.matcher, self.args.invert_match, true);
+    fn probe(
+        &self,
+        matcher: &PatternMatcher,
+        st: &mut TrailState,
+        t: &Target,
+        path: &Path,
+    ) -> Option<bool> {
+        let mut probe = CollectSink::new(matcher, self.args.invert_match, true);
         st.unnumbered
             .set_binary_detection(search::binary_detection(self.args, t.explicit));
         let searched = self
             .reader(t, path)
-            .and_then(|f| st.unnumbered.search_reader(&self.matcher, f, &mut probe));
+            .and_then(|f| st.unnumbered.search_reader(matcher, f, &mut probe));
         match searched {
             Err(e) => {
-                self.msgs.error(format_args!("{}: {e}", t.path.display()));
+                self.msgs.error(format_args!("{}: {e}", t.path().display()));
                 None
             }
             Ok(()) => Some(probe.items.iter().any(|i| matches!(i, Item::Match(_)))),
@@ -1767,23 +1922,24 @@ impl<'a> Ctx<'a> {
     /// with binary data (no Trails, step 7) or a BOM (whose reader search reads differently).
     fn outlined_file(
         &self,
+        matcher: &PatternMatcher,
         st: &mut TrailState,
         t: &Target,
         ro: &RenderOptions,
         def: &formats::definition::FormatDefinition,
         p: &dyn Processor,
     ) -> bool {
-        let Some(path) = &t.fs else { return false };
-        if !self.in_memory && self.probe(st, t, path) != Some(true) {
+        let Some(path) = t.fs() else { return false };
+        if !self.in_memory && self.probe(matcher, st, t, path) != Some(true) {
             return true;
         }
         let src = match Source::open_as(path, t.explicit, self.decoding, self.mapping) {
             Ok(mut s) => {
-                s.path = t.path.clone();
+                s.path = t.path().to_path_buf();
                 s
             }
             Err(e) => {
-                self.msgs.error(format_args!("{}: {e}", t.path.display()));
+                self.msgs.error(format_args!("{}: {e}", t.path().display()));
                 return true;
             }
         };
@@ -1803,15 +1959,9 @@ impl<'a> Ctx<'a> {
             st.source
                 .set_binary_detection(search::binary_detection(self.args, t.explicit));
             let invert = self.args.invert_match;
-            match if_matched(
-                &mut st.source,
-                &self.matcher,
-                invert,
-                src.bytes(),
-                outline_of,
-            ) {
+            match if_matched(&mut st.source, matcher, invert, src.bytes(), outline_of) {
                 Err(e) => {
-                    self.msgs.error(format_args!("{}: {e}", t.path.display()));
+                    self.msgs.error(format_args!("{}: {e}", t.path().display()));
                     return true;
                 }
                 Ok(None) => return true,
@@ -1835,13 +1985,16 @@ impl<'a> Ctx<'a> {
         } else {
             Streamed::Again(&src)
         };
-        self.stream_file(st, t, ro, how, outline.as_ref(), Some(&def.name));
+        self.stream_file(matcher, st, t, ro, how, outline.as_ref(), Some(&def.name));
         true
     }
 
     /// Searches one file with a `StreamSink` writing into the thread's buffer, and prints it.
+    // The worker's own matcher is the eighth (M5b plan, Task 3.2).
+    #[allow(clippy::too_many_arguments)]
     fn stream_file(
         &self,
+        matcher: &PatternMatcher,
         st: &mut TrailState,
         t: &Target,
         ro: &RenderOptions,
@@ -1861,7 +2014,7 @@ impl<'a> Ctx<'a> {
             Streamed::Again(src) => (&mut st.stream, Some(src)),
         };
         let file = StreamFile {
-            path: &t.path,
+            path: t.path(),
             explicit,
             format,
             src: src.map(Source::bytes),
@@ -1875,10 +2028,9 @@ impl<'a> Ctx<'a> {
             out: self.spill.then_some(&self.out),
             printed: &self.printed,
         };
-        let mut sink =
-            StreamSink::new(&mut w, &self.matcher, self.args.invert_match, ro, &jo, file);
-        let m = &self.matcher;
-        let r = match (how, &t.fs) {
+        let mut sink = StreamSink::new(&mut w, matcher, self.args.invert_match, ro, &jo, file);
+        let m = matcher;
+        let r = match (how, t.fs()) {
             (Streamed::Raw, _) => match self.open_input(t) {
                 Ok(mut f) => {
                     let searched = searcher.search_reader(m, &mut f, &mut sink);
@@ -1902,7 +2054,7 @@ impl<'a> Ctx<'a> {
                 st.buf.clear();
             }
             Err(e) => {
-                self.msgs.error(format_args!("{}: {e}", t.path.display()));
+                self.msgs.error(format_args!("{}: {e}", t.path().display()));
                 st.buf.clear();
             }
             Ok((has_match, stats)) => {
@@ -1925,16 +2077,17 @@ impl<'a> Ctx<'a> {
     /// `Tee`). Err: an error, already reported.
     fn search_first(
         &self,
+        matcher: &PatternMatcher,
         st: &mut TrailState,
         t: &Target,
         detector: &Detector,
     ) -> Result<Option<(Source, FileMatches)>, ()> {
         let report = |e: &dyn std::fmt::Display| {
-            self.msgs.error(format_args!("{}: {e}", t.path.display()));
+            self.msgs.error(format_args!("{}: {e}", t.path().display()));
         };
         let open = |p: &Path| match self.source(t, p) {
             Ok(mut s) => {
-                s.path = t.path.clone();
+                s.path = t.path().to_path_buf();
                 Ok(s)
             }
             Err(e) => {
@@ -1942,7 +2095,7 @@ impl<'a> Ctx<'a> {
                 Err(())
             }
         };
-        if let (Some(p), true) = (&t.fs, self.in_memory && t.through.is_none()) {
+        if let (Some(p), true) = (t.fs(), self.in_memory && t.through.is_none()) {
             let src = open(p)?;
             // A BOM: a reader search that decodes it, as ripgrep's (`Source::as_read`).
             let in_memory = !src.had_bom;
@@ -1954,7 +2107,7 @@ impl<'a> Ctx<'a> {
             searcher.set_binary_detection(search::binary_detection(self.args, t.explicit));
             return match search::search_source_stats(
                 searcher,
-                &self.matcher,
+                matcher,
                 &src,
                 in_memory,
                 search::max_count(self.args),
@@ -1974,7 +2127,7 @@ impl<'a> Ctx<'a> {
         }
         let started = Instant::now();
         let collect = || {
-            CollectSink::new(&self.matcher, self.args.invert_match, false)
+            CollectSink::new(matcher, self.args.invert_match, false)
                 .limit(search::max_count(self.args))
         };
         let mut sink = collect();
@@ -1984,10 +2137,10 @@ impl<'a> Ctx<'a> {
         // What cannot be read twice (stdin, `/dev/stdin`, a FIFO) is kept as it is read (code
         // review r2, Codex #1).
         let mut kept = None;
-        let r = match &t.fs {
+        let r = match t.fs() {
             Some(p) if t.regular => self
                 .reader(t, p)
-                .and_then(|f| st.unnumbered.search_reader(&self.matcher, f, &mut sink)),
+                .and_then(|f| st.unnumbered.search_reader(matcher, f, &mut sink)),
             _ => {
                 let inner = match self.open_input(t) {
                     Ok(r) => r,
@@ -2000,7 +2153,7 @@ impl<'a> Ctx<'a> {
                     inner,
                     read: Vec::new(),
                 });
-                st.unnumbered.search_reader(&self.matcher, tee, &mut sink)
+                st.unnumbered.search_reader(matcher, tee, &mut sink)
             }
         };
         // What rg reads as it searches (stdin, a pipe, `--pre`, `-z`) may fail after Matches,
@@ -2059,9 +2212,9 @@ impl<'a> Ctx<'a> {
         if !found && !printed {
             return Ok(None);
         }
-        let src = match (kept, &t.fs) {
+        let src = match (kept, t.fs()) {
             (Some(tee), _) => {
-                Source::from_bytes_as(t.path.clone(), tee.read, t.explicit, self.decoding)
+                Source::from_bytes_as(t.path().to_path_buf(), tee.read, t.explicit, self.decoding)
             }
             (None, Some(p)) => open(p)?,
             (None, None) => unreachable!("stdin is always kept"),
@@ -2075,18 +2228,17 @@ impl<'a> Ctx<'a> {
             // first search read them, searched again counting lines.
             st.stream.set_binary_detection(binary);
             let mut again = collect();
-            if let Err(e) = st.stream.search_reader(
-                &self.matcher,
-                std::io::Cursor::new(src.as_read()),
-                &mut again,
-            ) {
+            if let Err(e) =
+                st.stream
+                    .search_reader(matcher, std::io::Cursor::new(src.as_read()), &mut again)
+            {
                 report(&e);
                 return Err(());
             }
             items = again.items;
         }
         let fm = FileMatches {
-            path: t.path.clone(),
+            path: t.path().to_path_buf(),
             explicit: t.explicit,
             items,
             stats,
@@ -2104,7 +2256,8 @@ impl<'a> Ctx<'a> {
             return false;
         }
         let head = read[..read.len().min(crate::source::READ_HEAD)].to_vec();
-        let partial = Source::from_bytes_as(t.path.clone(), head, t.explicit, self.decoding);
+        let partial =
+            Source::from_bytes_as(t.path().to_path_buf(), head, t.explicit, self.decoding);
         detector
             .detect(&partial.path, partial.head())
             .is_some_and(|d| self.processors.describes(d))
@@ -2116,6 +2269,7 @@ impl<'a> Ctx<'a> {
     /// none. `replace`: `-r`'s, which an object file's search applies (`object`).
     fn describe(
         &self,
+        matcher: &PatternMatcher,
         st: &mut TrailState,
         t: &Target,
         detector: &Detector,
@@ -2124,9 +2278,9 @@ impl<'a> Ctx<'a> {
         st.binary_quit = false;
         st.failed = None;
         let found = if self.args.in_headings {
-            self.names_of(st, t, detector)?
+            self.names_of(matcher, st, t, detector)?
         } else {
-            let Some((src, fm)) = self.search_first(st, t, detector)? else {
+            let Some((src, fm)) = self.search_first(matcher, st, t, detector)? else {
                 return Ok(None);
             };
             if let Some(doc) = &t.doc {
@@ -2147,7 +2301,9 @@ impl<'a> Ctx<'a> {
             // What a transform outputs is no object file nor document, whatever its bytes or
             // --format say: Plain (spec §5.9; code review of the M4 plan r1, Codex #11).
             let transformed = matches!(t.through, Some(Through::Pre | Through::Zip));
-            if !transformed && let Some(d) = self.object(st, detector, &src, &fm, replace)? {
+            if !transformed
+                && let Some(d) = self.object(matcher, st, detector, &src, &fm, replace)?
+            {
                 return self.filter(st, t, src, d);
             }
             Some({
@@ -2242,6 +2398,7 @@ impl<'a> Ctx<'a> {
     /// costs only a file with a Match (8385). With `replace` (`-r`), its replacements too.
     fn object(
         &self,
+        matcher: &PatternMatcher,
         st: &mut TrailState,
         detector: &Detector,
         src: &Source,
@@ -2264,11 +2421,8 @@ impl<'a> Ctx<'a> {
         };
         let started = Instant::now();
         st.source.set_binary_detection(BinaryDetection::none());
-        let mut sink = CollectSink::new(&self.matcher, false, false).in_memory();
-        if let Err(e) = st
-            .source
-            .search_slice(&self.matcher, src.bytes(), &mut sink)
-        {
+        let mut sink = CollectSink::new(matcher, false, false).in_memory();
+        if let Err(e) = st.source.search_slice(matcher, src.bytes(), &mut sink) {
             self.msgs.error(format_args!("{}: {e}", fm.path.display()));
             return Err(());
         }
@@ -2373,6 +2527,7 @@ impl<'a> Ctx<'a> {
     /// says so.
     fn names_of(
         &self,
+        matcher: &PatternMatcher,
         st: &mut TrailState,
         t: &Target,
         detector: &Detector,
@@ -2381,7 +2536,7 @@ impl<'a> Ctx<'a> {
         // `-q --json` and, at a walked file's binary data, in --files-without-match (code review
         // r7, Codex #2 and Fable #4): it is searched only for those, without a Source (code
         // review r8, Fable #2).
-        let plain = matches!(detector.detect_by_path(&t.path), Some(None));
+        let plain = matches!(detector.detect_by_path(t.path()), Some(None));
         let quits = search::binary_detection(self.args, t.explicit)
             .quit_byte()
             .is_some();
@@ -2389,26 +2544,26 @@ impl<'a> Ctx<'a> {
             if (self.args.json && self.args.quiet)
                 || (quits && self.summary == Some(summary::Mode::FilesWithoutMatch))
             {
-                self.search_unnamed(st, t)?;
+                self.search_unnamed(matcher, st, t)?;
             }
             return Ok(None);
         }
-        let (mut src, binary) = match &t.fs {
+        let (mut src, binary) = match t.fs() {
             Some(p) if t.regular => {
                 let src = match self.source(t, p) {
                     Ok(mut s) => {
-                        s.path = t.path.clone();
+                        s.path = t.path().to_path_buf();
                         s
                     }
                     Err(e) => {
-                        self.msgs.error(format_args!("{}: {e}", t.path.display()));
+                        self.msgs.error(format_args!("{}: {e}", t.path().display()));
                         return Err(());
                     }
                 };
-                let binary = self.binary_probe(st, t, &src)?;
+                let binary = self.binary_probe(matcher, st, t, &src)?;
                 (src, binary)
             }
-            _ => self.read_probed(st, t)?,
+            _ => self.read_probed(matcher, st, t)?,
         };
         // Without Matches, rg reads on to the binary data; `heading_matches` decides otherwise.
         st.binary_quit = binary
@@ -2479,7 +2634,7 @@ impl<'a> Ctx<'a> {
             };
             (names, def.name.clone())
         };
-        let mut found = self.heading_matches(&src, &names);
+        let mut found = self.heading_matches(matcher, &src, &names);
         // What rg detects: `-m` and its after context may stop its search first.
         let detected = binary.as_ref().and_then(|b| {
             let items = found.as_ref().map_or(&[][..], |f| &f.0.items[..]);
@@ -2545,9 +2700,14 @@ impl<'a> Ctx<'a> {
 
     /// --in-headings: searches a Plain file, which has no names, as rg searches it, with a reader
     /// and no Source: for `-q --json`'s summary and for whether its search quits at binary data.
-    fn search_unnamed(&self, st: &mut TrailState, t: &Target) -> Result<(), ()> {
+    fn search_unnamed(
+        &self,
+        matcher: &PatternMatcher,
+        st: &mut TrailState,
+        t: &Target,
+    ) -> Result<(), ()> {
         let report = |e: &dyn std::fmt::Display| {
-            self.msgs.error(format_args!("{}: {e}", t.path.display()));
+            self.msgs.error(format_args!("{}: {e}", t.path().display()));
         };
         let mut reader = match self.open_input(t) {
             Ok(r) => r,
@@ -2559,7 +2719,7 @@ impl<'a> Ctx<'a> {
         let detection = search::binary_detection(self.args, t.explicit);
         let quit = detection.quit_byte().is_some();
         st.stream.set_binary_detection(detection);
-        let probed = search::binary_probe(&mut st.stream, &self.matcher, &mut reader);
+        let probed = search::binary_probe(&mut st.stream, matcher, &mut reader);
         let closed = reader.close().map_err(anyhow::Error::from);
         let probe = match probed.and_then(|p| closed.map(|()| p)) {
             Ok(p) => p,
@@ -2660,6 +2820,7 @@ impl<'a> Ctx<'a> {
     /// None; code review r7, Codex #3). None: no binary data, or `-a`.
     fn binary_probe(
         &self,
+        matcher: &PatternMatcher,
         st: &mut TrailState,
         t: &Target,
         src: &Source,
@@ -2669,7 +2830,7 @@ impl<'a> Ctx<'a> {
         if (!quit && detection.convert_byte().is_none()) || !src.bytes().contains(&0) {
             return Ok(None);
         }
-        let in_memory = t.fs.is_some() && self.in_memory && t.through.is_none() && !src.had_bom;
+        let in_memory = t.fs().is_some() && self.in_memory && t.through.is_none() && !src.had_bom;
         if in_memory {
             let ahead = &src.bytes()[..src.bytes().len().min(64 * 1024)];
             return Ok(Some(BinaryProbe {
@@ -2685,12 +2846,13 @@ impl<'a> Ctx<'a> {
         st.stream.set_binary_detection(BinaryDetection::quit(b'\0'));
         let probe = match search::binary_probe(
             &mut st.stream,
-            &self.matcher,
+            matcher,
             std::io::Cursor::new(src.as_read()),
         ) {
             Ok(p) => p,
             Err(e) => {
-                self.msgs.error(format_args!("{}: {e:#}", t.path.display()));
+                self.msgs
+                    .error(format_args!("{}: {e:#}", t.path().display()));
                 return Err(());
             }
         };
@@ -2704,11 +2866,12 @@ impl<'a> Ctx<'a> {
     /// in a later read is never seen (code review r8, Codex #1). Then the rest is read.
     fn read_probed(
         &self,
+        matcher: &PatternMatcher,
         st: &mut TrailState,
         t: &Target,
     ) -> Result<(Source, Option<BinaryProbe>), ()> {
         let report = |e: &dyn std::fmt::Display| {
-            self.msgs.error(format_args!("{}: {e}", t.path.display()));
+            self.msgs.error(format_args!("{}: {e}", t.path().display()));
         };
         let inner = match self.open_input(t) {
             Ok(r) => r,
@@ -2727,7 +2890,7 @@ impl<'a> Ctx<'a> {
         if quit || detection.convert_byte().is_some() {
             // Stopped at the binary data, as `binary_probe`; `tee` keeps the rest for the Source.
             st.stream.set_binary_detection(BinaryDetection::quit(b'\0'));
-            match search::binary_probe(&mut st.stream, &self.matcher, &mut tee) {
+            match search::binary_probe(&mut st.stream, matcher, &mut tee) {
                 Ok(p) => probe = Some(p),
                 Err(e) => {
                     report(&format_args!("{e:#}"));
@@ -2740,7 +2903,8 @@ impl<'a> Ctx<'a> {
             report(&e);
             return Err(());
         }
-        let src = Source::from_bytes_as(t.path.clone(), tee.read, t.explicit, self.decoding);
+        let src =
+            Source::from_bytes_as(t.path().to_path_buf(), tee.read, t.explicit, self.decoding);
         let binary = probe.and_then(|p| BinaryProbe::read(p, quit, &src));
         Ok((src, binary))
     }
@@ -2785,14 +2949,19 @@ impl<'a> Ctx<'a> {
 
     /// Step 8: Matches of the pattern in Segment names, as Match lines of the Source, with
     /// `-m` and `-A`/`-B`/`-C` applied as the searcher would. None when nothing matched.
-    fn heading_matches(&self, src: &Source, names: &[Name]) -> Option<HeadingFound> {
+    fn heading_matches(
+        &self,
+        matcher: &PatternMatcher,
+        src: &Source,
+        names: &[Name],
+    ) -> Option<HeadingFound> {
         let bytes = src.bytes();
         let mut hits: Vec<(usize, usize, Trail, Section)> = Vec::new();
         for n in names {
             // --expand prints the Section of the named Segment.
             let section = n.trail.last().map(|s| (s.line, s.end_line));
             // PatternMatcher's error type is NoError: the search cannot fail.
-            let _ = self.matcher.find_iter(n.text.as_bytes(), |m| {
+            let _ = matcher.find_iter(n.text.as_bytes(), |m| {
                 // One Match over contiguous pieces (`a&lt;b`, a replaced byte between letters)
                 // is one hit: its Source ranges are joined where they touch, never across two
                 // Matches (M3 review r3, Codex #1).
@@ -3012,7 +3181,7 @@ fn disk_of(t: &Target, src: &Source) -> Option<PathBuf> {
     if t.through.is_some() {
         return None;
     }
-    let real = std::fs::canonicalize(t.fs.as_deref()?).ok()?;
+    let real = std::fs::canonicalize(t.fs()?).ok()?;
     if real.starts_with("/dev") || real.starts_with("/proc") {
         return None;
     }
@@ -3102,8 +3271,10 @@ struct Above {
     link: Option<(PathBuf, Resolved)>,
 }
 
-/// How a name resolves, part by part (`through_descriptors`).
+/// How a name resolves, part by part (`through_descriptors`). Outside Unix every name is
+/// `Unknown` (`resolve`).
 #[derive(Clone)]
+#[cfg_attr(not(unix), allow(dead_code))]
 enum Resolved {
     /// Through this process's descriptors.
     Descriptors,
@@ -3220,7 +3391,12 @@ impl Out {
         self.w.buffer()
     }
 
+    /// An empty buffer, the output of most files, touches neither the shared byte count nor
+    /// stdout's lock (M5b plan, Task 3.2).
     fn print(&self, buf: &Buffer) -> std::io::Result<()> {
+        if buf.is_empty() {
+            return Ok(());
+        }
         self.bytes.fetch_add(buf.as_slice().len() as u64, Relaxed);
         self.w.print(buf)
     }
@@ -3277,6 +3453,14 @@ impl WriteColor for Spill<'_> {
     fn reset(&mut self) -> std::io::Result<()> {
         self.buf.reset()
     }
+}
+
+/// Whether `buffer`'s output is all in its bytes, which `SpillLines` copies: true for a plain
+/// or an ANSI buffer; false for a Windows console-API buffer, which keeps its colours beside
+/// its bytes, and is printed whole, as rg prints it (M5b spec §4.2). termcolor 1.4 tells it
+/// only by its abilities: it colours, and cannot hold a hyperlink.
+fn can_spill_bytes(buffer: &termcolor::Buffer) -> bool {
+    !buffer.supports_color() || buffer.supports_hyperlinks()
 }
 
 /// A file's output from grep-printer's printers that, with `out`, prints the complete lines
@@ -3427,6 +3611,16 @@ fn run_stats(s: &Stats) -> RunStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M5b spec §4.2: `SpillLines` copies a file's output as bytes, which a console-API buffer
+    /// (Windows) would print without its colours: only plain and ANSI buffers spill.
+    #[test]
+    fn only_buffers_of_bytes_spill() {
+        assert!(can_spill_bytes(&termcolor::Buffer::no_color()));
+        assert!(can_spill_bytes(&termcolor::Buffer::ansi()));
+        #[cfg(windows)]
+        assert!(!can_spill_bytes(&termcolor::Buffer::console()));
+    }
 
     #[test]
     fn only_outline_processors_take_the_streaming_path() {
