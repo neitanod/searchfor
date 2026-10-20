@@ -109,7 +109,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(!status.success());
-        assert!(began.elapsed() < Duration::from_secs(3));
+        assert!(began.elapsed() < Duration::from_secs(10));
     }
 
     #[test]

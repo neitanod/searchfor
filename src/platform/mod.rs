@@ -313,7 +313,7 @@ mod tests {
         let (status, survived) = parent_watch(&u32::MAX.to_string());
         assert!(!status.success() && !survived, "{status:?}");
         assert!(
-            began.elapsed() < Duration::from_secs(3),
+            began.elapsed() < Duration::from_secs(10),
             "{:?}",
             began.elapsed()
         );

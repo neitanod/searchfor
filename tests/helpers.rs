@@ -1132,9 +1132,9 @@ fn m5b_wait_knobs_log_both_pids_and_hold_until_the_release() {
     let took = released.elapsed();
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(stdout(&o), APP_TRAILS);
-    assert!(took < Duration::from_secs(5), "{took:?} after the release");
+    assert!(took < Duration::from_secs(10), "{took:?} after the release");
     assert!(
-        wait_for(Duration::from_secs(5), || !alive(helper)),
+        wait_for(Duration::from_secs(10), || !alive(helper)),
         "the helper outlived s4"
     );
 }

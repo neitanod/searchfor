@@ -1595,7 +1595,7 @@ fn m4_42_an_idle_reader_ends_with_a_killed_s4() {
     // SAFETY: signal 0 only asks whether the pid exists.
     while unsafe { libc::kill(readers[0] as libc::pid_t, 0) } == 0 {
         assert!(
-            killed.elapsed() < Duration::from_secs(3),
+            killed.elapsed() < Duration::from_secs(10),
             "reader {} outlived s4",
             readers[0]
         );

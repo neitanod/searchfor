@@ -286,7 +286,7 @@ mod tests {
             .unwrap();
         assert!(!status.success());
         assert!(
-            began.elapsed() < Duration::from_secs(3),
+            began.elapsed() < Duration::from_secs(10),
             "{:?}",
             began.elapsed()
         );

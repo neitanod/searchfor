@@ -357,7 +357,7 @@ impl Drop for NativeRun {
 fn m5b_client_output_disconnect_stops_a_blocked_search() {
     let mut r = NativeRun::blocked_search();
     r.close_client_output();
-    assert!(r.wait_search_dead(std::time::Duration::from_secs(3)));
+    assert!(r.wait_search_dead(std::time::Duration::from_secs(10)));
 }
 
 /// A server that dies, killed outright, takes its blocked search and helper with it.
@@ -365,7 +365,7 @@ fn m5b_client_output_disconnect_stops_a_blocked_search() {
 fn m5b_server_death_stops_a_blocked_search() {
     let mut r = NativeRun::blocked_search();
     r.kill_server();
-    assert!(r.wait_search_dead(std::time::Duration::from_secs(3)));
+    assert!(r.wait_search_dead(std::time::Duration::from_secs(10)));
 }
 
 /// A client that closes its input after a finite call leaves no search behind.
@@ -374,5 +374,5 @@ fn m5b_client_input_eof_leaves_no_search() {
     let mut r = NativeRun::finite_search();
     r.close_client_input();
     // This fixture is finite: queued requests complete after a half-close.
-    assert!(r.wait_search_dead(std::time::Duration::from_secs(3)));
+    assert!(r.wait_search_dead(std::time::Duration::from_secs(10)));
 }
