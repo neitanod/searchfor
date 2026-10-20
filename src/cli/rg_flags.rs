@@ -316,8 +316,16 @@ Mach-O file that it searches with a Match (a file named on the command line, or 
 Matches instead, at the hex offset of its first Match and with its Trail (spec §5.7), and so
 searches the whole file: in `--json`, `bytes_searched` is the file's size, `matched_lines` the
 rows and `matches` the Matches, and `binary_offset` is null. `-c`, `-l`, `-q` and `--no-trail`
-print what rg prints. With `-v` the file is printed as rg prints it. A walked object file
-without `--binary` stops at its first NUL, as in rg, and prints nothing (M4 plan, D4):
+print what rg prints. With `-v` the file is printed as rg prints it. `-r` replaces each Match
+where the search found it in the file's bytes, so its anchors and groups read the bytes around
+it, and shows the control bytes of the replacement as `.`, as those of a Match (review r2 of
+the M5a plan, Codex #2); the replacements are made in one pass over each line of those bytes,
+as `rg -a` makes them, so a `-P` Match after `\\K` is replaced too, with the groups the search
+found (review r3, Codex #3; review r4, Codex #2). A line the search reports where the search of
+the line's own bytes finds no Match, a `-P` Match whose `\\K` leaves out the bytes its pattern
+read before the line, is a row too, its string without a highlight, and the exit code 0, as rg
+prints that line (review r5, Codex #2). A walked object file without `--binary` stops at its first NUL, as in
+rg, and prints nothing (M4 plan, D4):
 
 ```sh
 s4 --flat version /usr/bin/ls      # rows; rg: binary file matches
@@ -333,7 +341,9 @@ it (spec §5.8), in a terminal and in a pipe alike (the Hilo, 18/10/2026, 8750).
 so where the search finds a document `--no-trail` prints more than rg, and `bytes_searched`
 counts the text. The cost differs too: every document of the search is extracted, a Match in
 it or not, in a child process with its own time and memory limits, so a tree with many
-documents takes longer than rg over it. The search finds a document by its name, and a file
+documents takes longer than rg over it. That child maps a document of 1 MiB or more even with
+`--no-mmap`, which keeps every other file unmapped: a document truncated while it is read can
+end the child, never s4. The search finds a document by its name, and a file
 without an extension by its first bytes.
 
 `--no-docs` turns that off: the documents are searched as rg searches them, at rg's cost, and
@@ -345,6 +355,94 @@ s4 --no-trail needle report.docx            # the lines of the document's text w
 s4 --no-docs --no-trail needle report.docx  # what rg prints for the bytes of the zip
 s4 --no-docs --docs needle report.docx      # the document's text again
 ```
+
+### ripgrep's output flags in the Trail layouts
+
+With `--no-trail` (and with `-c`, `--count-matches`, `-l`, `--files-without-match` and
+`--files`), ripgrep's own printers print, configured as rg 14.1.1 configures them, so every
+output flag prints what rg prints. In `--flat` and `--tree` the same flags change s4's rows
+(M5a plan, D4):
+
+- `--column` and `-b` add the column of the row's first Match and the row's byte offset after
+  its line number (`path:12:13:96: Trail │ text`, in the tree `12:13:96:text`); a row is the
+  part of a line under one Trail, so its column is its own first Match's, where rg's is the
+  line's.
+- `-o` prints a row per Match, its text the matched bytes, under that Match's Trail; `--vimgrep`
+  prints a row per Match with its line, `path:line:column:`, in the one-line layout whatever the
+  layout flags say (rg turns its heading off).
+- `-r` prints each line with its Matches replaced and the row's replacements highlighted;
+  `--trim` leaves out the line's leading white space; `--max-columns-preview` prints the start
+  of a line `-M` omits. `-M` with `--trim` compares the trimmed line, with colour too, where
+  rg's coloured printer compares the whole line (review r6 of the M5a plan, Fable).
+- `--field-match-separator`, `--field-context-separator`, `--context-separator` and
+  `--no-context-separator` replace `:`, `-` and `--`; `-0` puts a NUL after each path (in the
+  tree, after the header's path in place of its line break); `--path-separator` replaces `/`.
+- `--colors` colours the path, the numbers and the Matches as in rg, and also takes the type
+  `trail`, the Trail's colour (`trail:fg:yellow`), which rg does not know.
+- `--hyperlink-format` makes the path and the numbers of a row a link on a terminal with colour,
+  as rg's.
+- `--heading` and `--pretty` choose the tree and `--no-heading` the one-line layout, as `--tree`
+  and `--flat` do; of the four, the last one given wins.
+
+`--json` prints rg's JSON Lines, which ignore these flags as rg's do.
+
+```sh
+s4 --flat --column -b needle-pkg md/guide.md   # 12:13:96: Deploy guide › Install › Linux › bash │ apt install needle-pkg
+s4 --flat -o 'needle-\\w+' md/guide.md          # one row per Match, its text the Match
+```
+
+### A `-U` Match and a `--null-data` record in the Trail layouts
+
+rg prints a Match that spans lines (`-U`) and a NUL-terminated record (`--null-data`) as it is,
+the record's line breaks inside the printed line. In `--flat` and `--tree` each line of them is a
+row: a `-U` Match's lines with their own numbers, as rg numbers them, a record's lines with the
+record's number (M5a plan, D6). `-o` prints each line of a Match's text that is not empty, as
+rg's `-o` does with `-U`. Without `-U`, or with a pattern that cannot match a line break, it
+prints a row for every Match, as rg's `-o` prints a line's: an empty Match or an empty
+replacement is an empty row, and a `\\r` without `--crlf` is part of the text (review r2 of the
+M5a plan, Codex #4). `--vimgrep` prints the first line of each Match; when the pattern can match
+a line break, an empty Match at the start of a line prints nothing, as rg's printer of several
+lines skips it (`s4 --flat -U --vimgrep '^'` prints nothing; review r3, Codex #4). `--flat` and
+`--tree` end every row with `\\n`, with `--crlf` and `--null-data` too, where rg ends each line
+with the search's terminator (`\\r\\n`, NUL); `--no-trail` prints rg's (review r4, Fable #1). A
+context record's row leaves its NUL out too, with `-C`, `--passthru` and `-v` (review r5,
+Codex #3). `--trim` leaves out each row's leading white space, so each `\\n` line of a record
+is trimmed, where rg trims the record's start only (review r6, Fable).
+
+```sh
+s4 --flat -U 'Linux\\n\\nRun' block.md    # 5: Install │ ## Linux / 6: Install │ / 7: Install │ Run…
+```
+
+### `--stats` in the Trail layouts
+
+After `--flat`, `--tree` or s4's summaries, `--stats` prints rg's block, with every file the
+search read: the bytes printed are those s4 printed, the times s4's. With it, every file goes
+through the Trail pipeline's model, which counts its search (M5a plan, D14).
+
+### stdin in the Trail layouts
+
+A file whose Format its name does not decide, stdin among them, is read whole before its first
+row is printed: the Format may be told by its first bytes. `tail -f log | s4 error` prints
+when the input ends; `--no-trail` prints each line as rg does, and with `--line-buffered`, or on
+a terminal, as soon as it is found.
+
+### `--debug`, `--trace` and `--generate`
+
+`--debug` and `--trace` print the messages of the crates s4 shares with rg (ignore, globset,
+grep-regex, grep-searcher) in rg's format, `s4: DEBUG|target|file:line: message`; s4's own
+messages differ from rg's. `--generate` writes s4's man page and completions, from s4's own
+flags, with clap_mangen and clap_complete (M5a plan, D15, D16).
+
+### The configuration file
+
+s4 reads `SEARCHFOR_CONFIG_PATH` where rg reads `RIPGREP_CONFIG_PATH`, in rg's format (one
+argument per line, `#` comments), before the command line; `--no-config` skips it. Without the
+variable nothing is read (M5a plan, D3).
+
+### PCRE2
+
+`-P` searches with the PCRE2 that s4 is built with (10.43, in its release binaries), which
+`--pcre2-version` prints; an rg built against the system's PCRE2 prints that one's.
 ";
 
 #[cfg(test)]
@@ -508,6 +606,50 @@ mod tests {
         assert!(md.contains("By default, s4 searches inside documents"));
         assert!(md.contains("`s4 --no-docs --no-trail` prints exactly what rg prints"));
         assert!(!md.contains("Without `--docs`"));
+    }
+
+    /// M5a plan, D3, D4, D6, D14–D16: what the M5 flags print in the Trail layouts and where
+    /// s4's differ from rg's.
+    #[test]
+    fn m5_deviations_are_known() {
+        let md = render_markdown();
+        for section in [
+            "\n### ripgrep's output flags in the Trail layouts\n",
+            "\n### A `-U` Match and a `--null-data` record in the Trail layouts\n",
+            "\n### `--stats` in the Trail layouts\n",
+            "\n### stdin in the Trail layouts\n",
+            "\n### `--debug`, `--trace` and `--generate`\n",
+            "\n### The configuration file\n",
+            "\n### PCRE2\n",
+        ] {
+            assert!(md.contains(section), "{section}");
+        }
+        assert!(md.contains("SEARCHFOR_CONFIG_PATH"));
+        // Review r4 of the plan, Fable #1: the rows' terminator with `--crlf`.
+        assert!(md.contains("end every row with `\\n`"));
+        // Review r6 of the plan, Fable (NIT): `--trim` in the Trail layouts, stated in the
+        // section of the flag it changes; the sentences may wrap, so white space is collapsed.
+        let section = |heading: &str| {
+            let start = md.find(heading).expect(heading) + heading.len();
+            let end = md[start..].find("\n### ").map_or(md.len(), |i| start + i);
+            md[start..end]
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert!(
+            section("\n### A `-U` Match and a `--null-data` record in the Trail layouts\n")
+                .contains(
+                    "`--trim` leaves out each row's leading white space, so each `\\n` line of a \
+                     record is trimmed, where rg trims the record's start only"
+                )
+        );
+        assert!(
+            section("\n### ripgrep's output flags in the Trail layouts\n").contains(
+                "`-M` with `--trim` compares the trimmed line, with colour too, where rg's \
+                 coloured printer compares the whole line"
+            )
+        );
     }
 
     #[test]
