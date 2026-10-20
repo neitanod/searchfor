@@ -148,7 +148,7 @@ not the product.
 | D17 | Grammar names allow internal hyphens, reject traversal; each helper build enables exactly one Grammar | `c-sharp` is required and current valid_name excludes it; multi-feature builds otherwise duplicate grammar() |
 | D18 | Pure time ratios opt in with SEARCHFOR_PERF_TIMING=1; memory and bomb checks remain active on Linux CI | Shared runner jitter should not relax functional limits or RSS checks |
 | D19 | dist 0.33.0 generates release YAML; inspect plan JSON and generated archives instead of hand-maintaining its internals | The installed generator is the source of truth for release job details |
-| D20 | The native Windows launcher resolves `SpawnSpec.program` itself with std's algorithm (separator: as given, `.exe` if no extension; bare name: child or parent `PATH`, the directory of `current_exe`, System32, the Windows directory; never the cwd), passes the absolute path as `lpApplicationName` and returns `NotFound` otherwise | `CreateProcessW` with a null `lpApplicationName` searches the current directory first, which std never does. Without this, a `python.exe` left in the directory where the user runs `s4` would run as the `command` of any Helper Processor, reopening the hole that spec §4.2 closes for `--pre` |
+| D20 | The native Windows launcher resolves `SpawnSpec.program` itself with std's algorithm (separator: as given; bare name: the child's `PATH`, the directory of `current_exe`, System32, the Windows directory, and the parent's `PATH` last; `.exe` is appended only when the name contains no `.`; never the cwd), passes the absolute path as `lpApplicationName` and returns `NotFound` otherwise | `CreateProcessW` with a null `lpApplicationName` searches the current directory first, which std never does. Without this, a `python.exe` left in the directory where the user runs `s4` would run as the `command` of any Helper Processor, reopening the hole that spec §4.2 closes for `--pre` |
 
 ## Chunk graph and file ownership
 
@@ -182,6 +182,10 @@ Then: orchestrator's CI on the four systems, fixes in batches, release gates.
 
 The arrows are dependency declarations, not merge order within a tanda.
 Tanda 2 starts after all of tanda 1 merges; tanda 3 after all of tanda 2.
+When integrating tanda 2, the orchestrator deletes `Supervisor::launch_reader`
+from `src/helper/host.rs` in the merge commit, after C5 and C6 have both migrated
+their calls to `launch_managed` (C2 migrated its own host.rs test in tanda 1); no
+chunk owns that deletion.
 C11 stages publication-ready artifacts, then waits for the orchestrator's final
 CI and C12 docs before any tag. C12 amends the old spec after implementing its
 new tests; it does not change this source-of-truth spec.
@@ -536,7 +540,10 @@ fn windows_argument_quoting_covers_empty_quotes_and_trailing_slashes() {
 - [ ] **Step 2:** run
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --lib platform::tests`.
   Expected RED: missing module/types/functions. The ignored child is invoked
-  explicitly by the parent; the normal run must execute both parent tests.
+  explicitly by the parent; the normal run must execute both parent tests. On
+  Windows, the RED of `windows_bare_program_name_does_not_search_cwd` is observed
+  by removing the resolution (leaving `lpApplicationName` null): the probe then
+  finds the fake in its cwd and the parent test fails.
 - [ ] **Step 3:** implement Unix delegation and the native Windows launcher.
   Build UTF-16 program/argv/environment using Windows quoting compatible with
   Rust's Command: double backslashes before quotes and before a closing quote;
@@ -580,46 +587,69 @@ its three writer/reader threads, timeouts and failure semantics.
 
 `Supervisor::launch_reader` takes `FnOnce() -> io::Result<std::process::Child>`
 and its two callers are files C2 does not own: `src/mcp.rs` (C6) and
-`src/docs/isolated.rs` (C5). C2 therefore leaves `launch_reader` and its callers
-unchanged in tanda 1 and adds `Supervisor::launch_managed` beside it, taking
-`FnOnce() -> io::Result<platform::Child>` and storing the
-`Weak<Mutex<platform::Child>>`. Both coexist, so the tanda-1 workspace compiles
-and C2 can give its workspace GREEN. In tanda 2, C5 and C6 each migrate their own
-call to `launch_managed`. C6 is the last to touch it (the orchestrator merges C5
-first) and deletes `launch_reader` when, after rebasing on C5's merge, no caller
-remains; if the merge order is reversed, C5 deletes it instead.
+`src/docs/isolated.rs` (C5). C2 therefore leaves `launch_reader` and those two
+callers unchanged in tanda 1 and adds `Supervisor::launch_managed` beside it,
+taking `FnOnce() -> io::Result<platform::Child>` and storing the
+`Weak<Mutex<platform::Child>>`. C2 also migrates, in tanda 1, its own third
+caller: the host.rs unit test
+`cancel_kills_and_reaps_every_live_process_and_refuses_new_ones` (it calls
+`launch_reader(|| Command::new("sleep").arg("30").spawn())` at
+`src/helper/host.rs:1824`) now goes through `launch_managed`. Both launchers
+coexist, so the tanda-1 workspace compiles and C2 can give its workspace GREEN.
+In tanda 2, C5 and C6 each migrate their own call to `launch_managed` and delete
+nothing. The orchestrator deletes `launch_reader` in the merge commit of tanda 2,
+once no caller remains (an unused `pub(crate) fn` is `dead_code` and fails
+`clippy -D warnings`).
 
 The native launcher never lets `CreateProcessW` search for the program. It
 resolves `SpawnSpec.program` with the algorithm of std's `resolve_exe` /
 `search_paths` and passes the resulting absolute path as `lpApplicationName`:
-if `program` contains a path separator it is used as given, with `.exe` appended
-when it has no extension; otherwise it is searched, in this order, in the child's
-`PATH` (from `SpawnSpec.env`) or the parent's, the directory of `current_exe`,
-System32 and the Windows directory, and never in the current directory. A
-program that is not found returns `io::ErrorKind::NotFound` without creating a
-process. Windows adds this test to `src/platform/windows.rs`, analogous to
-`windows_pre_bare_name_does_not_search_cwd` but on `platform::spawn`:
+if `program` contains a path separator it is used as given; otherwise it is
+searched, in std's order, in the child's `PATH` (from `SpawnSpec.env`), the
+directory of `current_exe`, System32, the Windows directory, and the parent's
+`PATH` last, and never in the current directory. As in std, `.exe` is appended
+to a bare name only when the name contains no `.`. A program that is not found
+returns `io::ErrorKind::NotFound` without creating a process. The implicit
+search of `CreateProcessW` with a null `lpApplicationName` walks the current
+directory of the **parent** process, not the `lpCurrentDirectory` given to the
+child, so the regression runs in its own process whose current directory holds
+the fake, like Task 8.1's `--pre` probe. Windows adds both tests to
+`src/platform/windows.rs`:
 
 ```rust
+#[test]
+#[ignore = "isolated child for Windows spawn resolution"]
+fn windows_spawn_resolution_probe() {
+    let mut s = SpawnSpec::new("s4-fake-helper");
+    // Harmless if it ever ran: the fake is a copy of cmd.exe.
+    s.args = ["/c", "exit", "7"].into_iter().map(Into::into).collect();
+    // Resolving the name in the process cwd would return Ok(child) and run it.
+    let err = spawn(s, Limits { process_memory_bytes: None }).err().unwrap();
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+}
+
 #[test]
 fn windows_bare_program_name_does_not_search_cwd() {
     let dir = tempfile::tempdir().unwrap();
     // A runnable executable named like a bare program, only in the cwd.
-    std::fs::copy(std::env::current_exe().unwrap(),
-                  dir.path().join("s4-fake-helper.exe")).unwrap();
-    let mut s = SpawnSpec::new("s4-fake-helper");
-    s.cwd = Some(dir.path().to_path_buf());
-    s.env = vec![("PATH".into(),
-                  Some(std::env::var_os("SystemRoot").unwrap_or_default()))];
-    // Resolving it in the cwd would return Ok(child) and run it.
-    let err = spawn(s, Limits { process_memory_bytes: None }).err().unwrap();
-    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    let cmd = std::path::Path::new(&std::env::var_os("SystemRoot").unwrap())
+        .join("System32").join("cmd.exe");
+    std::fs::copy(cmd, dir.path().join("s4-fake-helper.exe")).unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "platform::windows::tests::windows_spawn_resolution_probe",
+               "--ignored"])
+        .current_dir(dir.path())
+        .env("PATH", dir.path().join("empty-path"))
+        .status().unwrap();
+    assert!(status.success());
 }
 ```
 
-The `PATH` of the test names no directory holding `s4-fake-helper.exe`, which
-sits only in the working directory. The test is Windows-only; Linux
-cross-checks compile it.
+The probe's `PATH` names no directory holding `s4-fake-helper.exe`, which sits
+only in the probe's working directory, and the fake is never the test binary
+(that would spawn the whole suite recursively). Even if it ran, it would exit
+with code 7 and the probe would still fail on `NotFound`, never pass on the
+exit code. The tests are Windows-only; Linux cross-checks compile them.
 
 - [ ] **Step 4:** rerun unit tests and
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --workspace --locked --test helpers`.
@@ -833,8 +863,12 @@ and signals an already created event. It never spawns a thread or holds a
 Supervisor lock. The coordinator executes GLOBAL.cancel(), which stops starts,
 kills and reaps under the existing lifecycle rules, then calls ExitProcess.
 The callback waits for that completion so returning TRUE cannot race a normal
-exit with code 0. The wait is bounded by the Supervisor's existing kill timeout
-(`KILL_TIMEOUT_MS`); when it expires, because a helper survives `TerminateProcess`
+exit with code 0. The wait is bounded by `CLEANUP_WAIT_MS: u32 = 2_000`
+(milliseconds, as `WaitForSingleObject` takes it), which is `SHUTDOWN_WAIT`
+(`src/helper/host.rs:13`, 1 s) plus a margin: `cancel()` applies the per-copy
+grace of `SHUTDOWN_WAIT` to every helper copy in parallel scoped threads, so the
+normal total is about 1 s, while the readers' `reap()` kills and waits without a
+bound. When the wait expires, because a helper survives `TerminateProcess`
 or a lock is held, the callback calls `ExitProcess(0xC000013A)` anyway, and the
 kill-on-close root Job terminates whatever remains. Repeated events share the
 same idempotent cleanup, so a second Ctrl-C cannot wait longer than the first.
@@ -850,7 +884,7 @@ unsafe extern "system" fn console_control(kind: u32) -> i32 {
         true, std::sync::atomic::Ordering::SeqCst);
     unsafe { SetEvent(CANCEL_EVENT); }
     // Bounded: a hung cleanup must not make Ctrl-C a no-op.
-    if unsafe { WaitForSingleObject(CLEANUP_DONE, KILL_TIMEOUT_MS) } != WAIT_OBJECT_0 {
+    if unsafe { WaitForSingleObject(CLEANUP_DONE, CLEANUP_WAIT_MS) } != WAIT_OBJECT_0 {
         unsafe { ExitProcess(0xC000013A) };
     }
     1
@@ -876,6 +910,13 @@ Windows; the normal example protocol tests remain portable.
   absent behaviour (criterion 34). This task therefore adds a macOS variant of
   h16, h17 and h18 that observes liveness with `kill(pid, 0)` and reaps its own
   children, as already done for `alive`, and runs it on both macOS CI jobs.
+  Case (c) of h16 also uses `/proc/PID/fd` to know that s4 has already opened
+  the FIFO before it sends SIGINT (`tests/helpers.rs:791-798`); the macOS
+  variant detects that with `libc::proc_pidinfo(PROC_PIDLISTFDS)` or
+  `lsof -p PID` (shipped with macOS), inside the same bounded `wait_for`, and
+  never replaces it with a fixed sleep. h17 and h18 do not use `/proc`
+  (`tests/helpers.rs:804-870`), so for them the change is only widening the
+  `cfg` to `unix`.
 - [ ] **Step 5:** commit with
   `git commit -m "feat: cancel Windows helpers through the shared Supervisor"`.
 
@@ -900,6 +941,9 @@ Script interface:
 # SEARCHFOR_BASE_BIN: existing previous milestone binary for old ceilings
 # --probe: N=5000,20000,80000, j=1,2,4,12; strace -f -c and perf stat
 # --accept: M4 text corpus, 40 paired alternated runs after warmups
+# --compare A B: the M4 corpus probe with the two s4 binaries A and B (no rg),
+#   40 pairs alternated in one process on one machine; prints the ratio of
+#   medians B/A and every raw sample as JSON (used by Task 11.2)
 ```
 
 - [ ] **Step 1:** begin the script with this complete self-test. It exercises
@@ -941,6 +985,11 @@ fi
   Collect strace syscall counts and perf cycles/instructions/branches/cache
   samples for each thread count; report missing optional profilers explicitly.
   Fit T=intercept+N*slope independently per tool/mode; keep each N's samples.
+  Implement `--compare A B` on the same measurement core: it takes two s4
+  binaries instead of s4 and rg, alternates which of the pair runs first on each
+  pair, and reports median(B)/median(A) with all raw wall/CPU/RSS samples; the
+  exit code is 0 when both binaries ran validly and 2 otherwise, and the script
+  never decides pass or fail from the ratio.
 - [ ] **Step 4:** build release with the common prefix, then run the baseline
   probe under nice/ionice, with uptime logged beside each series. Expected
   output: JSON containing raw pairs, medians, intercept/slope and profiler
@@ -1269,7 +1318,8 @@ impl FuzzBudget {
 // SEARCHFOR_FUZZ_ARTIFACT_DIR names local seed/case/args/stderr output on failure.
 ```
 
-- [ ] **Step 1:** add this complete unit test alongside common's tests.
+- [ ] **Step 1:** add this complete unit test in `mod m5b_tests` of `tests/cli.rs`, with
+  `use super::common::FuzzBudget`.
 
 ```rust
 #[test]
@@ -1483,7 +1533,8 @@ fn reader_wire_path_roundtrips_unpaired_utf16() {
   check even length before decoding and retain Unix raw-byte encoding.
   Migrate the reader start in `spawn` from `Supervisor::launch_reader` to
   `Supervisor::launch_managed` (added by C2 beside it, taking a
-  `platform::Child`); leave the deletion of `launch_reader` to C6.
+  `platform::Child`); do not delete `launch_reader` (the orchestrator removes it in
+  the tanda-2 merge commit).
 - [ ] **Step 4:** rerun unit tests and
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m4 m4_22 -- --nocapture`.
   Expected GREEN on Linux/macOS/Windows. Windows CI separately lowers the Job
@@ -1612,8 +1663,9 @@ fn waiting_for_exit_does_not_hold_the_cancel_lock() {
   the guard, then invoke wait. A helper unused by production is insufficient.
 - [ ] **Step 3:** route starts through platform::spawn under
   `Supervisor::launch_managed` (C2 added it beside `launch_reader`; C5 migrates
-  its own call in `src/docs/isolated.rs`). Once no caller of `launch_reader`
-  remains after rebasing on C5's merge, delete `launch_reader`.
+  its own call in `src/docs/isolated.rs`). C6 only migrates its own call; once no caller of `launch_reader`
+  remains, the orchestrator deletes `launch_reader` in the tanda-2 merge commit;
+  C6 does not touch `src/helper/host.rs` and does not depend on C5's merge.
   Capture WaitToken once before starting blocking wait; release mutex, wait,
   reacquire only for final reap/status. Unix waitid remains supported where
   safe, or use bounded try_wait under brief locks; Windows WaitForSingleObject
@@ -1946,7 +1998,7 @@ fn index_schema_accepts_required_c_sharp_identity() {
     let schema: serde_json::Value = serde_json::from_str(include_str!(
         "../../docs/grammar-index.schema.json")).unwrap();
     let doc = serde_json::json!({"version":1,"grammars":[{
-        "name":"c-sharp","version":"0.23.5","source":"https://example.org/csharp",
+        "name":"c-sharp","version":"0.23.1","source":"https://example.org/csharp",
         "license":"MIT","definition":"name = 'c-sharp'",
         "binaries":{"windows-x86_64":{"url":"file:///C:/g.exe",
             "sha256":"a".repeat(64)}}}]});
@@ -3021,11 +3073,18 @@ use std::alloc::System as Backing;
   (`cargo build -p pcre2-sys --target x86_64-unknown-linux-musl` fails here with
   `failed to find tool "x86_64-linux-musl-gcc"`) and nothing is installed with
   sudo. Add a Linux CI step that builds the GNU and musl release binaries in the
-  same target dir (sequentially), runs C3's M4 corpus probe in 40 alternated
-  pairs, stdout drained, same thread counts and priority, `uptime` printed, and
-  prints the median musl/GNU ratio to the job log. The decision rule is unchanged
-  (a ratio above 1.1 triggers jemalloc). The result is recorded in this plan and
-  in the commit body, copied from that CI log, as a CI-evidence entry.
+  same target dir (sequentially) and runs
+  `scripts/bench-m5b.sh --compare <glibc-s4> <musl-s4>` (Task 3.1) in the same job
+  on the same runner, so the 40 pairs are alternated within one process and the
+  runner noise cancels in part in the relative ratio; same thread counts and
+  priority, `uptime` printed, and the median musl/GNU ratio plus the raw samples
+  go to the job log. The decision rule is unchanged (a ratio above 1.1 triggers
+  jemalloc), with one addition: a ratio inside the band 1.05 to 1.15 is not
+  decided alone, because spec §5.1 calls shared runners too noisy for ceilings
+  this tight; it is reported to Sebastián with the raw samples, who either
+  accepts the call or installs `musl-tools` on this machine so the same
+  `--compare` runs here. The result is recorded in this plan and in the commit
+  body, copied from that CI log, as a CI-evidence entry.
   Complete evaluation test for the measurement decision:
 
 ```bash
@@ -3177,7 +3236,7 @@ for e in x['grammars']:
     assert set(e['binaries']) == systems
     assert e['name'] in e['definition']
     for system, b in e['binaries'].items():
-        assert re.fullmatch('[0-9a-fA-F]{64}', b['sha256'])
+        assert re.fullmatch('[0-9a-f]{64}', b['sha256'])
         assert '/releases/download/grammars-v1/' in b['url']
         assert b['url'].endswith('.exe') == system.startswith('windows-')
 print('six grammars, thirty target binaries: PASS')
