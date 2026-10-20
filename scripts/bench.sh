@@ -12,6 +12,13 @@ notes_pattern="${2:-ExecStart}"
 binary_dir="${3:-/usr/lib/x86_64-linux-gnu}"
 binary_pattern="${4:-zzqq-searchfor-bench}"
 cargo build --release --quiet
+# Isolation (M5a plan, review r1, Codex #5): no user Definitions or Grammars, no network, no
+# configuration file of rg or of s4, for hyperfine's runs too.
+iso=$(mktemp -d)
+trap 'rm -rf "$iso"' EXIT
+mkdir -p "$iso/formats" "$iso/grammars"
+export SEARCHFOR_FORMATS_DIR="$iso/formats" SEARCHFOR_GRAMMARS_DIR="$iso/grammars" SEARCHFOR_GRAMMAR_INDEX="file://$iso/none.json"
+unset RIPGREP_CONFIG_PATH SEARCHFOR_CONFIG_PATH
 
 # bench NAME DIR PATTERN: both ratios on one corpus; exits 1 when one is over its limit.
 bench() {

@@ -49,7 +49,7 @@ mkdir -p "$iso/formats" "$iso/grammars"
 export SEARCHFOR_FORMATS_DIR="$iso/formats" SEARCHFOR_GRAMMARS_DIR="$iso/grammars" SEARCHFOR_GRAMMAR_INDEX="file://$iso/none.json"
 # M3's sfor (SEARCHFOR_BASE_BIN) reads the same overrides under their names of then.
 export SFOR_FORMATS_DIR="$iso/formats" SFOR_GRAMMARS_DIR="$iso/grammars" SFOR_GRAMMAR_INDEX="file://$iso/none.json"
-unset RIPGREP_CONFIG_PATH
+unset RIPGREP_CONFIG_PATH SEARCHFOR_CONFIG_PATH
 threads=$(nproc); [ "$threads" -gt 12 ] && threads=12
 dir="${1:-$iso/corpus}"
 # Split in two, so no file holds them, this script included (M3 code review r1).

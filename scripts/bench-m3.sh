@@ -26,7 +26,7 @@ iso=$(mktemp -d)
 trap 'rm -rf "$iso"' EXIT
 mkdir -p "$iso/formats" "$iso/grammars"
 export SEARCHFOR_FORMATS_DIR="$iso/formats" SEARCHFOR_GRAMMARS_DIR="$iso/grammars" SEARCHFOR_GRAMMAR_INDEX="file://$iso/none.json"
-unset RIPGREP_CONFIG_PATH
+unset RIPGREP_CONFIG_PATH SEARCHFOR_CONFIG_PATH
 threads=$(nproc); [ "$threads" -gt 12 ] && threads=12
 dir="${1:-$iso/corpus}"
 # `none` is split in two, so no file holds it, this script included (M3 code review r1).
