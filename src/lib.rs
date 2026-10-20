@@ -11,6 +11,7 @@ pub mod matcher;
 pub mod mcp;
 pub mod model;
 pub mod output;
+pub mod platform;
 pub mod preprocess;
 pub mod processors;
 pub mod search;

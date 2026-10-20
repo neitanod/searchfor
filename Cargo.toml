@@ -94,6 +94,21 @@ signal-hook = "0.3"
 # The limits of the child that extracts a document (M4 plan, D30): setrlimit and kill.
 libc = "0.2"
 
+# The process layer on Windows (M5b spec §4.3; plan D3, D4, D5, D20, D22): suspended starts,
+# Job Objects, pipes, the console's Ctrl-C and the system directories a program is searched in.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_System_Console",
+    "Win32_System_Pipes",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_SystemInformation",
+] }
+
 [dev-dependencies]
 assert_cmd = "2"
 insta = { version = "1", features = ["json"] }

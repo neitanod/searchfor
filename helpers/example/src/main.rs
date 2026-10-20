@@ -301,7 +301,33 @@ fn start_up() {
     }
 }
 
+/// `--test-echo-args OUT ARG...` (M5b plan, Task 2.1): writes the `Debug` text of each argument
+/// after `OUT`, one per line, to the file `OUT`, so a test can compare the arguments a real
+/// process received with those it was started with. Everything after `OUT` is data, even when
+/// it starts with `--`.
+fn echo_args(mut args: impl Iterator<Item = std::ffi::OsString>) -> ! {
+    let Some(out) = args.next() else {
+        eprintln!("searchfor-example-helper: --test-echo-args needs a file");
+        std::process::exit(2);
+    };
+    let text: String = args.map(|a| format!("{a:?}\n")).collect();
+    if let Err(e) = std::fs::write(&out, text) {
+        eprintln!("searchfor-example-helper: {e}");
+        std::process::exit(1);
+    }
+    std::process::exit(0);
+}
+
+/// The test controls given as switches, before the normal protocol service.
+fn test_modes() {
+    let mut args = std::env::args_os().skip(1);
+    if args.next().as_deref() == Some(std::ffi::OsStr::new("--test-echo-args")) {
+        echo_args(args);
+    }
+}
+
 fn main() {
+    test_modes();
     start_up();
     let knobs = Knobs::from_env();
     let trace = std::env::var_os("SEARCHFOR_EXAMPLE_TRACE").map(Into::into);

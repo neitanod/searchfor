@@ -24,12 +24,13 @@ enum Fail {
 
 type Waiter = mpsc::Sender<Result<Reply, Fail>>;
 
-/// Runs `argv` with its three pipes, in s4's working directory and process group (D32).
+/// Runs `argv` with its three pipes, in s4's working directory and process group (D32), through
+/// the platform layer: on Windows inside s4's Job Object (M5b spec §4.3).
 pub struct CommandLauncher {
     pub argv: Vec<String>,
 }
 
-struct Child(std::process::Child);
+struct Child(crate::platform::Child);
 
 impl Control for Child {
     fn kill(&mut self) {
@@ -52,17 +53,17 @@ impl Control for Child {
 
 impl Launcher for CommandLauncher {
     fn launch(&self) -> std::io::Result<Proc> {
-        use std::process::{Command, Stdio};
+        use crate::platform::{Input, Limits, Output, SpawnSpec, spawn};
         let (prog, args) = self
             .argv
             .split_first()
             .ok_or_else(|| std::io::Error::other("empty command"))?;
-        let mut c = Command::new(prog)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+        let mut spec = SpawnSpec::new(prog);
+        spec.args = args.iter().map(Into::into).collect();
+        spec.stdin = Input::Piped;
+        spec.stdout = Output::Piped;
+        spec.stderr = Output::Piped;
+        let mut c = spawn(spec, Limits::default())?;
         Ok(Proc {
             stdin: Box::new(c.stdin.take().expect("piped")),
             stdout: Box::new(c.stdout.take().expect("piped")),
@@ -696,6 +697,9 @@ pub(crate) mod cancel {
         /// use, so one lock orders every kill and wait, and a pid is never signalled after
         /// its process was reaped (M4 plan r5, Codex #1).
         readers: Vec<Weak<Mutex<std::process::Child>>>,
+        /// The processes `launch_managed` started (readers and MCP searches from M5b on), under
+        /// the same rule as `readers`.
+        managed: Vec<Weak<Mutex<crate::platform::Child>>>,
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -710,6 +714,7 @@ pub(crate) mod cancel {
                     cancelled: false,
                     live: Vec::new(),
                     readers: Vec::new(),
+                    managed: Vec::new(),
                 }),
                 signals,
             }
@@ -757,6 +762,30 @@ pub(crate) mod cancel {
             Ok(started)
         }
 
+        /// `launch_reader` for a process of the platform layer (M5b plan, Task 2.1): started
+        /// under the lock and registered, so a signal either comes first or sees it.
+        // Its callers outside the tests, the readers and the MCP searches, move to it in tanda 2;
+        // its one test is Unix's.
+        #[cfg_attr(any(not(test), not(unix)), allow(dead_code))]
+        pub(crate) fn launch_managed(
+            &self,
+            start: impl FnOnce() -> std::io::Result<crate::platform::Child>,
+        ) -> Result<std::io::Result<Arc<Mutex<crate::platform::Child>>>, Cancelled> {
+            if self.signals {
+                watch();
+            }
+            let mut st = self.state.lock().unwrap();
+            if st.cancelled {
+                return Err(Cancelled);
+            }
+            let started = start().map(|c| Arc::new(Mutex::new(c)));
+            if let Ok(c) = &started {
+                st.managed.retain(|w| w.strong_count() > 0);
+                st.managed.push(Arc::downgrade(c));
+            }
+            Ok(started)
+        }
+
         /// `settle`, for the process-wide Supervisor alone.
         pub(crate) fn settle(&self) {
             if self.signals {
@@ -779,14 +808,16 @@ pub(crate) mod cancel {
             if self.signals {
                 STOPPED.store(true, SeqCst);
             }
-            let (live, readers): (Vec<Arc<Conn>>, Vec<_>) = {
+            let (live, readers, managed): (Vec<Arc<Conn>>, Vec<_>, Vec<_>) = {
                 let mut st = self.state.lock().unwrap();
                 st.cancelled = true;
                 let live = st.live.iter().filter_map(Weak::upgrade).collect();
                 let readers = st.readers.iter().filter_map(Weak::upgrade).collect();
-                (live, readers)
+                let managed = st.managed.iter().filter_map(Weak::upgrade).collect();
+                (live, readers, managed)
             };
             reap(&readers);
+            reap_managed(&managed);
             std::thread::scope(|s| {
                 for c in &live {
                     s.spawn(move || c.abort());
@@ -816,6 +847,16 @@ pub(crate) mod cancel {
     fn reap(readers: &[Arc<Mutex<std::process::Child>>]) {
         for r in readers {
             let mut c = r.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    /// `reap` for the processes of the platform layer.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    fn reap_managed(managed: &[Arc<Mutex<crate::platform::Child>>]) {
+        for m in managed {
+            let mut c = m.lock().unwrap_or_else(|e| e.into_inner());
             let _ = c.kill();
             let _ = c.wait();
         }
@@ -1821,7 +1862,11 @@ mod tests {
         let r = run(Mode::Pool, 1, 2000, deaf());
         let reader = r
             .sup
-            .launch_reader(|| std::process::Command::new("sleep").arg("30").spawn())
+            .launch_managed(|| {
+                let mut s = crate::platform::SpawnSpec::new("sleep");
+                s.args = vec!["30".into()];
+                crate::platform::spawn(s, crate::platform::Limits::default())
+            })
             .unwrap()
             .unwrap();
         let go = Arc::new(std::sync::Barrier::new(3));

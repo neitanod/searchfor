@@ -939,3 +939,48 @@ fn h19_a_failing_helper_is_plain_like_rg() {
     assert_eq!(m.len(), 1, "{}", stdout(&o));
     assert!(m[0]["data"]["format"].is_null(), "{}", m[0]);
 }
+
+/// M5b Task 2.1: the arguments a process started by the platform layer receives, read back by
+/// the example helper's `--test-echo-args` mode. On Windows this checks the command-line
+/// builder; on Unix the delegation to std.
+#[test]
+fn m5b_managed_spawn_delivers_the_exact_arguments() {
+    use searchfor::platform::{Limits, Output, SpawnSpec, spawn};
+    let fx = Fixture::new();
+    let out = fx.file("args.txt");
+    let tricky: Vec<std::ffi::OsString> = [
+        "",
+        "plain",
+        "a b",
+        "tab\there",
+        "quote\"inside",
+        "two \"\" quotes",
+        "ends with slash\\",
+        "ends with two\\\\",
+        "\\\"",
+        "C:\\Program Files\\x y\\",
+        "é ñ 日本",
+        "--flag=value",
+        "-",
+        "%PATH%",
+        "&|^<>",
+    ]
+    .into_iter()
+    .map(Into::into)
+    .collect();
+    let mut s = SpawnSpec::new(example_helper().into_os_string());
+    s.args = vec!["--test-echo-args".into(), out.clone().into_os_string()];
+    s.args.extend(tricky.iter().cloned());
+    s.stdout = Output::Null;
+    s.stderr = Output::Null;
+    let mut c = spawn(
+        s,
+        Limits {
+            process_memory_bytes: None,
+        },
+    )
+    .unwrap();
+    assert!(c.wait().unwrap().success());
+    let want: String = tricky.iter().map(|a| format!("{a:?}\n")).collect();
+    assert_eq!(std::fs::read_to_string(out).unwrap(), want);
+}
