@@ -898,7 +898,10 @@ pub(crate) mod cancel {
 fn refusal(r: &Reply) -> String {
     match &r.error {
         Some(e) => format!("refused hello: {e}"),
-        None => format!("speaks protocol {:?}; s4 speaks {PROTOCOL}", r.protocol),
+        None => match r.protocol {
+            Some(p) => format!("speaks protocol {p}; s4 speaks {PROTOCOL}"),
+            None => format!("speaks no protocol; s4 speaks {PROTOCOL}"),
+        },
     }
 }
 
@@ -1255,7 +1258,32 @@ mod tests {
         assert_eq!((threads, format.as_str()), (7, "ini"));
         let w = r.warnings.lock().unwrap();
         assert_eq!(w.len(), 1, "{w:?}");
-        assert!(w[0].contains("ini") && w[0].contains("protocol"), "{w:?}");
+        assert!(
+            w[0].contains("ini")
+                && w[0].contains(&format!("speaks protocol 2; s4 speaks {PROTOCOL}")),
+            "{w:?}"
+        );
+    }
+
+    #[test]
+    fn a_refused_hello_names_the_protocol_as_a_number_or_none() {
+        let wrong = Reply {
+            protocol: Some(2),
+            ..Default::default()
+        };
+        assert_eq!(
+            refusal(&wrong),
+            format!("speaks protocol 2; s4 speaks {PROTOCOL}")
+        );
+        assert_eq!(
+            refusal(&Reply::default()),
+            format!("speaks no protocol; s4 speaks {PROTOCOL}")
+        );
+        let refused = Reply {
+            error: Some("no".into()),
+            ..Default::default()
+        };
+        assert_eq!(refusal(&refused), "refused hello: no");
     }
 
     #[test]
