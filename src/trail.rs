@@ -216,6 +216,14 @@ impl<'o> TrailCursor<'o> {
         );
     }
 
+    /// Where the outermost Segment open at the last offset starts (hidden ones and those it
+    /// labels included), or that offset when none is open (`Cursor::open_from`).
+    pub fn open_from(&self) -> usize {
+        self.stack
+            .first()
+            .map_or(self.last, |&i| self.outline.segments[i].range.start)
+    }
+
     /// The Trail of `byte`.
     pub fn trail(&mut self, byte: usize) -> Trail {
         let mut ix = Vec::new();

@@ -256,7 +256,7 @@ impl TreeState {
 
     /// With --expand: a Section's Trail and its lines; `kept` has the rows of its Match lines
     /// (`section_rows`).
-    fn section<'s>(
+    pub(crate) fn section<'s>(
         &mut self,
         w: &mut dyn WriteColor,
         (trail, start, end): (&[Segment], u64, u64),

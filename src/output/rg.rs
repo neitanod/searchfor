@@ -171,8 +171,8 @@ pub fn look(args: &Args, matcher: &PatternMatcher) -> Look {
 /// Whether the rows of a file can be printed as the searcher reports them (the streaming
 /// printer, `output::stream`): not when a flag makes rows the searcher does not report (`-o`,
 /// `--vimgrep`, `-r`, `-U`, `--null-data`, `--crlf`'s terminator), nor with `--passthru`,
-/// which prints a file without a Match, nor with `--stats`, which counts every file's search in
-/// the model's path.
+/// which prints a file without a Match. `--stats` counts every file's search as it streams
+/// (code review r1, Codex #1).
 pub fn streams(look: &Look, args: &Args) -> bool {
     !(look.only_matching
         || look.per_match
@@ -180,8 +180,7 @@ pub fn streams(look: &Look, args: &Args) -> bool {
         || look.multi_line
         || look.null_data
         || look.crlf
-        || args.passthru
-        || args.stats)
+        || args.passthru)
 }
 
 /// rg 14.1.1's `--stats` block (main.rs `print_stats`), after the output.

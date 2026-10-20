@@ -742,6 +742,15 @@ impl Cursor for CsvCursor<'_, '_> {
         let trail = self.trail(at);
         Ok(super::cursor::share(&mut self.last, trail))
     }
+
+    /// The current record's start when it holds the last offset: every Segment is a record's.
+    fn open_from(&mut self) -> Option<usize> {
+        let at = self.last_at;
+        Some(match self.record {
+            Some((start, end, _)) if at < end => start.min(at),
+            _ => at,
+        })
+    }
 }
 
 #[cfg(test)]

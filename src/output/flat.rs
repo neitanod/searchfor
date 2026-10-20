@@ -311,6 +311,63 @@ pub(crate) fn write_binary_message(
     w.write_all(format!("{msg}\n").as_bytes())
 }
 
+/// With --expand, a Section: its header, `path:start-end: Trail`, and its lines (`sections`),
+/// the rows of its Match lines from `kept` (`section_rows`), then an empty line.
+pub(crate) fn write_section<'s>(
+    w: &mut dyn WriteColor,
+    file: &FileHead,
+    (trail, start, end): (&[Segment], u64, u64),
+    sections: &super::SectionLines<'s>,
+    kept: &[super::SectionBlock<'s>],
+    o: &RenderOptions,
+) -> std::io::Result<()> {
+    // The header: `path:start-end: Trail`; with --vimgrep `path:line:column:` at
+    // the Section's first line, as its rows (spec §8; code review r2 of M5a, Codex
+    // #2).
+    let p = &o.look.palette;
+    let (head, range) = if o.look.per_match {
+        let head = Head {
+            line: Some(start),
+            column: Some(1),
+            ..Head::new(file, None, true, o)
+        };
+        (head, String::new())
+    } else {
+        (Head::new(file, None, true, o), format!("{start}-{end}"))
+    };
+    head.write(w, o)?;
+    if !range.is_empty() {
+        style::write_in(w, p, "line", range.as_bytes())?;
+        w.write_all(&o.look.sep_match)?;
+    }
+    if !trail.is_empty() {
+        let sep = if range.is_empty() {
+            0
+        } else {
+            o.look.sep_match.len()
+        };
+        let fixed = head.width() + range.len() + sep + 1;
+        w.write_all(b" ")?;
+        let fitted = fit_trail(trail, o.width.saturating_sub(fixed));
+        style::write_in(w, p, "trail", fitted.as_bytes())?;
+    }
+    w.write_all(b"\n")?;
+    // Each line verbatim (M1 plan), or where --column, -b or --vimgrep ask for a
+    // row's coordinates a row of this layout, its prefix as any row's, without the
+    // Trail its header has: whole, as Fragments, or -M's message (spec §6.3).
+    let prefixed = o.look.column || o.look.byte_offset || o.look.per_match;
+    let no_prefix = |_: &mut dyn WriteColor| Ok(());
+    for mut r in sections.rows(start, end, kept, o) {
+        if prefixed {
+            r.trail = &[];
+            write_row(w, file, &r, o)?;
+        } else {
+            super::write_line_text(w, &no_prefix, &r.line, &r.subs, r.is_match, o.width, o)?;
+        }
+    }
+    w.write_all(b"\n")
+}
+
 /// Writes a Described file; `lead`, ripgrep's separator between files when it searches with one
 /// thread, goes before the first row, so a file whose output is only the binary message has
 /// none (code review r5, Fable #2).
@@ -337,53 +394,7 @@ pub fn render(
         match piece {
             Piece::Row(r) => write_row(w, &file, &r, o)?,
             Piece::Section { trail, start, end } => {
-                // The header: `path:start-end: Trail`; with --vimgrep `path:line:column:` at
-                // the Section's first line, as its rows (spec §8; code review r2 of M5a, Codex
-                // #2).
-                let p = &o.look.palette;
-                let (head, range) = if o.look.per_match {
-                    let head = Head {
-                        line: Some(start),
-                        column: Some(1),
-                        ..Head::new(&file, None, true, o)
-                    };
-                    (head, String::new())
-                } else {
-                    (Head::new(&file, None, true, o), format!("{start}-{end}"))
-                };
-                head.write(w, o)?;
-                if !range.is_empty() {
-                    style::write_in(w, p, "line", range.as_bytes())?;
-                    w.write_all(&o.look.sep_match)?;
-                }
-                if !trail.is_empty() {
-                    let sep = if range.is_empty() {
-                        0
-                    } else {
-                        o.look.sep_match.len()
-                    };
-                    let fixed = head.width() + range.len() + sep + 1;
-                    w.write_all(b" ")?;
-                    let fitted = fit_trail(trail, o.width.saturating_sub(fixed));
-                    style::write_in(w, p, "trail", fitted.as_bytes())?;
-                }
-                w.write_all(b"\n")?;
-                // Each line verbatim (M1 plan), or where --column, -b or --vimgrep ask for a
-                // row's coordinates a row of this layout, its prefix as any row's, without the
-                // Trail its header has: whole, as Fragments, or -M's message (spec §6.3).
-                let prefixed = o.look.column || o.look.byte_offset || o.look.per_match;
-                let no_prefix = |_: &mut dyn WriteColor| Ok(());
-                for mut r in sections.rows(start, end, &kept, o) {
-                    if prefixed {
-                        r.trail = &[];
-                        write_row(w, &file, &r, o)?;
-                    } else {
-                        super::write_line_text(
-                            w, &no_prefix, &r.line, &r.subs, r.is_match, o.width, o,
-                        )?;
-                    }
-                }
-                w.write_all(b"\n")?;
+                write_section(w, &file, (trail, start, end), &sections, &kept, o)?
             }
         }
     }

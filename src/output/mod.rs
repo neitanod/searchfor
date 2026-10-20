@@ -14,7 +14,7 @@ pub mod tree;
 use crate::cli::BinaryChoice;
 use crate::model::{Described, Item, Line, Segment, Submatch};
 use std::borrow::Cow;
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use termcolor::WriteColor;
@@ -781,7 +781,7 @@ fn clip(subs: &[(usize, usize)], start: usize, end: usize) -> Vec<(usize, usize)
 /// the matched bytes; with `--vimgrep`, one row per Match, its text the line. A `-U` block or
 /// a `--null-data` record prints a row per line. An object file's string is one line whatever
 /// it holds, its rows at hex offsets.
-fn match_rows<'a>(
+pub(crate) fn match_rows<'a>(
     d: &'a Described,
     i: usize,
     m: &'a Line,
@@ -1407,6 +1407,10 @@ pub(crate) fn section_rows<'a>(
     blocks
 }
 
+/// A streamed file's Section lines (`SectionLines::local`): where the last walk stood (a line
+/// and its start), the first line of the Section, and the starts of its lines.
+type LocalLines = ((u64, usize), u64, Vec<usize>);
+
 /// The lines of a file's Sections (--expand), found through the offsets of its lines, which
 /// the first Section reads: reading the file from its start for each Section made a file of N
 /// Sections cost N × the file (review r5 of the M5a plan, the audit).
@@ -1416,6 +1420,11 @@ pub(crate) struct SectionLines<'s> {
     /// With `--null-data`, the offset of every NUL of `src`, which numbers the records of the
     /// context rows: made at the first context row that needs it.
     nuls: OnceCell<Vec<usize>>,
+    /// A streamed file's (`local`): the first line of the Section being printed and the
+    /// starts of its lines and the next, found from the last Section's (code review r1, Codex
+    /// #1). None: every line's start, in `starts`.
+    /// The line seeks start from is kept as its number and start (`stream::LineSeek`).
+    local: Option<RefCell<LocalLines>>,
 }
 
 impl<'s> SectionLines<'s> {
@@ -1424,6 +1433,16 @@ impl<'s> SectionLines<'s> {
             src,
             starts: OnceCell::new(),
             nuls: OnceCell::new(),
+            local: None,
+        }
+    }
+
+    /// For a file printed as it is searched (`stream::StreamSink`): each Section finds the
+    /// starts of its own lines, and no index of the whole file is kept.
+    pub(crate) fn local(src: &'s [u8]) -> Self {
+        SectionLines {
+            local: Some(RefCell::new(((1, 0), 1, Vec::new()))),
+            ..Self::new(src)
         }
     }
 
@@ -1442,9 +1461,24 @@ impl<'s> SectionLines<'s> {
         blocks: &'m [SectionBlock<'s>],
         o: &'m RenderOptions,
     ) -> impl Iterator<Item = Row<'s>> + 'm {
-        let starts = self.starts.get_or_init(|| line_starts(self.src));
-        let at = |n: u64| starts[(n as usize).min(starts.len() - 1)];
-        let (s, e) = (at(start.saturating_sub(1)), at(end));
+        let (s, e) = match &self.local {
+            Some(local) => {
+                // The starts of lines `start..=end + 1`, past the last line its end.
+                let (known, first, starts) = &mut *local.borrow_mut();
+                let mut seek = stream::LineSeek::from(self.src, *known);
+                *first = start.max(1);
+                starts.clear();
+                starts.extend((*first..=end.max(*first) + 1).map(|n| seek.start(n)));
+                let e = seek.start(end + 1);
+                *known = seek.position();
+                (starts[0], e)
+            }
+            None => {
+                let starts = self.starts.get_or_init(|| line_starts(self.src));
+                let at = |n: u64| starts[(n as usize).min(starts.len() - 1)];
+                (at(start.saturating_sub(1)), at(end))
+            }
+        };
         let mut walk = SectionWalk {
             lines: self,
             blocks,
@@ -1463,10 +1497,19 @@ impl<'s> SectionLines<'s> {
     /// line, with `--null-data` of its record, each without its NUL and numbered by its record,
     /// as a context record's row (code review r3 of M5a, Fable #3).
     fn context_row(&self, s: usize, e: usize, o: &RenderOptions) -> (Row<'s>, usize) {
-        let starts = self.starts.get().expect("made by rows");
-        let line = starts.partition_point(|&l| l <= s);
-        let mut end = starts.get(line).map_or(e, |&next| next.min(e));
-        let mut n = line as u64;
+        let (mut end, mut n) = match &self.local {
+            Some(local) => {
+                let (_, first, starts) = &*local.borrow();
+                let line = starts.partition_point(|&l| l <= s);
+                let end = starts.get(line).map_or(e, |&next| next.min(e));
+                (end, first + line as u64 - 1)
+            }
+            None => {
+                let starts = self.starts.get().expect("made by rows");
+                let line = starts.partition_point(|&l| l <= s);
+                (starts.get(line).map_or(e, |&next| next.min(e)), line as u64)
+            }
+        };
         if o.look.null_data {
             let nuls = self
                 .nuls

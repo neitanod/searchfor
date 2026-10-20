@@ -5,14 +5,16 @@ use crate::docs;
 use crate::filter;
 use crate::formats::{self, Registry, detector::Detector};
 use crate::matcher::PatternMatcher;
-use crate::model::{Described, FileMatches, FileStats, Input, Item, Line, Name, Submatch, Trail};
+use crate::model::{
+    self, Described, FileMatches, FileStats, Input, Item, Line, Name, Submatch, Trail,
+};
 use crate::output::{
     self, Layout, RenderOptions,
     json::JsonOptions,
     json::RunStats,
     replace::Replacer,
     spool::FileSpool,
-    stream::{StreamFile, StreamSink},
+    stream::{StreamFile, StreamSink, WithinOptions},
     summary,
 };
 use crate::preprocess::{Preprocess, Through, Transformed};
@@ -1893,23 +1895,40 @@ impl<'a> Ctx<'a> {
         detector: &Detector,
         ro: &RenderOptions,
     ) {
-        // Without structural flags, rows are printed as the searcher reports them: Plain files,
-        // and files on disk whose Processor gives a native cursor (code review r1, Fable #1; M5b
-        // spec §6.1). The tests' oracle takes the model's path for every file.
+        // Rows are printed as the searcher reports them: Plain files, and files on disk whose
+        // Processor gives a native cursor (code review r1, Fable #1; M5b spec §6.1), with the
+        // structural flags and --stats too (code review r1, Codex #1). The tests' oracle takes
+        // the model's path for every file.
         if !self.model_only
-            && !self.args.structural()
             && self.summary.is_none()
             && !self.args.quiet
             && t.through.is_none()
             && output::rg::streams(&ro.look, self.args)
         {
+            let structural = self.args.structural();
             match detector.detect_by_path(t.path()) {
-                Some(None) if self.plain_file(matcher, st, t, ro, detector) => return,
+                // A Plain file has no names (`names_of`).
+                Some(None) if self.args.in_headings => return,
+                Some(None) if !structural && self.plain_file(matcher, st, t, ro, detector) => {
+                    return;
+                }
+                Some(None)
+                    if structural
+                        && t.regular
+                        && self.prepared_file(matcher, st, t, ro, None, detector) =>
+                {
+                    return;
+                }
                 Some(Some(def)) if t.regular => {
-                    if let Some(p) = self.outliner(def)
-                        && self.prepared_file(matcher, st, t, ro, def, p)
-                    {
-                        return;
+                    if let Some(p) = self.outliner(def) {
+                        let done = if self.args.in_headings {
+                            self.heading_file(matcher, st, t, ro, def, detector)
+                        } else {
+                            self.prepared_file(matcher, st, t, ro, Some((def, p)), detector)
+                        };
+                        if done {
+                            return;
+                        }
                     }
                 }
                 _ => {}
@@ -2075,6 +2094,7 @@ impl<'a> Ctx<'a> {
         let mut probe = CollectSink::new(matcher, self.args.invert_match, true);
         st.unnumbered
             .set_binary_detection(search::binary_detection(self.args, t.explicit));
+        let started = Instant::now();
         let searched = self
             .reader(t, path)
             .and_then(|f| st.unnumbered.search_reader(matcher, f, &mut probe));
@@ -2083,26 +2103,36 @@ impl<'a> Ctx<'a> {
                 self.msgs.error(format_args!("{}: {e}", t.path().display()));
                 None
             }
-            Ok(()) => Some(probe.items.iter().any(|i| matches!(i, Item::Match(_)))),
+            Ok(()) => {
+                let found = probe.items.iter().any(|i| matches!(i, Item::Match(_)));
+                // Without a Match the probe was the whole search: --stats counts it.
+                if !found {
+                    probe.stats.elapsed = started.elapsed();
+                    self.count_quiet_json(&probe.stats, false);
+                }
+                Some(found)
+            }
         }
     }
 
     /// A file whose Processor gives a native cursor (`Ctx::outliner`), printed as `plain_file`
-    /// with the Trail of each row asked of the cursor as it is printed (M5b spec §6.1). The
-    /// Processor prepares the file only when it has a Match (spec §3.1): a file searched with a
-    /// reader is searched first, up to its first Match, and read only when it has one; a file
-    /// searched in memory is read, and its Source searched up to its first Match. Then the
-    /// search runs again over the Source. Returns false, printing nothing, for the files the
-    /// model's path handles: one with binary data (no Trails, step 7) or a BOM (whose reader
-    /// search reads differently), and one whose preparation is the model fallback.
+    /// with the Trail of each row asked of the cursor as it is printed (M5b spec §6.1); with
+    /// `outline` None, a Plain file under the structural flags, which need its Source (code
+    /// review r1, Codex #1). The Processor prepares the file only when it has a Match (spec
+    /// §3.1): a file searched with a reader is searched first, up to its first Match, and read
+    /// only when it has one; a file searched in memory is read, and its Source searched up to
+    /// its first Match. Then the search runs again over the Source. Returns false, printing
+    /// nothing, for the files the model's path handles: one with binary data (no Trails, step
+    /// 7) or a BOM (whose reader search reads differently), a Plain one whose first bytes are an
+    /// object Format's magic (`plain_file`), and one whose preparation is the model fallback.
     fn prepared_file(
         &self,
         matcher: &PatternMatcher,
         st: &mut TrailState,
         t: &Target,
         ro: &RenderOptions,
-        def: &formats::definition::FormatDefinition,
-        p: &dyn Processor,
+        outline: Option<(&formats::definition::FormatDefinition, &dyn Processor)>,
+        detector: &Detector,
     ) -> bool {
         let Some(path) = t.fs() else { return false };
         if !self.in_memory && self.probe(matcher, st, t, path) != Some(true) {
@@ -2121,26 +2151,36 @@ impl<'a> Ctx<'a> {
         if src.had_bom || memchr::memchr(0, src.bytes()).is_some() {
             return false;
         }
-        let input = Input {
-            bytes: src.bytes(),
-            path: &src.path,
-            format: &def.name,
-            disk: None,
+        if outline.is_none() && !self.args.invert_match && detector.object(src.head()).is_some() {
+            return false;
+        }
+        let prepare = || {
+            outline.map(|(def, p)| {
+                let input = Input {
+                    bytes: src.bytes(),
+                    path: &src.path,
+                    format: &def.name,
+                    disk: None,
+                };
+                p.prepare(input, &def.params)
+            })
         };
-        let prepare = || p.prepare(input, &def.params);
         let prepared = if self.in_memory {
             // Searched in memory as ripgrep: the search first, here too (code review r2,
             // Fable #2 and Codex #4).
             st.source
                 .set_binary_detection(search::binary_detection(self.args, t.explicit));
             let invert = self.args.invert_match;
-            match if_matched(&mut st.source, matcher, invert, src.bytes(), prepare) {
+            match if_matched_stats(&mut st.source, matcher, invert, src.bytes(), prepare) {
                 Err(e) => {
                     self.msgs.error(format_args!("{}: {e}", t.path().display()));
                     return true;
                 }
-                Ok(None) => return true,
-                Ok(Some(o)) => o,
+                Ok((None, stats)) => {
+                    self.count_quiet_json(&stats, false);
+                    return true;
+                }
+                Ok((Some(o), _)) => o,
             }
         } else {
             prepare()
@@ -2148,9 +2188,10 @@ impl<'a> Ctx<'a> {
         // A failing Processor is a warning and leaves the file Plain (D33); `Unavailable` has no
         // warning of its own, as in `trails` (code review r1, Codex #3 and Fable #1).
         let prepared = match prepared {
-            Ok(p) if p.streams() => Some(p),
-            Ok(_) => return false,
-            Err(e) => {
+            None => None,
+            Some(Ok(p)) if p.streams() => Some(p),
+            Some(Ok(_)) => return false,
+            Some(Err(e)) => {
                 if e.downcast_ref::<crate::helper::Unavailable>().is_none() {
                     self.msgs
                         .warn(format_args!("s4: {}: {e:#}", src.path.display()));
@@ -2163,10 +2204,138 @@ impl<'a> Ctx<'a> {
         } else {
             Streamed::Again(&src)
         };
-        let format = prepared.as_ref().map(|_| def.name.as_str());
+        let format = prepared
+            .as_ref()
+            .and(outline)
+            .map(|(def, _)| def.name.as_str());
         let cursor = prepared.as_ref().map(|p| p.cursor());
         self.stream_file(matcher, st, t, ro, how, cursor, format);
         true
+    }
+
+    /// --in-headings for a file whose Processor gives a native cursor: the Matches of the
+    /// pattern in its Segment names, as `names_of` and `heading_matches` find them, fed to a
+    /// `StreamSink` in Source order with their context, without a model of the file (code
+    /// review r1, Codex #1). The names are the Processor's preparation of the file. Returns
+    /// false, printing nothing, for the files `names_of` handles: one with binary data or a
+    /// BOM, and one whose content names another Format.
+    fn heading_file(
+        &self,
+        matcher: &PatternMatcher,
+        st: &mut TrailState,
+        t: &Target,
+        ro: &RenderOptions,
+        def: &formats::definition::FormatDefinition,
+        detector: &Detector,
+    ) -> bool {
+        let Some(path) = t.fs() else { return false };
+        let src = match self.source(t, path) {
+            Ok(mut s) => {
+                s.path = t.path().to_path_buf();
+                s
+            }
+            Err(e) => {
+                self.msgs.error(format_args!("{}: {e}", t.path().display()));
+                return true;
+            }
+        };
+        if src.had_bom || memchr::memchr(0, src.bytes()).is_some() {
+            return false;
+        }
+        let same = detector
+            .detect(&src.path, src.head())
+            .is_some_and(|d| d.name == def.name);
+        let Some(p) = self.processors.for_definition(def).filter(|_| same) else {
+            return false;
+        };
+        let disk = disk_of(t, &src);
+        let input = Input {
+            bytes: src.bytes(),
+            path: &src.path,
+            format: &def.name,
+            disk: disk.as_deref(),
+        };
+        let names = match p.names(&input, &def.params) {
+            Ok(n) => n,
+            Err(e) => {
+                // As `names_of`: a failing Processor skips the file with one warning.
+                if e.downcast_ref::<crate::helper::Unavailable>().is_none() {
+                    self.msgs
+                        .warn(format_args!("s4: {}: {e:#}", src.path.display()));
+                }
+                return true;
+            }
+        };
+        let jo = self.json_options(ro);
+        st.buf.clear();
+        let file = StreamFile {
+            path: t.path(),
+            explicit: t.explicit,
+            format: Some(&def.name),
+            src: Some(src.bytes()),
+            cursor: None,
+            max_count: None,
+            lead: self.lead(),
+            within: self.within_options(),
+            count: false,
+            named: true,
+        };
+        let mut w = Spill {
+            buf: &mut st.buf,
+            out: self.spill.then_some(&self.out),
+            printed: &self.printed,
+        };
+        let mut sink = StreamSink::new(&mut w, matcher, self.args.invert_match, ro, &jo, file);
+        let fed = HeadingLines::new(self.args, self.max_count_after(), src.bytes())
+            .feed(matcher, &names, &mut sink);
+        let result = fed.and_then(|()| {
+            let (found, stats) = (sink.found, sink.stats.clone());
+            Ok((sink.has_match, found, stats, sink.close()?))
+        });
+        self.streamed(t, st, result);
+        true
+    }
+
+    /// --within's options for a `StreamSink`: the filter's names, and `-m` and the context it
+    /// applies after the filter (`Ctx::filter`).
+    fn within_options(&self) -> Option<WithinOptions> {
+        self.args.within.as_ref().map(|w| WithinOptions {
+            wanted: filter::parse_within(w),
+            max_count: self.args.max_count,
+            before: self.args.before() as u64,
+            after: self.max_count_after() as u64,
+        })
+    }
+
+    /// The end of a streamed file (`stream_file`, `heading_file`): its error, or its JSON stats,
+    /// its Match for the exit code and its --stats; then its output is printed.
+    fn streamed(
+        &self,
+        t: &Target,
+        st: &mut TrailState,
+        result: std::io::Result<(bool, bool, FileStats, Option<RunStats>)>,
+    ) {
+        match result {
+            // A closed pipe while `Spill` printed: the run ends quietly, as in `print`.
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                self.quit.store(true, Relaxed);
+                st.buf.clear();
+            }
+            Err(e) => {
+                self.msgs.error(format_args!("{}: {e}", t.path().display()));
+                st.buf.clear();
+            }
+            Ok((has_match, found, file_stats, stats)) => {
+                if let Some(stats) = stats {
+                    *self.stats.lock().expect("stats") += &stats;
+                }
+                if has_match {
+                    self.matched.store(true, Relaxed);
+                }
+                self.count_quiet_json(&file_stats, found);
+            }
+        }
+        self.print_file(&mut st.buf);
     }
 
     /// Searches one file with a `StreamSink` writing into the thread's buffer, and prints it.
@@ -2201,6 +2370,9 @@ impl<'a> Ctx<'a> {
             cursor,
             max_count: search::max_count(self.args),
             lead: self.lead(),
+            within: self.within_options(),
+            count: self.args.stats && !self.args.json,
+            named: false,
         };
         searcher.set_binary_detection(search::binary_detection(self.args, explicit));
         let mut w = Spill {
@@ -2226,27 +2398,11 @@ impl<'a> Ctx<'a> {
                 searcher.search_reader(m, std::io::Cursor::new(src.bytes()), &mut sink)
             }
         };
-        let result = r.and_then(|()| Ok((sink.has_match, sink.close()?)));
-        match result {
-            // A closed pipe while `Spill` printed: the run ends quietly, as in `print`.
-            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
-                self.quit.store(true, Relaxed);
-                st.buf.clear();
-            }
-            Err(e) => {
-                self.msgs.error(format_args!("{}: {e}", t.path().display()));
-                st.buf.clear();
-            }
-            Ok((has_match, stats)) => {
-                if let Some(stats) = stats {
-                    *self.stats.lock().expect("stats") += &stats;
-                }
-                if has_match {
-                    self.matched.store(true, Relaxed);
-                }
-            }
-        }
-        self.print_file(&mut st.buf);
+        let result = r.and_then(|()| {
+            let (found, stats) = (sink.found, sink.stats.clone());
+            Ok((sink.has_match, found, stats, sink.close()?))
+        });
+        self.streamed(t, st, result);
     }
 
     /// The search first, and the Source only for a file with Matches (spec §3.1). Explicit
@@ -3290,6 +3446,238 @@ impl<'a> Ctx<'a> {
     }
 }
 
+/// A line with hits in names: its number, and each hit's bytes, Trail and Section.
+type HeadingHits = (
+    u64,
+    Vec<(usize, usize)>,
+    Vec<model::SharedTrail>,
+    Vec<Section>,
+);
+
+/// --in-headings on the streaming path (`Ctx::heading_file`): `heading_matches` made one line
+/// at a time (code review r1, Codex #1). The hits of the pattern in the names come in Source
+/// order, the names taken by the first byte their hits may have; the lines they fall on, with
+/// `-m` and their context, go to a `StreamSink` as they are complete.
+struct HeadingLines<'s> {
+    src: &'s [u8],
+    before: u64,
+    after: u64,
+    max: Option<u64>,
+    /// The line of the last hit: its number, and the number of line breaks before it.
+    hit_line: (u64, usize),
+    /// The lines around the Match lines, for their context.
+    lines: crate::output::stream::LineSeek<'s>,
+    /// The last line of the file (`heading_matches`' `last_line`).
+    last_line: u64,
+    /// The Match line being gathered: its number, and its hits with their Trails and Sections.
+    line: Option<HeadingHits>,
+    /// Match lines so far, and the end of `-m`'s window once the `-m`th came.
+    count: u64,
+    window_end: u64,
+    /// The last line given to the sink, and the end of the after context of the last Match.
+    printed: u64,
+    context_until: u64,
+    /// `-m`'s window is over: no line after it counts.
+    done: bool,
+    stats: FileStats,
+}
+
+impl<'s> HeadingLines<'s> {
+    fn new(args: &Args, after: usize, src: &'s [u8]) -> Self {
+        let last_line = if src.is_empty() {
+            0
+        } else {
+            1 + memchr::memchr_iter(b'\n', &src[..src.len() - 1]).count() as u64
+        };
+        HeadingLines {
+            src,
+            before: args.before() as u64,
+            after: after as u64,
+            max: search::max_count(args),
+            hit_line: (1, 0),
+            lines: crate::output::stream::LineSeek::new(src),
+            last_line,
+            line: None,
+            count: 0,
+            window_end: u64::MAX,
+            printed: 0,
+            context_until: 0,
+            done: false,
+            stats: FileStats {
+                bytes_searched: src.len() as u64,
+                ..FileStats::default()
+            },
+        }
+    }
+
+    /// The hits of `names`, as `heading_matches` finds them, given to `sink`; sets its stats.
+    fn feed<W: WriteColor>(
+        mut self,
+        matcher: &PatternMatcher,
+        names: &[Name],
+        sink: &mut StreamSink<W>,
+    ) -> std::io::Result<()> {
+        use std::cmp::Reverse;
+        // No hit of a name starts before its first piece or its anchor.
+        let low = |n: &Name| {
+            n.pieces
+                .iter()
+                .map(|(_, s)| s.start)
+                .fold(n.anchor, usize::min)
+        };
+        let mut order: Vec<usize> = (0..names.len()).collect();
+        order.sort_by_key(|&i| low(&names[i]));
+        // Hits by their Source range, then by the order `heading_matches` gathers them in,
+        // which keeps the first of equal ranges.
+        let mut waiting: std::collections::BinaryHeap<Reverse<(usize, usize, usize, usize)>> =
+            Default::default();
+        let mut last = None;
+        for (at, &i) in order.iter().enumerate() {
+            let n = &names[i];
+            let mut k = 0;
+            let _ = matcher.find_iter(n.text.as_bytes(), |m| {
+                let mut joined: Vec<std::ops::Range<usize>> = Vec::new();
+                for r in n.source_ranges(m.start()..m.end()) {
+                    match joined.last_mut() {
+                        Some(last) if last.end == r.start && !r.is_empty() => last.end = r.end,
+                        _ => joined.push(r),
+                    }
+                }
+                for r in joined {
+                    waiting.push(Reverse((r.start, r.end, i, k)));
+                    k += 1;
+                }
+                true
+            });
+            // What starts before the next name's first byte is in order.
+            let next = order.get(at + 1).map_or(usize::MAX, |&j| low(&names[j]));
+            while let Some(&Reverse((s, e, i, _))) = waiting.peek() {
+                if s >= next || self.done {
+                    break;
+                }
+                waiting.pop();
+                if last == Some((s, e)) {
+                    continue;
+                }
+                last = Some((s, e));
+                let n = &names[i];
+                let trail: model::SharedTrail = n.trail_at(s).into();
+                let section = n.trail.last().map(|x| (x.line, x.end_line));
+                self.hit(s, e, trail, section, sink)?;
+            }
+            if self.done {
+                break;
+            }
+        }
+        self.line_done(sink)?;
+        self.context_to(self.context_until, sink)?;
+        sink.stats = self.stats;
+        Ok(())
+    }
+
+    /// A hit at bytes `s..e`: its line's, or the first of the next line.
+    fn hit<W: WriteColor>(
+        &mut self,
+        s: usize,
+        e: usize,
+        trail: model::SharedTrail,
+        section: Section,
+        sink: &mut StreamSink<W>,
+    ) -> std::io::Result<()> {
+        // `LineIndex::line_of`: one more than the line breaks before `s`.
+        let (line, from) = self.hit_line;
+        let to = s.min(self.src.len());
+        let l = line + memchr::memchr_iter(b'\n', &self.src[from.min(to)..to]).count() as u64;
+        self.hit_line = (l, to.max(from));
+        if self.line.as_ref().is_some_and(|g| g.0 != l) {
+            self.line_done(sink)?;
+            if self.done {
+                return Ok(());
+            }
+        }
+        let g = self
+            .line
+            .get_or_insert_with(|| (l, Vec::new(), Vec::new(), Vec::new()));
+        g.1.push((s, e));
+        g.2.push(trail);
+        g.3.push(section);
+        Ok(())
+    }
+
+    /// The Match line gathered, through `-m` (`heading_matches`), with the context before it.
+    fn line_done<W: WriteColor>(&mut self, sink: &mut StreamSink<W>) -> std::io::Result<()> {
+        let Some((l, hits, trails, sections)) = self.line.take() else {
+            return Ok(());
+        };
+        if let Some(m) = self.max.filter(|&m| m > 0) {
+            if self.count >= m && l > self.window_end {
+                self.done = true;
+                return Ok(());
+            }
+            if self.count + 1 == m {
+                self.window_end = l.saturating_add(self.after);
+            }
+        }
+        self.count += 1;
+        // The after context of the Match before, then the before context of this one.
+        self.context_to(self.context_until.min(l - 1), sink)?;
+        let first = l.saturating_sub(self.before).max(1).max(self.printed + 1);
+        for c in first..l {
+            let (start, end) = (self.lines.start(c), self.lines.start(c + 1));
+            sink.heading_context(context_line(c, start, end))?;
+            self.printed = c;
+        }
+        let (start, end) = (self.lines.start(l), self.lines.start(l + 1));
+        let submatches: Vec<Submatch> = hits
+            .iter()
+            .map(|&(s, e)| Submatch {
+                start: s - start,
+                end: e.min(end).max(s) - start,
+            })
+            .collect();
+        self.stats.matched_lines += 1;
+        self.stats.matches += submatches.len() as u64;
+        let line = Line {
+            submatches,
+            ..context_line(l, start, end)
+        };
+        sink.heading_match(line, trails, sections)?;
+        self.printed = l;
+        self.context_until = l
+            .saturating_add(self.after)
+            .min(self.window_end)
+            .min(self.last_line)
+            .max(l);
+        Ok(())
+    }
+
+    /// The context lines after the last one given, up to line `to`.
+    fn context_to<W: WriteColor>(
+        &mut self,
+        to: u64,
+        sink: &mut StreamSink<W>,
+    ) -> std::io::Result<()> {
+        while self.printed < to {
+            let c = self.printed + 1;
+            let (start, end) = (self.lines.start(c), self.lines.start(c + 1));
+            sink.heading_context(context_line(c, start, end))?;
+            self.printed = c;
+        }
+        Ok(())
+    }
+}
+
+/// Line `n` at bytes `start..end`, without submatches.
+fn context_line(n: u64, start: usize, end: usize) -> Line {
+    Line {
+        line_number: n,
+        absolute_offset: start as u64,
+        len: end - start,
+        owned: None,
+        submatches: Vec::new(),
+    }
+}
+
 /// What `binary_probe` finds about a Source with binary data.
 struct BinaryProbe {
     /// rg's `binary_offset` when its search detects the binary data at `cut`. None: a search in
@@ -3341,6 +3729,7 @@ type HeadingLine = (u64, Vec<(usize, usize)>, Vec<Trail>, Vec<Section>);
 
 /// Spec §3.1 for bytes searched in memory: the search, stopped at its first Match, and `then`
 /// (the Processor) only when it found one. None: no Match.
+#[cfg(test)]
 fn if_matched<T>(
     searcher: &mut Searcher,
     matcher: &PatternMatcher,
@@ -3348,13 +3737,24 @@ fn if_matched<T>(
     bytes: &[u8],
     then: impl FnOnce() -> T,
 ) -> std::io::Result<Option<T>> {
+    if_matched_stats(searcher, matcher, invert, bytes, then).map(|(t, _)| t)
+}
+
+/// `if_matched`, with the stats of the search, which without a Match is the whole search
+/// (`--stats` counts it).
+fn if_matched_stats<T>(
+    searcher: &mut Searcher,
+    matcher: &PatternMatcher,
+    invert: bool,
+    bytes: &[u8],
+    then: impl FnOnce() -> T,
+) -> std::io::Result<(Option<T>, FileStats)> {
+    let started = Instant::now();
     let mut probe = CollectSink::new(matcher, invert, true).in_memory();
     searcher.search_slice(matcher, bytes, &mut probe)?;
-    Ok(probe
-        .items
-        .iter()
-        .any(|i| matches!(i, Item::Match(_)))
-        .then(then))
+    probe.stats.elapsed = started.elapsed();
+    let found = probe.items.iter().any(|i| matches!(i, Item::Match(_)));
+    Ok((found.then(then), probe.stats))
 }
 
 /// The canonical path of the file on disk whose bytes are exactly `src`'s: a regular file
@@ -3959,6 +4359,8 @@ mod tests {
         stdout: Vec<u8>,
         stderr: Vec<u8>,
         code: i32,
+        /// Files that took the whole-file model (`Probe::described`).
+        described: usize,
     }
 
     /// A search run by the real engine (`search_main`) with its own directories.
@@ -4015,6 +4417,7 @@ mod tests {
         let grammars = dir.path().join("grammars");
         std::fs::create_dir(&formats).unwrap();
         std::fs::create_dir(&grammars).unwrap();
+        let probe = std::sync::Arc::new(Probe::default());
         let mut argv: Vec<std::ffi::OsString> = vec!["s4".into(), "--no-config".into()];
         argv.extend(args.iter().map(std::ffi::OsString::from));
         argv.push(path.as_os_str().to_owned());
@@ -4025,6 +4428,7 @@ mod tests {
                     stdout: Vec::new(),
                     stderr: format!("{e}").into_bytes(),
                     code: 2,
+                    described: 0,
                 };
             }
         };
@@ -4035,7 +4439,7 @@ mod tests {
             grammars,
             index: format!("file://{}", dir.path().join("missing-index").display()),
             spool: dir.path().to_path_buf(),
-            probe: None,
+            probe: Some(probe.clone()),
         };
         let mut out = termcolor::Buffer::no_color();
         let mut stderr = Vec::new();
@@ -4051,6 +4455,7 @@ mod tests {
             stdout: out.as_slice().to_vec(),
             stderr,
             code,
+            described: probe.described.load(Relaxed),
         }
     }
 
@@ -4145,7 +4550,33 @@ mod tests {
             &["--tree", "--crlf"],
             &["--flat", "--passthru"],
             &["--flat", "-v"],
+            // Code review r1, Codex #1: the structural flags and --stats stream too.
+            &["--tree", "--stats"],
+            &["--tree", "--within", "Install"],
+            &["--json", "--within", "Install", "-C1"],
+            &["--flat", "--within", "", "-C2"],
+            &["--tree", "--within", "row", "-m2", "-A1"],
+            &["--flat", "--within", "Install", "-v", "-B1"],
+            &["--flat", "--stats", "--within", "Install"],
+            &["--flat", "--expand"],
+            &["--flat", "--expand", "-C1", "--column"],
+            &["--tree", "--expand", "-m2"],
+            &["--tree", "--expand", "--within", "Install", "-C1"],
+            &["--json", "--expand", "--within", ""],
+            &["--tree", "--in-headings"],
+            &["--json", "--in-headings", "-C1"],
+            &["--flat", "--in-headings", "-C1", "-m1"],
+            &["--tree", "--in-headings", "--expand"],
+            &["--json", "--in-headings", "--expand"],
+            &["--flat", "--in-headings", "--within", "Install", "-A2"],
+            &["--flat", "--in-headings", "--stats"],
         ];
+        // The modes that take no whole-file model where the file streams (code review r1,
+        // Codex #1): every file with neither a BOM nor binary data whose rows stream.
+        let structural = |mode: &[&str]| {
+            mode.iter()
+                .any(|a| ["--within", "--expand", "--in-headings", "--stats"].contains(a))
+        };
         let mut jobs = Vec::new();
         for path in &paths {
             for &mode in modes {
@@ -4167,6 +4598,21 @@ mod tests {
                         args.extend(["--color=never", "--no-docs", "--regexp", pattern]);
                         let a = compare_fixture_command(path, &args, Pipeline::Model);
                         let b = compare_fixture_command(path, &args, Pipeline::Stream);
+                        if structural(mode) && b.described > 0 {
+                            let bytes = std::fs::read(path).unwrap();
+                            let plain = !bytes.starts_with(b"\xef\xbb\xbf")
+                                && !bytes.starts_with(b"\xff\xfe")
+                                && !bytes.starts_with(b"\xfe\xff")
+                                && !bytes.contains(&0);
+                            // Whether the file streams without the structural flags: every
+                            // line a Match.
+                            let base = ["--flat", "--color=never", "--no-docs", "--regexp", "^"];
+                            let streams = compare_fixture_command(path, &base, Pipeline::Stream);
+                            assert!(
+                                !(plain && streams.described == 0),
+                                "{path:?} {args:?} took the whole-file model"
+                            );
+                        }
                         assert_eq!(a.code, b.code, "{path:?} {args:?}");
                         assert_eq!(a.stderr, b.stderr, "{path:?} {args:?}");
                         let json = mode.contains(&"--json");
@@ -4227,6 +4673,7 @@ mod tests {
             stdout: out.into_inner(),
             stderr,
             code,
+            described: probe.described.load(Relaxed),
         }
     }
 
