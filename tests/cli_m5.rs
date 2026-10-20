@@ -621,9 +621,12 @@ fn m5_15_summaries_with_trails() {
 }
 
 /// M5a plan, D13: `--line-buffered` prints each line as it is found: the first line of a slow
-/// stdin comes out before the input ends, as rg's.
+/// stdin comes out before the input ends, as rg's. The line is read in a thread and waited for
+/// at most `WAIT`, so a line kept in a buffer fails the test instead of hanging it (code review
+/// r1 of M5a, Fable #5).
 #[test]
 fn m5_16_line_buffered() {
+    const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
     let fx = Fixture::new();
     let mut child = fx
         .s4(["--no-trail", "--line-buffered", "needle"])
@@ -635,11 +638,19 @@ fn m5_16_line_buffered() {
     writeln!(input, "a needle").unwrap();
     input.flush().unwrap();
     let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
-    let mut line = String::new();
-    out.read_line(&mut line).unwrap();
-    assert_eq!(line, "a needle\n");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = tx.send(out.read_line(&mut line).map(|_| line));
+    });
+    let line = rx.recv_timeout(WAIT);
+    // Ends s4 either way: its stdin closes, and the reader thread gets the end of its output.
     drop(input);
-    assert!(child.wait().unwrap().success());
+    let status = child.wait().unwrap();
+    reader.join().unwrap();
+    let line = line.unwrap_or_else(|_| panic!("no line within {WAIT:?} of its input"));
+    assert_eq!(line.unwrap(), "a needle\n");
+    assert!(status.success());
 }
 
 /// Review r1 of the M5a plan, Codex #4: an object file's string takes `-o`, `--vimgrep` and
