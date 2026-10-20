@@ -11,6 +11,7 @@ use crate::output::{
     json::JsonOptions,
     json::RunStats,
     replace::Replacer,
+    spool::FileSpool,
     stream::{StreamFile, StreamSink},
     summary,
 };
@@ -379,19 +380,18 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         _ => None,
     };
     let separator = separator.filter(|_| line_separator.is_none());
-    let mut out = BufferWriter::stdout(color);
-    out.separator(separator.clone());
+    let out = BufferWriter::stdout(color);
     // rg flushes each line on a terminal and with --line-buffered (hiargs.rs `stdout`).
     let line_buffered = match args.buffer {
         cli::BufferMode::Line => true,
         cli::BufferMode::Block => false,
         cli::BufferMode::Auto => tty,
     };
-    let out = Out {
-        w: out,
-        bytes: AtomicU64::new(0),
-        spill_at: if line_buffered { 1 } else { SPILL },
-    };
+    let out = Out::new(
+        OutTarget::Stdout(out),
+        separator.clone(),
+        if line_buffered { 1 } else { SPILL },
+    );
     let width = if tty && layout != Layout::Json {
         terminal_size::terminal_size().map_or(args.fragment_width, |(w, _)| w.0 as usize)
     } else {
@@ -505,7 +505,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
                     stream: Lazy::new(|| search::streaming_searcher(args, false, false)),
                     unnumbered: Lazy::new(|| search::printing_searcher(args, false, false, false)),
                     source: Lazy::new(|| search::searcher(args, false, true)),
-                    buf: ctx.out.buffer(),
+                    buf: ctx.file_out(),
                     binary_quit: false,
                     failed: None,
                 },
@@ -798,7 +798,8 @@ struct TrailState<'a> {
     /// or whose lines are numbered afterwards (`search::number_lines`).
     unnumbered: Lazy<'a, Searcher>,
     source: Lazy<'a, Searcher>,
-    buf: Buffer,
+    /// The output of the file being searched (`FileOut`).
+    buf: FileOut,
     /// The last `describe`d file's search quit at binary data (`BinaryDetection::quit`).
     binary_quit: bool,
     /// The last `describe`d file's search failed, after what it found is printed.
@@ -1496,6 +1497,58 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// Prints one file's output (`FileOut`) and empties it for the next file.
+    fn print_file(&self, out: &mut FileOut) {
+        let printed = match out {
+            FileOut::Buffer(b) => {
+                self.print(b);
+                Ok(())
+            }
+            FileOut::Plain(w) => self.print_spooled(w.get_mut()),
+            FileOut::Ansi(w) => self.print_spooled(w.get_mut()),
+        };
+        if let Err(e) = printed
+            && e.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            self.msgs.error(e);
+        }
+        out.clear();
+    }
+
+    /// `print` for a spooled output: an error reading the temporary file is returned, one
+    /// writing stdout handled as `print` handles it.
+    fn print_spooled(&self, spool: &mut FileSpool) -> std::io::Result<()> {
+        if stopped() {
+            self.quit.store(true, Relaxed);
+            return Ok(());
+        }
+        if spool.is_empty() {
+            return Ok(());
+        }
+        self.printed.store(true, Relaxed);
+        if let Err(e) = self.out.print_spool(spool) {
+            self.quit.store(true, Relaxed);
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// A worker's output of one file at a time (`FileOut`): spooled past 8 MiB where other
+    /// threads search, so a dense file's output is not held in memory (M5b spec §6.2).
+    fn file_out(&self) -> FileOut {
+        let buf = self.out.buffer();
+        if self.spill || !can_spill_bytes(&buf) {
+            return FileOut::Buffer(buf);
+        }
+        // An unnamed file: the system deletes it however s4 ends.
+        let spool = FileSpool::new(&std::env::temp_dir()).expect("FileSpool::new creates nothing");
+        if buf.supports_color() {
+            FileOut::Ansi(termcolor::Ansi::new(spool))
+        } else {
+            FileOut::Plain(termcolor::NoColor::new(spool))
+        }
+    }
+
     fn print_summary(&self) {
         let mut stats = self.stats.lock().expect("stats").clone();
         stats.elapsed_total = self.started.elapsed();
@@ -1791,7 +1844,7 @@ impl<'a> Ctx<'a> {
                 Ok(false) => {}
                 Err(e) => self.msgs.error(e),
             }
-            self.print(buf);
+            self.print_file(buf);
             return;
         }
         let Some((src, d)) = found else { return };
@@ -1811,26 +1864,23 @@ impl<'a> Ctx<'a> {
         let written = match ro.layout {
             Layout::Tree => output::tree::render(&d, src.bytes(), ro, buf),
             Layout::Flat => output::flat::render(&d, src.bytes(), ro, self.lead(), buf),
+            // Written straight into the file's bounded output (M5b spec §6.1).
             Layout::Json => {
                 let jo = self.json_options(ro);
-                let mut v = Vec::new();
-                output::json::render_with_stats(&d, src.bytes(), &jo, &mut v).and_then(
-                    |(_, stats)| {
-                        match failed {
-                            None => *self.stats.lock().expect("stats") += &stats,
-                            // rg's JSON printer writes `end` at the end of the search.
-                            Some(true) => without_end(&mut v),
-                            Some(false) => {}
-                        }
-                        buf.write_all(&v)
-                    },
-                )
+                // rg's JSON printer writes `end` at the end of the search, which a failed read
+                // never reaches.
+                let end = failed != Some(true);
+                output::json::render_messages(&d, src.bytes(), &jo, buf, end).map(|(_, stats)| {
+                    if let (None, Some(stats)) = (failed, stats) {
+                        *self.stats.lock().expect("stats") += &stats;
+                    }
+                })
             }
         };
         if let Err(e) = written {
             self.msgs.error(e);
         }
-        self.print(buf);
+        self.print_file(buf);
     }
 
     /// The after context `-m` lets run after the last Match allowed: none for -c,
@@ -2066,7 +2116,7 @@ impl<'a> Ctx<'a> {
                 }
             }
         }
-        self.print(&st.buf);
+        self.print_file(&mut st.buf);
     }
 
     /// The search first, and the Source only for a file with Matches (spec §3.1). Explicit
@@ -3189,14 +3239,6 @@ fn disk_of(t: &Target, src: &Source) -> Option<PathBuf> {
     (m.is_file() && !src.had_bom && m.len() == src.bytes().len() as u64).then_some(real)
 }
 
-/// One file's JSON messages without the last, its `end`.
-fn without_end(v: &mut Vec<u8>) {
-    let body = v.strip_suffix(b"\n").unwrap_or(v);
-    let last = body.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
-    debug_assert!(v[last..].starts_with(br#"{"type":"end""#));
-    v.truncate(last);
-}
-
 /// `trails[i][k]` of the Matches of `fm` from an Outline, as `OutlineProcessor` gives them.
 fn outline_trails(o: &Outline, fm: &FileMatches) -> Vec<Vec<Trail>> {
     let mut c = crate::trail::TrailCursor::new(o);
@@ -3377,18 +3419,48 @@ fn rewindable(p: &Path) -> bool {
 /// What `Spill` holds before it prints: a file's output is printed in pieces of about this size.
 const SPILL: usize = 64 * 1024;
 
-/// stdout: the BufferWriter every output goes through, the bytes printed (for `--stats`), and
-/// how much `Spill` holds before it prints: `SPILL`, or with line buffering a byte, so each
-/// line goes out as it is written (M5a plan, D13).
+/// stdout: the BufferWriter every output goes through, the separator it prints between two
+/// non-empty outputs, the bytes printed (for `--stats`), and how much `Spill` holds before it
+/// prints: `SPILL`, or with line buffering a byte, so each line goes out as it is written (M5a
+/// plan, D13). The separator is printed here, not by the BufferWriter, so that a spooled file
+/// (`FileOut`) goes out after it under the same lock (M5b spec §6.2).
 struct Out {
-    w: BufferWriter,
+    w: OutTarget,
+    separator: Option<Vec<u8>>,
+    /// Something was printed: the separator goes before the next output.
+    printed: AtomicBool,
+    /// Held while one output, with its separator, is printed: no other comes between.
+    lock: Mutex<()>,
     bytes: AtomicU64,
     spill_at: usize,
 }
 
+/// Where `Out` prints.
+enum OutTarget {
+    Stdout(BufferWriter),
+    /// The tests' engine (`execute_file`): what would go to stdout, kept.
+    #[cfg(test)]
+    Captured(std::sync::Arc<Mutex<Vec<u8>>>),
+}
+
 impl Out {
+    fn new(w: OutTarget, separator: Option<Vec<u8>>, spill_at: usize) -> Self {
+        Out {
+            w,
+            separator,
+            printed: AtomicBool::new(false),
+            lock: Mutex::new(()),
+            bytes: AtomicU64::new(0),
+            spill_at,
+        }
+    }
+
     fn buffer(&self) -> Buffer {
-        self.w.buffer()
+        match &self.w {
+            OutTarget::Stdout(w) => w.buffer(),
+            #[cfg(test)]
+            OutTarget::Captured(_) => Buffer::no_color(),
+        }
     }
 
     /// An empty buffer, the output of most files, touches neither the shared byte count nor
@@ -3397,8 +3469,130 @@ impl Out {
         if buf.is_empty() {
             return Ok(());
         }
+        let _held = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.separate()?;
         self.bytes.fetch_add(buf.as_slice().len() as u64, Relaxed);
-        self.w.print(buf)
+        self.put(buf)?;
+        self.printed.store(true, Relaxed);
+        Ok(())
+    }
+
+    /// A spooled file's output, after the separator, under one hold of the lock: no other
+    /// output comes between its pieces (M5b spec §6.2).
+    fn print_spool(&self, spool: &mut FileSpool) -> std::io::Result<()> {
+        if spool.is_empty() {
+            return Ok(());
+        }
+        let _held = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.separate()?;
+        let mut piece = self.buffer();
+        let n = spool.each_piece(&mut |bytes| {
+            piece.clear();
+            piece.write_all(bytes)?;
+            self.put(&piece)
+        })?;
+        self.bytes.fetch_add(n, Relaxed);
+        if n > 0 {
+            self.printed.store(true, Relaxed);
+        }
+        Ok(())
+    }
+
+    /// The separator, before an output when something was printed (held: `lock`).
+    fn separate(&self) -> std::io::Result<()> {
+        if let Some(sep) = &self.separator
+            && self.printed.load(Relaxed)
+        {
+            let mut b = self.buffer();
+            b.write_all(sep)?;
+            b.write_all(b"\n")?;
+            self.put(&b)?;
+        }
+        Ok(())
+    }
+
+    fn put(&self, buf: &Buffer) -> std::io::Result<()> {
+        match &self.w {
+            OutTarget::Stdout(w) => w.print(buf),
+            #[cfg(test)]
+            OutTarget::Captured(v) => {
+                v.lock().unwrap().extend_from_slice(buf.as_slice());
+                Ok(())
+            }
+        }
+    }
+}
+
+/// One file's output in a Trail-mode worker, printed when the file ends (`Ctx::print_file`).
+/// Where nothing can come between pieces (`Ctx::spill`), and for a Windows console buffer,
+/// whose colours live beside its bytes (plan D12), a termcolor `Buffer`; otherwise the plain or
+/// ANSI bytes go to a `FileSpool`, which keeps 8 MiB in memory and the rest in a temporary file
+/// (M5b spec §6.2).
+enum FileOut {
+    Buffer(Buffer),
+    Plain(termcolor::NoColor<FileSpool>),
+    Ansi(termcolor::Ansi<FileSpool>),
+}
+
+impl FileOut {
+    fn clear(&mut self) {
+        match self {
+            FileOut::Buffer(b) => b.clear(),
+            FileOut::Plain(w) => w.get_mut().clear(),
+            FileOut::Ansi(w) => w.get_mut().clear(),
+        }
+    }
+
+    fn color(&mut self) -> &mut dyn WriteColor {
+        match self {
+            FileOut::Buffer(b) => b,
+            FileOut::Plain(w) => w,
+            FileOut::Ansi(w) => w,
+        }
+    }
+}
+
+impl Write for FileOut {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.color().write(bytes)
+    }
+
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.color().write_all(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl WriteColor for FileOut {
+    fn supports_color(&self) -> bool {
+        match self {
+            FileOut::Buffer(b) => b.supports_color(),
+            FileOut::Plain(w) => w.supports_color(),
+            FileOut::Ansi(w) => w.supports_color(),
+        }
+    }
+
+    fn supports_hyperlinks(&self) -> bool {
+        match self {
+            FileOut::Buffer(b) => b.supports_hyperlinks(),
+            FileOut::Plain(w) => w.supports_hyperlinks(),
+            FileOut::Ansi(w) => w.supports_hyperlinks(),
+        }
+    }
+
+    fn set_hyperlink(&mut self, link: &termcolor::HyperlinkSpec) -> std::io::Result<()> {
+        self.color().set_hyperlink(link)
+    }
+
+    fn set_color(&mut self, spec: &termcolor::ColorSpec) -> std::io::Result<()> {
+        self.color().set_color(spec)
+    }
+
+    fn reset(&mut self) -> std::io::Result<()> {
+        self.color().reset()
     }
 }
 
@@ -3406,7 +3600,7 @@ impl Out {
 /// file's output is not held in memory until the file ends (code review r2, Fable #3). Only
 /// where nothing can come between the pieces (`Ctx::spill`).
 struct Spill<'a> {
-    buf: &'a mut Buffer,
+    buf: &'a mut FileOut,
     out: Option<&'a Out>,
     printed: &'a AtomicBool,
 }
@@ -3415,15 +3609,16 @@ impl Write for Spill<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let n = self.buf.write(bytes)?;
         if let Some(out) = self.out
-            && self.buf.as_slice().len() >= out.spill_at
+            && let FileOut::Buffer(buf) = &mut *self.buf
+            && buf.as_slice().len() >= out.spill_at
         {
             if stopped() {
-                self.buf.clear();
+                buf.clear();
                 return Ok(n);
             }
             self.printed.store(true, Relaxed);
-            out.print(self.buf)?;
-            self.buf.clear();
+            out.print(buf)?;
+            buf.clear();
         }
         Ok(n)
     }
@@ -3620,6 +3815,58 @@ mod tests {
         assert!(can_spill_bytes(&termcolor::Buffer::ansi()));
         #[cfg(windows)]
         assert!(!can_spill_bytes(&termcolor::Buffer::console()));
+    }
+
+    /// M5b spec §6.2: a parallel run's file output past 8 MiB goes to an unnamed temporary
+    /// file and is copied whole after the separator; the next file starts empty.
+    #[test]
+    fn a_spooled_file_prints_whole_after_the_separator() {
+        use crate::output::spool::FILE_SPOOL_THRESHOLD;
+        let out = Out::new(
+            OutTarget::Captured(Default::default()),
+            Some(b"--".to_vec()),
+            SPILL,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = FileOut::Plain(termcolor::NoColor::new(FileSpool::new(dir.path()).unwrap()));
+        let line = b"a dense line with a needle\n";
+        let lines = FILE_SPOOL_THRESHOLD / line.len() + 2;
+        for _ in 0..lines {
+            file.write_all(line).unwrap();
+        }
+        // Colour changes of a plain output are no bytes.
+        file.set_color(termcolor::ColorSpec::new().set_bold(true))
+            .unwrap();
+        file.write_all(b"last\n").unwrap();
+        let FileOut::Plain(w) = &mut file else {
+            unreachable!()
+        };
+        assert!(w.get_ref().is_spilled());
+        assert!(w.get_ref().memory_len() == 0);
+        out.print_spool(w.get_mut()).unwrap();
+        file.clear();
+        file.write_all(b"second\n").unwrap();
+        let FileOut::Plain(w) = &mut file else {
+            unreachable!()
+        };
+        assert!(!w.get_ref().is_spilled());
+        out.print_spool(w.get_mut()).unwrap();
+        file.clear();
+        // An empty output prints nothing, not even the separator.
+        let FileOut::Plain(w) = &mut file else {
+            unreachable!()
+        };
+        out.print_spool(w.get_mut()).unwrap();
+        let OutTarget::Captured(v) = &out.w else {
+            unreachable!()
+        };
+        let v = v.lock().unwrap();
+        let first = lines * line.len() + 5;
+        assert_eq!(v.len(), first + 3 + 7);
+        assert!(v[..first - 5].chunks(line.len()).all(|c| c == line));
+        assert_eq!(&v[first - 5..], b"last\n--\nsecond\n");
+        assert_eq!(out.bytes.load(Relaxed), (first + 7) as u64);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]

@@ -60,6 +60,20 @@ pub fn render_with_stats(
     o: &JsonOptions,
     w: &mut dyn Write,
 ) -> std::io::Result<(u64, RunStats)> {
+    let (n, stats) = render_messages(d, src, o, w, true)?;
+    Ok((n, stats.expect("`end` is written")))
+}
+
+/// As `render_with_stats`, written straight into `w`, a file's bounded output (M5b spec
+/// §6.1); without `end`, the file's messages but its `end`, and no stats: a search that failed
+/// in its read never reached the end where rg's printer writes it.
+pub fn render_messages(
+    d: &Described,
+    src: &[u8],
+    o: &JsonOptions,
+    w: &mut dyn Write,
+    end: bool,
+) -> std::io::Result<(u64, Option<RunStats>)> {
     let mut f = JsonFile::new(&d.file.path, d.format.as_deref(), o);
     f.begin(w)?;
     let lines = o.expand.then(|| super::line_starts(src));
@@ -99,8 +113,11 @@ pub fn render_with_stats(
             Item::Context(c) => f.context(w, c, c.bytes(src))?,
         }
     }
+    if !end {
+        return Ok((f.written, None));
+    }
     let stats = f.end(w, &d.file.stats)?;
-    Ok((f.written, stats))
+    Ok((f.written, Some(stats)))
 }
 
 /// One file's messages, written as they come: `begin` before the first line, `end` last.

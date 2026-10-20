@@ -5,6 +5,7 @@ pub mod hyperlink;
 pub mod json;
 pub mod replace;
 pub mod rg;
+pub mod spool;
 pub mod stream;
 pub mod style;
 pub mod summary;
