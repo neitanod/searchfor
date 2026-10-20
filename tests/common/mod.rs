@@ -14,6 +14,8 @@ pub struct Fixture {
     pub dir: tempfile::TempDir,
     pub formats: tempfile::TempDir,
     pub grammars: tempfile::TempDir,
+    /// `Fixture::slashed`: s4 prints `/` between a path's components on every system.
+    slash_paths: bool,
 }
 
 impl Fixture {
@@ -25,6 +27,20 @@ impl Fixture {
             dir,
             formats: tempfile::tempdir().unwrap(),
             grammars: tempfile::tempdir().unwrap(),
+            slash_paths: false,
+        }
+    }
+
+    /// A fixture whose `s4` prints the paths it walks with `/` on every system: on Windows it
+    /// adds `--path-separator /` unless `args` sets a separator (M5b spec §4.2: rg's Windows
+    /// paths have `\` between the components the walker joins). For the tests that assert how
+    /// a Trail layout presents a path; the comparisons with rg use `new`, whose paths stay
+    /// native on both sides. Only path bytes change: searched bytes, JSON paths and patterns
+    /// are never rewritten.
+    pub fn slashed() -> Self {
+        Self {
+            slash_paths: true,
+            ..Self::new()
         }
     }
 
@@ -59,10 +75,11 @@ impl Fixture {
             .env_remove("RIPGREP_CONFIG_PATH")
             .stdin(Stdio::null());
         let args: Vec<_> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
-        if !args
-            .iter()
-            .any(|a| a.to_string_lossy().starts_with("--color"))
-        {
+        let given = |flag: &str| args.iter().any(|a| a.to_string_lossy().starts_with(flag));
+        if self.slash_paths && cfg!(windows) && !given("--path-separator") {
+            c.arg("--path-separator").arg("/");
+        }
+        if !given("--color") {
             c.arg("--color").arg("never");
         }
         c.args(args);
@@ -128,9 +145,26 @@ pub fn workspace_bin(package: &str, bin: &str, features: &[&str]) -> PathBuf {
         return p.clone();
     }
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let mut c = Command::new(cargo);
-    c.current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(["build", "--quiet", "-p", package, "--bin", bin]);
+    // Low priority on Linux, as every cargo of the plan (M5b plan, Limits); offline and
+    // locked, as the suite itself. CARGO_TARGET_DIR, when set, is inherited.
+    let mut c = match low_priority_prefix() {
+        Some(prefix) => {
+            let mut c = Command::new(&prefix[0]);
+            c.args(&prefix[1..]).arg(&cargo);
+            c
+        }
+        None => Command::new(&cargo),
+    };
+    c.current_dir(env!("CARGO_MANIFEST_DIR")).args([
+        "build",
+        "--quiet",
+        "--offline",
+        "--locked",
+        "-p",
+        package,
+        "--bin",
+        bin,
+    ]);
     if !features.is_empty() {
         c.arg("--features").arg(features.join(","));
     }
@@ -154,15 +188,46 @@ pub fn workspace_bin(package: &str, bin: &str, features: &[&str]) -> PathBuf {
     exe
 }
 
-/// The reference ripgrep: `SEARCHFOR_RG` when set, else `/usr/bin/rg` when it exists (another rg,
-/// such as 15.x, may come first on `PATH`), else `rg` on `PATH` (M3 review r1, Codex #8).
+/// `nice -n 19 ionice -c3` on Linux when both are on `PATH`, else nothing: the words put
+/// before a nested cargo so that it builds at the lowest CPU and I/O priority.
+fn low_priority_prefix() -> Option<Vec<PathBuf>> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let find = |name: &str| {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|d| d.join(name))
+            .find(|p| p.is_file())
+    };
+    let (nice, ionice) = (find("nice")?, find("ionice")?);
+    Some(vec![nice, "-n".into(), "19".into(), ionice, "-c3".into()])
+}
+
+/// The reference ripgrep (M5b spec §5.2): `select_rg` over this process's `SEARCHFOR_RG`, this
+/// system, and whether `/usr/bin/rg` exists.
 pub fn rg_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("SEARCHFOR_RG") {
+    select_rg(
+        std::env::var_os("SEARCHFOR_RG"),
+        cfg!(unix),
+        Path::new("/usr/bin/rg").is_file(),
+    )
+}
+
+/// The reference ripgrep, given the environment it is chosen from: `override_path` (the value
+/// of `SEARCHFOR_RG`) when set, as given and never searched on `PATH`; else on Unix
+/// `/usr/bin/rg` when it exists (another rg, such as 15.x, may come first on `PATH`; M3 review
+/// r1, Codex #8); else `rg` from `PATH`, the last resort (a Mac with rg under
+/// `/opt/homebrew/bin`, Windows). `reference_rg` then checks that it is 14.1.1.
+pub fn select_rg(
+    override_path: Option<std::ffi::OsString>,
+    unix: bool,
+    usr_bin_rg_exists: bool,
+) -> PathBuf {
+    if let Some(p) = override_path {
         return p.into();
     }
-    let usr = Path::new("/usr/bin/rg");
-    if usr.is_file() {
-        return usr.to_path_buf();
+    if unix && usr_bin_rg_exists {
+        return PathBuf::from("/usr/bin/rg");
     }
     PathBuf::from("rg")
 }
@@ -249,4 +314,255 @@ pub fn assert_valid_json_schema(out: &str) {
             assert!(validator.is_valid(&v["data"]), "{line}");
         }
     }
+}
+
+/// How long a fuzz test runs (M5b spec §5.1, plan Task 4.2): a deadline, a cap on the cases,
+/// or both. `permits(completed)` says whether case number `completed` (from 0) may run.
+pub struct FuzzBudget {
+    deadline: Option<std::time::Instant>,
+    /// A budget of more than 0 s runs at least one case, however late its test starts.
+    at_least_one: bool,
+    count: Option<usize>,
+}
+
+impl FuzzBudget {
+    /// A deadline `seconds` from now and a cap of `count` cases, each when given. Neither
+    /// given is no limit: a fuzz test always gives one (`fuzz_budget`).
+    pub fn new(seconds: Option<u64>, count: Option<usize>) -> Self {
+        Self {
+            deadline: seconds
+                .map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s)),
+            at_least_one: seconds.is_some_and(|s| s > 0),
+            count,
+        }
+    }
+
+    pub fn permits(&self, completed: usize) -> bool {
+        if self.count.is_some_and(|c| completed >= c) {
+            return false;
+        }
+        match self.deadline {
+            Some(d) => (completed == 0 && self.at_least_one) || std::time::Instant::now() < d,
+            None => true,
+        }
+    }
+
+    /// Whether a deadline bounds the run (`SEARCHFOR_FUZZ_SECONDS`).
+    pub fn timed(&self) -> bool {
+        self.deadline.is_some()
+    }
+}
+
+/// Seconds since the Unix epoch at which every fuzz test of this run stops: set by a fuzz test
+/// for the child processes it supervises, which share its deadline.
+pub const FUZZ_DEADLINE_VAR: &str = "SEARCHFOR_FUZZ_DEADLINE_MS";
+
+/// A fuzz setting from the environment: absent, or a number; anything else stops the run
+/// with a message rather than fuzzing with a default the user did not ask for.
+fn fuzz_var<T: std::str::FromStr>(name: &str) -> Option<T> {
+    let v = std::env::var_os(name)?;
+    let parsed = v.to_str().and_then(|s| s.trim().parse().ok());
+    Some(parsed.unwrap_or_else(|| panic!("{name}={v:?} is not a non-negative integer")))
+}
+
+/// `SEARCHFOR_FUZZ_SEED`, else `default`.
+pub fn fuzz_seed(default: u64) -> u64 {
+    fuzz_var("SEARCHFOR_FUZZ_SEED").unwrap_or(default)
+}
+
+/// `SEARCHFOR_FUZZ_N`, the inputs of one round, when set; 0 is refused, as a run that could
+/// never test anything.
+pub fn fuzz_n() -> Option<usize> {
+    let n = fuzz_var("SEARCHFOR_FUZZ_N")?;
+    assert!(n > 0, "SEARCHFOR_FUZZ_N=0 runs no case");
+    Some(n)
+}
+
+/// The deadline every fuzz test of this binary shares, and when it is, in milliseconds since
+/// the Unix epoch: a supervising parent's (`FUZZ_DEADLINE_VAR`), else `SEARCHFOR_FUZZ_SECONDS`
+/// from the first call. With neither, the run is counted, not timed.
+fn fuzz_deadline() -> Option<(std::time::Instant, u128, bool)> {
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    static DEADLINE: std::sync::OnceLock<Option<(Instant, u128, bool)>> =
+        std::sync::OnceLock::new();
+    *DEADLINE.get_or_init(|| {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        if let Some(at) = fuzz_var::<u128>(FUZZ_DEADLINE_VAR) {
+            let left = Duration::from_millis(at.saturating_sub(now_ms) as u64);
+            // Case 0 of the run is the first child's, which runs it however late it starts;
+            // a later child starts past case 0, so runs nothing past the deadline.
+            return Some((Instant::now() + left, at, true));
+        }
+        let secs: u64 = fuzz_var("SEARCHFOR_FUZZ_SECONDS")?;
+        assert!(secs > 0, "SEARCHFOR_FUZZ_SECONDS=0 runs no case");
+        let at = now_ms + u128::from(secs) * 1000;
+        Some((Instant::now() + Duration::from_secs(secs), at, secs > 0))
+    })
+}
+
+/// The budget of one fuzz test whose round of N inputs makes `cases_per_round` cases. Counted
+/// (no `SEARCHFOR_FUZZ_SECONDS`): one round. Timed: rounds until the deadline shared by the
+/// binary's tests, and at least one case; an explicit `SEARCHFOR_FUZZ_N` still caps the run at
+/// one round. A test checks `permits` before each round as well as before each case, so a
+/// round without cases never spins.
+pub fn fuzz_budget(cases_per_round: usize) -> FuzzBudget {
+    match fuzz_deadline() {
+        None => FuzzBudget::new(None, Some(cases_per_round)),
+        Some((deadline, _, at_least_one)) => FuzzBudget {
+            deadline: Some(deadline),
+            at_least_one,
+            count: fuzz_n().map(|_| cases_per_round),
+        },
+    }
+}
+
+/// The environment a supervised fuzz child needs to share this run's deadline.
+pub fn fuzz_child_env() -> Option<(&'static str, String)> {
+    fuzz_deadline().map(|(_, at, _)| (FUZZ_DEADLINE_VAR, at.to_string()))
+}
+
+/// Where a failing fuzz case is saved (`SEARCHFOR_FUZZ_ARTIFACT_DIR`), when set.
+pub fn fuzz_artifact_dir() -> Option<PathBuf> {
+    std::env::var_os("SEARCHFOR_FUZZ_ARTIFACT_DIR").map(PathBuf::from)
+}
+
+/// A fuzz case as saved for replay: the test, the round's seed and N, the case's index in the
+/// round, its command line, and its files.
+pub struct FuzzCase<'a> {
+    pub test: &'a str,
+    pub seed: u64,
+    pub n: usize,
+    pub case: usize,
+    pub argv: &'a [&'a std::ffi::OsStr],
+    pub files: &'a [(&'a str, &'a [u8])],
+    pub stderr: &'a [u8],
+    pub what: &'a str,
+}
+
+/// The exact bytes of `arg`: the Unix bytes, or the UTF-16LE units of a Windows string, so a
+/// command line that is not Unicode replays as it ran.
+fn os_bytes(arg: &std::ffi::OsStr) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        std::os::unix::ffi::OsStrExt::as_bytes(arg).to_vec()
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::ffi::OsStrExt::encode_wide(arg)
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        arg.to_string_lossy().into_owned().into_bytes()
+    }
+}
+
+/// Saves `case` under `SEARCHFOR_FUZZ_ARTIFACT_DIR`, when set, in a directory of its own:
+/// `case.txt` (what failed, the seed, N, the case and the replay variables), `argv-<i>.bin`
+/// (each argument's exact bytes), `stderr.bin`, and each file under `files/`. Returns it.
+pub fn save_fuzz_case(case: &FuzzCase) -> Option<PathBuf> {
+    save_fuzz_case_in(&fuzz_artifact_dir()?, case)
+}
+
+/// `save_fuzz_case` under `root`.
+pub fn save_fuzz_case_in(root: &Path, case: &FuzzCase) -> Option<PathBuf> {
+    let dir = root.join(format!("{}-{}-{}", case.test, case.seed, case.case));
+    std::fs::create_dir_all(dir.join("files")).ok()?;
+    let argv: Vec<String> = case
+        .argv
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let text = format!(
+        "test: {}\nfailure: {}\nreplay: SEARCHFOR_FUZZ_SEED={} SEARCHFOR_FUZZ_N={} (case {} of the round)\nargv (lossy; exact bytes in argv-*.bin): {argv:?}\n",
+        case.test, case.what, case.seed, case.n, case.case
+    );
+    let _ = std::fs::write(dir.join("case.txt"), text);
+    for (i, a) in case.argv.iter().enumerate() {
+        let _ = std::fs::write(dir.join(format!("argv-{i}.bin")), os_bytes(a));
+    }
+    let _ = std::fs::write(dir.join("stderr.bin"), case.stderr);
+    for (name, bytes) in case.files {
+        let _ = std::fs::write(dir.join("files").join(name), bytes);
+    }
+    Some(dir)
+}
+
+/// The case a fuzz test is about to run, written to `SEARCHFOR_FUZZ_ARTIFACT_DIR` before it
+/// runs and removed when the test ends normally: a crash that ends the whole test process
+/// leaves the seed, N and the case behind for the workflow to upload.
+pub struct FuzzInFlight {
+    path: Option<PathBuf>,
+}
+
+impl FuzzInFlight {
+    pub fn new(test: &str) -> Self {
+        let path = fuzz_artifact_dir().map(|d| d.join(format!("in-flight-{test}.txt")));
+        if let Some(p) = &path {
+            let _ = std::fs::create_dir_all(p.parent().unwrap());
+        }
+        Self { path }
+    }
+
+    /// Records the case about to run.
+    pub fn at(&self, what: impl FnOnce() -> String) {
+        if let Some(p) = &self.path {
+            let _ = std::fs::write(p, what());
+        }
+    }
+
+    /// The test ended without a crash: nothing to keep.
+    pub fn finish(self) {
+        if let Some(p) = &self.path {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
+/// A child process that is killed and reaped when this goes out of scope, a panic included,
+/// so a fuzz case that hangs never outlives its test.
+pub struct Reaped(pub std::process::Child);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Runs `cmd` with stdout discarded and stderr collected, killed and reaped after `limit`.
+/// Returns its exit status (None when it was killed) and stderr.
+pub fn run_limited(
+    cmd: &mut Command,
+    limit: std::time::Duration,
+) -> (Option<std::process::ExitStatus>, Vec<u8>) {
+    let started = std::time::Instant::now();
+    let mut child = Reaped(
+        cmd.stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut pipe = child.0.stderr.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut e = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut pipe, &mut e);
+        e
+    });
+    let status = loop {
+        if let Some(st) = child.0.try_wait().unwrap() {
+            break Some(st);
+        }
+        if started.elapsed() > limit {
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    // Killed and reaped here when it is still running, so its stderr ends.
+    drop(child);
+    (status, reader.join().unwrap())
 }

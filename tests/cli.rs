@@ -7,8 +7,9 @@ use std::io::Write;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+/// s4 in a fresh fixture whose walked paths print with `/` on every system.
 fn s4(args: &[&str]) -> std::process::Output {
-    run(&mut Fixture::new().s4(args))
+    run(&mut Fixture::slashed().s4(args))
 }
 
 #[test]
@@ -362,7 +363,7 @@ fn t19_files_without_match_after_filters() {
 
 #[test]
 fn t20_stdin_selection() {
-    let fx = Fixture::new();
+    let fx = Fixture::slashed();
     // /dev/null: the current directory is searched, as `rg needle < /dev/null`.
     let o = run(&mut fx.s4(["--sort", "path", "needle", "--flat"]));
     assert_eq!(code(&o), 0, "{}", stderr(&o));
@@ -867,7 +868,9 @@ fn piped(fx: &Fixture, args: &[&str], input: &[u8]) -> std::process::Output {
 }
 
 /// Code review r2, Codex #1: a path that is not a regular file (`/dev/stdin`, a FIFO) is read
-/// once, as stdin: its Matches are the same as through `-`.
+/// once, as stdin: its Matches are the same as through `-`. Unix: Windows has no `/dev/stdin`
+/// (`-` is covered there by t23 and t36).
+#[cfg(unix)]
 #[test]
 fn t34_a_path_that_cannot_be_read_twice_is_read_as_stdin() {
     let fx = Fixture::new();
@@ -897,7 +900,9 @@ fn t34_a_path_that_cannot_be_read_twice_is_read_as_stdin() {
 /// is not opened again (which would wait for the writer to close it, and find nothing). With
 /// `--within`, `-m` counts the lines the filter keeps, so the search reads to the end, as on stdin.
 /// So does `--json` on a Markdown FIFO, whose `end_line`s need the whole input (code review r3,
-/// Fable #1, `t36`): the `--json` case is a FIFO without an Outline.
+/// Fable #1, `t36`): the `--json` case is a FIFO without an Outline. Unix: Windows has no
+/// FIFO in the file system (`mkfifo`).
+#[cfg(unix)]
 #[test]
 fn t35_max_count_on_an_open_fifo_stops_at_the_limit() {
     let fx = Fixture::new();
@@ -911,11 +916,18 @@ fn t35_max_count_on_an_open_fifo_stops_at_the_limit() {
     {
         let name = format!("pipe{n}.{ext}");
         let fifo = fx.file(&name);
-        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
-        if !made.is_ok_and(|s| s.success()) {
-            eprintln!("skipping: mkfifo failed");
-            return;
-        }
+        let c_path =
+            std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(fifo.as_os_str()))
+                .unwrap();
+        // SAFETY: a NUL-terminated path that lives across the call.
+        let made = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+        assert_eq!(
+            made,
+            0,
+            "mkfifo {}: {}",
+            fifo.display(),
+            std::io::Error::last_os_error()
+        );
         // The writer holds the FIFO open for 4 s after writing; it is left running.
         std::thread::spawn(move || {
             let mut w = std::fs::OpenOptions::new().write(true).open(fifo).unwrap();
@@ -1066,7 +1078,13 @@ fn t36_sections_of_stdin_with_max_count_span_the_whole_input() {
         "{}",
         stdout(&want)
     );
-    for input in ["-", "/dev/stdin"] {
+    // `/dev/stdin` exists on Unix only.
+    let inputs: &[&str] = if cfg!(unix) {
+        &["-", "/dev/stdin"]
+    } else {
+        &["-"]
+    };
+    for &input in inputs {
         let mut dash = path.to_vec();
         *dash.last_mut().unwrap() = input;
         let got = fed(&fx, &dash, bigsec.clone().into_bytes());
@@ -1136,4 +1154,132 @@ fn t39_the_configuration_file_is_trimmed_as_ripgreps() {
         (code(&got), stdout(&got), stderr(&got)),
         (code(&want), stdout(&want), stderr(&want))
     );
+}
+
+/// M5b (plan, Chunk 4): the test base itself. These live here, not in `tests/common`, whose
+/// own tests every integration binary declaring `mod common;` would run again.
+mod m5b_tests {
+    use super::common::FuzzBudget;
+    use super::common::select_rg;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn explicit_reference_wins_without_path_search() {
+        assert_eq!(
+            select_rg(Some("/tmp/rg reference".into()), true, true),
+            PathBuf::from("/tmp/rg reference")
+        );
+        assert_eq!(
+            select_rg(Some(r"C:\tools\rg.exe".into()), false, false),
+            PathBuf::from(r"C:\tools\rg.exe")
+        );
+        assert_eq!(select_rg(None, true, true), PathBuf::from("/usr/bin/rg"));
+        // Unix without /usr/bin/rg (a Mac with Homebrew): PATH is the last resort.
+        assert_eq!(select_rg(None, true, false), PathBuf::from("rg"));
+        assert_eq!(select_rg(None, false, false), PathBuf::from("rg"));
+    }
+
+    #[test]
+    fn fuzz_budget_combines_explicit_count_with_a_deadline() {
+        assert!(!FuzzBudget::new(Some(0), None).permits(0));
+        assert!(FuzzBudget::new(Some(60), Some(2)).permits(1));
+        assert!(!FuzzBudget::new(Some(60), Some(2)).permits(2));
+        assert!(FuzzBudget::new(Some(60), None).permits(1_000_000));
+        assert!(!FuzzBudget::new(None, Some(0)).permits(0));
+    }
+
+    /// A failing fuzz case is saved with its replay variables and the exact bytes of its
+    /// command line and files.
+    #[test]
+    fn a_saved_fuzz_case_replays_exactly() {
+        use super::common::{FuzzCase, save_fuzz_case_in};
+        let root = tempfile::tempdir().unwrap();
+        let argv = [std::ffi::OsStr::new("-e"), std::ffi::OsStr::new("ñ|\n")];
+        let dir = save_fuzz_case_in(
+            root.path(),
+            &FuzzCase {
+                test: "t",
+                seed: 7,
+                n: 30,
+                case: 4,
+                argv: &argv,
+                files: &[("input.md", b"\xff\r\n")],
+                stderr: b"boom",
+                what: "panic",
+            },
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(dir.join("case.txt")).unwrap();
+        assert!(
+            text.contains("SEARCHFOR_FUZZ_SEED=7 SEARCHFOR_FUZZ_N=30 (case 4"),
+            "{text}"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("files/input.md")).unwrap(),
+            b"\xff\r\n"
+        );
+        assert_eq!(std::fs::read(dir.join("stderr.bin")).unwrap(), b"boom");
+        let arg = std::fs::read(dir.join("argv-1.bin")).unwrap();
+        if cfg!(windows) {
+            let units: Vec<u16> = "ñ|\n".encode_utf16().collect();
+            assert_eq!(
+                arg,
+                units
+                    .iter()
+                    .flat_map(|u| u.to_le_bytes())
+                    .collect::<Vec<_>>()
+            );
+        } else {
+            assert_eq!(arg, "ñ|\n".as_bytes());
+        }
+    }
+
+    #[test]
+    fn m5b_ci_names_four_native_systems_and_required_reference() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        for marker in [
+            "ubuntu-24.04",
+            "macos-15",
+            "macos-15-intel",
+            "windows-2022",
+            "SEARCHFOR_REQUIRE_REFERENCE",
+            "SEARCHFOR_RG",
+            "120",
+            "cargo clippy",
+            "cargo test",
+            "--workspace",
+            "--release",
+        ] {
+            assert!(ci.contains(marker), "missing workflow contract: {marker}");
+        }
+        let docs = std::fs::read_to_string(root.join("docs/platforms.md")).unwrap();
+        for reason in [
+            "/proc",
+            "GNU time",
+            "POSIX",
+            "PCRE2",
+            "arm64",
+            "invoked by a parent test",
+            "selected explicitly in CI",
+        ] {
+            assert!(
+                docs.contains(reason),
+                "missing platform inventory: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn fixture_attributes_keep_synthetic_bytes() {
+        let attrs =
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(".gitattributes"))
+                .unwrap();
+        let has = |rule: &str| attrs.lines().any(|l| l.trim() == rule);
+        // Repo-wide: checkout never rewrites LF to CRLF, so docs/examples,
+        // insta snapshots and fixtures keep their exact bytes on Windows.
+        assert!(has("* -text"));
+        assert!(has("*.sh text eol=lf"));
+        assert!(has("tests/fixtures/** -text"));
+    }
 }

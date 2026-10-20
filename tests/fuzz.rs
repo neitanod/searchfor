@@ -3,7 +3,10 @@
 //! with lone CRs, CRLF, BOMs, multi-byte keys and values, and truncated files, looking for
 //! panics and for name pieces outside their text, outside their Source, or over other bytes.
 //! The generator is seeded, so a failure reproduces; `SEARCHFOR_FUZZ_SEED` and `SEARCHFOR_FUZZ_N` (inputs
-//! per Format) change the seed and the count.
+//! per Format) change the seed and the count. `SEARCHFOR_FUZZ_SECONDS` repeats rounds, round r
+//! with the seed plus r, until that many seconds have passed, one deadline for every test of
+//! this file (M5b plan, Task 4.2). A failure says how to replay it and is saved under
+//! `SEARCHFOR_FUZZ_ARTIFACT_DIR`.
 mod common;
 
 use searchfor::model::{Input, Name};
@@ -525,18 +528,24 @@ fn run(t: &Target, p: &dyn Processor, bytes: &[u8], rng: &mut Rng) -> Result<(),
     check_names(&names.unwrap_or_default(), bytes)
 }
 
-fn count() -> usize {
-    std::env::var("SEARCHFOR_FUZZ_N")
-        .ok()
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(1000)
+/// Inputs per Format of a counted run, and of each round of a timed one.
+const COUNTED_N: usize = 1000;
+const TIMED_N: usize = 100;
+
+/// The seed of round 0; round r runs with this plus r, as a counted run of that seed would.
+fn base_seed() -> u64 {
+    common::fuzz_seed(0x5eed_f0f0_1234_5678)
 }
 
-fn seed() -> u64 {
-    std::env::var("SEARCHFOR_FUZZ_SEED")
-        .ok()
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(0x5eed_f0f0_1234_5678)
+/// The inputs of a round: `SEARCHFOR_FUZZ_N`, else `COUNTED_N`, or `TIMED_N` in a timed run.
+fn round_n(timed: bool) -> usize {
+    common::fuzz_n().unwrap_or(if timed { TIMED_N } else { COUNTED_N })
+}
+
+/// The budget of a test and the N of its rounds; `cases(n)` is how many cases a round makes.
+fn budget(cases: impl Fn(usize) -> usize) -> (common::FuzzBudget, usize) {
+    let n = round_n(common::fuzz_budget(0).timed());
+    (common::fuzz_budget(cases(n)), n)
 }
 
 /// A Format fuzzed: its Definition's name, a file extension, its Processor and generators.
@@ -605,45 +614,70 @@ fn targets() -> Vec<Target> {
         .collect()
 }
 
-/// `n` generated inputs per target, in the order of `targets`.
-fn inputs(targets: &[Target], n: usize) -> Vec<Vec<Vec<u8>>> {
-    let mut rng = Rng(seed());
+/// `n` generated inputs per target from `seed`, in the order of `targets`.
+fn inputs(targets: &[Target], n: usize, seed: u64) -> Vec<Vec<Vec<u8>>> {
+    let mut rng = Rng(seed);
     targets
         .iter()
         .map(|t| (0..n).map(|_| generate(&mut rng, t)).collect())
         .collect()
 }
 
+/// The longest one run of s4 over a round's files may take.
+const CLI_LIMIT: Duration = Duration::from_secs(10);
+
 #[test]
 fn generated_inputs_do_not_panic_the_processors() {
+    const TEST: &str = "generated_inputs_do_not_panic_the_processors";
     let targets = targets();
-    let mut rng = Rng(seed() ^ 1);
+    let (budget, n) = budget(|n| targets.len() * n);
+    let in_flight = common::FuzzInFlight::new(TEST);
     let mut failures = Vec::new();
     let mut tried = 0;
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
-    for (t, set) in targets.iter().zip(inputs(&targets, count())) {
-        let ts = TreeSitter::default();
-        let p: &dyn Processor = match t.proc {
-            Proc::Keypath => &Keypath,
-            Proc::TreeSitter => &ts,
-            Proc::Markup => &Markup,
-            Proc::Csv => &Csv,
-            Proc::Subtitles => &Subtitles,
-        };
-        for bytes in &set {
-            tried += 1;
-            if let Err(e) = run(t, p, bytes, &mut rng) {
-                failures.push(format!(
-                    "{}: {e}\n  input: \"{}\"",
-                    t.format,
-                    bytes.escape_ascii()
-                ));
+    // Round r: the inputs of seed `base + r`, Format after Format, as a counted run of it.
+    'rounds: for round in 0u64.. {
+        if !budget.permits(tried) {
+            break;
+        }
+        let seed = base_seed().wrapping_add(round);
+        let (mut make, mut rng) = (Rng(seed), Rng(seed ^ 1));
+        let mut case = 0;
+        for t in &targets {
+            let ts = TreeSitter::default();
+            let p: &dyn Processor = match t.proc {
+                Proc::Keypath => &Keypath,
+                Proc::TreeSitter => &ts,
+                Proc::Markup => &Markup,
+                Proc::Csv => &Csv,
+                Proc::Subtitles => &Subtitles,
+            };
+            for _ in 0..n {
+                let bytes = generate(&mut make, t);
+                if !budget.permits(tried) {
+                    break 'rounds;
+                }
+                in_flight.at(|| replay(seed, n, case, t.format));
+                tried += 1;
+                if let Err(e) = run(t, p, &bytes, &mut rng) {
+                    let name = format!("input.{}", t.ext);
+                    let saved = save(TEST, seed, n, case, &e, &[(&name, &bytes)]);
+                    failures.push(format!(
+                        "{}: {e} ({}{saved})\n  input: \"{}\"",
+                        t.format,
+                        replay(seed, n, case, t.format),
+                        bytes.escape_ascii()
+                    ));
+                }
+                case += 1;
             }
         }
     }
     std::panic::set_hook(hook);
+    in_flight.finish();
     eprintln!("fuzz: {tried} inputs, {} failures", failures.len());
+    assert!(tried > 0, "no input within the budget");
     assert!(
         failures.is_empty(),
         "{} of {tried} inputs failed; the first ones:\n{}",
@@ -652,41 +686,117 @@ fn generated_inputs_do_not_panic_the_processors() {
     );
 }
 
+/// How to run a case again: its round's seed and N, and where in the round it is.
+fn replay(seed: u64, n: usize, case: usize, what: &str) -> String {
+    format!(
+        "replay: SEARCHFOR_FUZZ_SEED={seed} SEARCHFOR_FUZZ_N={n}, case {case} of the round, {what}"
+    )
+}
+
+/// Saves a failing case under `SEARCHFOR_FUZZ_ARTIFACT_DIR`; returns where, for the message.
+fn save(
+    test: &str,
+    seed: u64,
+    n: usize,
+    case: usize,
+    what: &str,
+    files: &[(&str, &[u8])],
+) -> String {
+    common::save_fuzz_case(&common::FuzzCase {
+        test,
+        seed,
+        n,
+        case,
+        argv: &[],
+        files,
+        stderr: b"",
+        what,
+    })
+    .map(|d| format!(", saved in {}", d.display()))
+    .unwrap_or_default()
+}
+
 /// A tenth of the same inputs through the binary: the output that maps the Trails and the
-/// names back to the Source must not panic either.
+/// names back to the Source must not panic either, and each run ends within `CLI_LIMIT`.
 #[test]
 fn generated_files_do_not_panic_sfor() {
-    let targets = targets();
-    let fx = common::Fixture::new();
-    let dir = fx.path().join("fuzz");
-    std::fs::create_dir(&dir).unwrap();
-    let mut files = 0;
-    for (t, set) in targets.iter().zip(inputs(&targets, count() / 10)) {
-        for (k, bytes) in set.iter().enumerate() {
-            std::fs::write(dir.join(format!("{k}.{}", t.ext)), bytes).unwrap();
-            files += 1;
-        }
-    }
-    for args in [
-        &["-e", "needle|é|a"][..],
+    const TEST: &str = "generated_files_do_not_panic_sfor";
+    const RUNS: &[&[&str]] = &[
+        &["-e", "needle|é|a"],
         &["--json", "-e", "needle|é|a"],
         &["--flat", "-e", "needle|é|a"],
         &["--in-headings", "-e", "é|a|^|$"],
         &["--in-headings", "--json", "-e", "é|a"],
         &["--expand", "-e", "needle"],
-    ] {
-        let out = fx
-            .s4(args.iter().copied().chain(["fuzz"]))
-            .output()
-            .unwrap();
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            out.status.code() != Some(101) && !err.contains("panicked"),
-            "s4 {args:?} over {files} files: {:?}\n{err}",
-            out.status
-        );
+    ];
+    let targets = targets();
+    let fx = common::Fixture::new();
+    let dir = fx.path().join("fuzz");
+    let (budget, n) = budget(|_| RUNS.len());
+    let mut failures = Vec::new();
+    let (mut files, mut tried) = (0, 0);
+    for round in 0u64.. {
+        if !budget.permits(tried) {
+            break;
+        }
+        let seed = base_seed().wrapping_add(round);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let mut written: Vec<(String, Vec<u8>)> = Vec::new();
+        for (t, set) in targets.iter().zip(inputs(&targets, (n / 10).max(1), seed)) {
+            for (k, bytes) in set.into_iter().enumerate() {
+                let name = format!("{k}.{}", t.ext);
+                std::fs::write(dir.join(&name), &bytes).unwrap();
+                written.push((name, bytes));
+            }
+        }
+        files += written.len();
+        for (case, args) in RUNS.iter().enumerate() {
+            if !budget.permits(tried) {
+                break;
+            }
+            tried += 1;
+            let (status, err) =
+                common::run_limited(&mut fx.s4(args.iter().copied().chain(["fuzz"])), CLI_LIMIT);
+            let text = String::from_utf8_lossy(&err);
+            if status.is_none_or(|s| s.code() == Some(101)) || text.contains("panicked") {
+                let what = match status {
+                    None => format!("s4 {args:?}: still running after {CLI_LIMIT:?}, killed"),
+                    Some(s) => format!("s4 {args:?}: {s}"),
+                };
+                let mut argv: Vec<&std::ffi::OsStr> =
+                    args.iter().map(std::ffi::OsStr::new).collect();
+                argv.push(std::ffi::OsStr::new("fuzz"));
+                let shown: Vec<(&str, &[u8])> = written
+                    .iter()
+                    .map(|(name, b)| (name.as_str(), b.as_slice()))
+                    .collect();
+                let saved = common::save_fuzz_case(&common::FuzzCase {
+                    test: TEST,
+                    seed,
+                    n,
+                    case,
+                    argv: &argv,
+                    files: &shown,
+                    stderr: &err,
+                    what: &what,
+                })
+                .map(|d| format!(", saved in {}", d.display()))
+                .unwrap_or_default();
+                failures.push(format!(
+                    "{what} over {} files ({}{saved})\n{text}",
+                    written.len(),
+                    replay(seed, n, case, "the round's files")
+                ));
+            }
+        }
     }
-    eprintln!("fuzz: {files} files through s4");
+    eprintln!(
+        "fuzz: {files} files, {tried} runs of s4, {} failures",
+        failures.len()
+    );
+    assert!(tried > 0, "no run of s4 within the budget");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 // M4 (plan, Task 12.1): the Extractors and the `object` Processor over mutated files. Each seed
@@ -850,18 +960,23 @@ const BETWEEN: Duration = Duration::from_secs(60);
 /// whose child dies (an abort, out of memory) fails too. Between cases, while the child starts
 /// or makes the next case, the limit is `BETWEEN`: making a seed's cases takes 0.5 s alone and
 /// passed 3 s with the suite running beside it on a loaded machine. Returns the failures.
-fn supervised(test: &str, limit: Duration) -> Vec<String> {
+fn supervised(test: &str, limit: Duration) -> Supervised {
     use std::io::BufRead;
     let mut failures = Vec::new();
+    let mut lost = Vec::new();
+    let mut ended = 0;
     let mut from = 0usize;
     'children: loop {
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", test, "--nocapture", "--test-threads", "1"])
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact", test, "--nocapture", "--test-threads", "1"])
             .env(CHILD_FROM, from.to_string())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
+            .stderr(std::process::Stdio::null());
+        // A timed run's children stop at the parent's deadline.
+        if let Some((k, v)) = common::fuzz_child_env() {
+            cmd.env(k, v);
+        }
+        let mut child = cmd.spawn().unwrap();
         let out = std::io::BufReader::new(child.stdout.take().unwrap());
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -881,7 +996,11 @@ fn supervised(test: &str, limit: Duration) -> Vec<String> {
                     };
                     if msg == "done" {
                         let _ = child.wait();
-                        return failures;
+                        return Supervised {
+                            failures,
+                            ended,
+                            lost,
+                        };
                     }
                     let (what, rest) = msg.split_once(' ').unwrap_or((msg, ""));
                     let (n, failure) = rest.split_once(' ').unwrap_or((rest, ""));
@@ -890,6 +1009,7 @@ fn supervised(test: &str, limit: Duration) -> Vec<String> {
                         "run" => running = Some(n),
                         _ => {
                             running = None;
+                            ended += 1;
                             if !failure.is_empty() {
                                 failures.push(failure.replace("\\n", "\n"));
                             }
@@ -905,13 +1025,19 @@ fn supervised(test: &str, limit: Duration) -> Vec<String> {
                     let status = child.wait().unwrap();
                     let Some(n) = running else {
                         failures.push(format!("the child stopped between cases ({status})"));
-                        return failures;
+                        return Supervised {
+                            failures,
+                            ended,
+                            lost,
+                        };
                     };
+                    ended += 1;
                     failures.push(if timed_out {
                         format!("case {n}: still running after {limit:?}, killed")
                     } else {
                         format!("case {n}: the child died ({status})")
                     });
+                    lost.push(n);
                     from = n + 1;
                     continue 'children;
                 }
@@ -920,19 +1046,47 @@ fn supervised(test: &str, limit: Duration) -> Vec<String> {
     }
 }
 
-/// In a child of `supervised`: runs the cases from `CHILD_FROM` on, reporting each.
-fn run_cases(cases: impl Iterator<Item = (Kind, Vec<u8>)>) {
+/// What `supervised` saw: the failures, how many cases ended (a killed or dead one included),
+/// and the cases whose child was killed or died, which the parent saves.
+struct Supervised {
+    failures: Vec<String>,
+    ended: usize,
+    lost: Vec<usize>,
+}
+
+/// A mutated document and where it comes from: its round's seed and N, and its index there.
+struct DocCase {
+    kind: Kind,
+    bytes: Vec<u8>,
+    seed: u64,
+    n: usize,
+    case: usize,
+}
+
+/// In a child of `supervised`: runs the cases from `CHILD_FROM` on while `budget` permits,
+/// reporting each, and saves a failing one.
+fn run_cases(test: &str, cases: impl Iterator<Item = DocCase>, budget: &common::FuzzBudget) {
     let from: usize = std::env::var(CHILD_FROM).unwrap().parse().unwrap();
     std::panic::set_hook(Box::new(|_| {}));
-    for (i, (kind, bytes)) in cases.enumerate() {
+    for (i, c) in cases.enumerate() {
+        if !budget.permits(i) {
+            break;
+        }
         if i < from {
             continue;
         }
         println!("fuzzcase run {i}");
-        let failure = check_doc(kind, &bytes)
+        let failure = check_doc(c.kind, &c.bytes)
             .err()
             .map(|e| {
-                format!("{kind:?}: {e}\n  input: \"{}\"", bytes.escape_ascii()).replace('\n', "\\n")
+                let what = format!("{:?}: {e}", c.kind);
+                let saved = save(test, c.seed, c.n, c.case, &what, &[("input", &c.bytes)]);
+                format!(
+                    "{what} ({}{saved})\n  input: \"{}\"",
+                    replay(c.seed, c.n, c.case, "mutated documents"),
+                    c.bytes.escape_ascii()
+                )
+                .replace('\n', "\\n")
             })
             .unwrap_or_default();
         println!("fuzzcase end {i} {failure}");
@@ -940,10 +1094,27 @@ fn run_cases(cases: impl Iterator<Item = (Kind, Vec<u8>)>) {
     println!("fuzzcase done");
 }
 
-/// The mutated documents, in order: the same for every child.
-fn mutated_documents() -> impl Iterator<Item = (Kind, Vec<u8>)> {
-    let mut rng = Rng(seed() ^ 2);
-    let n = count() / 4;
+/// Every mutated document of the run, round after round, in order: the same for every child.
+/// Round r is a counted run of seed `base + r`; a counted run is round 0 alone.
+fn all_mutated_documents(n: usize) -> impl Iterator<Item = DocCase> {
+    (0u64..).flat_map(move |round| {
+        let seed = base_seed().wrapping_add(round);
+        mutated_documents(seed, n)
+            .enumerate()
+            .map(move |(case, (kind, bytes))| DocCase {
+                kind,
+                bytes,
+                seed,
+                n,
+                case,
+            })
+    })
+}
+
+/// The mutated documents of one round, in order.
+fn mutated_documents(seed: u64, n: usize) -> impl Iterator<Item = (Kind, Vec<u8>)> {
+    let mut rng = Rng(seed ^ 2);
+    let n = (n / 4).max(1);
     document_seeds()
         .into_iter()
         .flat_map(move |(kind, seed_bytes)| {
@@ -971,12 +1142,25 @@ fn mutated_documents() -> impl Iterator<Item = (Kind, Vec<u8>)> {
 
 #[test]
 fn mutated_documents_do_not_panic_the_extractors() {
+    const TEST: &str = "mutated_documents_do_not_panic_the_extractors";
+    let (budget, n) = budget(|n| document_seeds().len() * (n / 4).max(1));
     if std::env::var_os(CHILD_FROM).is_some() {
-        return run_cases(mutated_documents());
+        return run_cases(TEST, all_mutated_documents(n), &budget);
     }
-    let tried = mutated_documents().count();
-    let failures = supervised("mutated_documents_do_not_panic_the_extractors", DEADLINE);
+    let Supervised {
+        failures,
+        ended: tried,
+        lost,
+    } = supervised(TEST, DEADLINE);
+    // A case whose child was killed or died could not save itself: the parent makes it again.
+    for i in lost {
+        if let Some(c) = all_mutated_documents(n).nth(i) {
+            let what = format!("{:?}: killed or died", c.kind);
+            save(TEST, c.seed, c.n, c.case, &what, &[("input", &c.bytes)]);
+        }
+    }
     eprintln!("fuzz: {tried} documents, {} failures", failures.len());
+    assert!(tried > 0, "no document within the budget");
     assert!(
         failures.is_empty(),
         "{} of {tried} documents failed; the first ones:\n{}",
@@ -1015,7 +1199,12 @@ fn the_supervisor_kills_a_case_that_never_ends() {
         return;
     }
     let started = std::time::Instant::now();
-    let failures = supervised(TEST, Duration::from_millis(300));
+    let Supervised {
+        failures,
+        ended,
+        lost,
+    } = supervised(TEST, Duration::from_millis(300));
+    assert_eq!((ended, lost), (5, vec![1]));
     assert_eq!(
         failures,
         [
@@ -1032,7 +1221,7 @@ fn the_supervisor_kills_a_case_that_never_ends() {
 
 #[test]
 fn mutated_objects_do_not_panic_the_object_processor() {
-    let mut rng = Rng(seed() ^ 3);
+    const TEST: &str = "mutated_objects_do_not_panic_the_object_processor";
     let spec = obj::Spec::new()
         .section(".text", b"\x55\xc3\0\0")
         .section(".rodata", b"\0hello\0version=needle\0")
@@ -1071,51 +1260,86 @@ fn mutated_objects_do_not_panic_the_object_processor() {
         let at = info.location().map(|l| l.to_string()).unwrap_or_default();
         WHERE.with(|w| *w.borrow_mut() = at);
     }));
+    let (budget, n) = budget(|n| seeds.len() * (n / 4).max(1));
+    let in_flight = common::FuzzInFlight::new(TEST);
     let mut failures = Vec::new();
     let (mut tried, mut in_goblin) = (0, 0);
-    for s in &seeds {
-        for _ in 0..count() / 4 {
-            tried += 1;
-            let bytes = mutate(&mut rng, s.clone(), COMMON);
-            let anchors: Vec<usize> = (0..4).map(|_| rng.below(bytes.len() + 1)).collect();
-            let got = catch_unwind(AssertUnwindSafe(|| {
-                let lines = searchfor::trail::LineIndex::new(&bytes);
-                if let Some(m) = object::Map::parse_loudly(&bytes) {
-                    for &a in &anchors {
-                        let _ = m.trail(a, &lines);
-                    }
+    // Round r: the mutations of seed `base + r`, as a counted run of it.
+    'rounds: for round in 0u64.. {
+        if !budget.permits(tried) {
+            break;
+        }
+        let seed = base_seed().wrapping_add(round);
+        let mut rng = Rng(seed ^ 3);
+        let mut case = 0;
+        for s in &seeds {
+            for _ in 0..(n / 4).max(1) {
+                if !budget.permits(tried) {
+                    break 'rounds;
                 }
-                let hits: Vec<_> = anchors
-                    .iter()
-                    .map(|&a| a..(a + 3).min(bytes.len()))
-                    .collect();
-                let mut sorted = hits.clone();
-                sorted.sort_by_key(|h| h.start);
-                object::rows::rows(&bytes, &sorted, None, &lines)
-            }));
-            match got {
-                Err(_) if WHERE.with(|w| w.borrow().contains("/goblin-")) => in_goblin += 1,
-                Err(_) => failures.push(format!(
-                    "panic at {}\n  input: \"{}\"",
-                    WHERE.with(|w| w.borrow().clone()),
-                    bytes.escape_ascii()
-                )),
-                Ok(rows) => {
-                    for r in rows {
-                        let end = r.absolute_offset as usize + r.len;
-                        if end > bytes.len() || r.submatches.iter().any(|s| s.end > r.len) {
-                            failures.push(format!(
-                                "row {}..{end} over {} bytes",
-                                r.absolute_offset,
-                                bytes.len()
-                            ));
+                in_flight.at(|| replay(seed, n, case, "mutated objects"));
+                tried += 1;
+                let bytes = mutate(&mut rng, s.clone(), COMMON);
+                let anchors: Vec<usize> = (0..4).map(|_| rng.below(bytes.len() + 1)).collect();
+                let got = catch_unwind(AssertUnwindSafe(|| {
+                    let lines = searchfor::trail::LineIndex::new(&bytes);
+                    if let Some(m) = object::Map::parse_loudly(&bytes) {
+                        for &a in &anchors {
+                            let _ = m.trail(a, &lines);
+                        }
+                    }
+                    let hits: Vec<_> = anchors
+                        .iter()
+                        .map(|&a| a..(a + 3).min(bytes.len()))
+                        .collect();
+                    let mut sorted = hits.clone();
+                    sorted.sort_by_key(|h| h.start);
+                    object::rows::rows(&bytes, &sorted, None, &lines)
+                }));
+                match got {
+                    // The crate's directory, after a backslash on Windows.
+                    Err(_)
+                        if WHERE.with(|w| {
+                            let w = w.borrow();
+                            w.contains("/goblin-") || w.contains("\\goblin-")
+                        }) =>
+                    {
+                        in_goblin += 1
+                    }
+                    Err(_) => {
+                        let what = format!("panic at {}", WHERE.with(|w| w.borrow().clone()));
+                        let saved = save(TEST, seed, n, case, &what, &[("input", &bytes)]);
+                        failures.push(format!(
+                            "{what} ({}{saved})\n  input: \"{}\"",
+                            replay(seed, n, case, "mutated objects"),
+                            bytes.escape_ascii()
+                        ))
+                    }
+                    Ok(rows) => {
+                        for r in rows {
+                            let end = r.absolute_offset as usize + r.len;
+                            if end > bytes.len() || r.submatches.iter().any(|s| s.end > r.len) {
+                                let what = format!(
+                                    "row {}..{end} over {} bytes",
+                                    r.absolute_offset,
+                                    bytes.len()
+                                );
+                                let saved = save(TEST, seed, n, case, &what, &[("input", &bytes)]);
+                                failures.push(format!(
+                                    "{what} ({}{saved})",
+                                    replay(seed, n, case, "mutated objects")
+                                ));
+                            }
                         }
                     }
                 }
+                case += 1;
             }
         }
     }
     std::panic::set_hook(hook);
+    in_flight.finish();
+    assert!(tried > 0, "no object file within the budget");
     eprintln!(
         "fuzz: {tried} object files, {in_goblin} panics in goblin, {} failures",
         failures.len()

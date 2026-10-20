@@ -1,0 +1,255 @@
+# The suite on four native systems (M5b spec §4.1 and §5): Linux x86-64, macOS arm64, macOS
+# x86-64 and Windows x86-64 (MSVC), on every push to any branch and every pull request. Each
+# job checks formatting (Linux), clippy, the release build and the whole suite against the
+# rg 14.1.1 its system's official archive provides, verified by the SHA-256 written below
+# (M5b plan, D16); then prints which tests did not run there and why (docs/platforms.md).
+# The packaging jobs of releases come later (M5b plan, Chunk 11); the job id `build` stays.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_BUILD_JOBS: '8'
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+  PCRE2_SYS_STATIC: '1'
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            rg_archive: ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz
+            rg_sha256: 4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e
+            prio: nice -n 19 ionice -c3
+          - name: macos-arm64
+            os: macos-15
+            target: aarch64-apple-darwin
+            rg_archive: ripgrep-14.1.1-aarch64-apple-darwin.tar.gz
+            rg_sha256: 24ad76777745fbff131c8fbc466742b011f925bfa4fffa2ded6def23b5b937be
+            prio: nice -n 19
+          - name: macos-x86_64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            rg_archive: ripgrep-14.1.1-x86_64-apple-darwin.tar.gz
+            rg_sha256: fc87e78f7cb3fea12d69072e7ef3b21509754717b746368fd40d88963630e2b3
+            prio: nice -n 19
+          - name: windows
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            rg_archive: ripgrep-14.1.1-x86_64-pc-windows-msvc.zip
+            rg_sha256: d0f534024c42afd6cb4d38907c25cd2b249b79bbe6cc1dbee8e3e37c2b6e25a1
+            prio: ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    env:
+      PRIO: ${{ matrix.prio }}
+      SYSTEM: ${{ matrix.name }}
+      # GNU time's report is parsed in English (tests/perf.rs).
+      LC_ALL: ${{ matrix.name == 'linux' && 'C' || '' }}
+    steps:
+      - name: Low priority (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # The runner's worker starts every later step; a process a BelowNormal one creates
+          # is BelowNormal unless it asks otherwise, so cargo and the tests run below normal.
+          (Get-Process -Id $PID).Parent.PriorityClass = 'BelowNormal'
+          (Get-Process -Id $PID).Parent | Format-List Name, Id, PriorityClass
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.90.0'
+          targets: ${{ matrix.target }}
+          components: clippy, rustfmt
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # One cache per system: MSVC, GNU, arm64 and Intel objects are never shared.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: build-${{ matrix.name }}-${{ matrix.target }}-${{ runner.arch }}-rust1.90.0-${{ hashFiles('Cargo.lock') }}
+
+      # The reference: rg 14.1.1's official archive for this system, checked before it is
+      # opened. The tests themselves never download anything.
+      - name: Reference ripgrep 14.1.1 (Unix)
+        if: runner.os != 'Windows'
+        env:
+          ARCHIVE: ${{ matrix.rg_archive }}
+          SHA256: ${{ matrix.rg_sha256 }}
+        run: |
+          dir="$RUNNER_TEMP/rg"
+          mkdir -p "$dir"
+          curl -fsSL --retry 3 -o "$dir/$ARCHIVE" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/$ARCHIVE"
+          if [ "$RUNNER_OS" = Linux ]; then
+            echo "$SHA256  $dir/$ARCHIVE" | sha256sum -c -
+          else
+            echo "$SHA256  $dir/$ARCHIVE" | shasum -a 256 -c -
+          fi
+          tar -xzf "$dir/$ARCHIVE" -C "$dir"
+          echo "SEARCHFOR_RG=$dir/${ARCHIVE%.tar.gz}/rg" >> "$GITHUB_ENV"
+      - name: Reference ripgrep 14.1.1 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ARCHIVE: ${{ matrix.rg_archive }}
+          SHA256: ${{ matrix.rg_sha256 }}
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'rg'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $zip = Join-Path $dir $env:ARCHIVE
+          Invoke-WebRequest -Uri "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/$($env:ARCHIVE)" -OutFile $zip
+          $got = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLowerInvariant()
+          if ($got -ne $env:SHA256) { throw "SHA-256 of $($env:ARCHIVE) is $got, expected $($env:SHA256)" }
+          Expand-Archive -Path $zip -DestinationPath $dir
+          $rg = Join-Path $dir ($env:ARCHIVE -replace '\.zip$', '') | Join-Path -ChildPath 'rg.exe'
+          "SEARCHFOR_RG=$rg" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Check the reference
+        run: |
+          "$SEARCHFOR_RG" --version
+          "$SEARCHFOR_RG" --version | head -1 | grep -qx 'ripgrep 14.1.1'
+
+      # The reference programs SEARCHFOR_REQUIRE_REFERENCE=1 requires, and the decompressors
+      # of `-z`.
+      - name: Reference tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qpdf poppler-utils time strace \
+            bzip2 xz-utils lz4 zstd brotli
+      - name: Reference tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install qpdf poppler lz4 zstd xz brotli
+      - name: Reference tools (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # MSYS2's MinGW builds, named through their variables, never put on PATH: their DLLs
+          # sit beside them, and the MSVC build must not see that toolchain.
+          C:\msys64\usr\bin\pacman.exe -S --noconfirm --needed mingw-w64-x86_64-qpdf mingw-w64-x86_64-poppler
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "SEARCHFOR_QPDF=C:\msys64\mingw64\bin\qpdf.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "SEARCHFOR_PDFTOTEXT=C:\msys64\mingw64\bin\pdftotext.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Reference Python
+        run: |
+          python -c 'import sqlite3, sys; print(sys.version, sqlite3.sqlite_version)'
+          echo "SEARCHFOR_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+
+      # Every later cargo is --offline, as locally: the lock's crates are fetched here.
+      - name: Fetch the locked crates
+        run: cargo fetch --locked
+
+      - name: Format (Linux)
+        if: runner.os == 'Linux'
+        run: $PRIO cargo fmt --all --check
+      - name: Clippy
+        run: $PRIO cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+      - name: Build release
+        run: $PRIO cargo build --workspace --release --locked --offline
+      - name: Full suite
+        run: $PRIO cargo test --workspace --release --locked --offline
+        env:
+          SEARCHFOR_REQUIRE_REFERENCE: '1'
+      - name: Short Processor fuzz (Linux)
+        if: runner.os == 'Linux'
+        run: $PRIO cargo test --release --locked --offline --test fuzz -- --nocapture
+        env:
+          SEARCHFOR_FUZZ_SECONDS: '120'
+          SEARCHFOR_FUZZ_ARTIFACT_DIR: ${{ runner.temp }}/fuzz-artifacts
+      - name: Short CLI fuzz (Linux)
+        if: runner.os == 'Linux'
+        run: $PRIO cargo test --release --locked --offline --test fuzz_m5 -- --nocapture
+        env:
+          SEARCHFOR_FUZZ_SECONDS: '120'
+          SEARCHFOR_FUZZ_ARTIFACT_DIR: ${{ runner.temp }}/fuzz-artifacts
+      # The ignored tests docs/platforms.md lists as selected explicitly in CI, one at a time:
+      # memory ceilings and the refusal of bombs. Time ratios stay local: SEARCHFOR_PERF_TIMING
+      # is not set (M5b plan, D18).
+      - name: Memory and bomb checks (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          $PRIO cargo test --release --locked --offline --test perf -- --ignored --test-threads 1
+          $PRIO cargo test --release --locked --offline -p searchfor-example-helper \
+            -p searchfor-grammar -- --ignored --test-threads 1 memory_stays_flat
+        env:
+          SEARCHFOR_REQUIRE_REFERENCE: '1'
+
+      - name: Tests that did not run on this system
+        if: success() || failure()
+        run: |
+          set -euo pipefail
+          # Each binary's list follows its "Running <file>" line; a test is "<name>: test".
+          tests() {
+            awk '/^ *Running /{bin=$2; gsub(/\\/, "/", bin)} /^ *Doc-tests /{bin="doc-tests"}
+                 /: test$/{t=$0; sub(/: test$/, "", t); sub(/^ +/, "", t); print bin "\t" t}'
+          }
+          names() { awk -F'\t' '{n=$2; sub(/.*::/, "", n); print n}'; }
+          $PRIO cargo test --workspace --release --locked --offline -- --list 2>&1 | tests > "$RUNNER_TEMP/listed.tsv"
+          $PRIO cargo test --workspace --release --locked --offline -- --list --ignored 2>&1 | tests > "$RUNNER_TEMP/ignored.tsv"
+          section() { awk -v h="$1" '$0 == h {f=1; next} /^## /{f=0} f' docs/platforms.md; }
+          probes=$(section '## Entry points invoked by a parent test' | grep -o '`[a-z0-9_]*`' | tr -d '`' || true)
+          probe_n=$(names < "$RUNNER_TEMP/ignored.tsv" | grep -Fxc -f <(printf '%s\n' "$probes") || true)
+          selected_n=0
+          if [ "$SYSTEM" = linux ]; then
+            selected_n=$(awk -F'\t' '$1 == "tests/perf.rs" || $2 ~ /memory_stays_flat_over_five_thousand_requests$/' "$RUNNER_TEMP/ignored.tsv" | wc -l)
+          fi
+          total=$(wc -l < "$RUNNER_TEMP/listed.tsv")
+          ignored=$(wc -l < "$RUNNER_TEMP/ignored.tsv")
+          # The cfg table: a row naming this system must be absent from its list, any other
+          # row present.
+          section '## Tests excluded by `cfg`' | awk -F'|' -v sys="$SYSTEM" '/^\| `/ {
+              name = $2; gsub(/[ `]/, "", name)
+              print name "\t" ($4 ~ ("(^|[ ,])" sys "($|[ ,])"))
+            }' > "$RUNNER_TEMP/rows.tsv"
+          names < "$RUNNER_TEMP/listed.tsv" | sort -u > "$RUNNER_TEMP/names.txt"
+          excluded=0; wrong=0
+          while IFS=$'\t' read -r name skipped; do
+            if grep -Fxq "$name" "$RUNNER_TEMP/names.txt"; then listed=1; else listed=0; fi
+            if [ "$skipped" = 1 ]; then excluded=$((excluded + 1)); fi
+            if [ "$skipped" = "$listed" ]; then
+              echo "::error::docs/platforms.md: $name is $([ "$skipped" = 1 ] && echo 'listed as excluded on' || echo 'not listed as excluded on') $SYSTEM, and cargo test --list $([ "$listed" = 1 ] && echo 'has' || echo 'lacks') it"
+              wrong=$((wrong + 1))
+            fi
+          done < "$RUNNER_TEMP/rows.tsv"
+          line="$SYSTEM: $total tests listed; $ignored ignored ($probe_n invoked by a parent test, $selected_n selected explicitly in CI, $((ignored - probe_n - selected_n)) skipped); $excluded excluded by cfg (docs/platforms.md)"
+          echo "$line"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          awk -F'\t' '{print "  ignored: " $1 " " $2}' "$RUNNER_TEMP/ignored.tsv"
+          [ "$wrong" = 0 ]
+
+      - name: Keep the failing fuzz cases
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-cases-ci-${{ github.sha }}
+          path: ${{ runner.temp }}/fuzz-artifacts
+          if-no-files-found: ignore

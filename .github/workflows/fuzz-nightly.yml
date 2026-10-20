@@ -1,0 +1,138 @@
+# The long fuzz (M5b spec §5.1, Q57.fuzz-ci): every night and on demand, tests/fuzz.rs and
+# tests/fuzz_m5.rs for 30 minutes each on Linux and 10 minutes each on macOS and Windows. A
+# scheduled night whose `main` head is the commit of the last successful scheduled run ends at
+# once, successfully: a night without new commits runs nothing. A failing case is kept as an
+# artifact with its seed, N, case index, command line and bytes (SEARCHFOR_FUZZ_ARTIFACT_DIR).
+name: fuzz-nightly
+
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fuzz-nightly
+  cancel-in-progress: false
+
+env:
+  CARGO_BUILD_JOBS: '8'
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+  PCRE2_SYS_STATIC: '1'
+
+jobs:
+  gate:
+    name: Skip an unchanged main
+    # Before any download or build: the decision needs only the API.
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      sha: ${{ steps.decide.outputs.sha }}
+    steps:
+      - name: Compare main with the last successful scheduled run
+        id: decide
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const branch = 'main';
+            const {data: head} = await github.rest.repos.getCommit({
+              ...context.repo, ref: branch,
+            });
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              ...context.repo, workflow_id: 'fuzz-nightly.yml', branch,
+              event: 'schedule', status: 'success', per_page: 100,
+            });
+            const last = runs.find(r => r.id !== context.runId &&
+              r.conclusion === 'success' && r.head_branch === branch);
+            const run = context.eventName === 'workflow_dispatch' || !last ||
+              last.head_sha !== head.sha;
+            core.setOutput('sha', head.sha);
+            core.setOutput('run', String(run));
+            return String(run);
+
+  fuzz:
+    name: fuzz (${{ matrix.name }})
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+            seconds: '1800'
+            prio: nice -n 19 ionice -c3
+          - name: macos-arm64
+            os: macos-15
+            seconds: '600'
+            prio: nice -n 19
+          - name: macos-x86_64
+            os: macos-15-intel
+            seconds: '600'
+            prio: nice -n 19
+          - name: windows-x86_64
+            os: windows-2022
+            seconds: '600'
+            prio: ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      PRIO: ${{ matrix.prio }}
+    steps:
+      - name: Low priority (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # The runner's worker starts every later step; a process a BelowNormal one creates
+          # is BelowNormal unless it asks otherwise, so cargo and the tests run below normal.
+          (Get-Process -Id $PID).Parent.PriorityClass = 'BelowNormal'
+          (Get-Process -Id $PID).Parent | Format-List Name, Id, PriorityClass
+      # The exact commit the gate compared: a push after the decision is the next night's.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.90.0'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: fuzz-${{ matrix.name }}-${{ runner.arch }}-rust1.90.0-${{ hashFiles('Cargo.lock') }}
+      - name: Fetch the locked crates
+        run: cargo fetch --locked
+      - name: Build the fuzz tests
+        run: $PRIO cargo test --release --locked --offline --no-run --test fuzz --test fuzz_m5
+      - name: Processor fuzz
+        run: $PRIO cargo test --release --locked --offline --test fuzz -- --nocapture
+        env:
+          SEARCHFOR_FUZZ_SECONDS: ${{ matrix.seconds }}
+          SEARCHFOR_FUZZ_ARTIFACT_DIR: ${{ runner.temp }}/fuzz-artifacts
+      - name: CLI fuzz
+        # Also after a failure of the Processor fuzz: each keeps its own cases.
+        if: success() || failure()
+        run: $PRIO cargo test --release --locked --offline --test fuzz_m5 -- --nocapture
+        env:
+          SEARCHFOR_FUZZ_SECONDS: ${{ matrix.seconds }}
+          SEARCHFOR_FUZZ_ARTIFACT_DIR: ${{ runner.temp }}/fuzz-artifacts
+      # Even when a test process crashed or the job timed out: its in-flight case is there.
+      - name: Keep the failing cases
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-cases-${{ matrix.name }}-${{ needs.gate.outputs.sha }}
+          path: ${{ runner.temp }}/fuzz-artifacts
+          if-no-files-found: ignore
+          retention-days: 30

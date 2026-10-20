@@ -1,0 +1,8 @@
+# Checkout never converts line endings (M5b spec §4.4): fixtures, insta snapshots and the
+# documentation examples are compared byte for byte, and a Windows runner may set
+# core.autocrlf=true. Later, more specific rules win.
+* -text
+# Shell scripts run under bash on every system, which needs LF.
+*.sh text eol=lf
+# The fixtures' bytes are synthetic, unusual line endings of .sh fixtures included.
+tests/fixtures/** -text

@@ -73,7 +73,7 @@ fn m2_03_php_method_and_signatures() {
 
 #[test]
 fn m2_04_within_and_expand_on_code() {
-    let fx = Fixture::new();
+    let fx = Fixture::slashed();
     let o = stdout(&run(&mut fx.s4([
         "needle",
         "code",
@@ -97,7 +97,7 @@ fn m2_04_within_and_expand_on_code() {
 
 #[test]
 fn m2_05_in_headings_on_names_and_keys() {
-    let fx = Fixture::new();
+    let fx = Fixture::slashed();
     let o = stdout(&run(&mut fx.s4([
         "--in-headings",
         "^addItem$",
