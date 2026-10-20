@@ -352,20 +352,14 @@ fn m5_10_debug_and_trace() {
 #[test]
 fn m5_11_mcp_server() {
     let fx = Fixture::new();
-    let pre = fx.file("pre.sh");
-    std::fs::write(
-        &pre,
-        format!(
-            "#!/bin/sh\ntouch '{}'\necho 'INJECTED needle'\n",
-            fx.file("pre-ran").display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&pre, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    // A configuration file the server and its searches never read (M5b plan, Task 1.2): read
+    // by the server, `--generate` would replace it; read by a search, its pattern would find
+    // the sentinel's line. No executable script, so the trap is the same on every system.
     let cfg = fx.file("s4rc");
-    std::fs::write(&cfg, format!("--pre={}\n", pre.display())).unwrap();
+    std::fs::write(&cfg, "--generate=man\n--regexp=ABSENT_CONFIG_SENTINEL\n").unwrap();
     let dir = fx.file("mcp");
     std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("sentinel.txt"), "ABSENT_CONFIG_SENTINEL\n").unwrap();
     let long = format!("{} needle {}\n", "x".repeat(3000), "y".repeat(3000));
     std::fs::write(dir.join("long.txt"), long).unwrap();
     // A line longer than the 4 MiB a message of s4 may be (review r2 of the plan, Fable #1).
@@ -500,12 +494,15 @@ fn m5_11_mcp_server() {
             .contains("missing"),
         "{r}"
     );
+    let r = search(json!({"pattern":"needle","paths":["mcp/sentinel.txt"]}));
+    assert_eq!(r["isError"], false, "{r}");
+    assert_eq!(
+        r["structuredContent"]["matches"],
+        json!([]),
+        "the configuration's pattern reached a search"
+    );
     drop(input);
     assert!(child.wait().unwrap().success());
-    assert!(
-        !fx.file("pre-ran").exists(),
-        "the configuration's --pre ran"
-    );
     // A `--generate` in the configuration file does not replace the server.
     std::fs::write(&cfg, "--generate=man\n").unwrap();
     let mut c = fx.s4(["--mcp"]);
@@ -1064,7 +1061,9 @@ fn m5_18_trim_as_ripgrep() {
 
 /// Review r2 of the plan, Codex #1: `--no-mmap` maps no file, however large, as rg; without it
 /// s4 maps a file of 8 MiB or more. Seen in `/proc/PID/maps` while s4 prints: the test reads
-/// the first line and no more, so s4 waits on a full pipe with the file still open.
+/// the first line and no more, so s4 waits on a full pipe with the file still open. Linux
+/// alone has `/proc/PID/maps`; the output `--no-mmap` keeps is checked on every system by
+/// `m5b_no_mmap_keeps_output_portable`.
 #[cfg(target_os = "linux")]
 #[test]
 fn m5_19_no_mmap_maps_no_file() {
@@ -1476,10 +1475,43 @@ fn m5_26_the_version_is_0_5() {
 
 /// Code review r3, Codex #4: every diagnostic of a search or an action is written without a
 /// panic when stderr is a pipe without a reader, or closed: the exit code is the one s4 gives
-/// with stderr open, and the run ends (a panic in a walker thread used to hang it).
+/// with stderr open, and the run ends (a panic in a walker thread used to hang it). The pipe
+/// without a reader exists on every system; a closed descriptor 2 in
+/// `m5_27_unix_a_closed_descriptor_2_keeps_the_exit_code_of_every_diagnostic`.
 #[test]
 fn m5_27_a_closed_stderr_keeps_the_exit_code_of_every_diagnostic() {
+    each_diagnostic_with_stderr("a pipe without a reader", |mut c| {
+        let (r, w) = std::io::pipe().unwrap();
+        drop(r);
+        c.stderr(w).spawn().unwrap()
+    });
+}
+
+/// `m5_27`'s cases with descriptor 2 closed in the child, which only Unix can start: Windows
+/// has no `pre_exec`, and its child gets a null handle instead (M5b plan, Task 1.2).
+#[cfg(unix)]
+#[test]
+fn m5_27_unix_a_closed_descriptor_2_keeps_the_exit_code_of_every_diagnostic() {
     use std::os::unix::process::CommandExt;
+    each_diagnostic_with_stderr("closed", |mut c| {
+        c.stderr(std::process::Stdio::inherit());
+        // SAFETY: close(2) is async-signal-safe.
+        unsafe {
+            c.pre_exec(|| {
+                libc::close(2);
+                Ok(())
+            });
+        }
+        c.spawn().unwrap()
+    });
+}
+
+/// Each diagnostic of `m5_27`: with stderr open it prints its message and gives its exit code;
+/// started by `spawn` with stderr `closed`, it gives the same exit code within 30 s.
+fn each_diagnostic_with_stderr(
+    closed: &str,
+    spawn: impl Fn(std::process::Command) -> std::process::Child,
+) {
     use std::time::{Duration, Instant};
     let fx = Fixture::new();
     // A Format whose Grammar Helper cannot start, in a fixture of its own.
@@ -1520,53 +1552,87 @@ fn m5_27_a_closed_stderr_keeps_the_exit_code_of_every_diagnostic() {
     ];
     let limit = Duration::from_secs(30);
     for (fx, args, env, want) in cases {
-        let command = |stderr: std::process::Stdio| {
+        let command = || {
             let mut c = fx.s4(&args);
             if let Some((k, v)) = env {
                 c.env(k, v);
             }
-            c.stdout(std::process::Stdio::null()).stderr(stderr);
+            c.stdout(std::process::Stdio::null());
             c
         };
         // With stderr open the case prints its diagnostic, and that is the exit code to keep.
-        let o = command(std::process::Stdio::piped()).output().unwrap();
+        let o = command()
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .unwrap();
         assert_eq!(code(&o), want, "{args:?}: {}", stderr(&o));
         assert!(!stderr(&o).is_empty(), "{args:?} prints no diagnostic");
-        for closed in ["a pipe without a reader", "closed"] {
-            let mut c = if closed == "closed" {
-                let mut c = command(std::process::Stdio::inherit());
-                // SAFETY: close(2) is async-signal-safe.
-                unsafe {
-                    c.pre_exec(|| {
-                        libc::close(2);
-                        Ok(())
-                    });
-                }
-                c
-            } else {
-                let (r, w) = std::io::pipe().unwrap();
-                drop(r);
-                command(w.into())
-            };
-            let start = Instant::now();
-            let mut child = c.spawn().unwrap();
-            let status = loop {
-                if let Some(s) = child.try_wait().unwrap() {
-                    break s;
-                }
-                if start.elapsed() > limit {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    panic!("{args:?} with stderr {closed}: still running after {limit:?}");
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            };
+        let start = Instant::now();
+        let mut child = spawn(command());
+        let status = loop {
+            if let Some(s) = child.try_wait().unwrap() {
+                break s;
+            }
+            if start.elapsed() > limit {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{args:?} with stderr {closed}: still running after {limit:?}");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(
+            status.code(),
+            Some(want),
+            "{args:?} with stderr {closed}, after {:?}",
+            start.elapsed()
+        );
+    }
+}
+
+/// M5b plan, Task 1.2: the MCP server's trap needs no executable script, so it runs on every
+/// system.
+#[test]
+fn m5b_mcp_config_trap_needs_no_executable_script() {
+    let fx = Fixture::new();
+    let config = fx.file("config");
+    std::fs::write(&config, "--generate=man\n--regexp=ABSENT_CONFIG_SENTINEL\n").unwrap();
+    let mut cmd = fx.s4(["--mcp"]);
+    cmd.env("SEARCHFOR_CONFIG_PATH", config)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    let call = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":"search","arguments":{
+            "pattern":"needle-pkg","paths":["md/guide.md"]}}});
+    writeln!(child.stdin.take().unwrap(), "{call}").unwrap();
+    let result = child.wait_with_output().unwrap();
+    assert!(result.status.success());
+    let reply: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(reply["id"], 1);
+    assert_eq!(
+        reply["result"]["structuredContent"]["matches"][0]["line"],
+        12
+    );
+}
+
+/// M5b plan, Task 1.2: `--no-mmap` prints what a mapped search prints, on every system; that
+/// it maps no file is seen in Linux's `/proc` alone (`m5_19`).
+#[test]
+fn m5b_no_mmap_keeps_output_portable() {
+    let fx = Fixture::new();
+    let bytes = format!("# Head\n{}needle\n", "x\n".repeat(4_200_000));
+    std::fs::write(fx.file("large.md"), bytes).unwrap();
+    for mode in ["--flat", "--json"] {
+        let a = run(&mut fx.s4([mode, "needle", "large.md"]));
+        let b = run(&mut fx.s4([mode, "--no-mmap", "needle", "large.md"]));
+        assert_eq!(code(&a), code(&b));
+        if mode == "--json" {
             assert_eq!(
-                status.code(),
-                Some(want),
-                "{args:?} with stderr {closed}, after {:?}",
-                start.elapsed()
+                common::mask_json_times(&stdout(&a)),
+                common::mask_json_times(&stdout(&b))
             );
+        } else {
+            assert_eq!(a.stdout, b.stdout);
         }
     }
 }
