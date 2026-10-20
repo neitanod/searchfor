@@ -332,6 +332,9 @@ fn m5_09_generate() {
 #[test]
 fn m5_10_debug_and_trace() {
     let fx = Fixture::new();
+    // An ignore file of the fixture's own, so the walk builds a glob set (and logs it) on any
+    // machine, not only on one with a global git ignore file.
+    std::fs::write(fx.file("md/.ignore"), "*.never\n").unwrap();
     let o = run(&mut fx.s4(["--debug", "-l", "needle-pkg", "md"]));
     assert_eq!(code(&o), 0);
     let err = stderr(&o);

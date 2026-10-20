@@ -706,12 +706,13 @@ fn m4_24_stdin_redirected_from_a_document_is_no_document() {
     std::os::unix::fs::symlink("/dev/stdin", fx.path().join("m4/stdin.docx")).unwrap();
     let shop = common::source_dir().join("docs/shop.sqlite");
     let docx = fx.path().join("m4/report.docx");
-    for (path, input) in [
-        ("/dev/stdin", &shop),
-        ("/dev/fd/0", &shop),
-        ("/proc/self/fd/0", &shop),
-        ("m4/stdin.docx", &docx),
-    ] {
+    let mut paths = vec![("/dev/stdin", &shop), ("/dev/fd/0", &shop)];
+    // `/proc` is Linux's; macOS has `/dev/fd` only.
+    if cfg!(target_os = "linux") {
+        paths.push(("/proc/self/fd/0", &shop));
+    }
+    paths.push(("m4/stdin.docx", &docx));
+    for (path, input) in paths {
         let started = std::time::Instant::now();
         let s = run(fx
             .s4(["--docs", "--no-trail", "needle", path])
@@ -1500,7 +1501,7 @@ fn m4_40_the_second_barrier_holds_above_a_permissive_counter() {
 /// document is still read, under the counter. s4 runs with a hard `RLIMIT_DATA` of 4 096 MiB,
 /// so a reader asking for 8 192 MiB (`SEARCHFOR_READER_RLIMIT_MIB`) is refused, as macOS may
 /// refuse any; without `--debug` nothing is said.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn m4_41_a_refused_reader_limit_is_one_debug_line() {
     let fx = fixture();
@@ -1990,6 +1991,7 @@ fn run_limited(c: &mut std::process::Command, mib: u64) -> std::process::Output 
 /// one table of 3000 imports and a PE with 32 000 exports named by one 64 KiB name (Codex M4
 /// code r9 #1) get their Trail. Each is a file of at most 2 MiB, searched with a data segment
 /// of 256 MiB.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn m4_30_what_an_object_file_declares_costs_no_more_than_the_file() {
     if !common::reference_rg() {
@@ -2165,11 +2167,8 @@ fn m4_33_no_docs_gives_ripgreps_output_and_the_last_flag_wins() {
         "{}",
         with.0
     );
-    assert!(
-        with.1.contains("m4/locked.pdf: pdf: encrypted"),
-        "{}",
-        with.1
-    );
+    let locked = format!("m4{}locked.pdf: pdf: encrypted", std::path::MAIN_SEPARATOR);
+    assert!(with.1.contains(&locked), "{}", with.1);
     let off = flat(&["--no-docs"]);
     assert!(
         !off.0.contains(" › page ") && !off.0.contains("Scope needle."),

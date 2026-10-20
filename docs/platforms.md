@@ -53,7 +53,9 @@ merge. The owner is the chunk of the M5b plan that owns the file.
 | `t34_a_path_that_cannot_be_read_twice_is_read_as_stdin` | `tests/cli.rs` | windows | `/dev/stdin` (`-` is tested everywhere) | C4 |
 | `t35_max_count_on_an_open_fifo_stops_at_the_limit` | `tests/cli.rs` | windows | FIFOs in the file system (`mkfifo`) | C4 |
 | `m4_12_docs_reads_streams_once` | `tests/cli_m4.rs` | windows | FIFOs, `/dev/stdin`, `/dev/fd/0` | C5 |
-| `m4_24_stdin_redirected_from_a_document_is_no_document` | `tests/cli_m4.rs` | windows | descriptors named as paths (`/dev/fd`, `/proc/self/fd`) | C5 |
+| `m4_24_stdin_redirected_from_a_document_is_no_document` | `tests/cli_m4.rs` | windows | descriptors named as paths (`/dev/fd`, `/proc/self/fd`; the `/proc` case runs on Linux only) | C5 |
+| `m4_30_what_an_object_file_declares_costs_no_more_than_the_file` | `tests/cli_m4.rs` | macos-arm64, macos-x86_64 | a test-imposed `RLIMIT_DATA`, which macOS refuses below the address space a process already reserved (EINVAL) | orchestrator |
+| `m4_41_a_refused_reader_limit_is_one_debug_line` | `tests/cli_m4.rs` | macos-arm64, macos-x86_64, windows | the same test-imposed `RLIMIT_DATA` (macOS refuses it with EINVAL); Windows has no rlimit | orchestrator |
 | `m4_27_only_names_through_descriptors_are_no_documents` | `tests/cli_m4.rs` | macos-arm64, macos-x86_64, windows | `/proc` and `/dev/shm` | C5 |
 | `m4_18_any_path_reaches_the_reader` | `tests/cli_m4.rs` | macos-arm64, macos-x86_64, windows | file names that are not UTF-8 (APFS and Windows refuse them) | C5 |
 | `m4_19_a_signal_to_sfor_ends_its_readers` | `tests/cli_m4.rs` | macos-arm64, macos-x86_64, windows | POSIX signals and process groups; `/proc` to find the readers | C5 |
