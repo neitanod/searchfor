@@ -174,6 +174,41 @@ s4 --in-headings --flat '^addItem$' src/
 separated by `›`, `>` or `/`, and each is a case-insensitive substring, so `--within linux`
 or `--within addItem` is enough when the name is unique.
 
+## Names: `s4` and `searchfor`
+
+The command is `s4`; everything else is named `searchfor`: the package you install
+(`cargo install searchfor`, `npm install -g searchfor`, `brew install neitanod/tap/searchfor`),
+the repository (`neitanod/searchfor`), the configuration and data directories
+(`searchfor/formats/`, `searchfor/grammars/`), the environment variables (`SEARCHFOR_*`) and the
+MCP server's name (`claude mcp add searchfor -- s4 --mcp`). Run `s4`, never `searchfor`.
+
+## On Windows
+
+s4 runs natively on Windows (x86-64), and with `--no-trail` it prints what Windows' rg prints:
+
+- Paths print with `\` between components (`docs\guide.md:12: …`), as rg's. Add
+  `--path-separator /` when a script or a later command expects `/`.
+- Quote a path with spaces, and a pattern, the way your shell wants. In PowerShell, single
+  quotes keep `\`, `$` and `*` literal; cmd.exe has only double quotes:
+
+  ```powershell
+  s4 --flat 'Get-\w+' 'C:\Users\me\My Projects\scripts'
+  s4 --within 'Install > Windows' --flat 'needle' "$env:USERPROFILE\Documents\notes"
+  ```
+
+  ```bat
+  s4 --flat "needle" "C:\Program Files\App\config"
+  ```
+
+- In `--within`, write `>` or `/` between names instead of `›`, which most keyboards cannot
+  type.
+- `--hyperlink-format` gives `file:///C:/…` links, with the drive letter.
+- `--pre` takes an absolute path or a program on `PATH` (a relative name is never looked up in
+  the current directory), and it needs a program (`.exe`, `.bat` or `.cmd`): a script with a
+  shebang line does not run there.
+- Format Definitions go in `%APPDATA%\searchfor\formats\`, and Grammar Helpers are installed in
+  `%APPDATA%\searchfor\grammars\`; `s4 --help` prints both directories.
+
 ## Details that matter
 
 - `--in-headings 'regex'` parses every candidate file, so it is slower than a normal search.

@@ -1,0 +1,18 @@
+# The Format Definition of the worked example of docs/external-processors.md: INI files
+# described by ini-helper.py, a Helper Processor written in Python.
+#
+# Copy it into the formats directory (`~/.config/searchfor/formats/` on Linux,
+# `~/Library/Application Support/searchfor/formats/` on macOS, `%APPDATA%\searchfor\formats\`
+# on Windows) and write the absolute path of ini-helper.py in `command`.
+name       = "ini-guide"
+extensions = ["ini"]
+processor  = "external"
+
+[params]
+# The interpreter first, then the script: no shebang or executable bit is needed, so the same
+# Definition works on Windows (write "python" there, or "py" for the Python launcher).
+command    = ["python3", "/absolute/path/to/docs/examples/ini-helper.py"]
+# One process per request: the script reads its whole stdin before it answers.
+mode       = "oneshot"
+# Per request, counted from when s4 queues it; 5000 when absent.
+timeout_ms = 5000

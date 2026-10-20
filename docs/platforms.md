@@ -167,3 +167,12 @@ every system, Python with `sqlite3` (`SEARCHFOR_PYTHON`), qpdf (`SEARCHFOR_QPDF`
 pdftotext (`SEARCHFOR_PDFTOTEXT`); on Windows the last two come from MSYS2's MinGW packages
 and are named by those variables, never put on `PATH`. A local run without them prints a note
 and skips the comparison.
+
+The two tests of `tests/guide.rs` (`m5b_external_processor_guide_examples_run_as_documented`
+and `m5b_guide_names_and_errors_keep_request_ids`, M5b spec §10) run the Python examples of
+`docs/external-processors.md` with the first of `python3` and `python` on `PATH` that is
+Python 3, so the CI's Python must be on `PATH` on every system; the first test also builds
+`docs/examples/pre-launcher.rs` with the job's `rustc`. They run on all four systems. A local
+run without Python 3 prints `skipping guide examples: Python 3 is not installed` (or
+`skipping guide protocol: …`) and passes without checking anything; they are neither ignored
+nor excluded by `cfg`, so they appear in no table above.
