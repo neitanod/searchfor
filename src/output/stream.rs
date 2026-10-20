@@ -149,6 +149,9 @@ pub struct StreamSink<'a, W: WriteColor> {
     /// width of that path in characters.
     path_prefix: (Vec<u8>, usize),
     scratch: Vec<u8>,
+    /// The writer takes neither colour nor links: a flat row is made in `line_buf` first.
+    plain_out: bool,
+    line_buf: termcolor::NoColor<Vec<u8>>,
     /// Trail of the last row of the current group, once it has a Match.
     group: Option<Rc<[Segment]>>,
     pending: Vec<Pending>,
@@ -184,6 +187,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             && o.max_columns.is_none()
             && file.cursor.is_none()
             && o.look.plain();
+        let plain_out = !w.supports_color() && !w.supports_hyperlinks();
         let within = file.within.take().map(|o| Within {
             o,
             held: VecDeque::new(),
@@ -238,6 +242,8 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
                 (Vec::new(), 0)
             },
             scratch: Vec::new(),
+            plain_out,
+            line_buf: termcolor::NoColor::new(Vec::new()),
             group: None,
             pending: Vec::new(),
             empty: Rc::from(Vec::new()),
@@ -327,9 +333,22 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
 
     /// One row in the tree or flat layout.
     fn row(&mut self, r: &Row) -> std::io::Result<()> {
+        self.row_of(r, None)
+    }
+
+    /// `row`, the row's Trail `shared` when it has its `Rc`. Without colour or links a flat
+    /// row is made in `line_buf` and written at once: the writer under it (`Spill`, a spool)
+    /// takes one write per row, not one per piece (code review r1, Fable #2).
+    fn row_of(&mut self, r: &Row, shared: Option<&SharedTrail>) -> std::io::Result<()> {
         if self.o.layout == Layout::Flat {
             self.lead()?;
-            return flat::write_row(self.w, &self.head, r, self.o);
+            if !self.plain_out {
+                return flat::write_row_shared(self.w, &self.head, r, shared, self.o);
+            }
+            let buf = &mut self.line_buf;
+            buf.get_mut().clear();
+            flat::write_row_shared(buf, &self.head, r, shared, self.o)?;
+            return self.w.write_all(buf.get_ref());
         }
         if !self.header {
             self.header = true;
@@ -395,21 +414,23 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         let gap_before = gap && self.o.context;
         // One text for every row of the line, which outlives none of the Trails it is under.
         let text = Rc::new(LineText::new(bytes));
-        for (n, (trail, subs)) in groups.iter().enumerate() {
+        let mut groups = groups;
+        for (n, (trail, subs)) in groups.iter_mut().enumerate() {
+            let subs = std::mem::take(subs);
             let row = Row {
                 offset: None,
                 trail,
                 line_number: line.line_number,
                 line: text.clone(),
                 column: subs.first().map(|s| s.0 as u64 + 1),
-                subs: subs.clone(),
+                subs,
                 is_match: true,
                 gap_before: gap_before && n == 0,
                 byte_offset: line.absolute_offset,
             };
-            self.row(&row)?;
-            self.group = Some(trail.clone());
+            self.row_of(&row, Some(trail))?;
         }
+        self.group = groups.pop().map(|g| g.0);
         Ok(())
     }
 

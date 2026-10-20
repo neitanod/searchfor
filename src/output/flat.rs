@@ -1,6 +1,6 @@
 //! One-line output (spec §6.2): `path:line: Trail │ text`.
 use super::{Piece, RenderOptions, Row, style};
-use crate::model::{Described, Segment};
+use crate::model::{Described, Segment, SharedTrail};
 use crate::text;
 use termcolor::WriteColor;
 
@@ -17,8 +17,13 @@ fn fit_trail(trail: &[Segment], room: usize) -> String {
     let fits = |s: &str| shown(s) <= room;
     let names: Vec<&str> = trail.iter().map(|s| s.name.as_str()).collect();
     let full = names.join(" › ");
-    if fits(&full) {
-        return text::visible(&full).into_owned();
+    // The whole Trail, made visible once: what most rows print (code review r1, Fable #2).
+    let visible = text::visible(&full);
+    if width(&visible) <= room {
+        return match visible {
+            std::borrow::Cow::Borrowed(_) => full,
+            std::borrow::Cow::Owned(v) => v,
+        };
     }
     let mut parts: Vec<&str> = Vec::new();
     for (s, n) in trail.iter().zip(&names) {
@@ -66,9 +71,16 @@ pub(crate) struct FileHead {
     link: std::path::PathBuf,
     /// Width of `path` in characters, plus its separator.
     width: usize,
-    /// The last Trail fitted, the room it had and the result: consecutive rows usually share
-    /// them.
-    fitted: std::cell::RefCell<Option<(Vec<Segment>, usize, String)>>,
+    /// The last Trail fitted, the room it had, and the result and its width: consecutive rows
+    /// usually share them. A streamed row's Trail is kept by its `Rc`, compared by address
+    /// (code review r1, Fable #2).
+    fitted: std::cell::RefCell<Option<(Fitted, usize, std::rc::Rc<str>, usize)>>,
+}
+
+/// The Trail `FileHead::fit` fitted last.
+enum Fitted {
+    Copy(Vec<Segment>),
+    Shared(SharedTrail),
 }
 
 impl FileHead {
@@ -85,19 +97,48 @@ impl FileHead {
         }
     }
 
-    /// `fit_trail`, reusing the last result for the same Trail and room.
-    fn fit(&self, trail: &[Segment], room: usize) -> String {
+    /// `fit_trail` and its width, reusing the last result for the same Trail and room;
+    /// `shared`: the Trail's `Rc`, which a streamed row has.
+    fn fit(
+        &self,
+        trail: &[Segment],
+        shared: Option<&SharedTrail>,
+        room: usize,
+    ) -> (std::rc::Rc<str>, usize) {
         let mut cache = self.fitted.borrow_mut();
-        if let Some((t, r, s)) = cache.as_ref()
+        if let Some((t, r, s, n)) = cache.as_ref()
             && *r == room
-            && t.as_slice() == trail
+            && match (t, shared) {
+                (Fitted::Shared(t), Some(shared)) => std::rc::Rc::ptr_eq(t, shared),
+                (Fitted::Shared(t), None) => &t[..] == trail,
+                (Fitted::Copy(t), _) => t.as_slice() == trail,
+            }
         {
-            return s.clone();
+            return (s.clone(), *n);
         }
-        let s = fit_trail(trail, room);
-        *cache = Some((trail.to_vec(), room, s.clone()));
-        s
+        let s: std::rc::Rc<str> = fit_trail(trail, room).into();
+        let n = width(&s);
+        let kept = match shared {
+            Some(t) => Fitted::Shared(t.clone()),
+            None => Fitted::Copy(trail.to_vec()),
+        };
+        *cache = Some((kept, room, s.clone(), n));
+        (s, n)
     }
+}
+
+/// `n` in decimal, written at the end of `buf` (code review r1, Fable #2: no `String` per row).
+pub(crate) fn decimal(mut n: u64, buf: &mut [u8; 20]) -> &[u8] {
+    let mut at = buf.len();
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    &buf[at..]
 }
 
 fn digits(mut n: u64) -> usize {
@@ -209,17 +250,17 @@ impl<'a> Head<'a> {
                 None => w.write_all(self.sep)?,
             }
         }
+        let mut digits = [0u8; 20];
         if let Some(l) = self.line {
-            let n = if self.hex {
-                format!("0x{l:x}")
+            if self.hex {
+                style::write_in(w, p, "line", format!("0x{l:x}").as_bytes())?;
             } else {
-                l.to_string()
-            };
-            style::write_in(w, p, "line", n.as_bytes())?;
+                style::write_in(w, p, "line", decimal(l, &mut digits))?;
+            }
             w.write_all(self.sep)?;
         }
         for n in [self.column, self.byte_offset].into_iter().flatten() {
-            style::write_in(w, p, "column", n.to_string().as_bytes())?;
+            style::write_in(w, p, "column", decimal(n, &mut digits))?;
             w.write_all(self.sep)?;
         }
         super::link_end(w, link)
@@ -242,6 +283,17 @@ pub(crate) fn write_row(
     w: &mut dyn WriteColor,
     file: &FileHead,
     r: &Row,
+    o: &RenderOptions,
+) -> std::io::Result<()> {
+    write_row_shared(w, file, r, None, o)
+}
+
+/// `write_row` for a row whose Trail is `shared`, which `FileHead::fit` keeps by its address.
+pub(crate) fn write_row_shared(
+    w: &mut dyn WriteColor,
+    file: &FileHead,
+    r: &Row,
+    shared: Option<&SharedTrail>,
     o: &RenderOptions,
 ) -> std::io::Result<()> {
     if r.gap_before {
@@ -271,16 +323,16 @@ pub(crate) fn write_row(
         // The text keeps up to half the width for itself; the Trail gets what is left.
         let reserve = text_width.min(o.width.div_ceil(2));
         let room = o.width.saturating_sub(head.width() + space + 3 + reserve);
-        Some(file.fit(r.trail, room))
+        Some(file.fit(r.trail, shared, room))
     };
-    let used = head.width() + space + trail.as_ref().map_or(0, |t| width(t) + 3);
+    let used = head.width() + space + trail.as_ref().map_or(0, |t| t.1 + 3);
     let p = &o.look.palette;
     let prefix = |w: &mut dyn WriteColor| -> std::io::Result<()> {
         head.write(w, o)?;
         if space == 1 {
             w.write_all(b" ")?;
         }
-        if let Some(t) = &trail {
+        if let Some((t, _)) = &trail {
             style::write_in(w, p, "trail", t.as_bytes())?;
             style::write_in(w, p, "dim", " │ ".as_bytes())?;
         }

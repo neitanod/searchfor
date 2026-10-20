@@ -524,6 +524,10 @@ fn trail_hash(trail: &[Segment]) -> u64 {
 /// A submatch under the Trail of the one before joins its group at once; any other finds its
 /// group by the Trail's hash, so a line with a Trail per submatch costs one lookup per
 /// submatch and not one comparison per group (M3 code review r3, Fable #1).
+/// Groups `group_by_trail` looks through one by one before it hashes the Trails: a line with a
+/// few Trails (a CSV row's columns) builds no index (code review r1, Fable #2).
+const FEW_GROUPS: usize = 8;
+
 pub(crate) fn group_by_trail<T>(subs: impl Iterator<Item = (T, (usize, usize))>) -> Vec<(T, Subs)>
 where
     T: std::ops::Deref<Target = [Segment]>,
@@ -540,9 +544,24 @@ where
             g.1.push(sub);
             continue;
         }
-        // The index is built once a second Trail comes.
-        if groups.len() == 1 {
-            by_hash.insert(trail_hash(&groups[0].0), vec![0]);
+        // A few groups are looked through; the index is built once there are more.
+        if groups.len() < FEW_GROUPS {
+            match groups.iter().position(|g| *g.0 == *t) {
+                Some(g) => {
+                    groups[g].1.push(sub);
+                    last = g;
+                }
+                None => {
+                    last = groups.len();
+                    groups.push((t, vec![sub]));
+                }
+            }
+            continue;
+        }
+        if by_hash.is_empty() {
+            for (k, g) in groups.iter().enumerate() {
+                by_hash.entry(trail_hash(&g.0)).or_default().push(k);
+            }
         }
         let ids = by_hash.entry(trail_hash(&t)).or_default();
         match ids.iter().find(|&&g| *groups[g].0 == *t) {

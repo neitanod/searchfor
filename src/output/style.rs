@@ -96,6 +96,10 @@ pub fn write_styled(w: &mut dyn WriteColor, kind: &str, s: &str) -> std::io::Res
 
 /// `write_styled` with the run's palette.
 pub fn write_in(w: &mut dyn WriteColor, p: &Palette, kind: &str, s: &[u8]) -> std::io::Result<()> {
+    // Without colour the bytes alone, and no spec is made (code review r1, Fable #2).
+    if !w.supports_color() {
+        return w.write_all(s);
+    }
     w.set_color(&p.spec(kind))?;
     w.write_all(s)?;
     w.reset()
@@ -108,6 +112,9 @@ pub fn write_highlighted_in(
     text: &str,
     subs: &[(usize, usize)],
 ) -> std::io::Result<()> {
+    if subs.is_empty() || !w.supports_color() {
+        return w.write_all(text.as_bytes());
+    }
     highlighted(w, &p.spec("match"), text, subs)
 }
 
