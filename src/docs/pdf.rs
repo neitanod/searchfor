@@ -2543,7 +2543,7 @@ mod tests {
             .unwrap()
             .set("Pad", Object::Reference(pad));
         doc.save(dir.path().join("plain.pdf")).unwrap();
-        let made = std::process::Command::new("qpdf")
+        let made = std::process::Command::new(reference_tool("SEARCHFOR_QPDF", "qpdf"))
             .args([
                 "--encrypt",
                 "",
@@ -2556,9 +2556,9 @@ mod tests {
             .arg(dir.path().join("plain.pdf"))
             .arg(dir.path().join("enc.pdf"))
             .status();
-        if !made.is_ok_and(|s| s.success()) {
-            eprintln!("skipping: qpdf is missing");
-            return;
+        match made {
+            Ok(s) => assert!(s.success(), "qpdf failed: {s}"),
+            Err(e) => return missing_tool(&format!("qpdf ({e})")),
         }
         let enc = std::fs::read(dir.path().join("enc.pdf")).unwrap();
         let e = extract(Kind::Pdf, &enc).unwrap_err();
@@ -2905,18 +2905,39 @@ mod tests {
         })
     }
 
+    /// A reference program of these tests (M5b plan, Task 4.1): the one `var` names when it is
+    /// set (CI points it where it installed the program), else `default` from `PATH`.
+    fn reference_tool(var: &str, default: &str) -> std::ffi::OsString {
+        std::env::var_os(var).unwrap_or_else(|| default.into())
+    }
+
+    /// A reference program that cannot run: a note, or a failure when
+    /// `SEARCHFOR_REQUIRE_REFERENCE=1`, which CI sets after installing every one.
+    fn missing_tool(what: &str) {
+        if std::env::var_os("SEARCHFOR_REQUIRE_REFERENCE").is_some_and(|v| v == "1") {
+            panic!("{what} is required (SEARCHFOR_REQUIRE_REFERENCE=1) and missing");
+        }
+        eprintln!("note: {what} is missing; the comparison is skipped");
+    }
+
     /// The words `pdftotext -raw` reads from `pdf`, if it is installed: in the order the
     /// content streams show them.
     fn pdftotext_words(pdf: &[u8]) -> Option<Vec<String>> {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.pdf");
         std::fs::write(&path, pdf).unwrap();
-        let out = std::process::Command::new("pdftotext")
+        let out = std::process::Command::new(reference_tool("SEARCHFOR_PDFTOTEXT", "pdftotext"))
             .args(["-raw", "-q"])
             .arg(&path)
             .arg("-")
-            .output()
-            .ok()?;
+            .output();
+        let out = match out {
+            Ok(out) => out,
+            Err(e) => {
+                missing_tool(&format!("pdftotext ({e})"));
+                return None;
+            }
+        };
         out.status.success().then(|| {
             String::from_utf8_lossy(&out.stdout)
                 .split_whitespace()
@@ -2929,9 +2950,8 @@ mod tests {
     fn reads_as_pdftotext(pdf: &[u8], want: &str) {
         let got = text_of(pdf);
         assert_eq!(got, want);
-        match pdftotext_words(pdf) {
-            Some(words) => assert_eq!(got.split_whitespace().collect::<Vec<_>>(), words),
-            None => eprintln!("note: pdftotext is missing; the comparison is skipped"),
+        if let Some(words) = pdftotext_words(pdf) {
+            assert_eq!(got.split_whitespace().collect::<Vec<_>>(), words);
         }
     }
 

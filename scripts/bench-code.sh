@@ -4,12 +4,13 @@
 #   - a pattern matching under 5 % of the files: s4 − rg ≤ matching bytes ÷ (2.5 MB/s × threads);
 #   - a dense pattern: reported only.
 # Usage: scripts/bench-code.sh [DIR_A [SPARSE_A [DIR_B [SPARSE_B]]]]
-# Needs hyperfine, jq and GNU stat. SEARCHFOR_BIN replaces the s4 under test (to check that a
+# Needs hyperfine, jq and GNU stat. SEARCHFOR_RG, else /usr/bin/rg, is the reference and must be
+# ripgrep 14.1.1 (M5b spec §5.2). SEARCHFOR_BIN replaces the s4 under test (to check that a
 # broken one fails the script: SEARCHFOR_BIN=scripts/fake-s4-exit-2.sh must make it exit 1).
 set -euo pipefail
 # Decimal points in awk's output, whatever the user's locale.
 export LC_ALL=C
-registry=$(ls -d "$HOME"/.cargo/registry/src/index.crates.io-*/ 2>/dev/null | head -1)
+registry=$(ls -d "${CARGO_HOME:-$HOME/.cargo}"/registry/src/index.crates.io-*/ 2>/dev/null | head -1)
 dir_a="${1:-$registry}"; sparse_a="${2:-impl Drop for}"
 dir_b="${3:-$HOME/robotin/apps}"; sparse_b="${4:-TODO}"
 # Built at run time, so no file holds it, this script included (M3 code review r1): split in
@@ -18,6 +19,11 @@ none='zzqq-searchfor-bench-''absent'
 cargo build --release --quiet
 s4="${SEARCHFOR_BIN:-./target/release/s4}"
 export SEARCHFOR_BIN_PATH="$s4"
+rg="${SEARCHFOR_RG:-/usr/bin/rg}"
+if ! "$rg" --version 2>/dev/null | head -1 | grep -qx 'ripgrep 14.1.1'; then
+  echo "FAIL: the reference $rg is not ripgrep 14.1.1"; exit 1
+fi
+export SEARCHFOR_RG_PATH="$rg"
 # Isolation (review r1, Codex #12): no user Definitions or Grammars, no network, no rg config.
 iso=$(mktemp -d)
 trap 'rm -rf "$iso"' EXIT
@@ -49,7 +55,7 @@ check() {
   local name="$1" expected="$2" flag="$3"; shift 3
   local code=0 rgcode=0
   "$s4" --color never "$flag" "$@" >"$iso/s4.out" 2>"$iso/s4.err" || code=$?
-  rg --color never "$@" >"$iso/rg.out" 2>"$iso/rg.err" || rgcode=$?
+  "$rg" --color never "$@" >"$iso/rg.out" 2>"$iso/rg.err" || rgcode=$?
   local err rgerr
   err=$(sed 's/^s4: //' "$iso/s4.err" | sort)
   rgerr=$(sed 's/^rg: //' "$iso/rg.err" | sort)
@@ -71,12 +77,12 @@ corpus() {
   local name="$1" dir="$2" sparse="$3"
   export SEARCHFOR_BENCH_DIR="$dir" SEARCHFOR_BENCH_PATTERN="$sparse" SEARCHFOR_BENCH_NONE="$none"
   local total hits bytes
-  total=$(rg --files -- "$dir" | wc -l)
-  hits=$( (rg -l -e "$sparse" -- "$dir" || true) | wc -l)
-  bytes=$( (rg -l -0 "${code_types[@]}" -e "$sparse" -- "$dir" || true) | xargs -0 -r stat -c %s | awk '{ s += $1 } END { print s + 0 }')
+  total=$("$rg" --files -- "$dir" | wc -l)
+  hits=$( ("$rg" -l -e "$sparse" -- "$dir" || true) | wc -l)
+  bytes=$( ("$rg" -l -0 "${code_types[@]}" -e "$sparse" -- "$dir" || true) | xargs -0 -r stat -c %s | awk '{ s += $1 } END { print s + 0 }')
   echo "== $name: $dir, files $total, matching $hits ($bytes bytes of code and data), threads $threads"
   awk -v h="$hits" -v t="$total" 'BEGIN { if (h * 20 >= t) { print "the sparse pattern matches 5% or more of the files"; exit 1 } }'
-  if rg -q -e "$none" -- "$dir"; then echo "  FAIL: '$none' matches in $dir"; fail=1; return; fi
+  if "$rg" -q -e "$none" -- "$dir"; then echo "  FAIL: '$none' matches in $dir"; fail=1; return; fi
   # Before timing: every command does what it is timed for. A failed check skips this corpus's
   # timings only; a failure of an earlier corpus does not skip this one.
   local prior="$fail"
@@ -86,13 +92,13 @@ corpus() {
   check no-trail found --no-trail -e "$sparse" -- "$dir"
   [ "$fail" = 0 ] || return 0
   fail="$prior"
-  median "$name-none" 'rg --color never -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR"' \
+  median "$name-none" '"$SEARCHFOR_RG_PATH" --color never -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR"' \
     '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_NONE" -- "$SEARCHFOR_BENCH_DIR"'
   awk -v a="$SEARCHFOR_S" -v b="$RG_S" 'BEGIN { exit !(a <= 1.1 * b) }' || { echo "  FAIL: over 1.1 × rg"; fail=1; }
-  median "$name-no-trail" 'rg --color never -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"' \
+  median "$name-no-trail" '"$SEARCHFOR_RG_PATH" --color never -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"' \
     '"$SEARCHFOR_BIN_PATH" --color never --no-trail -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"'
   awk -v a="$SEARCHFOR_S" -v b="$RG_S" 'BEGIN { exit !(a <= 1.1 * b) }' || { echo "  FAIL: over 1.1 × rg"; fail=1; }
-  median "$name-sparse" 'rg --color never -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"' \
+  median "$name-sparse" '"$SEARCHFOR_RG_PATH" --color never -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"' \
     '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"'
   awk -v a="$SEARCHFOR_S" -v b="$RG_S" -v by="$bytes" -v t="$threads" \
     'BEGIN { budget = by / (2.5e6 * t); printf "  extra %.3f s, budget %.3f s\n", a - b, budget; exit !(a - b <= budget) }' \
@@ -102,6 +108,6 @@ corpus() {
 corpus registry "$dir_a" "$sparse_a"
 corpus apps "$dir_b" "$sparse_b"
 export SEARCHFOR_BENCH_DIR="$dir_a" SEARCHFOR_BENCH_PATTERN='fn new\('
-median registry-dense 'rg --color never -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"' \
+median registry-dense '"$SEARCHFOR_RG_PATH" --color never -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"' \
   '"$SEARCHFOR_BIN_PATH" --color never --flat -e "$SEARCHFOR_BENCH_PATTERN" -- "$SEARCHFOR_BENCH_DIR"'
 exit "$fail"

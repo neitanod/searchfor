@@ -1094,7 +1094,15 @@ fn mutated_objects_do_not_panic_the_object_processor() {
                 object::rows::rows(&bytes, &sorted, None, &lines)
             }));
             match got {
-                Err(_) if WHERE.with(|w| w.borrow().contains("/goblin-")) => in_goblin += 1,
+                // The crate's directory, after a backslash on Windows.
+                Err(_)
+                    if WHERE.with(|w| {
+                        let w = w.borrow();
+                        w.contains("/goblin-") || w.contains("\\goblin-")
+                    }) =>
+                {
+                    in_goblin += 1
+                }
                 Err(_) => failures.push(format!(
                     "panic at {}\n  input: \"{}\"",
                     WHERE.with(|w| w.borrow().clone()),

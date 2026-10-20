@@ -2423,7 +2423,8 @@ json.dump(cases, sys.stdout)
     /// Python's sqlite3, are read as it reads them: each table's lines are its `SELECT`'s, and
     /// none is broken.
     /// `SEARCHFOR_SQLITE_TABLES` sets how many (400 by default), `SEARCHFOR_SQLITE_SEED` the
-    /// seed. Skipped with a note without python3, unless SEARCHFOR_REQUIRE_REFERENCE=1.
+    /// seed. The Python is `SEARCHFOR_PYTHON` when set (CI's), else `python3` (`python` on
+    /// Windows). Skipped with a note without it, unless SEARCHFOR_REQUIRE_REFERENCE=1.
     #[test]
     fn random_tables_read_as_sqlite_reads_them() {
         let var = |k: &str, d: u64| {
@@ -2437,7 +2438,9 @@ json.dump(cases, sys.stdout)
             var("SEARCHFOR_SQLITE_SEED", 1),
         );
         let dir = tempfile::tempdir().unwrap();
-        let out = std::process::Command::new("python3")
+        let python = std::env::var_os("SEARCHFOR_PYTHON")
+            .unwrap_or_else(|| if cfg!(windows) { "python" } else { "python3" }.into());
+        let out = std::process::Command::new(&python)
             .args(["-I", "-c", RANDOM_TABLES])
             .arg(dir.path())
             .args([seed.to_string(), count.to_string()])
@@ -2446,9 +2449,9 @@ json.dump(cases, sys.stdout)
             Ok(o) if o.status.success() => o,
             other => {
                 if std::env::var_os("SEARCHFOR_REQUIRE_REFERENCE").is_some_and(|v| v == "1") {
-                    panic!("python3 with sqlite3 is required and failed: {other:?}");
+                    panic!("{python:?} with sqlite3 is required and failed: {other:?}");
                 }
-                eprintln!("note: python3 with sqlite3 is missing; random tables skipped");
+                eprintln!("note: {python:?} with sqlite3 is missing; random tables skipped");
                 return;
             }
         };

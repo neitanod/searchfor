@@ -14,6 +14,8 @@ pub struct Fixture {
     pub dir: tempfile::TempDir,
     pub formats: tempfile::TempDir,
     pub grammars: tempfile::TempDir,
+    /// `Fixture::slashed`: s4 prints `/` between a path's components on every system.
+    slash_paths: bool,
 }
 
 impl Fixture {
@@ -25,6 +27,20 @@ impl Fixture {
             dir,
             formats: tempfile::tempdir().unwrap(),
             grammars: tempfile::tempdir().unwrap(),
+            slash_paths: false,
+        }
+    }
+
+    /// A fixture whose `s4` prints the paths it walks with `/` on every system: on Windows it
+    /// adds `--path-separator /` unless `args` sets a separator (M5b spec §4.2: rg's Windows
+    /// paths have `\` between the components the walker joins). For the tests that assert how
+    /// a Trail layout presents a path; the comparisons with rg use `new`, whose paths stay
+    /// native on both sides. Only path bytes change: searched bytes, JSON paths and patterns
+    /// are never rewritten.
+    pub fn slashed() -> Self {
+        Self {
+            slash_paths: true,
+            ..Self::new()
         }
     }
 
@@ -59,10 +75,11 @@ impl Fixture {
             .env_remove("RIPGREP_CONFIG_PATH")
             .stdin(Stdio::null());
         let args: Vec<_> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
-        if !args
-            .iter()
-            .any(|a| a.to_string_lossy().starts_with("--color"))
-        {
+        let given = |flag: &str| args.iter().any(|a| a.to_string_lossy().starts_with(flag));
+        if self.slash_paths && cfg!(windows) && !given("--path-separator") {
+            c.arg("--path-separator").arg("/");
+        }
+        if !given("--color") {
             c.arg("--color").arg("never");
         }
         c.args(args);
@@ -128,9 +145,26 @@ pub fn workspace_bin(package: &str, bin: &str, features: &[&str]) -> PathBuf {
         return p.clone();
     }
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let mut c = Command::new(cargo);
-    c.current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(["build", "--quiet", "-p", package, "--bin", bin]);
+    // Low priority on Linux, as every cargo of the plan (M5b plan, Limits); offline and
+    // locked, as the suite itself. CARGO_TARGET_DIR, when set, is inherited.
+    let mut c = match low_priority_prefix() {
+        Some(prefix) => {
+            let mut c = Command::new(&prefix[0]);
+            c.args(&prefix[1..]).arg(&cargo);
+            c
+        }
+        None => Command::new(&cargo),
+    };
+    c.current_dir(env!("CARGO_MANIFEST_DIR")).args([
+        "build",
+        "--quiet",
+        "--offline",
+        "--locked",
+        "-p",
+        package,
+        "--bin",
+        bin,
+    ]);
     if !features.is_empty() {
         c.arg("--features").arg(features.join(","));
     }
@@ -154,15 +188,46 @@ pub fn workspace_bin(package: &str, bin: &str, features: &[&str]) -> PathBuf {
     exe
 }
 
-/// The reference ripgrep: `SEARCHFOR_RG` when set, else `/usr/bin/rg` when it exists (another rg,
-/// such as 15.x, may come first on `PATH`), else `rg` on `PATH` (M3 review r1, Codex #8).
+/// `nice -n 19 ionice -c3` on Linux when both are on `PATH`, else nothing: the words put
+/// before a nested cargo so that it builds at the lowest CPU and I/O priority.
+fn low_priority_prefix() -> Option<Vec<PathBuf>> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let find = |name: &str| {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|d| d.join(name))
+            .find(|p| p.is_file())
+    };
+    let (nice, ionice) = (find("nice")?, find("ionice")?);
+    Some(vec![nice, "-n".into(), "19".into(), ionice, "-c3".into()])
+}
+
+/// The reference ripgrep (M5b spec §5.2): `select_rg` over this process's `SEARCHFOR_RG`, this
+/// system, and whether `/usr/bin/rg` exists.
 pub fn rg_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("SEARCHFOR_RG") {
+    select_rg(
+        std::env::var_os("SEARCHFOR_RG"),
+        cfg!(unix),
+        Path::new("/usr/bin/rg").is_file(),
+    )
+}
+
+/// The reference ripgrep, given the environment it is chosen from: `override_path` (the value
+/// of `SEARCHFOR_RG`) when set, as given and never searched on `PATH`; else on Unix
+/// `/usr/bin/rg` when it exists (another rg, such as 15.x, may come first on `PATH`; M3 review
+/// r1, Codex #8); else `rg` from `PATH`, the last resort (a Mac with rg under
+/// `/opt/homebrew/bin`, Windows). `reference_rg` then checks that it is 14.1.1.
+pub fn select_rg(
+    override_path: Option<std::ffi::OsString>,
+    unix: bool,
+    usr_bin_rg_exists: bool,
+) -> PathBuf {
+    if let Some(p) = override_path {
         return p.into();
     }
-    let usr = Path::new("/usr/bin/rg");
-    if usr.is_file() {
-        return usr.to_path_buf();
+    if unix && usr_bin_rg_exists {
+        return PathBuf::from("/usr/bin/rg");
     }
     PathBuf::from("rg")
 }
