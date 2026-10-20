@@ -502,3 +502,87 @@ jobs:
           assert not any('grammar' in p.name or 'example-helper' in p.name for p in files)
           print('native archive smoke: PASS')
           PY
+
+      # The static Linux archive (Task 11.2, Step 4): no dynamic libc, and the unstripped s4
+      # within 23,000,000 bytes (grill 8612). A missed cap fails; it is never raised here.
+      - name: Static Linux s4 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          s4=$(find "$ARTIFACT_DIR" -type f -name s4)
+          file "$s4"
+          readelf -d "$s4" || true
+          if readelf -d "$s4" | grep -q NEEDED; then echo "::error::$s4 needs shared libraries"; exit 1; fi
+          if readelf -l "$s4" | grep -q INTERP; then echo "::error::$s4 asks for a dynamic loader"; exit 1; fi
+          size=$(stat -c %s "$s4")
+          echo "unstripped x86_64-unknown-linux-musl s4: $size bytes (cap 23000000)" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$size" -le 23000000 ]
+
+      # musl's malloc against glibc's under s4's threads (M5b spec §8.1; plan Task 11.2): the
+      # same release profile for both targets, built one after the other in this target dir,
+      # and scripts/bench-m5b.sh --compare alternating 40 pairs of each s4 mode over the M4
+      # text corpus (20,000 files) on this runner. The report and its raw samples are kept.
+      - name: musl against glibc (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          uptime
+          for t in x86_64-unknown-linux-gnu x86_64-unknown-linux-musl; do
+            $PRIO cargo build --release --locked --offline -p searchfor --bin s4 --target "$t"
+          done
+          SEARCHFOR_BENCH_REPORT="$RUNNER_TEMP/musl-vs-glibc.json" $PRIO bash scripts/bench-m5b.sh \
+            --compare target/x86_64-unknown-linux-gnu/release/s4 \
+            target/x86_64-unknown-linux-musl/release/s4 "$RUNNER_TEMP/m4-corpus"
+          uptime
+      # The rule, in this order (plan Task 11.2): a musl/glibc ratio of the medians of at most
+      # 1.05 keeps System; at least 1.15 means jemalloc behind the counter, a change this job
+      # cannot make, so it fails; in between it is Sebastián's decision, flagged as a warning.
+      # The worst of the three s4 modes decides.
+      - name: musl allocator decision (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python3 - "$RUNNER_TEMP/musl-vs-glibc.json" <<'PY'
+          import json, sys
+          def decide(musl, glibc):
+              ratio = musl / glibc
+              if ratio <= 1.05:
+                  return 'system'
+              if ratio >= 1.15:
+                  return 'jemalloc'
+              return 'ask'
+          assert decide(1.05, 1.0) == 'system'
+          assert decide(1.0501, 1.0) == 'ask'
+          assert decide(1.12, 1.0) == 'ask'
+          assert decide(1.1499, 1.0) == 'ask'
+          assert decide(1.15, 1.0) == 'jemalloc'
+          print('musl allocator rule (<=1.05 system, >=1.15 jemalloc, else ask): PASS')
+          report = json.load(open(sys.argv[1], encoding='utf-8'))
+          rank = {'system': 0, 'ask': 1, 'jemalloc': 2}
+          worst = 'system'
+          for mode, m in report['modes'].items():
+              glibc, musl = m['medians']['A']['wall'], m['medians']['B']['wall']
+              d = decide(musl, glibc)
+              worst = max(worst, d, key=rank.get)
+              print(f"{mode}: glibc {glibc:.4f} s, musl {musl:.4f} s, musl/glibc {musl / glibc:.4f} -> {d}"
+                    f" (uptime: {m['uptime']})")
+              print(f"{mode} raw samples: {json.dumps(m['samples'])}")
+          print(f'decision: {worst}')
+          if worst == 'jemalloc':
+              print('::error::musl is at least 1.15 x glibc: s4 needs jemalloc behind the counter (plan Task 11.2, Step 3)')
+              sys.exit(1)
+          if worst == 'ask':
+              print('::warning::musl/glibc is between 1.05 and 1.15: Sebastián decides System or jemalloc (plan Task 11.2, Step 2)')
+          PY
+      - name: Keep the musl measurement (Linux)
+        if: runner.os == 'Linux' && (success() || failure())
+        uses: actions/upload-artifact@v4
+        with:
+          name: musl-vs-glibc-${{ github.sha }}
+          path: ${{ runner.temp }}/musl-vs-glibc.json
+          if-no-files-found: ignore
+      # The counter's contract under musl: the memory unit tests and m4_22's warning.
+      - name: Memory limits under musl (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          $PRIO cargo test --release --locked --offline --target x86_64-unknown-linux-musl --lib memory
+          $PRIO cargo test --release --locked --offline --target x86_64-unknown-linux-musl --test cli_m4 m4_22
