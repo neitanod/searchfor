@@ -449,17 +449,35 @@ variable nothing is read (M5a plan, D3).
 mod tests {
     use super::*;
 
+    /// The reference rg, as `tests/common`'s `rg_path` chooses it (M5b plan, D2):
+    /// `SEARCHFOR_RG` as given, else `/usr/bin/rg` on Unix when it exists (another rg may come
+    /// first on `PATH`), else `rg` from `PATH`.
+    fn reference_rg() -> std::path::PathBuf {
+        if let Some(p) = std::env::var_os("SEARCHFOR_RG") {
+            return p.into();
+        }
+        let usr_bin = std::path::Path::new("/usr/bin/rg");
+        if cfg!(unix) && usr_bin.is_file() {
+            return usr_bin.into();
+        }
+        "rg".into()
+    }
+
     fn reference_rg_help() -> Option<String> {
-        let v = std::process::Command::new("rg")
+        let rg = reference_rg();
+        let v = std::process::Command::new(&rg)
             .arg("--version")
             .env_remove("RIPGREP_CONFIG_PATH")
-            .output()
-            .ok()?;
-        if !String::from_utf8_lossy(&v.stdout).starts_with("ripgrep 14.1.1") {
-            eprintln!("skipping: reference rg 14.1.1 not found");
+            .output();
+        if !v.is_ok_and(|v| String::from_utf8_lossy(&v.stdout).starts_with("ripgrep 14.1.1")) {
+            let what = format!("reference rg 14.1.1 at {}", rg.display());
+            if std::env::var_os("SEARCHFOR_REQUIRE_REFERENCE").is_some_and(|v| v == "1") {
+                panic!("{what} is required (SEARCHFOR_REQUIRE_REFERENCE=1) and missing");
+            }
+            eprintln!("skipping: {what} not found");
             return None;
         }
-        let h = std::process::Command::new("rg")
+        let h = std::process::Command::new(&rg)
             .arg("--help")
             .env_remove("RIPGREP_CONFIG_PATH")
             .output()

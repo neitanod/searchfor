@@ -191,14 +191,16 @@ fn encode_as(input: &[u8], windows: bool) -> Vec<u8> {
 }
 
 /// rg 14.1.1's `hostname`: the output of `--hostname-bin`, trimmed, when it runs and prints
-/// something; else the system's.
+/// something; else the system's. The program starts through `platform::spawn`, inside s4's Job
+/// Object on Windows (M5b plan, D21), with what grep-cli's `CommandReader::new` gives rg: stdin
+/// from the null device and stderr read once stdout ends.
 pub fn hostname(bin: Option<&Path>) -> Option<String> {
     if let Some(bin) = bin
         && let Ok(bin) = grep_cli::resolve_binary(bin)
     {
-        let mut cmd = std::process::Command::new(&bin);
-        cmd.stdin(std::process::Stdio::null());
-        if let Ok(rdr) = grep_cli::CommandReader::new(&mut cmd)
+        let mut spec = crate::platform::SpawnSpec::new(bin.into_os_string());
+        spec.stdin = crate::platform::Input::Null;
+        if let Ok(rdr) = crate::preprocess::ManagedCommandReader::start(spec, false)
             && let Ok(out) = std::io::read_to_string(rdr)
             && !out.trim().is_empty()
         {
