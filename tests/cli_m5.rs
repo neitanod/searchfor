@@ -1236,3 +1236,63 @@ fn m5_23_passthru_prints_an_input_without_a_match() {
         );
     }
 }
+
+/// Code review r1, Codex #4: the last mode flag wins, as rg 14.1.1's `Mode::update`, where a
+/// search mode (-c, --count-matches, -l, --files-without-match, --json, and --no-json after
+/// --json) given after `--files`, `--type-list` or `--generate` searches again; on the command
+/// line and from the configuration file, against the reference rg.
+#[test]
+fn m5_24_the_last_mode_flag_wins_as_ripgrep() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let both = |args: &[&str], config: Option<&str>| {
+        let (mut s, mut r) = (fx.s4(["--sort", "path"]), fx.rg(["--sort", "path"]));
+        s.args(args);
+        r.args(args);
+        if let Some(c) = config {
+            let path = fx.file("modes-rc");
+            std::fs::write(&path, c).unwrap();
+            s.env("SEARCHFOR_CONFIG_PATH", &path);
+            r.env("RIPGREP_CONFIG_PATH", &path);
+        }
+        let (s, r) = (run(&mut s), run(&mut r));
+        assert_eq!(
+            (code(&s), stdout(&s)),
+            (code(&r), stdout(&r)),
+            "{args:?} with {config:?}: {}",
+            stderr(&s)
+        );
+        assert_eq!(code(&s), 0, "{args:?} with {config:?}");
+    };
+    for args in [
+        &["--files", "-l", "^#", "md"][..],
+        &["-l", "--files", "md"],
+        &["--files", "-c", "Plan", "md"],
+        &["--files", "--count-matches", "Plan", "md"],
+        &["--files", "--files-without-match", "needle-pkg", "md"],
+        &["--type-list", "-l", "Plan", "md"],
+        &["--generate", "man", "-l", "Plan", "md"],
+        &["--generate", "man", "--files", "md"],
+        &["--type-list", "--files", "md"],
+        &["--files", "--type-list"],
+        &["-c", "--type-list"],
+        &["--json", "--files", "--no-json", "md"],
+        &["--files", "--no-json", "md"],
+        &["--json", "-l", "--no-json", "Plan", "md"],
+    ] {
+        both(args, None);
+    }
+    both(&["-l", "Plan", "md"], Some("--files\n"));
+    both(&["--files", "md"], Some("-l\n"));
+    both(&["--type-list"], Some("--files\n"));
+    both(&["-c", "Plan", "md"], Some("--generate=man\n"));
+    // `--no-json` after `--json` searches again, in s4's own layout.
+    let plain = ok(&fx, &["Plan", "md"]);
+    assert_eq!(
+        ok(&fx, &["--files", "--json", "--no-json", "Plan", "md"]),
+        plain
+    );
+    assert!(ok(&fx, &["-l", "--generate", "man"]).contains(".TH s4"));
+}

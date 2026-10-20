@@ -224,15 +224,16 @@ pub struct Args {
     pub before_context: Option<usize>,
     #[arg(short = 'C', long)]
     pub context: Option<usize>,
-    // The output modes override each other: the last one on the command line wins, as in
-    // ripgrep (`--json -c` counts, `-c --json` prints JSON, `-l -c` counts, `-c -l` lists).
-    #[arg(short = 'c', long, overrides_with_all = ["count_matches", "files_with_matches", "files_without_match", "json"])]
+    // The output modes override each other and the actions: the last one on the command line
+    // wins, as in ripgrep (`--json -c` counts, `-c --json` prints JSON, `--files -l` lists the
+    // files with Matches); `order::modes` resolves them.
+    #[arg(short = 'c', long)]
     pub count: bool,
-    #[arg(long, overrides_with_all = ["count", "files_with_matches", "files_without_match", "json"])]
+    #[arg(long)]
     pub count_matches: bool,
-    #[arg(short = 'l', long, overrides_with_all = ["count", "count_matches", "files_without_match", "json"])]
+    #[arg(short = 'l', long)]
     pub files_with_matches: bool,
-    #[arg(long, overrides_with_all = ["count", "count_matches", "files_with_matches", "json"])]
+    #[arg(long)]
     pub files_without_match: bool,
     #[arg(short = 'm', long)]
     pub max_count: Option<u64>,
@@ -248,7 +249,7 @@ pub struct Args {
     pub color: ColorWhen,
     #[arg(short = 'M', long)]
     pub max_columns: Option<u64>,
-    #[arg(long, overrides_with_all = ["no_json", "count", "count_matches", "files_with_matches", "files_without_match"])]
+    #[arg(long)]
     pub json: bool,
     #[arg(long, hide = true)]
     pub no_json: bool,

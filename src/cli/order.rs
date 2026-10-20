@@ -382,24 +382,63 @@ fn headings(m: &ArgMatches, a: &mut Args) {
     }
 }
 
-/// `--mmap`/`--no-mmap`; and the actions, of which the last one given runs as rg's
-/// `Mode::update` (`--files`, `--type-list`, `--generate`).
+/// `--mmap`/`--no-mmap`; and the modes, of which the last one given wins, as rg 14.1.1's
+/// `Mode::update`: the search modes (-c, --count-matches, -l, --files-without-match, --json)
+/// and the actions (`--files`, `--type-list`, `--generate`) override each other in either
+/// order, and `--no-json` goes back to the standard search only from `--json` (code review r1,
+/// Codex #4).
 fn modes(m: &ArgMatches, a: &mut Args) {
     a.mmap_mode = match (at(m, "mmap"), at(m, "no_mmap")) {
         (Some(_), _) => MmapMode::Always,
         (_, Some(_)) => MmapMode::Never,
         _ => MmapMode::Auto,
     };
-    let last = [
-        at(m, "files"),
-        at(m, "type_list"),
-        values::<String>(m, "generate").last().map(|(i, _)| *i),
-    ];
-    if let Some(max) = last.iter().flatten().max().copied() {
-        a.files = last[0] == Some(max);
-        a.type_list = last[1] == Some(max);
-        if last[2] != Some(max) {
-            a.generate = None;
+    #[derive(Clone, PartialEq)]
+    enum Mode {
+        Standard,
+        Count,
+        CountMatches,
+        FilesWithMatches,
+        FilesWithoutMatch,
+        Json,
+        NoJson,
+        Files,
+        Types,
+        Generate(String),
+    }
+    let mut steps: Vec<(usize, Mode)> = values::<String>(m, "generate")
+        .into_iter()
+        .map(|(i, kind)| (i, Mode::Generate(kind)))
+        .collect();
+    for (id, mode) in [
+        ("count", Mode::Count),
+        ("count_matches", Mode::CountMatches),
+        ("files_with_matches", Mode::FilesWithMatches),
+        ("files_without_match", Mode::FilesWithoutMatch),
+        ("json", Mode::Json),
+        ("no_json", Mode::NoJson),
+        ("files", Mode::Files),
+        ("type_list", Mode::Types),
+    ] {
+        if let Some(i) = at(m, id) {
+            steps.push((i, mode));
         }
     }
+    let mut mode = Mode::Standard;
+    replay(&mut mode, steps, |mode, new| match new {
+        Mode::NoJson if *mode == Mode::Json => *mode = Mode::Standard,
+        Mode::NoJson => {}
+        new => *mode = new,
+    });
+    a.count = mode == Mode::Count;
+    a.count_matches = mode == Mode::CountMatches;
+    a.files_with_matches = mode == Mode::FilesWithMatches;
+    a.files_without_match = mode == Mode::FilesWithoutMatch;
+    a.json = mode == Mode::Json;
+    a.files = mode == Mode::Files;
+    a.type_list = mode == Mode::Types;
+    a.generate = match mode {
+        Mode::Generate(kind) => Some(kind),
+        _ => None,
+    };
 }
