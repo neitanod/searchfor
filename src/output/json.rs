@@ -277,14 +277,15 @@ impl<'a> JsonFile<'a> {
     }
 }
 
-/// A searched file with a Match, as the summary counts it: its search's stats (before filters,
-/// spec §6.4) and `bytes_printed`.
+/// A searched file, as the summary counts it: its search's stats (before filters, spec §6.4)
+/// and `bytes_printed`. It is a search with a Match when a line matched: with `-v` rg counts
+/// the inverted lines and leaves `matches` at 0 (code review r2, Fable #1).
 pub fn file_stats(st: &FileStats, bytes_printed: u64) -> RunStats {
     RunStats {
         elapsed_total: Default::default(),
         elapsed: st.elapsed,
         searches: 1,
-        searches_with_match: 1,
+        searches_with_match: u64::from(st.matched_lines > 0),
         bytes_searched: st.bytes_searched,
         bytes_printed,
         matched_lines: st.matched_lines,

@@ -1248,6 +1248,54 @@ fn m5_23_passthru_prints_an_input_without_a_match() {
     }
 }
 
+/// Code review r2, Fable #1: in s4's `--json`, a file `--passthru` prints without a Match has
+/// `searches_with_match` 0 in its `end` and adds 0 to the `summary`; with `-v`, a file whose
+/// inverted lines matched counts 1 although its `matches` is 0. Against the reference rg.
+#[test]
+fn m5_23b_json_counts_a_search_with_a_match_as_ripgrep() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("pt")).unwrap();
+    std::fs::write(fx.file("pt/c.txt"), "nothing\n").unwrap();
+    std::fs::write(fx.file("pt/all.txt"), "needle\n").unwrap();
+    // Per `end`, its path and its matched_lines, matches and searches_with_match; then the
+    // summary's searches and searches_with_match.
+    let counts = |o: &std::process::Output| -> Vec<Value> {
+        stdout(o)
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter_map(|m| {
+                let st = &m["data"]["stats"];
+                match m["type"].as_str()? {
+                    "end" => Some(json!([
+                        m["data"]["path"],
+                        st["matched_lines"],
+                        st["matches"],
+                        st["searches_with_match"],
+                    ])),
+                    "summary" => Some(json!([st["searches"], st["searches_with_match"]])),
+                    _ => None,
+                }
+            })
+            .collect()
+    };
+    for flags in [&["--passthru"][..], &["--passthru", "-v"], &["-v"], &[]] {
+        let mut args = vec!["--json", "--sort", "path"];
+        args.extend(flags);
+        args.push("needle");
+        let s = piped(&fx, &args, b"nothing\n");
+        let r = run(fx
+            .rg(&args)
+            .stdin(std::fs::File::open(fx.file("pt/c.txt")).unwrap()));
+        assert_eq!(counts(&s), counts(&r), "{args:?} on stdin: {}", stderr(&s));
+        args.extend(["pt/c.txt", "pt/all.txt", "md/guide.md"]);
+        let (s, r) = (run(&mut fx.s4(&args)), run(&mut fx.rg(&args)));
+        assert_eq!(counts(&s), counts(&r), "{args:?}: {}", stderr(&s));
+    }
+}
+
 /// Code review r1, Codex #4: the last mode flag wins, as rg 14.1.1's `Mode::update`, where a
 /// search mode (-c, --count-matches, -l, --files-without-match, --json, and --no-json after
 /// --json) given after `--files`, `--type-list` or `--generate` searches again; on the command
