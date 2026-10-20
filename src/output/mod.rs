@@ -825,12 +825,18 @@ fn match_rows<'a>(
             // The first line the Match touches; rg's printer of several lines prints none for
             // an empty Match at a line's start (review r3 of the M5a plan, Codex #4). Past the
             // line that holds its start, a line touches it only if it starts before its end.
-            let Some((n, &(ls, le))) = lines
+            let touched = lines
                 .iter()
                 .enumerate()
                 .skip(line_at(&lines, s))
                 .take_while(|&(_, &(ls, _))| ls <= s || ls < e)
-                .find(|&(_, &(ls, le))| s < le && (e > ls || (s >= ls && !o.look.multi_line)))
+                .find(|&(_, &(ls, le))| s < le && (e > ls || (s >= ls && !o.look.multi_line)));
+            // A Match at the end of a last line without a terminator, as one whose replacement
+            // empties the line's end: rg's printer of one line prints it on that line (code
+            // review r1 of M5a, Codex #5).
+            let last = lines.len() - 1;
+            let at_end = !o.look.multi_line && s >= lines[last].1;
+            let Some((n, &(ls, le))) = touched.or_else(|| at_end.then(|| (last, &lines[last])))
             else {
                 continue;
             };
@@ -1647,6 +1653,60 @@ pub(crate) mod tests {
         assert_eq!(columns(1, &subs, true), [(1, 2), (1, 7)]);
         assert_eq!(columns(1, &subs, false), [(1, 1), (1, 2), (1, 7)]);
         assert_eq!(columns(2, &[(0, 0)], true), []);
+    }
+
+    /// Code review r1 of M5a, Codex #5: a Match whose replacement leaves a last line without a
+    /// terminator empty at its end keeps its row, as rg's: `printf 'a needle' | rg --vimgrep -b
+    /// -r '' needle` prints `<stdin>:1:3:2:a `, and `needle needle` prints `1:1:0:` and
+    /// `1:2:1:`. `-o` and `--column` print theirs too (rg: an empty line, `1:1:`).
+    #[test]
+    fn per_match_rows_of_an_emptied_last_line() {
+        use super::fixture::*;
+        let texts = |src: &[u8], subs: &[(usize, usize)], look: Look| -> Vec<Seen> {
+            let mut item = mat(src, 1);
+            if let Item::Match(l) = &mut item {
+                l.submatches = subs
+                    .iter()
+                    .map(|&(start, end)| Submatch { start, end })
+                    .collect();
+            }
+            let trails = vec![vec![seg("key", "A", 1, 1)]; subs.len()];
+            let d = described(src, vec![item], vec![trails]);
+            seen(&d, src, &with(look))
+        };
+        let row = |text: &str, column, at| {
+            (
+                1,
+                text.to_string(),
+                vec![],
+                Some(column),
+                at,
+                "A".to_string(),
+            )
+        };
+        let vimgrep = || Look {
+            per_match: true,
+            ..replacer("needle", b"")
+        };
+        assert_eq!(texts(b"needle", &[(0, 6)], vimgrep()), [row("", 1, 0)]);
+        assert_eq!(texts(b"a needle", &[(2, 8)], vimgrep()), [row("a ", 3, 2)]);
+        assert_eq!(
+            texts(b"needle needle", &[(0, 6), (7, 13)], vimgrep()),
+            [
+                (1, " ".into(), vec![(0, 0)], Some(1), 0, "A".into()),
+                row(" ", 2, 1)
+            ]
+        );
+        let only = Look {
+            only_matching: true,
+            ..replacer("needle", b"")
+        };
+        assert_eq!(texts(b"needle", &[(0, 6)], only), [row("", 1, 0)]);
+        let line = texts(b"needle", &[(0, 6)], replacer("needle", b""));
+        assert_eq!(
+            line,
+            [(1, String::new(), vec![(0, 0)], Some(1), 0, "A".into())]
+        );
     }
 
     /// M5a plan, D6: a `-U` Match prints a row per line, numbered as rg numbers them, under
