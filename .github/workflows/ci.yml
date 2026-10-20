@@ -725,7 +725,9 @@ jobs:
           with tarfile.open(distrib / 'searchfor-npm-package.tar.gz') as t:
               t.extractall(src, filter='data')
           [pkg] = [p.parent for p in src.rglob('package.json')]
-          for kind in ('good', 'bad'):
+          # Only the good archive: dist's npm installer checks no checksum (spec §8.3; the
+          # attestation is the check), so a corrupt archive may or may not fail to unpack.
+          for kind in ('good',):
               copy = tmp / f'npm-src-{kind}'
               shutil.copytree(pkg, copy)
               meta = json.loads((copy / 'package.json').read_text(encoding='utf-8'))
@@ -741,11 +743,8 @@ jobs:
                       env=dict(env, NO_PROXY=registry, no_proxy=registry))
               served(kind)
               shim = prefix / 'node_modules' / '.bin' / ('s4.cmd' if windows else 's4')
-              if kind == 'good':
-                  assert r.returncode == 0, r
-                  assert version(shim) == 's4 1.0.0'
-              else:
-                  assert r.returncode != 0, 'npm installed a corrupt archive'
+              assert r.returncode == 0, r
+              assert version(shim) == 's4 1.0.0'
           print('npm package: PASS')
 
           if mac:
