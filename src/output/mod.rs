@@ -990,6 +990,18 @@ fn shown_rows<'a>(
                 at,
             ));
         }
+        // A row of a replaced Match prints one line of the replaced text; a replacement holding
+        // a line break leaves the rest of that Source line in lines no row prints. The row covers
+        // the Source line it ends on, so no piece of it comes back as context (M5b spec §3,
+        // item 2).
+        if spans.is_some() && !d.offsets {
+            let term = if o.look.null_data { 0 } else { b'\n' };
+            for (_, (_, e)) in &mut rows {
+                if *e > 0 && *e < len && original[*e - 1] != term {
+                    *e = memchr::memchr(term, &original[*e..]).map_or(len, |p| *e + p + 1);
+                }
+            }
+        }
         return rows;
     }
     let one = subs.is_empty() || omitted(original, o) || d.offsets;
@@ -1308,13 +1320,14 @@ impl<'a> Iterator for Pieces<'a> {
 /// (code review r2 of M5a, Codex #1 and Fable #3), and takes only those of its own bytes (code
 /// review r3, Codex #1). `start` is where the item starts, `end` where the bytes its rows show
 /// end: the bytes of the item no row shows, the lines `-o` and `--vimgrep` leave out, are
-/// context (code review r3, Fable #1). Each row is `(start, end, from, row)`: the bytes it
-/// shows, and where the first Match its bytes hold starts (`start` without one).
+/// context (code review r3, Fable #1). Each row is `(start, end, from, owned, row)`: the bytes
+/// it shows, where the first Match its bytes hold starts (`start` without one), and whether that
+/// Match has a Section, which then owns the row (M5b spec §3, item 1).
 #[derive(Clone)]
 pub(crate) struct SectionBlock<'a> {
     start: usize,
     end: usize,
-    rows: Vec<(usize, usize, usize, Row<'a>)>,
+    rows: Vec<(usize, usize, usize, bool, Row<'a>)>,
 }
 
 /// The rows of the printed Matches, in file order, for --expand's Sections: each Match's rows
@@ -1339,40 +1352,55 @@ pub(crate) fn section_rows<'a>(
         // The item's Matches by their starts, and the furthest end of each and of those before
         // it: the first Match that reaches a row's bytes is the first whose furthest end is
         // past the row's start.
-        let mut found = subs_of(&m.submatches);
+        // Each Match with whether it has a Section, by its index among the submatches.
+        let sectioned = |k: usize| {
+            d.sections
+                .get(i)
+                .and_then(|v| v.get(k))
+                .is_some_and(Option::is_some)
+        };
+        let mut found: Vec<(usize, usize, bool)> = m
+            .submatches
+            .iter()
+            .enumerate()
+            .map(|(k, s)| (s.start, s.end, sectioned(k)))
+            .collect();
         found.sort_unstable();
         let reach: Vec<usize> = found
             .iter()
-            .scan(0, |far, &(_, e)| {
+            .scan(0, |far, &(_, e, _)| {
                 *far = e.max(*far);
                 Some(*far)
             })
             .collect();
-        let from = |s: usize, e: usize| -> usize {
+        let from = |s: usize, e: usize| -> (usize, bool) {
             let k = reach.partition_point(|&far| far <= s);
             found
                 .get(k)
-                .filter(|&&(ms, me)| ms < e || (ms == me && ms == s))
-                .map_or(at(s), |&(ms, _)| at(ms))
+                .filter(|&&(ms, me, _)| ms < e || (ms == me && ms == s))
+                .map_or((at(s), false), |&(ms, _, owned)| (at(ms), owned))
         };
-        let mut rows: Vec<(usize, usize, usize, Row<'a>)> = Vec::new();
+        let mut rows: Vec<(usize, usize, usize, bool, Row<'a>)> = Vec::new();
         for (r, (s, e)) in shown_rows(d, i, m, src, o) {
             match rows.last_mut() {
-                Some((_, _, _, last)) if !per_match && Rc::ptr_eq(&last.line, &r.line) => {
+                Some((_, _, _, _, last)) if !per_match && Rc::ptr_eq(&last.line, &r.line) => {
                     last.subs.extend(r.subs);
                     last.column = match (last.column, r.column) {
                         (Some(a), Some(b)) => Some(a.min(b)),
                         (a, b) => a.or(b),
                     };
                 }
-                _ => rows.push((at(s), at(e), from(s, e), r)),
+                _ => {
+                    let (from, owned) = from(s, e);
+                    rows.push((at(s), at(e), from, owned, r));
+                }
             }
         }
         // The submatches of a line's Trails, back in the line's order once, as each Trail's are.
-        for (_, _, _, r) in &mut rows {
+        for (_, _, _, _, r) in &mut rows {
             r.subs.sort_unstable();
         }
-        let end = rows.iter().map(|&(_, e, _, _)| e).max().unwrap_or(start);
+        let end = rows.iter().map(|&(_, e, _, _, _)| e).max().unwrap_or(start);
         blocks.push(SectionBlock { start, end, rows });
     }
     blocks
@@ -1400,10 +1428,12 @@ impl<'s> SectionLines<'s> {
 
     /// The rows of lines `start..=end` (1-based), in file order: of each printed Match's rows
     /// (`section_rows`) those that show bytes of these lines, once; any other bytes a context
-    /// row per line (`context_row`). A Match that starts before the Section prints the rows of
-    /// its lines in the Section, and none of the lines before it; one that starts in it and
-    /// goes on past its end, the rows of its lines after it too (code review r3 of M5a, Codex
-    /// #1).
+    /// row per line (`context_row`). A row belongs to the Section where its Match starts (M5b
+    /// spec §3, item 1): a Match that starts in the Section and goes on past its end prints
+    /// every row of its lines after it too, the bytes between them as context (item 3); one
+    /// that starts before it prints none of its rows here, and its bytes are not context.
+    /// A Match without a Section prints the rows of its lines in the Section, and none of the
+    /// lines before it (code review r3 of M5a, Codex #1).
     pub(crate) fn rows<'m>(
         &'m self,
         start: u64,
@@ -1510,7 +1540,7 @@ impl<'s> SectionWalk<'_, 's> {
                         let s = self.start;
                         let first = b
                             .rows
-                            .partition_point(|&(rs, re, _, _)| re < s || (re == s && rs < re));
+                            .partition_point(|&(rs, re, _, _, _)| re < s || (re == s && rs < re));
                         self.row = Some(first);
                     }
                 }
@@ -1519,8 +1549,16 @@ impl<'s> SectionWalk<'_, 's> {
             let block = &self.blocks[self.block];
             let mine = |from: usize| (self.start..self.end).contains(&from);
             match block.rows.get(k) {
-                Some((rs, re, from, row)) if *rs < self.end || (mine(*from) && *rs <= self.at) => {
-                    // The bytes of the item between two rows that no row shows.
+                Some((rs, re, from, owned, row)) if *rs < self.end || mine(*from) => {
+                    // A row of a Match that starts in an earlier Section is printed there,
+                    // and so are the bytes it covers (M5b spec §3, item 1).
+                    if *owned && *from < self.start {
+                        self.row = Some(k + 1);
+                        self.at = self.at.max(*re);
+                        continue;
+                    }
+                    // The bytes of the item between two rows that no row shows, past the
+                    // Section's end too for a Match that starts in it (item 3).
                     if *rs > self.at {
                         self.context_to(*rs);
                         continue;

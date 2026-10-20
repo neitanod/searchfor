@@ -1570,3 +1570,81 @@ fn m5_27_a_closed_stderr_keeps_the_exit_code_of_every_diagnostic() {
         }
     }
 }
+
+/// M5b spec §3, item 1: a row belongs to the Section where its Match starts, so a replaced
+/// Match's continuation is printed once, under that Section.
+#[test]
+fn m5b_expand_replacement_continuations_belong_to_start_section() {
+    let fx = Fixture::new();
+    std::fs::write(fx.file("a.md"), "# A\nneedle\n# B\nlast\nneedle\n").unwrap();
+    let out = ok(
+        &fx,
+        &[
+            "--tree",
+            "--expand",
+            "-U",
+            "-r",
+            "X",
+            "needle\\n# B\\nlast|needle",
+            "a.md",
+        ],
+    );
+    assert_eq!(out.matches("X").count(), 2, "{out}");
+    assert_eq!(out.matches("last").count(), 0, "{out}");
+    // The replacement consumes the continuation; Section B must not print it again.
+    assert_eq!(
+        out.lines().filter(|l| l.ends_with(":X")).count(),
+        2,
+        "{out}"
+    );
+}
+
+/// M5b spec §3, item 2: the row of a replaced Match covers the whole item, so no piece of the
+/// Source line comes back as a context row.
+#[test]
+fn m5b_expand_vimgrep_newline_replacement_covers_the_source_item() {
+    let fx = Fixture::new();
+    std::fs::write(fx.file("a.md"), "# A\nprefix needle suffix\n").unwrap();
+    let out = ok(
+        &fx,
+        &[
+            "--flat",
+            "--expand",
+            "--vimgrep",
+            "-r",
+            "X\nY",
+            "needle",
+            "a.md",
+        ],
+    );
+    assert_eq!(out.matches("prefix").count(), 1, "{out}");
+    // --vimgrep keeps the first replacement line; the rest of the original
+    // item is covered, so suffix must not reappear as source context.
+    assert_eq!(out.matches("suffix").count(), 0, "{out}");
+    assert!(out.contains("prefix X"), "{out}");
+    assert!(!out.contains("Y"), "{out}");
+    assert!(!out.contains("needle"), "{out}");
+}
+
+/// M5b spec §3, item 3: a row of the same Match after an empty line past the Section's end
+/// prints, with the gap as context, as it does inside the Section.
+#[test]
+fn m5b_expand_only_matching_keeps_a_row_after_a_gap_outside_section() {
+    let fx = Fixture::new();
+    std::fs::write(fx.file("a.md"), "# A\nneedle\n# B\n\nlast\n").unwrap();
+    let out = ok(
+        &fx,
+        &[
+            "--tree",
+            "--expand",
+            "-U",
+            "-o",
+            "needle\\n# B\\n\\nlast",
+            "a.md",
+        ],
+    );
+    assert_eq!(out.matches("needle").count(), 1, "{out}");
+    assert_eq!(out.matches("last").count(), 1, "{out}");
+    assert!(out.lines().any(|l| l.ends_with("5:last")), "{out}");
+    assert!(out.lines().any(|l| l.ends_with("4-")), "{out}");
+}
