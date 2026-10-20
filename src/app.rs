@@ -134,6 +134,21 @@ struct Env {
     /// Every file through the whole-file model, as the oracle of the streaming path (plan
     /// Task 9.3, `Pipeline::Model`); false in every run of s4.
     model_only: bool,
+    /// Where a file's output past 8 MiB is spooled (`FileOut`): the system's temporary
+    /// directory.
+    spool: PathBuf,
+    /// What the tests' engine counts of a run (`Probe`).
+    #[cfg(test)]
+    probe: Option<std::sync::Arc<Probe>>,
+}
+
+/// What a run did, for the tests: files whose output was spooled to disk, and files that took
+/// the whole-file model (`Ctx::describe`).
+#[cfg(test)]
+#[derive(Default)]
+struct Probe {
+    spilled: std::sync::atomic::AtomicUsize,
+    described: std::sync::atomic::AtomicUsize,
 }
 
 impl Env {
@@ -147,6 +162,9 @@ impl Env {
             #[cfg(test)]
             out: None,
             model_only: false,
+            spool: std::env::temp_dir(),
+            #[cfg(test)]
+            probe: None,
         })
     }
 }
@@ -531,6 +549,9 @@ fn search_main(args: &Args, msgs: Messages, env: &Env) -> anyhow::Result<i32> {
         ),
         grammars: env.grammars.clone(),
         model_only: env.model_only,
+        spool: env.spool.clone(),
+        #[cfg(test)]
+        probe: env.probe.clone(),
     };
     match mode {
         Mode::Quiet => ctx.walk(
@@ -1096,6 +1117,10 @@ struct Ctx<'a> {
     grammars: Option<PathBuf>,
     /// `Env::model_only`.
     model_only: bool,
+    /// `Env::spool`.
+    spool: PathBuf,
+    #[cfg(test)]
+    probe: Option<std::sync::Arc<Probe>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -1610,6 +1635,12 @@ impl<'a> Ctx<'a> {
             return Ok(());
         }
         self.printed.store(true, Relaxed);
+        #[cfg(test)]
+        if let Some(p) = &self.probe
+            && spool.is_spilled()
+        {
+            p.spilled.fetch_add(1, Relaxed);
+        }
         if let Err(e) = self.out.print_spool(spool) {
             self.quit.store(true, Relaxed);
             return Err(e);
@@ -1625,7 +1656,7 @@ impl<'a> Ctx<'a> {
             return FileOut::Buffer(buf);
         }
         // An unnamed file: the system deletes it however s4 ends.
-        let spool = FileSpool::new(&std::env::temp_dir()).expect("FileSpool::new creates nothing");
+        let spool = FileSpool::new(&self.spool).expect("FileSpool::new creates nothing");
         if buf.supports_color() {
             FileOut::Ansi(termcolor::Ansi::new(spool))
         } else {
@@ -2415,6 +2446,10 @@ impl<'a> Ctx<'a> {
         detector: &Detector,
         replace: Option<&Replacer>,
     ) -> Result<Option<(Source, Described)>, ()> {
+        #[cfg(test)]
+        if let Some(p) = &self.probe {
+            p.described.fetch_add(1, Relaxed);
+        }
         st.binary_quit = false;
         st.failed = None;
         let found = if self.args.in_headings {
@@ -3926,6 +3961,9 @@ mod tests {
         /// The Grammar index: only `--list-grammars` and `--install-grammar` read it, never a
         /// search, so it is checked to be local and goes nowhere.
         index: String,
+        /// The run's spool directory (`Env::spool`) and what it counts (`Probe`).
+        spool: std::path::PathBuf,
+        probe: Option<std::sync::Arc<Probe>>,
     }
 
     /// `command` through `search_main` with `pipeline`, its stdout and stderr written to
@@ -3948,6 +3986,8 @@ mod tests {
             err: Stderr(Some(err.clone())),
             out: Some(out.clone()),
             model_only: matches!(pipeline, Pipeline::Model),
+            spool: command.spool.clone(),
+            probe: command.probe.clone(),
         };
         let msgs = Messages::new(&command.args, env.err.clone());
         let code = search_main(&command.args, msgs, &env);
@@ -3985,6 +4025,8 @@ mod tests {
             formats,
             grammars,
             index: format!("file://{}", dir.path().join("missing-index").display()),
+            spool: dir.path().to_path_buf(),
+            probe: None,
         };
         let mut out = termcolor::Buffer::no_color();
         let mut stderr = Vec::new();
@@ -4114,8 +4156,8 @@ mod tests {
                     while let Some(&(path, mode, pattern)) = jobs.get(next.fetch_add(1, Relaxed)) {
                         let mut args = mode.to_vec();
                         args.extend(["--color=never", "--no-docs", "--regexp", pattern]);
-                        let a = compare_fixture_command(&path, &args, Pipeline::Model);
-                        let b = compare_fixture_command(&path, &args, Pipeline::Stream);
+                        let a = compare_fixture_command(path, &args, Pipeline::Model);
+                        let b = compare_fixture_command(path, &args, Pipeline::Stream);
                         assert_eq!(a.code, b.code, "{path:?} {args:?}");
                         assert_eq!(a.stderr, b.stderr, "{path:?} {args:?}");
                         let json = mode.contains(&"--json");
@@ -4145,6 +4187,96 @@ mod tests {
                 });
             }
         });
+    }
+
+    /// `argv` (paths included) through the real engine, as `compare_fixture_command`, with
+    /// `spool` as its spool directory and `probe` counting.
+    fn run_engine(
+        argv: &[std::ffi::OsString],
+        spool: &Path,
+        probe: &std::sync::Arc<Probe>,
+    ) -> Captured {
+        let dir = tempfile::tempdir().unwrap();
+        let (formats, grammars) = (dir.path().join("formats"), dir.path().join("grammars"));
+        std::fs::create_dir(&formats).unwrap();
+        std::fs::create_dir(&grammars).unwrap();
+        let mut all: Vec<std::ffi::OsString> = vec!["s4".into(), "--no-config".into()];
+        all.extend(argv.iter().cloned());
+        let command = FileCommand {
+            args: crate::cli::parse(all).unwrap(),
+            cwd: std::env::current_dir().unwrap(),
+            formats,
+            grammars,
+            index: format!("file://{}", dir.path().join("missing-index").display()),
+            spool: spool.to_path_buf(),
+            probe: Some(probe.clone()),
+        };
+        let mut out = termcolor::Buffer::no_color();
+        let mut stderr = Vec::new();
+        let code = execute_file(&command, Pipeline::Stream, &mut out, &mut stderr).unwrap();
+        Captured {
+            stdout: out.into_inner(),
+            stderr,
+            code,
+        }
+    }
+
+    /// M5b spec §6.1 and §6.2 (plan Task 9.4, Step 4): dense CSV files searched by several
+    /// workers stream through the CSV cursor, never the whole-file model, and each file's
+    /// output past 8 MiB is spooled and printed whole, the spool leaving nothing behind. The
+    /// spool directory is on disk when one is at hand (CARGO_TARGET_DIR): `/tmp` is a tmpfs on
+    /// the shared Linux machine (`df` shows it), where the spool lives in RAM. So this checks
+    /// the spill and its cleanup, not where the bytes live, and no memory.
+    #[test]
+    fn dense_files_of_several_workers_stream_and_spool_whole() {
+        let disk = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from);
+        let spool = match &disk {
+            Some(d) if std::fs::create_dir_all(d).is_ok() => tempfile::tempdir_in(d).unwrap(),
+            _ => tempfile::tempdir().unwrap(),
+        };
+        let data = tempfile::tempdir().unwrap();
+        const ROWS: usize = 200_000;
+        for name in ["a.csv", "b.csv"] {
+            let mut csv = b"Name,Plan\n".to_vec();
+            for i in 0..ROWS {
+                csv.extend_from_slice(format!("n{i},needle\n").as_bytes());
+            }
+            std::fs::write(data.path().join(name), csv).unwrap();
+        }
+        let argv: Vec<std::ffi::OsString> = [
+            "--flat",
+            "-H",
+            "--color=never",
+            "--no-docs",
+            "-j2",
+            "needle",
+        ]
+        .iter()
+        .map(Into::into)
+        .chain([data.path().as_os_str().to_owned()])
+        .collect();
+        let probe = std::sync::Arc::new(Probe::default());
+        let both = run_engine(&argv, spool.path(), &probe);
+        assert_eq!(both.code, 0, "{}", String::from_utf8_lossy(&both.stderr));
+        // Whole files, one after the other, in either order, each row with its Trail.
+        let text = String::from_utf8(both.stdout).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2 * ROWS);
+        let (first, second) = lines.split_at(ROWS);
+        for rows in [first, second] {
+            let file = &rows[0][..rows[0].find(':').unwrap()];
+            assert!(rows.iter().all(|l| l.starts_with(file)), "{file}");
+            let bytes: usize = rows.iter().map(|l| l.len() + 1).sum();
+            assert!(
+                bytes > crate::output::spool::FILE_SPOOL_THRESHOLD,
+                "{bytes}"
+            );
+            assert!(rows[0].contains("row 1 ") && rows[ROWS - 1].contains(&format!("row {ROWS} ")));
+        }
+        assert_ne!(first[0].split(':').next(), second[0].split(':').next());
+        assert_eq!(probe.spilled.load(Relaxed), 2);
+        assert_eq!(probe.described.load(Relaxed), 0);
+        assert_eq!(std::fs::read_dir(spool.path()).unwrap().count(), 0);
     }
 
     /// M5b spec §4.2: `SpillLines` copies a file's output as bytes, which a console-API buffer

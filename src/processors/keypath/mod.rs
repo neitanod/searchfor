@@ -4,7 +4,7 @@ pub mod json;
 pub mod toml;
 pub mod yaml;
 
-use super::Processor;
+use super::{Capability, Prepared, Processor};
 use crate::model::{Input, Name, Trail};
 use crate::trail::{Outline, TrailCursor, names_of};
 use collect::Collector;
@@ -41,6 +41,19 @@ pub(crate) fn outline_for(src: &[u8], syntax: Syntax, anchors: &[usize]) -> Outl
     }
 }
 
+/// The prepared file of each syntax (plan Task 9.4): JSON's native cursor (`json::prepare`);
+/// YAML's and TOML's are their modules' (`yaml::prepare`, `toml::prepare`).
+pub(crate) fn prepare_syntax<'a>(
+    input: Input<'a>,
+    params: &'a ::toml::Table,
+) -> anyhow::Result<Box<dyn Prepared + 'a>> {
+    Ok(match syntax(params)? {
+        Syntax::Json => Box::new(json::prepare(input.bytes)),
+        Syntax::Yaml => yaml::prepare(input, params)?,
+        Syntax::Toml => toml::prepare(input, params)?,
+    })
+}
+
 fn walk(syntax: Syntax, src: &[u8], c: &mut Collector) -> usize {
     match syntax {
         Syntax::Json => json::walk(src, c),
@@ -67,6 +80,28 @@ impl Processor for Keypath {
             out[i] = cursor.trail(sorted[k]);
         }
         Ok(out)
+    }
+
+    fn prepare<'a>(
+        &'a self,
+        input: Input<'a>,
+        params: &'a ::toml::Table,
+    ) -> anyhow::Result<Box<dyn Prepared + 'a>> {
+        prepare_syntax(input, params)
+    }
+
+    fn capability(&self, params: &::toml::Table) -> Capability {
+        let native = match syntax(params) {
+            Ok(Syntax::Json) => true,
+            Ok(Syntax::Yaml) => yaml::NATIVE,
+            Ok(Syntax::Toml) => toml::NATIVE,
+            Err(_) => false,
+        };
+        if native {
+            Capability::Native
+        } else {
+            Capability::Model
+        }
     }
 
     fn names(&self, input: &Input, params: &::toml::Table) -> anyhow::Result<Vec<Name>> {
@@ -359,5 +394,84 @@ mod tests {
             .trails(&input, &::toml::Table::new(), &[0])
             .unwrap_err();
         assert!(e.to_string().contains("`syntax`"), "{e}");
+    }
+
+    #[test]
+    fn json_cursor_matches_model_for_repeated_values_and_broken_tail() {
+        for src in [
+            &b"{\"a\":\"needle\"}\n{\"b\":[\"needle\",\"needle\"]}\n"[..],
+            &b"{\"a\":{\"b\":\"needle\"},\"bad\":[\"needle\""[..],
+        ] {
+            let params = self::params("json");
+            let input = Input {
+                bytes: src,
+                path: Path::new("x.jsonl"),
+                format: "json",
+                disk: None,
+            };
+            let anchors: Vec<_> = memchr::memmem::find_iter(src, b"needle").collect();
+            let expected = Keypath.trails(&input, &params, &anchors).unwrap();
+            let prepared = Keypath.prepare(input, &params).unwrap();
+            assert!(prepared.streams());
+            let mut cursor = prepared.cursor();
+            for (at, trail) in anchors.into_iter().zip(expected) {
+                assert_eq!(cursor.trail_at(at).unwrap().as_ref(), trail.as_slice());
+            }
+        }
+    }
+
+    /// The cursor asked at every byte of each file, in order and once more from the start,
+    /// gives the model's Trails: members, keys and labels, comments, escapes, errors, a value
+    /// cut by the end of the file, and nesting past MAX_DEPTH.
+    #[test]
+    fn json_cursor_matches_model_at_every_byte() {
+        let deep = format!(
+            "{}\"needle\"{}",
+            "[".repeat(json::MAX_DEPTH + 3),
+            "]".repeat(json::MAX_DEPTH + 3)
+        );
+        let mut cases: Vec<Vec<u8>> = ["config.json", "broken.json", "lines.jsonl"]
+            .iter()
+            .map(|f| fixture(f))
+            .collect();
+        for s in [
+            &b"{\"a\" : {\"b\" /* c */ : [1, {\"c\":\"d\"}, []] , \"e\": 2 }, \"f\":3}"[..],
+            b"{\"k\\u00e9y\": {\"x\": [true, null, -1.5e3]}, \"z\": \"\\\"q\"}\n",
+            b"[1, [2, \"needle\"]] // tail\n[3]",
+            b"{\"a\": 1 x}",
+            b"{\"a\": {\"b\": 2} x, \"c\": 3}",
+            b"{\"a\": [1, 2",
+            b"{\"a\": tru}",
+            b"{\"a\"  \n : \n 7,\n\"b\": {}\n}\n{\"c\":[[[]]]}",
+            b"\"needle\"\n12\n{\"needle\": {\"needle\": \"needle\"}}",
+            b"",
+            deep.as_bytes(),
+        ] {
+            cases.push(s.to_vec());
+        }
+        for src in &cases {
+            let params = self::params("json");
+            let input = Input {
+                bytes: src,
+                path: Path::new("x.json"),
+                format: "json",
+                disk: None,
+            };
+            let anchors: Vec<usize> = (0..=src.len()).collect();
+            let expected = Keypath.trails(&input, &params, &anchors).unwrap();
+            let prepared = Keypath.prepare(input, &params).unwrap();
+            let mut cursor = prepared.cursor();
+            for (&at, trail) in anchors.iter().zip(&expected) {
+                let got = cursor.trail_at(at).unwrap();
+                assert_eq!(
+                    got.as_ref(),
+                    trail.as_slice(),
+                    "{} at {at}",
+                    String::from_utf8_lossy(src)
+                );
+            }
+            // Before the last offset: answered again from the start.
+            assert_eq!(cursor.trail_at(0).unwrap().as_ref(), expected[0].as_slice());
+        }
     }
 }

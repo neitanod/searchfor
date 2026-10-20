@@ -481,6 +481,22 @@ fn unescape(part: &str) -> String {
     out
 }
 
+/// Whether `prepare` gives a native cursor: not yet, the model fallback (plan Task 9.4; Task
+/// 10.2 gives YAML its cursor).
+pub(crate) const NATIVE: bool = false;
+
+/// The prepared YAML file: the model fallback (`ModelPrepared`) until its cursor (Task 10.2).
+pub(crate) fn prepare<'a>(
+    input: crate::model::Input<'a>,
+    params: &'a ::toml::Table,
+) -> anyhow::Result<Box<dyn crate::processors::Prepared + 'a>> {
+    Ok(Box::new(crate::processors::cursor::ModelPrepared::new(
+        &super::Keypath,
+        input,
+        params,
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tests::needles;

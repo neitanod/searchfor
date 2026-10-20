@@ -1,8 +1,8 @@
 //! csv: rows and columns of CSV and TSV files (spec §5.5, M3 plan design note 4). csv-core
 //! reads the fields; this module keeps their byte ranges and walks only as far as the last
 //! anchor, so a Match on row 3 of a 1 GB file reads three rows.
-use super::Processor;
-use crate::model::{Input, Name, Segment, Trail};
+use super::{Capability, Cursor, Prepared, Processor};
+use crate::model::{Input, Name, Segment, SharedTrail, Trail};
 use std::ops::Range;
 
 use crate::text::Pieces;
@@ -520,6 +520,18 @@ impl Processor for Csv {
         Ok(out)
     }
 
+    fn prepare<'a>(
+        &'a self,
+        input: Input<'a>,
+        params: &'a toml::Table,
+    ) -> anyhow::Result<Box<dyn Prepared + 'a>> {
+        Ok(Box::new(CsvPrepared::new(input, params)?))
+    }
+
+    fn capability(&self, _params: &toml::Table) -> Capability {
+        Capability::Native
+    }
+
     fn names(&self, input: &Input, params: &toml::Table) -> anyhow::Result<Vec<Name>> {
         let p = self::params(params)?;
         if !p.headers {
@@ -550,6 +562,185 @@ impl Processor for Csv {
                 })
             })
             .collect())
+    }
+}
+
+/// A CSV file prepared once (plan Task 9.4): its Params and its header, read once; each cursor
+/// reads the records after it in one pass.
+struct CsvPrepared<'a> {
+    input: Input<'a>,
+    params: &'a toml::Table,
+    p: Params,
+    /// None: the file has no header row (`headers = false`), or no record at all.
+    header: Option<Header>,
+}
+
+impl<'a> CsvPrepared<'a> {
+    fn new(input: Input<'a>, params: &'a toml::Table) -> anyhow::Result<Self> {
+        let p = self::params(params)?;
+        let src = input.bytes;
+        let header = if p.headers {
+            let mut lines = Lines {
+                src,
+                at: 0,
+                line: 1,
+            };
+            Header::read(&mut Records::new(src, &p), &mut lines)
+        } else {
+            None
+        };
+        Ok(Self {
+            input,
+            params,
+            p,
+            header,
+        })
+    }
+
+    /// A reader and a line counter past the header; None when `headers` is set and the file
+    /// has no record, whose Matches have no Trail. A new reader each time: csv-core 0.1.13's
+    /// `Reader::clone` loses its tables, and reads every byte as a record.
+    fn body(&self) -> Option<(Records<'a>, Lines<'a>)> {
+        let src = self.input.bytes;
+        let mut recs = Records::new(src, &self.p);
+        let mut lines = Lines {
+            src,
+            at: 0,
+            line: 1,
+        };
+        if self.p.headers {
+            self.header.as_ref()?;
+            // The header row again, without its text.
+            let mut fields = Vec::new();
+            recs.next(&mut fields, false);
+            lines.of(fields[0].raw.start);
+            lines.of(fields
+                .last()?
+                .raw
+                .end
+                .saturating_sub(1)
+                .max(fields[0].raw.start));
+        }
+        Some((recs, lines))
+    }
+}
+
+impl Prepared for CsvPrepared<'_> {
+    fn cursor(&self) -> Box<dyn Cursor + '_> {
+        Box::new(CsvCursor {
+            prepared: self,
+            body: self.body(),
+            fields: Vec::new(),
+            row: 0,
+            record: None,
+            k: 0,
+            names: Default::default(),
+            last_at: 0,
+            last: None,
+        })
+    }
+
+    fn names(&self) -> anyhow::Result<Vec<Name>> {
+        Csv.names(&self.input, self.params)
+    }
+
+    fn streams(&self) -> bool {
+        true
+    }
+}
+
+/// The Trails of a CSV file in file order: the record holding the Match, read once and kept
+/// alone (its fields, its end and its lines), and the column names asked for so far.
+struct CsvCursor<'p, 'a> {
+    prepared: &'p CsvPrepared<'a>,
+    /// None: no more records (the file ended, inside quotes too, or it has no record).
+    body: Option<(Records<'a>, Lines<'a>)>,
+    fields: Vec<Field>,
+    row: u64,
+    /// The current record: where its first field starts, where it ends, and its lines.
+    record: Option<(usize, usize, (u64, u64))>,
+    /// The column of the last Match in the current record.
+    k: usize,
+    names: std::collections::HashMap<usize, Option<String>>,
+    last_at: usize,
+    last: Option<SharedTrail>,
+}
+
+impl CsvCursor<'_, '_> {
+    /// The Trail of `at`, as `Csv::trails` gives it for an anchor in file order.
+    fn trail(&mut self, at: usize) -> Trail {
+        let pr = self.prepared;
+        // Matches in the header row are in a column's name: no Trail (spec §5.5).
+        if let Some(h) = &pr.header
+            && at < h.fields.last().expect("a record has a field").end
+        {
+            return Vec::new();
+        }
+        loop {
+            if let Some((_, end, _)) = self.record
+                && at < end
+            {
+                break;
+            }
+            let Some((recs, lines)) = self.body.as_mut() else {
+                return Vec::new();
+            };
+            match recs.next(&mut self.fields, false) {
+                Next::End | Next::Unclosed => {
+                    self.body = None;
+                    self.record = None;
+                    return Vec::new();
+                }
+                Next::Record => {}
+            }
+            self.row += 1;
+            let (first, last) = (&self.fields[0], self.fields.last().unwrap());
+            let lines_of = (
+                lines.of(first.raw.start),
+                lines.of(last.raw.end.saturating_sub(1).max(first.raw.start)),
+            );
+            self.record = Some((first.raw.start, last.end, lines_of));
+            self.k = 0;
+        }
+        let (start, _, lines_of) = self.record.expect("read above");
+        if at < start {
+            return Vec::new();
+        }
+        while self.k + 1 < self.fields.len() && at >= self.fields[self.k].end {
+            self.k += 1;
+        }
+        let k = self.k;
+        let src = pr.input.bytes;
+        let col = pr
+            .header
+            .as_ref()
+            .filter(|h| k < h.fields.len())
+            .and_then(|h| {
+                self.names
+                    .entry(k)
+                    .or_insert_with(|| h.name(src, k, &pr.p).map(|n| n.text))
+                    .clone()
+            })
+            .unwrap_or_else(|| format!("column {}", k + 1));
+        vec![
+            seg("row", format!("row {}", self.row), lines_of),
+            seg("column", col, lines_of),
+        ]
+    }
+}
+
+impl Cursor for CsvCursor<'_, '_> {
+    fn trail_at(&mut self, at: usize) -> anyhow::Result<SharedTrail> {
+        if at < self.last_at {
+            // Before the last one: read again from the header.
+            self.body = self.prepared.body();
+            self.row = 0;
+            self.record = None;
+            self.k = 0;
+        }
+        self.last_at = at;
+        let trail = self.trail(at);
+        Ok(super::cursor::share(&mut self.last, trail))
     }
 }
 
@@ -812,5 +1003,71 @@ mod tests {
         // Everything after row 1 is never read: an unclosed quote there changes nothing.
         let src = b"a,b\nneedle,1\n2,\"open\n";
         assert_eq!(needles(src, ""), [vec!["row 1:2-2", "a:2-2"]]);
+    }
+
+    #[test]
+    fn csv_cursor_matches_model_across_multiline_records() {
+        let src = b"Name,Plan\nfirst,needle\n\"two\nlines\",needle\nlast,needle\n";
+        let params = toml::Table::new();
+        let input = crate::model::Input {
+            bytes: src,
+            path: std::path::Path::new("x.csv"),
+            format: "csv",
+            disk: None,
+        };
+        let anchors: Vec<_> = memchr::memmem::find_iter(src, b"needle").collect();
+        let expected = Csv.trails(&input, &params, &anchors).unwrap();
+        let prepared = Csv.prepare(input, &params).unwrap();
+        assert!(prepared.streams());
+        let mut cursor = prepared.cursor();
+        for (at, trail) in anchors.into_iter().zip(expected) {
+            assert_eq!(cursor.trail_at(at).unwrap().as_ref(), trail.as_slice());
+        }
+    }
+
+    /// The cursor asked at every byte of each file, in order and once more from the start,
+    /// gives the model's Trails: the header, blank lines, CRLF, quotes across lines, an
+    /// unclosed quote, no header row, and a file without records.
+    #[test]
+    fn csv_cursor_matches_model_at_every_byte() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/table");
+        let mut cases: Vec<(Vec<u8>, &str)> = ["plans.csv", "semi.csv", "people.tsv"]
+            .iter()
+            .map(|f| (std::fs::read(dir.join(f)).unwrap(), ""))
+            .collect();
+        for (s, extra) in [
+            (&b"a,b\r\n\r\n1,\"x\r\ny\"\r\n,\r\n3"[..], ""),
+            (b"\n\na;b;c\n1;2\n1;2;3;4\n", ""),
+            (b"h1,h2\n1,\"open\n2,3\n", ""),
+            (b"1,2\n3,4\n", "headers = false"),
+            (b"x|y\n\"q\"|z\n", "delimiter = '|'\nquote = ''"),
+            (b"", ""),
+            (b"\n\n", ""),
+        ] {
+            cases.push((s.to_vec(), extra));
+        }
+        for (src, extra) in &cases {
+            let params = table(extra);
+            let input = Input {
+                bytes: src,
+                path: Path::new("x.csv"),
+                format: "csv",
+                disk: None,
+            };
+            let anchors: Vec<usize> = (0..=src.len()).collect();
+            let expected = Csv.trails(&input, &params, &anchors).unwrap();
+            let prepared = Csv.prepare(input, &params).unwrap();
+            let mut cursor = prepared.cursor();
+            for (&at, trail) in anchors.iter().zip(&expected) {
+                let got = cursor.trail_at(at).unwrap();
+                assert_eq!(
+                    got.as_ref(),
+                    trail.as_slice(),
+                    "{} at {at}",
+                    String::from_utf8_lossy(src)
+                );
+            }
+            assert_eq!(cursor.trail_at(0).unwrap().as_ref(), expected[0].as_slice());
+        }
     }
 }
