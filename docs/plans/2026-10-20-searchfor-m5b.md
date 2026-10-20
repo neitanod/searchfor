@@ -148,7 +148,9 @@ not the product.
 | D17 | Grammar names allow internal hyphens, reject traversal; each helper build enables exactly one Grammar | `c-sharp` is required and current valid_name excludes it; multi-feature builds otherwise duplicate grammar() |
 | D18 | Pure time ratios opt in with SEARCHFOR_PERF_TIMING=1; memory and bomb checks remain active on Linux CI | Shared runner jitter should not relax functional limits or RSS checks |
 | D19 | dist 0.33.0 generates release YAML; inspect plan JSON and generated archives instead of hand-maintaining its internals | The installed generator is the source of truth for release job details |
-| D20 | The native Windows launcher resolves `SpawnSpec.program` itself with std's algorithm (separator: as given; bare name: the child's `PATH`, the directory of `current_exe`, System32, the Windows directory, and the parent's `PATH` last; `.exe` is appended only when the name contains no `.`; never the cwd), passes the absolute path as `lpApplicationName` and returns `NotFound` otherwise | `CreateProcessW` with a null `lpApplicationName` searches the current directory first, which std never does. Without this, a `python.exe` left in the directory where the user runs `s4` would run as the `command` of any Helper Processor, reopening the hole that spec §4.2 closes for `--pre` |
+| D20 | The native Windows launcher resolves `SpawnSpec.program` itself with std's algorithm (a name with a path separator: used as given when it ends in `.exe` in any case; otherwise `.exe` is appended and that file is used when it exists, and the name as given when it does not, so `command = ["C:\\tools\\helper"]` finds `helper.exe`; a bare name: the child's `PATH`, the directory of `current_exe`, System32, the Windows directory, and the parent's `PATH` last, with `.exe` appended only when the name contains no `.`; never the cwd), passes the absolute path as `lpApplicationName` and returns `NotFound` otherwise | `CreateProcessW` with a null `lpApplicationName` searches the current directory first, which std never does. Without this, a `python.exe` left in the directory where the user runs `s4` would run as the `command` of any Helper Processor, reopening the hole that spec §4.2 closes for `--pre` |
+| D21 | Every process s4 starts itself goes through `platform::spawn` and its suspended Job assignment: workers, Helpers, `--pre`, the `-z` decompressors and the `--hostname-bin` program. Task 8.1 migrates the last three on every system (on Unix `spawn` delegates to std). The `-z` command choice is replicated in s4 from grep-cli 0.1.11 (`DecompressionMatcher`: the same globs, programs and arguments, the same fallback to the raw file), and `src/output/hyperlink.rs` passes from C1 (tanda 1) to C8 (tanda 2) because C1 cannot call C2's API yet | `grep_cli::CommandReader` and `DecompressionReaderBuilder::build` spawn inside grep-cli, where s4 cannot assign the child to the Job before it runs; on Windows a force-terminated s4 would leave those children alive. rg's messages, fallbacks and `--no-trail` output do not change: only who launches the process |
+| D22 | `.bat` and `.cmd` programs run as `std::process::Command` runs them: `cmd.exe` from System32 (`GetSystemDirectoryW`, never `PATH` or the cwd) is the `lpApplicationName`, the command line is a port of `make_bat_command_line` (Rust 1.90, `library/std/src/sys/args/windows.rs`, with `append_bat_arg`; the detection and `command_prompt` are in `library/std/src/sys/process/windows.rs`), and the process is assigned to the Job before it resumes like any other child | `rg --pre convert.cmd` works because `std` does this. Passing the batch path to `CreateProcessW` with executable quoting fails or mangles arguments, and Microsoft requires starting the interpreter to run a batch file |
 
 ## Chunk graph and file ownership
 
@@ -160,6 +162,11 @@ belongs with its hyperlink work. C4 owns `src/docs/pdf.rs` and
 `src/processors/treesitter/mod.rs` to C10, whose chunks already own these files.
 C4 owns existing `scripts/bench*.sh`; C3 owns only the new `bench-m5b.sh`.
 Move `src/processors/external.rs` temporary cleanup from C8 to C10.
+`src/output/hyperlink.rs` is C1's in tanda 1 and passes to C8 in tanda 2: the
+`--hostname-bin` launch (`hostname`, today `grep_cli::CommandReader`) must use
+`platform::spawn`, which C1 cannot call yet. C9, in the same tanda, owns
+`src/output/**` except `src/output/hyperlink.rs`. C8 also owns the new
+`tests/process_tree_m5b.rs`.
 YAML/TOML prepared-factory scaffolds land in C9; ownership of
 `src/processors/keypath/yaml.rs` and `toml.rs` transfers to C10 in tanda 3.
 This explicit sequential handoff leaves C9's mod/json/collect files unchanged
@@ -184,7 +191,8 @@ The arrows are dependency declarations, not merge order within a tanda.
 Tanda 2 starts after all of tanda 1 merges; tanda 3 after all of tanda 2.
 When integrating tanda 2, the orchestrator deletes `Supervisor::launch_reader`
 from `src/helper/host.rs` in the merge commit, after C5 and C6 have both migrated
-their calls to `launch_managed` (C2 migrated its own host.rs test in tanda 1); no
+their calls to `launch_managed` (C2 migrated its own host.rs test,
+`a_reader_retired_while_the_run_is_cancelled_is_reaped_once`, in tanda 1); no
 chunk owns that deletion.
 C11 stages publication-ready artifacts, then waits for the orchestrator's final
 CI and C12 docs before any tag. C12 amends the old spec after implementing its
@@ -222,7 +230,7 @@ as well; native-only APIs still need their named CI jobs.
 
 ## Chunk 1: M5a leftovers and output tests
 
-Owns `src/output/mod.rs`, `src/output/hyperlink.rs`, hyperlink test sections of
+Owns `src/output/mod.rs`, `src/output/hyperlink.rs` (until tanda 2, when it passes to C8), hyperlink test sections of
 `flat.rs`/`tree.rs`, `tests/cli_m5.rs` and only its snapshots.
 
 ### Task 1.1: regression tests for all three expand findings
@@ -418,7 +426,9 @@ C5, C6 and C8 consume; publish the API commit before those chunks start.
 ### Task 2.1: managed process contract and Windows suspended assignment
 
 **Files:** create `src/platform/mod.rs`, `src/platform/windows.rs`,
-`src/platform/unix.rs`; modify `src/lib.rs:1` (module export),
+`src/platform/unix.rs`, `src/platform/batch.rs`; modify `tests/helpers.rs` (the
+real-arguments test below), `helpers/example/src/main.rs` (`--test-echo-args`),
+`src/lib.rs:1` (module export),
 `Cargo.toml:92` and Cargo.lock (windows-sys); modify `src/helper/host.rs:27`
 (`CommandLauncher`, `Child` wrapper, `reap`; add `Supervisor::launch_managed`
 beside `launch_reader`, which stays untouched in tanda 1).
@@ -481,8 +491,8 @@ mod tests {
     use std::io::Read;
 
     #[test]
-    #[ignore = "child entry point invoked by managed_spawn_preserves_argv"]
-    fn child_echo_arguments() {
+    #[ignore = "child entry point invoked by managed_spawn_preserves_environment_and_pipes"]
+    fn child_echo_environment() {
         if let Some(p) = std::env::var_os("SEARCHFOR_PLATFORM_ECHO") {
             std::fs::write(p, std::env::var_os("SEARCHFOR_PLATFORM_VALUE").unwrap()
                 .to_string_lossy().as_bytes()).unwrap();
@@ -490,11 +500,11 @@ mod tests {
     }
 
     #[test]
-    fn managed_spawn_preserves_argv_and_pipes() {
+    fn managed_spawn_preserves_environment_and_pipes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("echo file");
         let mut s = SpawnSpec::new(std::env::current_exe().unwrap().into_os_string());
-        s.args = ["--exact", "platform::tests::child_echo_arguments", "--ignored",
+        s.args = ["--exact", "platform::tests::child_echo_environment", "--ignored",
                   "--nocapture"].into_iter().map(Into::into).collect();
         s.env = vec![
             ("SEARCHFOR_PLATFORM_ECHO".into(), Some(path.clone().into_os_string())),
@@ -519,6 +529,40 @@ mod tests {
 }
 ```
 
+That test checks the environment and the pipes. The arguments a real process
+receives are checked by this complete test in `tests/helpers.rs`, which starts the
+example helper in its `--test-echo-args OUT ARG...` mode (added to
+`helpers/example/src/main.rs` in this task: it writes `{arg:?}` plus a newline, the
+`Debug` text of each `OsString` in `std::env::args_os()` after `OUT`, to the file
+`OUT`, treating everything after `OUT` as data even when it starts with `--`):
+
+```rust
+#[test]
+fn m5b_managed_spawn_delivers_the_exact_arguments() {
+    use searchfor::platform::{Limits, Output, SpawnSpec, spawn};
+    let fx = Fixture::new();
+    let out = fx.file("args.txt");
+    let tricky: Vec<std::ffi::OsString> = [
+        "", "plain", "a b", "tab\there", "quote\"inside", "two \"\" quotes",
+        "ends with slash\\", "ends with two\\\\", "\\\"", "C:\\Program Files\\x y\\",
+        "é ñ 日本", "--flag=value", "-", "%PATH%", "&|^<>",
+    ].into_iter().map(Into::into).collect();
+    let mut s = SpawnSpec::new(example_helper().into_os_string());
+    s.args = vec!["--test-echo-args".into(), out.clone().into_os_string()];
+    s.args.extend(tricky.iter().cloned());
+    s.stdout = Output::Null;
+    s.stderr = Output::Null;
+    let mut c = spawn(s, Limits { process_memory_bytes: None }).unwrap();
+    assert!(c.wait().unwrap().success());
+    let want: String = tricky.iter().map(|a| format!("{a:?}\n")).collect();
+    assert_eq!(std::fs::read_to_string(out).unwrap(), want);
+}
+```
+
+On Windows this runs natively and fails if the command-line builder loses an
+empty argument, a quote, a trailing backslash or a non-ASCII character; on Linux
+it passes through the std delegation.
+
 The Windows module also gets this complete lexical quoting test; its helper
 is private `fn quote_windows_arg(arg: &[u16]) -> Vec<u16>` and is used by the
 CreateProcessW command-line builder, not a separate test implementation.
@@ -538,8 +582,13 @@ fn windows_argument_quoting_covers_empty_quotes_and_trailing_slashes() {
 ```
 
 - [ ] **Step 2:** run
-  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --lib platform::tests`.
-  Expected RED: missing module/types/functions. The ignored child is invoked
+  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --lib platform::`
+  and
+  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test helpers m5b_managed_spawn`.
+  Expected RED: missing module/types/functions (including `platform::batch`
+  and the `--test-echo-args` mode). On Windows the batch-file test is RED while
+  the launcher passes a `.cmd` to `CreateProcessW` as an executable (I expect
+  the spawn to fail; not run). The ignored child is invoked
   explicitly by the parent; the normal run must execute both parent tests. On
   Windows, the RED of `windows_bare_program_name_does_not_search_cwd` is observed
   by removing the resolution (leaving `lpApplicationName` null): the probe then
@@ -592,9 +641,11 @@ callers unchanged in tanda 1 and adds `Supervisor::launch_managed` beside it,
 taking `FnOnce() -> io::Result<platform::Child>` and storing the
 `Weak<Mutex<platform::Child>>`. C2 also migrates, in tanda 1, its own third
 caller: the host.rs unit test
-`cancel_kills_and_reaps_every_live_process_and_refuses_new_ones` (it calls
-`launch_reader(|| Command::new("sleep").arg("30").spawn())` at
-`src/helper/host.rs:1824`) now goes through `launch_managed`. Both launchers
+`a_reader_retired_while_the_run_is_cancelled_is_reaped_once` (it begins at
+`src/helper/host.rs:1820`, is `#[cfg(unix)]` from :1818, and calls
+`launch_reader(|| Command::new("sleep").arg("30").spawn())` at :1824) now goes
+through `launch_managed` with `SpawnSpec::new("sleep")` and the argument `30`;
+being Unix-only, it needs no Windows version. Both launchers
 coexist, so the tanda-1 workspace compiles and C2 can give its workspace GREEN.
 In tanda 2, C5 and C6 each migrate their own call to `launch_managed` and delete
 nothing. The orchestrator deletes `launch_reader` in the merge commit of tanda 2,
@@ -604,7 +655,10 @@ once no caller remains (an unused `pub(crate) fn` is `dead_code` and fails
 The native launcher never lets `CreateProcessW` search for the program. It
 resolves `SpawnSpec.program` with the algorithm of std's `resolve_exe` /
 `search_paths` and passes the resulting absolute path as `lpApplicationName`:
-if `program` contains a path separator it is used as given; otherwise it is
+if `program` contains a path separator it is used as given when it ends in `.exe`
+in any case, and otherwise `.exe` is appended and that file is used when it
+exists, falling back to the name as given when it does not (the branch of std's
+`resolve_exe` at `library/std/src/sys/process/windows.rs`); otherwise it is
 searched, in std's order, in the child's `PATH` (from `SpawnSpec.env`), the
 directory of `current_exe`, System32, the Windows directory, and the parent's
 `PATH` last, and never in the current directory. As in std, `.exe` is appended
@@ -651,9 +705,205 @@ only in the probe's working directory, and the fake is never the test binary
 with code 7 and the probe would still fail on `NotFound`, never pass on the
 exit code. The tests are Windows-only; Linux cross-checks compile them.
 
+Explicit program paths follow std's `.exe` rule. Windows adds these two tests to
+`src/platform/windows.rs`; the first fails with `NotFound` if the explicit-path
+branch uses the name as given only:
+
+```rust
+#[test]
+fn windows_explicit_path_without_suffix_finds_the_exe() {
+    let dir = tempfile::tempdir().unwrap();
+    let cmd = std::path::Path::new(&std::env::var_os("SystemRoot").unwrap())
+        .join("System32").join("cmd.exe");
+    // Only `helper.exe` exists; the caller names `helper`.
+    std::fs::copy(cmd, dir.path().join("helper.exe")).unwrap();
+    let mut s = SpawnSpec::new(dir.path().join("helper").into_os_string());
+    s.args = ["/c", "exit", "7"].into_iter().map(Into::into).collect();
+    s.stdout = Output::Null;
+    s.stderr = Output::Null;
+    let mut c = spawn(s, Limits { process_memory_bytes: None }).unwrap();
+    assert_eq!(c.wait().unwrap().code(), Some(7));
+}
+
+#[test]
+fn windows_explicit_path_that_does_not_exist_is_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = spawn(SpawnSpec::new(dir.path().join("absent").into_os_string()),
+                    Limits { process_memory_bytes: None }).err().unwrap();
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+}
+```
+
+`.bat` and `.cmd` programs run as `std::process::Command` runs them (D22), because
+rg's `--pre` accepts them. After resolution the launcher takes the full path
+(`GetFullPathNameW`, unless it is verbatim) and tests it for a case-insensitive
+`.bat` or `.cmd` suffix (`is_batch_path`). For a batch file the process it
+creates is the interpreter: `lpApplicationName` is `GetSystemDirectoryW()`
+followed by `\cmd.exe` (never found through `PATH` or the cwd; std's
+`command_prompt`), and the command line is `make_bat_command_line`, a port of the
+function of that name in Rust 1.90's `library/std/src/sys/args/windows.rs`
+together with its helper `append_bat_arg`; the detection and `command_prompt` are
+in `library/std/src/sys/process/windows.rs`. The implementer reads both in
+`~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/sys/`.
+The port keeps std's rules: the line starts `cmd.exe /e:ON /v:OFF /d /c "` and
+ends with the closing `"`; the script path is quoted and refused when it
+contains `"` or ends in `\`; an argument is quoted when it is empty, ends in
+`\`, has an ASCII character other than letters, digits and `#$*+-./:?@\_`, or has
+a control character; inside a quoted argument `"` is doubled and the backslashes
+before it are doubled; each `%` and `\r` is preceded by `%%cd:~,` so `cmd.exe`
+does not expand `%VAR%`; an argument containing `\r` or `\n` is refused with
+`InvalidInput`. The suspended process is that `cmd.exe`; it is assigned to the
+Job before `ResumeThread` like any other child, so the batch file and everything
+it starts die with the Job. The pure part compiles and is tested on every
+system:
+
+```rust
+// src/platform/batch.rs. UTF-16 code units in and out; the Windows launcher
+// converts each OsStr with encode_wide.
+pub(crate) fn make_bat_command_line(script: &[u16], args: &[Vec<u16>])
+    -> std::io::Result<Vec<u16>>;
+/// True when the path ends in .bat or .cmd, ASCII case-insensitive.
+pub(crate) fn is_batch_path(full_path: &[u16]) -> bool;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn w(s: &str) -> Vec<u16> { s.encode_utf16().collect() }
+
+    fn line(script: &str, args: &[&str]) -> std::io::Result<String> {
+        let args: Vec<Vec<u16>> = args.iter().map(|a| w(a)).collect();
+        make_bat_command_line(&w(script), &args).map(|l| String::from_utf16(&l).unwrap())
+    }
+
+    #[test]
+    fn batch_command_line_matches_std_for_the_arguments_that_matter() {
+        const P: &str = "cmd.exe /e:ON /v:OFF /d /c \"";
+        let script = "C:\\t m\\a.cmd";
+        assert_eq!(line(script, &[]).unwrap(), format!("{P}\"{script}\"\""));
+        assert_eq!(line(script, &["a", "b c"]).unwrap(),
+                   format!("{P}\"{script}\" a \"b c\"\""));
+        for (arg, want) in [
+            ("plain", "plain"),
+            ("-x", "-x"),
+            ("./a/b.txt", "./a/b.txt"),
+            ("é", "é"),
+            ("", "\"\""),
+            ("a b", "\"a b\""),
+            ("&", "\"&\""),
+            ("a|b", "\"a|b\""),
+            ("^", "\"^\""),
+            ("(x)", "\"(x)\""),
+            ("%", "\"%%cd:~,%\""),
+            ("50%off", "\"50%%cd:~,%off\""),
+            ("say \"hi\"", "\"say \"\"hi\"\"\""),
+            ("C:\\dir\\", "\"C:\\dir\\\\\""),
+            ("a\\\"b", "\"a\\\\\"\"b\""),
+        ] {
+            assert_eq!(line(script, &[arg]).unwrap(),
+                       format!("{P}\"{script}\" {want}\""), "{arg:?}");
+        }
+    }
+
+    #[test]
+    fn batch_command_line_refuses_what_std_refuses() {
+        for bad in ["a\nb", "a\rb"] {
+            assert!(line("C:\\a.cmd", &[bad]).is_err(), "{bad:?}");
+        }
+        assert!(line("C:\\a\".cmd", &[]).is_err());
+        assert!(line("C:\\dir\\", &[]).is_err());
+    }
+
+    #[test]
+    fn only_bat_and_cmd_suffixes_are_batch_files() {
+        for yes in ["a.cmd", "a.BAT", "C:\\x y\\a.Cmd"] {
+            assert!(is_batch_path(&w(yes)), "{yes}");
+        }
+        for no in ["a.exe", "a.cmd.exe", "cmd", "a.batx", "bat"] {
+            assert!(!is_batch_path(&w(no)), "{no}");
+        }
+    }
+}
+```
+
+Windows runs the batch path natively and compares it with `std`, for a `.cmd` and
+a `.bat` in a directory whose name has a space, with arguments that carry the
+metacharacters `&`, `|`, `%`, `^`, quotes and a trailing backslash. A second test
+runs in its own process, whose cwd and `PATH` hold a fake `cmd.exe`, and requires
+the real interpreter to run:
+
+```rust
+#[test]
+fn managed_spawn_runs_batch_files_like_std() {
+    use std::{ffi::OsString, io::Read};
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path().join("with space");
+    std::fs::create_dir(&dir).unwrap();
+    for ext in ["cmd", "bat"] {
+        let script = dir.join(format!("show args.{ext}"));
+        std::fs::write(&script, "@echo off\r\necho [%1] [%2]\r\nexit /b 5\r\n").unwrap();
+        for args in [
+            vec!["plain", "a b"], vec!["&", "|"], vec!["%", "^"],
+            vec!["say \"hi\"", "C:\\dir\\"], vec!["", "é"],
+        ] {
+            let want = std::process::Command::new(&script).args(&args).output().unwrap();
+            let mut s = SpawnSpec::new(script.clone().into_os_string());
+            s.args = args.iter().map(|a| OsString::from(*a)).collect();
+            s.stdout = Output::Piped;
+            s.stderr = Output::Null;
+            let mut c = spawn(s, Limits { process_memory_bytes: None }).unwrap();
+            let mut out = Vec::new();
+            c.stdout.take().unwrap().read_to_end(&mut out).unwrap();
+            let status = c.wait().unwrap();
+            assert_eq!(out, want.stdout, "{ext} {args:?}");
+            assert_eq!(status.code(), want.status.code(), "{ext} {args:?}");
+            assert_eq!(status.code(), Some(5), "{ext} {args:?}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "isolated child for the Windows batch interpreter lookup"]
+fn windows_batch_interpreter_probe() {
+    let script = std::env::var_os("SEARCHFOR_BATCH_PROBE_SCRIPT").unwrap();
+    let mut s = SpawnSpec::new(script);
+    s.stdout = Output::Null;
+    s.stderr = Output::Null;
+    let mut c = spawn(s, Limits { process_memory_bytes: None }).unwrap();
+    // The real interpreter ran the script, whose exit code is 5. A fake `cmd.exe`
+    // in the cwd or on PATH would give another code.
+    assert_eq!(c.wait().unwrap().code(), Some(5));
+}
+
+#[test]
+fn windows_batch_interpreter_is_not_searched_in_cwd_or_path() {
+    let dir = tempfile::tempdir().unwrap();
+    // A fake `cmd.exe`: the test binary itself, which fails on `/e:ON ...`.
+    std::fs::copy(std::env::current_exe().unwrap(), dir.path().join("cmd.exe")).unwrap();
+    let script = tempfile::Builder::new().suffix(".cmd").tempfile().unwrap();
+    std::fs::write(script.path(), "@exit /b 5\r\n").unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "platform::windows::tests::windows_batch_interpreter_probe",
+               "--ignored"])
+        .current_dir(dir.path())
+        .env("PATH", dir.path())
+        .env("SEARCHFOR_BATCH_PROBE_SCRIPT", script.path())
+        .status().unwrap();
+    assert!(status.success());
+}
+```
+
+The same API serves C8's three launches in Task 8.1 (`--pre`, the `-z`
+decompressors and the `--hostname-bin` program): `Input::File`, `Input::Inherit`
+or `Input::Null`, piped stdout and stderr, `process_memory_bytes: None`. C2 adds
+no code for them.
+
 - [ ] **Step 4:** rerun unit tests and
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --workspace --locked --test helpers`.
-  Linux GREEN preserves h01–h17 behaviour. Cross-check all targets. Windows CI
+  Linux GREEN preserves h01–h17 behaviour. Check the migration with
+  `grep -rn "launch_reader(" src tests helpers`: after C2 it lists the
+  definition in `src/helper/host.rs` and the two callers in `src/mcp.rs` and
+  `src/docs/isolated.rs`, and no test of `host.rs`. Cross-check all targets. Windows CI
   adds actual start, nested Job, invalid-program and rollback execution; verify
   all handles close under repeated spawn/exit, not only first launch.
 - [ ] **Step 5:** commit with
@@ -759,6 +1009,13 @@ pub fn watch_console(stopped: &'static std::sync::atomic::AtomicBool, cancel: fn
     -> std::io::Result<()>;
 // helpers/example CLI test controls, parsed before normal protocol service:
 // --test-hold-pipes: sleep 30 s, inherited output, no protocol handling.
+// --test-echo-args OUT ARG...: Task 2.1's real-arguments mode.
+// SEARCHFOR_EXAMPLE_ACT_AS=hold-pipes: whatever its argv, the binary behaves as
+// --test-hold-pipes, so a copy can stand in for a program s4 launches with fixed
+// arguments (a --hostname-bin program, a `gzip` found on PATH). It appends its own
+// PID, one per line, to the file named by SEARCHFOR_EXAMPLE_PIDS; when
+// SEARCHFOR_EXAMPLE_FORK is set it first starts one descendant of itself in the
+// same mode, which appends its PID the same way (Task 8.1's process-tree tests).
 // --test-pre-upper PATH: uppercase ASCII bytes to stdout, exit 0.
 // --test-pre-fail PATH: stderr "oops", exit 3.
 // When argv[0] stem is s4-test-pre-upper or s4-test-pre-fail, use that
@@ -912,9 +1169,13 @@ Windows; the normal example protocol tests remain portable.
   children, as already done for `alive`, and runs it on both macOS CI jobs.
   Case (c) of h16 also uses `/proc/PID/fd` to know that s4 has already opened
   the FIFO before it sends SIGINT (`tests/helpers.rs:791-798`); the macOS
-  variant detects that with `libc::proc_pidinfo(PROC_PIDLISTFDS)` or
-  `lsof -p PID` (shipped with macOS), inside the same bounded `wait_for`, and
-  never replaces it with a fixed sleep. h17 and h18 do not use `/proc`
+  variant detects that with `lsof -p PID` (shipped with macOS), whose output
+  lists each descriptor with its path, inside the same bounded `wait_for`, and
+  never replaces it with a fixed sleep. The locked `libc` (0.2.190) defines
+  `proc_pidinfo` and `PROC_PIDLISTFDS`, which list descriptors without their
+  paths, and lacks the `PROC_PIDFDVNODEPATHINFO` constant and the
+  `vnode_fdinfowithpath` struct that would give them; declaring those by hand is
+  the alternative, and `lsof` is the recipe. h17 and h18 do not use `/proc`
   (`tests/helpers.rs:804-870`), so for them the change is only widening the
   `cfg` to `unix`.
 - [ ] **Step 5:** commit with
@@ -934,16 +1195,19 @@ Script interface:
 
 ```bash
 # scripts/bench-m5b.sh [--self-test] [--probe|--accept] CORPUS
-# SEARCHFOR_BIN: release s4, required
+# scripts/bench-m5b.sh --compare A B CORPUS
+# SEARCHFOR_BIN: release s4, required (not used by --compare)
 # SEARCHFOR_RG: reference 14.1.1, Unix fallback /usr/bin/rg
 # SEARCHFOR_BENCH_REPORT: output JSON path, required for measurements
 # SEARCHFOR_BENCH_VARIANT: descriptive label (baseline, worker-matcher, ...)
 # SEARCHFOR_BASE_BIN: existing previous milestone binary for old ceilings
 # --probe: N=5000,20000,80000, j=1,2,4,12; strace -f -c and perf stat
 # --accept: M4 text corpus, 40 paired alternated runs after warmups
-# --compare A B: the M4 corpus probe with the two s4 binaries A and B (no rg),
-#   40 pairs alternated in one process on one machine; prints the ratio of
-#   medians B/A and every raw sample as JSON (used by Task 11.2)
+# --compare A B CORPUS: the --accept run (the M4 corpus, N=20,000 files, the same
+#   -j settings as --accept) with the two s4 binaries A and B instead of s4 and
+#   rg; 40 pairs alternated in one process on one machine; writes the ratio of
+#   medians B/A and every raw sample as JSON to SEARCHFOR_BENCH_REPORT, which it
+#   requires like every measurement (used by Task 11.2)
 ```
 
 - [ ] **Step 1:** begin the script with this complete self-test. It exercises
@@ -985,7 +1249,7 @@ fi
   Collect strace syscall counts and perf cycles/instructions/branches/cache
   samples for each thread count; report missing optional profilers explicitly.
   Fit T=intercept+N*slope independently per tool/mode; keep each N's samples.
-  Implement `--compare A B` on the same measurement core: it takes two s4
+  Implement `--compare A B CORPUS` on the same measurement core: it takes two s4
   binaries instead of s4 and rg, alternates which of the pair runs first on each
   pair, and reports median(B)/median(A) with all raw wall/CPU/RSS samples; the
   exit code is 0 when both binaries ran validly and 2 otherwise, and the script
@@ -1044,7 +1308,9 @@ fn lowercase_extensions_borrow_the_existing_bytes() {
 ```
 
 Add this complete test in tests/rg_compat.rs; it compares both engines and worker
-counts while retaining native path bytes.
+counts while retaining native path bytes. Every variant carries `--sort=path`,
+which forces one worker, so it checks the cloned matchers only in sequence; the
+parallel test after it checks the workers.
 
 ```rust
 #[test]
@@ -1069,13 +1335,59 @@ fn m5b_worker_matchers_keep_reference_output() {
 }
 ```
 
+This second complete test in tests/rg_compat.rs runs without `--sort`, so the
+walker really uses several workers, each with its own matcher clone and some
+files with Matches and some without. Under `--heading` the output of one file is
+one block, and blocks are separated by an empty line; the order between files may
+differ from rg's, but the bytes inside each block may not:
+
+```rust
+#[test]
+fn m5b_parallel_workers_keep_each_files_block() {
+    if !common::reference_rg() { return; }
+    let fx = Fixture::new();
+    for i in 0..64 {
+        let body = if i % 4 == 0 {
+            "nothing here\n".to_string()
+        } else {
+            format!("ñ needle {i}\nmiddle\nneedle again {i}\n")
+        };
+        std::fs::write(fx.file(&format!("par-{i:02}.txt")), body).unwrap();
+    }
+    let blocks = |out: &std::process::Output| {
+        let mut v: Vec<String> = String::from_utf8(out.stdout.clone()).unwrap()
+            .split("\n\n").map(str::to_owned).collect();
+        v.sort();
+        v
+    };
+    for engine in ["default", "pcre2"] {
+        for j in ["2", "4", "12"] {
+            let args = ["--heading", "--color=never", "-j", j, "--engine", engine,
+                        "needle", "."];
+            let mut s = fx.s4(args);
+            s.args(["--no-docs", "--no-trail"]);
+            let a = run(&mut s);
+            let b = run(&mut fx.rg(args));
+            assert_eq!(code(&a), code(&b), "{engine}/{j}");
+            assert_eq!(a.stdout.len(), b.stdout.len(), "{engine}/{j}");
+            let (ba, bb) = (blocks(&a), blocks(&b));
+            assert_eq!(ba.len(), 48, "{engine}/{j}: one block per file with Matches");
+            assert_eq!(ba, bb, "{engine}/{j}");
+        }
+    }
+}
+```
+
 - [ ] **Step 2:** run
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --lib lowercase_extensions_borrow`
   (RED: helper missing) and Task 3.1's exact baseline benchmark.
   Run preservation check:
-  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test rg_compat m5b_worker_matchers`.
-  The functional differential is a preservation check; unsorted parallel
-  searches must also be measured, since `--sort` deliberately forces one worker.
+  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test rg_compat m5b_worker_matchers`
+  and
+  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test rg_compat m5b_parallel_workers`.
+  The functional differentials are preservation checks, and the second is the one
+  that exercises several workers (`--sort` deliberately forces one); unsorted
+  parallel searches must also be measured.
 - [ ] **Step 3:** clone PatternMatcher once per walker worker, use that clone
   in every sink/search in the worker (Rust cache pool per clone; PCRE2 retains
   its existing thread-local behaviour). Measure this change alone first.
@@ -1402,7 +1714,8 @@ fn m5b_ci_names_four_native_systems_and_required_reference() {
         assert!(ci.contains(marker), "missing workflow contract: {marker}");
     }
     let docs = std::fs::read_to_string(root.join("docs/platforms.md")).unwrap();
-    for reason in ["/proc", "GNU time", "POSIX", "PCRE2", "arm64"] {
+    for reason in ["/proc", "GNU time", "POSIX", "PCRE2", "arm64",
+                   "invoked by a parent test", "selected explicitly in CI"] {
         assert!(docs.contains(reason), "missing platform inventory: {reason}");
     }
 }
@@ -1453,7 +1766,15 @@ Cache ~/.cargo and the single target dir by OS/arch/toolchain/lock; never share
 MSVC/GNU or arm64/Intel objects. Schedule Linux RSS/bomb tests from perf with
 --ignored in a serial invocation after C10, without SEARCHFOR_PERF_TIMING.
 Print test discovery plus ignored and cfg-excluded inventory counts for each
-system. The inventory identifies test function, file, platform and missing
+system. `docs/platforms.md` keeps two sections apart from the skip inventory:
+"entry points invoked by a parent test" (the `#[ignore]` probes that a parent
+test runs in its own process: `child_echo_environment`, `orphan_probe`,
+`windows_pre_resolution_probe`, `windows_spawn_resolution_probe`,
+`windows_batch_interpreter_probe`) and "tests selected explicitly in CI" (the
+performance and RSS tests run with `--ignored`). Both appear as "ignored" in
+every system's `cargo test` output, so the per-system count of skipped tests
+subtracts them from the ignored total, and criterion 34 ("none is skipped for a
+reason other than a missing system feature") is checked on what remains. The inventory identifies test function, file, platform and missing
 feature; cfg-excluded tests are counted from the maintained inventory, ignored
 tests from test output. Compare inventory against `cargo test -- --list`.
 Document Linux-only GNU time, strace and /proc; Unix signals/non-UTF8 bytes;
@@ -1860,28 +2181,67 @@ fn m5b_client_input_eof_leaves_no_search() {
 
 ## Chunk 8: --pre, Grammars and the six Grammar Helpers
 
-Depends on C2; owns `src/preprocess.rs`, `src/grammars/**`, `src/cli/**`,
+Depends on C2; owns `src/preprocess.rs`, `src/output/hyperlink.rs` (from C1),
+`tests/process_tree_m5b.rs`, `src/grammars/**`, `src/cli/**`,
 `helpers/grammar/**`, `scripts/build-grammar-helper.sh`, `grammars/**`,
 `docs/grammar-index.schema.json`, root Cargo.lock for this tanda.
 
-### Task 8.1: safe --pre resolution and managed transport
+### Task 8.1: safe --pre resolution and managed transport for --pre, -z and --hostname-bin
 
 **Files:** modify `src/preprocess.rs:34,80` (`Preprocess::new`, `open`,
-`Transformed`), `src/cli/rg_flags.rs:453` (unit reference resolver).
+`Transformed`), `src/output/hyperlink.rs:181` (`hostname`, owned by C8 from
+tanda 2), `src/cli/rg_flags.rs:453` (unit reference resolver); create
+`tests/process_tree_m5b.rs`.
+
+All three process launches that today hide their spawn inside grep-cli move to
+`platform::spawn` (Task 2.1, D21): `--pre` (`grep_cli::CommandReader`),
+`--hostname-bin` (`grep_cli::CommandReader::new` in `hostname`) and the `-z`
+decompressors (`DecompressionReaderBuilder::build`). rg's messages, fallbacks and
+output stay as they are.
 
 ```rust
-// preprocess.rs, Windows transport replacing CommandReader's hidden spawn.
-struct ManagedCommandReader { /* managed Child, stdout, stderr drain, exit state */ }
-impl std::io::Read for ManagedCommandReader { /* native stdout bytes */ }
+// src/preprocess.rs: one transport on every system, replacing grep_cli::CommandReader.
+// On Unix platform::spawn delegates to std, so Linux tests exercise the same code.
+pub(crate) struct ManagedCommandReader { /* platform::Child, its stdout, stderr drain, eof flag */ }
+impl std::io::Read for ManagedCommandReader { /* stdout bytes; at EOF it closes */ }
 impl ManagedCommandReader {
-    fn start(program: &std::path::Path, path: &std::path::Path) -> std::io::Result<Self>;
-    fn close(&mut self) -> std::io::Result<()>;
+    /// Sets stdout and stderr to Output::Piped; stdin stays as the caller set it.
+    pub(crate) fn start(spec: platform::SpawnSpec, async_stderr: bool)
+        -> std::io::Result<Self>;
+    /// grep-cli 0.1.11 `CommandReader::close`; idempotent.
+    pub(crate) fn close(&mut self) -> std::io::Result<()>;
 }
-// Transformed retains the existing Read/closing API consumed by app.rs.
-// --pre uses grep_cli::resolve_binary before creating a managed SpawnSpec.
+
+// -z: the choice of command, replicated from grep-cli 0.1.11 `DecompressionMatcher`.
+pub(crate) struct Decompressors {
+    globs: globset::GlobSet,
+    // Same index as `globs`: the program resolved with grep_cli::resolve_binary, and its arguments.
+    commands: Vec<(std::ffi::OsString, Vec<std::ffi::OsString>)>,
+}
+impl Decompressors {
+    /// The twelve default rules of grep-cli 0.1.11, in its order; a rule whose program
+    /// does not resolve is left out, as `add` does there.
+    pub(crate) fn new() -> Self;
+    #[cfg(test)]
+    pub(crate) fn from_rules(rules: &[(&str, std::path::PathBuf, Vec<std::ffi::OsString>)]) -> Self;
+    pub(crate) fn has_command(&self, path: &std::path::Path) -> bool;
+    /// The last matching glob wins. argv is the rule's arguments plus `path`; stdin is
+    /// `Input::Inherit`, as grep-cli leaves it.
+    pub(crate) fn spec_for(&self, path: &std::path::Path) -> Option<platform::SpawnSpec>;
+    /// grep-cli's `DecompressionReaderBuilder::build`: no rule, or a spawn that fails,
+    /// reads the raw file (`File::open`'s error if that fails).
+    pub(crate) fn open(&self, path: &std::path::Path) -> std::io::Result<Decompression>;
+}
+pub(crate) enum Decompression { Command(ManagedCommandReader), Raw(std::fs::File) }
 ```
 
-- [ ] **Step 1:** add this complete test to preprocess.rs's tests module.
+The rules are grep-cli 0.1.11's: `*.gz` and `*.tgz` run `gzip -d -c`; `*.bz2` and
+`*.tbz2` run `bzip2 -d -c`; `*.xz` and `*.txz` run `xz -d -c`; `*.lz4` runs
+`lz4 -d -c`; `*.lzma` runs `xz --format=lzma -d -c`; `*.br` runs `brotli -d -c`;
+`*.zst` and `*.zstd` run `zstd -q -d -c`; `*.Z` runs `uncompress -c`. Globs are
+compiled with `globset::Glob::new` and matched against the path as given.
+
+- [ ] **Step 1:** add these complete tests to preprocess.rs's tests module.
 
 ```rust
 #[test]
@@ -1897,6 +2257,76 @@ fn pre_resolution_matches_the_library_reference() {
     let input = dir.path().join("input");
     std::fs::write(&input, "needle").unwrap();
     assert!(got.open(&Through::Pre, &input).is_err());
+}
+
+#[test]
+fn zip_choice_matches_grep_cli_for_every_default_rule() {
+    let reference = grep_cli::DecompressionMatcher::new();
+    let ours = Decompressors::new();
+    for name in ["a.gz", "a.tgz", "a.bz2", "a.tbz2", "a.xz", "a.txz", "a.lz4", "a.lzma",
+                 "a.br", "a.zst", "a.zstd", "a.Z", "a.z", "a.GZ", "a.txt", "a.gz.txt",
+                 "dir.gz/a.txt", "gz"] {
+        let p = Path::new(name);
+        assert_eq!(ours.has_command(p), reference.has_command(p), "{name}");
+        let want = reference.command(p).map(|c| {
+            (c.get_program().to_owned(), c.get_args().map(|a| a.to_owned()).collect::<Vec<_>>())
+        });
+        let got = ours.spec_for(p).map(|mut s| {
+            // The last argument is the path itself.
+            assert_eq!(s.args.pop().as_deref(), Some(p.as_os_str()), "{name}");
+            (s.program, s.args)
+        });
+        assert_eq!(got, want, "{name}");
+    }
+}
+
+#[test]
+fn the_last_matching_zip_rule_wins() {
+    let z = Decompressors::from_rules(&[
+        ("*.gz", "first".into(), vec![]),
+        ("a.*", "second".into(), vec!["-x".into()]),
+    ]);
+    let s = z.spec_for(Path::new("a.gz")).unwrap();
+    assert_eq!(s.program, std::ffi::OsString::from("second"));
+    assert_eq!(s.args, vec![std::ffi::OsString::from("-x"), "a.gz".into()]);
+}
+
+#[cfg(unix)]
+#[test]
+fn zip_falls_back_to_the_raw_file_when_the_decompressor_cannot_start() {
+    let d = tempfile::tempdir().unwrap();
+    // Present but not executable: the rule exists, the spawn fails.
+    let broken = d.path().join("gzip");
+    std::fs::write(&broken, "#!/bin/sh\n").unwrap();
+    let f = d.path().join("a.txt.gz");
+    std::fs::write(&f, "plain bytes\n").unwrap();
+    let z = Decompressors::from_rules(&[("*.gz", broken, vec!["-d".into(), "-c".into()])]);
+    let mut out = String::new();
+    z.open(&f).unwrap().read_to_string(&mut out).unwrap();
+    assert_eq!(out, "plain bytes\n");
+    // When the raw file cannot be opened either, File::open's error is the result.
+    assert!(z.open(&d.path().join("missing.gz")).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_reader_reports_stderr_as_grep_cli_does() {
+    let d = tempfile::tempdir().unwrap();
+    let fail = script(d.path(), "fail.sh", "echo out\necho boom >&2\nexit 3");
+    let mut r = ManagedCommandReader::start(
+        platform::SpawnSpec::new(fail.into_os_string()), true).unwrap();
+    let mut out = Vec::new();
+    let e = r.read_to_end(&mut out).unwrap_err().to_string();
+    assert_eq!(out, b"out\n");
+    // CommandError's text: the trimmed stderr between two 79-dash lines.
+    let rule = "-".repeat(79);
+    assert_eq!(e, format!("\n{rule}\nboom\n{rule}"));
+    // An empty stderr with a non-zero status, read to the end, is "<stderr is empty>".
+    let quiet = script(d.path(), "quiet.sh", "exit 4");
+    let mut r = ManagedCommandReader::start(
+        platform::SpawnSpec::new(quiet.into_os_string()), true).unwrap();
+    let e = r.read_to_end(&mut Vec::new()).unwrap_err().to_string();
+    assert_eq!(e, "<stderr is empty>");
 }
 ```
 
@@ -1926,28 +2356,198 @@ fn windows_pre_bare_name_does_not_search_cwd() {
 }
 ```
 
+Two Windows integration tests in the new `tests/process_tree_m5b.rs` cover the Job
+(spec §4.3). The synthetic program is a copy of the example helper in the
+`SEARCHFOR_EXAMPLE_ACT_AS=hold-pipes` mode (Task 2.3): it blocks, keeps one
+descendant, and appends both PIDs to a file. s4 is killed with
+`TerminateProcess`, which runs no cleanup code in s4, so only the kill-on-close
+root Job can end the others:
+
+```rust
+//! Windows: a forcibly terminated s4 leaves no `--hostname-bin` program, no `-z`
+//! decompressor and none of their descendants (Task 8.1, D21).
+#![cfg(windows)]
+mod common;
+
+use common::Fixture;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+fn example_helper() -> PathBuf {
+    common::workspace_bin("searchfor-example-helper", "searchfor-example-helper", &[])
+}
+
+fn alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+    // SAFETY: plain Win32 calls; the handle is closed before returning.
+    unsafe {
+        let h = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if h as usize == 0 {
+            return false;
+        }
+        let running = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+        CloseHandle(h);
+        running
+    }
+}
+
+fn announced_pids(file: &Path) -> Vec<u32> {
+    std::fs::read_to_string(file).unwrap_or_default()
+        .lines().filter_map(|l| l.trim().parse().ok()).collect()
+}
+
+/// Waits until the synthetic program and its descendant announced themselves, kills
+/// s4, and requires both to be gone soon after.
+fn kill_s4_and_expect_no_survivors(mut s4: Child, announced: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while announced_pids(announced).len() < 2 {
+        assert!(Instant::now() < deadline,
+                "the synthetic program never started: {:?}", announced_pids(announced));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let started = announced_pids(announced);
+    s4.kill().unwrap();
+    s4.wait().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let left: Vec<u32> = started.iter().copied().filter(|p| alive(*p)).collect();
+        if left.is_empty() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "survivors after s4 was killed: {left:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn m5b_killed_s4_leaves_no_hostname_program_or_descendant() {
+    let fx = Fixture::new();
+    let announced = fx.file("hostname-pids.txt");
+    let bin = fx.file("hostname-hold.exe");
+    std::fs::copy(example_helper(), &bin).unwrap();
+    let input = fx.file("a.txt");
+    std::fs::write(&input, "needle\n").unwrap();
+    let mut c = fx.s4(["--hyperlink-format", "default", "--color=always", "needle"]);
+    c.arg("--hostname-bin").arg(&bin).arg(&input)
+        .env("SEARCHFOR_EXAMPLE_ACT_AS", "hold-pipes")
+        .env("SEARCHFOR_EXAMPLE_FORK", "1")
+        .env("SEARCHFOR_EXAMPLE_PIDS", &announced)
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    kill_s4_and_expect_no_survivors(c.spawn().unwrap(), &announced);
+}
+
+#[test]
+fn m5b_killed_s4_leaves_no_decompressor_or_descendant() {
+    let fx = Fixture::new();
+    let announced = fx.file("zip-pids.txt");
+    let bin_dir = fx.file("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    // `-z` resolves `gzip` through PATH; this copy comes first.
+    std::fs::copy(example_helper(), bin_dir.join("gzip.exe")).unwrap();
+    let input = fx.file("a.txt.gz");
+    std::fs::write(&input, "not really gzip\n").unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin_dir).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    ).unwrap();
+    let mut c = fx.s4(["-z", "needle"]);
+    c.arg(&input).env("PATH", path)
+        .env("SEARCHFOR_EXAMPLE_ACT_AS", "hold-pipes")
+        .env("SEARCHFOR_EXAMPLE_FORK", "1")
+        .env("SEARCHFOR_EXAMPLE_PIDS", &announced)
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    kill_s4_and_expect_no_survivors(c.spawn().unwrap(), &announced);
+}
+```
+
+A third Windows test in the same file compares `--pre` batch files with rg, for
+`.cmd` and `.bat`, a directory with a space in its name and input files whose
+names carry `&`, `^`, `%`, parentheses and non-ASCII characters:
+
+```rust
+#[test]
+fn m5b_pre_batch_files_match_ripgrep() {
+    if !common::reference_rg() { return; }
+    let fx = Fixture::new();
+    let dir = fx.file("pre dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    for ext in ["cmd", "bat"] {
+        let script = dir.join(format!("show.{ext}"));
+        std::fs::write(&script, "@echo off\r\ntype %1\r\n").unwrap();
+        for name in ["plain.txt", "with space.txt", "a&b.txt", "c^d.txt", "100%.txt",
+                     "(x).txt", "é ñ.txt"] {
+            let file = dir.join(name);
+            std::fs::write(&file, "needle one\nother\n").unwrap();
+            let args = ["--pre", script.to_str().unwrap(), "--no-heading",
+                        "--color=never", "needle", file.to_str().unwrap()];
+            let mut s = fx.s4(args);
+            s.args(["--no-docs", "--no-trail"]);
+            let a = common::run(&mut s);
+            let b = common::run(&mut fx.rg(args));
+            assert_eq!(common::code(&a), common::code(&b), "{ext} {name}");
+            assert_eq!(a.stdout, b.stdout, "{ext} {name}");
+        }
+    }
+}
+```
+
 - [ ] **Step 2:** run
-  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --lib pre_resolution_matches`.
-  The portable absolute-path case already passes: resolve_binary is a no-op
-  for absolute paths, even missing ones. Behavioural RED is the separate
-  Windows bare-name test below; preserve spawn-time missing-program errors.
+  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --lib preprocess::`.
+  Expected RED: `Decompressors`, `ManagedCommandReader` and `from_rules` do not
+  exist. The portable absolute-path case of `pre_resolution_matches_the_library_reference`
+  already passes: resolve_binary is a no-op for absolute paths, even missing
+  ones. Behavioural RED on Windows is the bare-name test, and the two
+  `m5b_killed_s4_*` tests: with grep-cli's hidden spawn the synthetic program
+  starts outside the Job and survives the kill. Preserve spawn-time
+  missing-program errors.
 - [ ] **Step 3:** resolve --pre just as rg's grep_cli::resolve_binary does,
-  keeping diagnostics and last-flag/pre-glob precedence. In Windows create it
-  through C2's suspended root-Job launcher; no memory Job. Give it the file as
-  stdin and as argv path, concurrently drain stderr, wait/reap on close,
-  preserve `preprocessor command could not start/failed` messages and status.
-  Reproduce grep-cli's async_stderr behaviour without an unbounded stderr
-  deadlock. Keep decompression semantics, and route any directly started
-  decompressor through the same managed mechanism if owned by this process.
-  Never call CommandReaderBuilder::build on Windows and then assign its child:
-  its hidden spawn would violate the assignment-before-resume guarantee.
-  Add the Windows test in the next code block: cwd contains a native fake
-  program and PATH excludes cwd; a bare name cannot execute accidentally. Reuse the native preprocessor test helper C5 uses.
+  keeping diagnostics and last-flag/pre-glob precedence. Implement the interface
+  above and route the three launches through it, on every system:
+  - `--pre`: `SpawnSpec` with the resolved program, the file path as argv,
+    `Input::File(file)` as stdin, `async_stderr` true, no memory Job. A
+    `std::process::Command` is built only to render the same `{cmd:?}` text rg
+    prints in `preprocessor command could not start: '<command>': <error>`; it is
+    never spawned. The launch error keeps the OS text (a program that is not found
+    on Windows reports std's `program not found`). `preprocessor command failed:
+    '<command>': <error and stderr>` and the exit status behave as today.
+  - `-z`: `Preprocess` holds `Option<Decompressors>` instead of
+    `DecompressionReaderBuilder`, and `through` asks `has_command`. `open` gives
+    `Decompression::Command` or, when there is no rule or the launch fails, the raw
+    file. The launch uses `async_stderr` true, as the code does today. Errors are
+    rg's, as they are, without naming the command.
+  - `--hostname-bin`: `hostname` keeps `resolve_binary`, the trimmed output, the
+    empty-output rule and the fallback to `grep_cli::hostname()` on any failure;
+    only the launch changes: `Input::Null` as stdin, `async_stderr` false (what
+    `CommandReader::new` gives rg), read with `std::io::read_to_string`.
+  `ManagedCommandReader` reproduces grep-cli 0.1.11's `CommandReader`: `read`
+  returns the stdout bytes and, at the first zero-byte read, sets `eof` and closes;
+  `close` is idempotent, drops stdout, waits, and on a non-zero status returns the
+  stderr text formatted as grep-cli's `CommandError` (the text trimmed between two
+  lines of 79 `-`, or `<stderr is empty>`), except that a reader closed before EOF
+  whose stderr is empty succeeds (the broken pipe it caused); `Drop` closes it and
+  ignores the result, as grep-cli's only logs it. With `async_stderr`, a thread
+  drains stderr so a chatty process cannot deadlock. Never call
+  `CommandReaderBuilder::build`, `DecompressionReaderBuilder::build` or
+  `CommandReader::new` anywhere in `src`: their hidden spawn would violate the
+  assignment-before-resume guarantee, and assigning their child afterwards is
+  forbidden. `grep_cli` stays a dependency for `resolve_binary` and `hostname`.
+  The Windows bare-name test of Step 1 puts a native fake program in the cwd with
+  PATH excluding it, so a bare name cannot execute accidentally.
   rg_flags unit tests use SEARCHFOR_RG first, then native fallback; no test
   invokes documentation-writing developer test during CI.
-- [ ] **Step 4:** preprocess and cli_m4 comparisons GREEN locally; cross-check
-  Windows; native Windows CI proves cwd resolution, Job cleanup and error
-  parity against its downloaded rg. macOS follows grep_cli resolution too.
+- [ ] **Step 4:** preprocess unit tests GREEN, and the existing `-z` and `--pre`
+  differential cases of `tests/cli_m4.rs` (the ones that run `-z` and `--pre` with
+  `--no-trail` against rg, around lines 427–454 and 858) GREEN locally, which
+  proves the output equals rg's:
+  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m4`.
+  Then `grep -rnw "CommandReader\|DecompressionReaderBuilder" src` must list no
+  call (only comments, if any). Cross-check Windows; native Windows CI proves cwd
+  resolution, Job cleanup for the hostname program and the decompressor, the
+  `.cmd`/`.bat` parity with its downloaded rg, and error parity. macOS follows
+  grep_cli resolution too.
 - [ ] **Step 5:** commit with
   `git commit -m "fix: resolve preprocessors safely and manage their lifecycle"`.
 
@@ -2173,7 +2773,8 @@ Bash invocation explicit in Windows CI; execution of .exe is native.
 
 ## Chunk 9: Dense streaming, core
 
-Depends on C1 and C3; owns `src/app.rs`, `src/output/**`,
+Depends on C1 and C3; owns `src/app.rs`, `src/output/**` except
+`src/output/hyperlink.rs` (C8's in this tanda),
 `src/processors/mod.rs`, `csv.rs`, `keypath/**`, `src/model.rs`,
 `src/trail.rs`, `src/filter.rs`. This task's YAML/TOML cursor hooks are handed
 off to C10 without overlapping files in tanda 3 (see Task 10.2).
@@ -3074,32 +3675,46 @@ use std::alloc::System as Backing;
   `failed to find tool "x86_64-linux-musl-gcc"`) and nothing is installed with
   sudo. Add a Linux CI step that builds the GNU and musl release binaries in the
   same target dir (sequentially) and runs
-  `scripts/bench-m5b.sh --compare <glibc-s4> <musl-s4>` (Task 3.1) in the same job
-  on the same runner, so the 40 pairs are alternated within one process and the
+  `SEARCHFOR_BENCH_REPORT="$CARGO_TARGET_DIR/musl-vs-glibc.json" bash scripts/bench-m5b.sh --compare <glibc-s4> <musl-s4> "$CORPUS"`
+  (Task 3.1; `CORPUS` is the M4 corpus the job generates for `--accept`, 20,000
+  files, with `--accept`'s `-j` settings) in the same job on the same runner, so the 40 pairs are alternated within one process and the
   runner noise cancels in part in the relative ratio; same thread counts and
   priority, `uptime` printed, and the median musl/GNU ratio plus the raw samples
-  go to the job log. The decision rule is unchanged (a ratio above 1.1 triggers
-  jemalloc), with one addition: a ratio inside the band 1.05 to 1.15 is not
-  decided alone, because spec §5.1 calls shared runners too noisy for ceilings
-  this tight; it is reported to Sebastián with the raw samples, who either
-  accepts the call or installs `musl-tools` on this machine so the same
-  `--compare` runs here. The result is recorded in this plan and in the commit
+  go to the job log. The decision rule has three outcomes, applied in this order
+  and the same in Step 2, in the orchestrator stage and in the risks table: a
+  ratio of at most 1.05 keeps System; a ratio of at least 1.15 adds jemalloc; a
+  ratio strictly between 1.05 and 1.15 is not decided alone, because spec §5.1
+  calls shared runners too noisy for ceilings this tight. It is reported to
+  Sebastián with the raw samples and nothing changes until he decides: he either
+  accepts System or jemalloc, or installs `musl-tools` on this machine so the
+  same `--compare` runs here. The result is recorded in this plan and in the commit
   body, copied from that CI log, as a CI-evidence entry.
   Complete evaluation test for the measurement decision:
 
 ```bash
 python3 - <<'PY'
-def needs_allocator(musl, glibc):
-    return musl / glibc > 1.1
-assert not needs_allocator(1.10, 1.0)
-assert needs_allocator(1.10001, 1.0)
-print('strict musl >1.1 trigger: PASS')
+def decide(musl, glibc):
+    ratio = musl / glibc
+    if ratio <= 1.05:
+        return 'system'
+    if ratio >= 1.15:
+        return 'jemalloc'
+    return 'ask'
+assert decide(1.05, 1.0) == 'system'
+assert decide(1.0501, 1.0) == 'ask'
+assert decide(1.12, 1.0) == 'ask'
+assert decide(1.1499, 1.0) == 'ask'
+assert decide(1.15, 1.0) == 'jemalloc'
+print('musl allocator rule (<=1.05 system, >=1.15 jemalloc, else ask): PASS')
 PY
 ```
 
-- [ ] **Step 2:** actual baseline RED for optimization is ratio >1.1. If ≤1.1,
-  record it, skip allocator mutation, retain System and pass this task through
-  measurement evidence. Do not add jemalloc merely because rg uses it.
+- [ ] **Step 2:** actual baseline RED for optimization is a ratio of at least
+  1.15. At most 1.05: record it, skip allocator mutation, retain System and pass
+  this task through measurement evidence. Strictly between 1.05 and 1.15 (1.12,
+  for example): stop, report the ratio and the raw samples to Sebastián and wait
+  for his decision before Step 3 (jemalloc: Step 3; System: record it and skip
+  Step 3). Do not add jemalloc merely because rg uses it.
 - [ ] **Step 3:** if triggered, add tikv-jemallocator 0.7 only under Linux musl
   target dependencies, wrap Backing inside Counter; preserve count refusal for
   fallible/infallible allocations, realloc shrink/grow and counter disabled
@@ -3125,7 +3740,8 @@ fn selected_backing_can_allocate_reallocate_and_free() {
 
 - [ ] **Step 4:** run memory tests locally under GNU with the common cargo
   prefix and under musl in the Linux CI job, then repeat the paired benchmark
-  there. Expected GREEN ratio ≤1.1 and unchanged m4_22/memory warning. Linux aarch64 static linkage and runtime are release CI
+  there. Expected GREEN ratio ≤1.05 (a ratio above it goes to Sebastián, as in Step 2)
+  and unchanged m4_22/memory warning. Linux aarch64 static linkage and runtime are release CI
   checks. Verify no dynamic libc dependency via readelf; record unstripped
   Linux x86-64 release size ≤23,000,000 bytes. A missed threshold or size cap is
   reported, not loosened. No mimalloc/extra crate is authorized here.
@@ -3563,7 +4179,9 @@ commit and report locally; they do not push branches on their own.
   no-change gate with same/different SHA, scheduled/manual events and a failed
   previous run. Confirm failure artifacts contain replayable seed and bytes.
 - [ ] Read the Linux job's musl-versus-glibc ratio (Task 11.2) from its log and
-  record it in the plan; above 1.1 sends C11 back to add jemalloc.
+  record it in the plan: at most 1.05 keeps System; at least 1.15 sends C11
+  back to add jemalloc; strictly between, report the ratio and the raw samples to
+  Sebastián and wait for his decision (the rule of Task 11.2).
 - [ ] Verify packaging native jobs, local Homebrew/npm installs, crate dry-run,
   all five archives/30 Grammar artifacts and the acceptance matrix below.
 - [ ] Report GREEN/remaining blockers to Sebastián. Resume C11's individual
@@ -3622,7 +4240,8 @@ commit and report locally; they do not push branches on their own.
 | Windows process/file-sharing rules | Hash/rollback algorithms and wire path encoding tests | Temp files still open, exe replacement failure, drive/UNC URL and native path bytes |
 | 1.05 per-file gate may remain missed | Paired raw data, strace/perf, slopes, allocator cost last | Timing stays local; report share and ask Sebastián before any criterion change |
 | Whole-tree preparation may dominate dense RSS | Same bytes sparse/dense baselines, seven families, bounded spool | CI Linux RSS only; never infer bounded history merely from shared Trail types |
-| No musl C toolchain on this machine (no `musl-gcc`; PCRE2 builds from C; no sudo) | Rust musl target installed, GNU probe only | Linux job installs `musl-tools`, builds the musl archive and prints the musl/glibc ratio (> 1.1 triggers jemalloc) |
+| No musl C toolchain on this machine (no `musl-gcc`; PCRE2 builds from C; no sudo) | Rust musl target installed, GNU probe only | Linux job installs `musl-tools`, builds the musl archive and prints the musl/glibc ratio (≤ 1.05 keeps System, ≥ 1.15 triggers jemalloc, in between Sebastián decides) |
+| Children started by libraries escape the Job, **verified in grep-cli's source** | Reader, decompressor choice and error text tested on Linux against grep-cli 0.1.11 | Windows: s4 killed with a synthetic `--hostname-bin` and `gzip` plus descendants, none survives; `.cmd`/`.bat` `--pre` equals rg |
 | Reference digests unavailable offline | Configuration/digest validation and exact version checks | Setup obtains official bytes/checksums; orchestrator verifies before push |
 | dist schema/package installer details | Installed 0.33.0 help, generated plan/build validation | Native formula/npm install from own archives, five-target archive manifests |
 | OIDC attestations cannot be issued locally | Subject list/configuration review, dist plan/build | First approved RC verifies every archive/script/checksum with gh |
