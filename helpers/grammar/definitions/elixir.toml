@@ -1,0 +1,25 @@
+# Elixir: modules, protocols and their functions and macros (spec §5.3), through the Elixir
+# Grammar Helper (spec §7). Elixir's definitions are calls (`defmodule`, `def`), so the query
+# keys on the called name and every Segment's kind is `definition`.
+name       = "elixir"
+extensions = ["ex", "exs"]
+shebangs   = ["elixir"]
+processor  = "treesitter"
+
+[params]
+grammar = "elixir"
+query = '''
+(call
+  target: (identifier) @keyword
+  (#any-of? @keyword "defmodule" "defprotocol" "defimpl")
+  (arguments . (alias) @name)) @segment
+(call
+  target: (identifier) @keyword
+  (#any-of? @keyword "def" "defp" "defmacro" "defmacrop" "defguard" "defguardp" "defdelegate")
+  (arguments .
+    [(identifier) @name
+     (call target: (identifier) @name)
+     (binary_operator left: (call target: (identifier) @name))
+     (binary_operator left: (identifier) @name)])) @segment
+'''
+kinds = { call = "definition" }
