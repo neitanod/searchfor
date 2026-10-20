@@ -1335,3 +1335,11 @@ fn m5_25_a_closed_stdout_ends_the_actions_quietly() {
         .unwrap();
     assert_eq!(code(&o), 2);
 }
+
+/// Code review r1, Codex #6 and Fable #2: M5a is v0.5, as the README says.
+#[test]
+fn m5_26_the_version_is_0_5() {
+    let fx = Fixture::new();
+    let v = ok(&fx, &["--version"]);
+    assert!(v.starts_with("s4 0.5"), "{v}");
+}
