@@ -512,3 +512,84 @@ fn m5_expand_rows_equal_ripgreps_lines() {
         assert_eq!(got, want, "{file}:\n{out:?}");
     }
 }
+
+/// Code review r2 of M5a, Codex #3: `--vimgrep -b` in the one-line layout prints the column and
+/// offset rg prints, chosen by the search's mode and not by how many lines a Match holds: a
+/// search that can match a line break (`-U` with `-P`, or with a pattern of `\n`) prints the
+/// offset of the Match's line (of its record with `--null-data`), one that cannot the offset of
+/// the Match. Each row is compared by its `path:line:column:offset:` and, without
+/// `--null-data`, its text: s4 prints a space before the text, and of a record the line that
+/// holds the Match where rg prints the record (spec §8).
+#[test]
+fn m5_vimgrep_offsets_equal_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    write_m5_files(&fx);
+    std::fs::write(
+        fx.file("m5/vim.txt"),
+        b"xx needle\none\nxx needle two\nthree\n",
+    )
+    .unwrap();
+    std::fs::write(fx.file("m5/vim.dat"), b"a\nb needle\0c\0").unwrap();
+    let mut cases: Vec<(Vec<&str>, bool)> = Vec::new();
+    for engine in [&[][..], &["-P"][..]] {
+        for multi in [&[][..], &["-U"][..]] {
+            let mut a = engine.to_vec();
+            a.extend(multi);
+            a.extend(["needle", "m5/vim.txt"]);
+            cases.push((a, false));
+            for file in ["m5/records.dat", "m5/vim.dat"] {
+                let mut a = engine.to_vec();
+                a.extend(multi);
+                a.extend(["--null-data", "-a", "needle", file]);
+                cases.push((a, true));
+            }
+        }
+        for pattern in ["needle|two\\n", "needle two\\nthree"] {
+            let mut a = engine.to_vec();
+            a.extend(["-U", pattern, "m5/vim.txt"]);
+            cases.push((a, false));
+        }
+    }
+    // Each row's four fields and, without `--null-data`, its text; rg ends a record with its
+    // NUL.
+    let rows = |out: &str, null: bool, space: bool| -> Vec<String> {
+        let term = if null && !space { '\0' } else { '\n' };
+        out.split_terminator(term)
+            .map(|l| {
+                let f: Vec<&str> = l.splitn(5, ':').collect();
+                let text = f.last().copied().unwrap_or_default();
+                let text = if null { "" } else { text };
+                let text = if space {
+                    text.strip_prefix(' ').unwrap_or(text)
+                } else {
+                    text
+                };
+                format!("{}:{}", f[..f.len() - 1].join(":"), text)
+            })
+            .collect()
+    };
+    let mut diffs = Vec::new();
+    for (case, null) in &cases {
+        let mut want = vec!["--vimgrep", "-b"];
+        want.extend(case);
+        let mut got = vec!["--no-docs", "--flat", "--vimgrep", "-b"];
+        got.extend(case);
+        let (want, got) = (rg(&fx, &want), run(&mut fx.s4(&got)));
+        let (want, got) = (
+            rows(&stdout(&want), *null, false),
+            rows(&stdout(&got), *null, true),
+        );
+        if want != got {
+            diffs.push(format!("== {case:?}\n-- rg:\n{want:?}\n-- s4:\n{got:?}"));
+        }
+    }
+    assert!(
+        diffs.is_empty(),
+        "{} case(s) differ:\n{}",
+        diffs.len(),
+        diffs.join("\n")
+    );
+}

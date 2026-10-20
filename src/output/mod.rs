@@ -841,9 +841,19 @@ fn match_rows<'a>(
             else {
                 continue;
             };
-            let (column, at) = if lines.len() == 1 {
+            // The column and offset rg's printers give, chosen by the search's mode and not by
+            // the lines the Match holds (code review r2 of M5a, Codex #3): a search that can
+            // match a line break prints the column in the Match's line and that line's offset,
+            // a `--null-data` record being its line; one that cannot, the column in the item and
+            // the Match's offset. An object file's string is one line at its own offset.
+            let (column, at) = if !o.look.multi_line || d.offsets {
                 (s as u64 + 1, off + s as u64)
             } else {
+                let ls = if o.look.null_data {
+                    memchr::memrchr(0, &bytes[..s]).map_or(0, |z| z + 1)
+                } else {
+                    ls
+                };
                 ((s - ls) as u64 + 1, off + ls as u64)
             };
             let line = match &shared {
