@@ -20,7 +20,9 @@
 - **Nothing is pushed until the orchestrator says so.** Commit workflows on the
   chunk branch. The orchestrator owns branch pushes, merges and the four-system
   CI stage after tanda 3. Tags and channel publication additionally require the
-  corresponding Sebastián approval.
+  corresponding Sebastián approval. Never dispatch the generated `release.yml`
+  by hand (`workflow_dispatch`, which takes a `tag` input) with a real tag
+  outside its publication gate: it publishes as if the tag had been pushed.
 - **Tests have no network.** CI setup may download pinned tools and dependencies;
   the test processes use local fixtures and `file://` indexes. Installation smoke
   tests use the job's archives through a local server or local package overrides.
@@ -58,6 +60,11 @@
   Invoke this binary; pin the same version in distribution configuration.
 - Linux checks and Windows GNU cross-checks are local evidence. Windows MSVC
   linking, console events, Job nesting and both macOS architectures require CI.
+  So does everything that needs a musl C toolchain: this machine has the Rust
+  musl target but no musl C compiler (`musl-gcc`, `x86_64-linux-musl-gcc`), PCRE2
+  is compiled from C, and nothing is installed with sudo. The musl build and the
+  musl-versus-glibc measurement of Task 11.2 run in the Linux CI job, whose runner
+  installs `musl-tools`.
   Never describe cross-compilation as a native test pass.
 
 **Goal:** ship a reviewable v1.0 that works on four native systems, bounds dense
@@ -121,7 +128,7 @@ not the product.
 
 | Id | Decision | Why |
 |---|---|---|
-| D1 | Keep the prescribed three tandas and chunk IDs, including the missing C7 | Stable orchestration and separate ownership |
+| D1 | Keep the prescribed three tandas and chunk IDs, including the missing C7 | Stable orchestration and separate ownership. C7 does not exist: the orchestrator numbered the chunks up front, and the Windows presentation work (colours, hyperlinks) ended up split between C1 and C3 with no chunk of its own |
 | D2 | Use existing `common::rg_path()` in integration tests; repeat a tiny local resolver in unit tests/scripts that cannot import common | Existing helper at tests/common/mod.rs:159 already honors SEARCHFOR_RG; avoids a C4 startup dependency |
 | D3 | Platform layer owns a managed Child and explicit SpawnSpec, not a Windows std::Command post-spawn patch | std spawn closes the primary thread handle; correct suspended assignment needs CreateProcessW and ResumeThread on the original thread |
 | D4 | One non-inheritable process-wide Job plus a reader's retained nested Job | Kill-on-close covers descendants; committed-memory limits remain a second barrier beside the counter |
@@ -141,6 +148,7 @@ not the product.
 | D17 | Grammar names allow internal hyphens, reject traversal; each helper build enables exactly one Grammar | `c-sharp` is required and current valid_name excludes it; multi-feature builds otherwise duplicate grammar() |
 | D18 | Pure time ratios opt in with SEARCHFOR_PERF_TIMING=1; memory and bomb checks remain active on Linux CI | Shared runner jitter should not relax functional limits or RSS checks |
 | D19 | dist 0.33.0 generates release YAML; inspect plan JSON and generated archives instead of hand-maintaining its internals | The installed generator is the source of truth for release job details |
+| D20 | The native Windows launcher resolves `SpawnSpec.program` itself with std's algorithm (separator: as given, `.exe` if no extension; bare name: child or parent `PATH`, the directory of `current_exe`, System32, the Windows directory; never the cwd), passes the absolute path as `lpApplicationName` and returns `NotFound` otherwise | `CreateProcessW` with a null `lpApplicationName` searches the current directory first, which std never does. Without this, a `python.exe` left in the directory where the user runs `s4` would run as the `command` of any Helper Processor, reopening the hole that spec §4.2 closes for `--pre` |
 
 ## Chunk graph and file ownership
 
@@ -408,7 +416,8 @@ C5, C6 and C8 consume; publish the API commit before those chunks start.
 **Files:** create `src/platform/mod.rs`, `src/platform/windows.rs`,
 `src/platform/unix.rs`; modify `src/lib.rs:1` (module export),
 `Cargo.toml:92` and Cargo.lock (windows-sys); modify `src/helper/host.rs:27`
-(`CommandLauncher`, `Child` wrapper, `Supervisor::launch_reader`, `reap`).
+(`CommandLauncher`, `Child` wrapper, `reap`; add `Supervisor::launch_managed`
+beside `launch_reader`, which stays untouched in tanda 1).
 New interfaces (public inside the library; no CLI contract added):
 
 ```rust
@@ -568,6 +577,49 @@ WaitToken, WaitForSingleObject outside locks, and GetExitCodeProcess afterward.
 Unbounded wait occurs only after termination or on a separate wait token.
 Migrate CommandLauncher and its Control implementation in this task; retain
 its three writer/reader threads, timeouts and failure semantics.
+
+`Supervisor::launch_reader` takes `FnOnce() -> io::Result<std::process::Child>`
+and its two callers are files C2 does not own: `src/mcp.rs` (C6) and
+`src/docs/isolated.rs` (C5). C2 therefore leaves `launch_reader` and its callers
+unchanged in tanda 1 and adds `Supervisor::launch_managed` beside it, taking
+`FnOnce() -> io::Result<platform::Child>` and storing the
+`Weak<Mutex<platform::Child>>`. Both coexist, so the tanda-1 workspace compiles
+and C2 can give its workspace GREEN. In tanda 2, C5 and C6 each migrate their own
+call to `launch_managed`. C6 is the last to touch it (the orchestrator merges C5
+first) and deletes `launch_reader` when, after rebasing on C5's merge, no caller
+remains; if the merge order is reversed, C5 deletes it instead.
+
+The native launcher never lets `CreateProcessW` search for the program. It
+resolves `SpawnSpec.program` with the algorithm of std's `resolve_exe` /
+`search_paths` and passes the resulting absolute path as `lpApplicationName`:
+if `program` contains a path separator it is used as given, with `.exe` appended
+when it has no extension; otherwise it is searched, in this order, in the child's
+`PATH` (from `SpawnSpec.env`) or the parent's, the directory of `current_exe`,
+System32 and the Windows directory, and never in the current directory. A
+program that is not found returns `io::ErrorKind::NotFound` without creating a
+process. Windows adds this test to `src/platform/windows.rs`, analogous to
+`windows_pre_bare_name_does_not_search_cwd` but on `platform::spawn`:
+
+```rust
+#[test]
+fn windows_bare_program_name_does_not_search_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    // A runnable executable named like a bare program, only in the cwd.
+    std::fs::copy(std::env::current_exe().unwrap(),
+                  dir.path().join("s4-fake-helper.exe")).unwrap();
+    let mut s = SpawnSpec::new("s4-fake-helper");
+    s.cwd = Some(dir.path().to_path_buf());
+    s.env = vec![("PATH".into(),
+                  Some(std::env::var_os("SystemRoot").unwrap_or_default()))];
+    // Resolving it in the cwd would return Ok(child) and run it.
+    let err = spawn(s, Limits { process_memory_bytes: None }).err().unwrap();
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+}
+```
+
+The `PATH` of the test names no directory holding `s4-fake-helper.exe`, which
+sits only in the working directory. The test is Windows-only; Linux
+cross-checks compile it.
 
 - [ ] **Step 4:** rerun unit tests and
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --workspace --locked --test helpers`.
@@ -781,7 +833,12 @@ and signals an already created event. It never spawns a thread or holds a
 Supervisor lock. The coordinator executes GLOBAL.cancel(), which stops starts,
 kills and reaps under the existing lifecycle rules, then calls ExitProcess.
 The callback waits for that completion so returning TRUE cannot race a normal
-exit with code 0. Repeated events share the same idempotent cleanup.
+exit with code 0. The wait is bounded by the Supervisor's existing kill timeout
+(`KILL_TIMEOUT_MS`); when it expires, because a helper survives `TerminateProcess`
+or a lock is held, the callback calls `ExitProcess(0xC000013A)` anyway, and the
+kill-on-close root Job terminates whatever remains. Repeated events share the
+same idempotent cleanup, so a second Ctrl-C cannot wait longer than the first.
+rg always exits on Ctrl-C and so must s4.
 
 ```rust
 // Windows callback core. EVENT and a pointer to the Supervisor STOPPED atomic
@@ -792,7 +849,10 @@ unsafe extern "system" fn console_control(kind: u32) -> i32 {
     STOP_FLAG.get().expect("installed before handler").store(
         true, std::sync::atomic::Ordering::SeqCst);
     unsafe { SetEvent(CANCEL_EVENT); }
-    unsafe { WaitForSingleObject(CLEANUP_DONE, INFINITE); }
+    // Bounded: a hung cleanup must not make Ctrl-C a no-op.
+    if unsafe { WaitForSingleObject(CLEANUP_DONE, KILL_TIMEOUT_MS) } != WAIT_OBJECT_0 {
+        unsafe { ExitProcess(0xC000013A) };
+    }
     1
 }
 // coordinator: cancel(); SetEvent(CLEANUP_DONE); ExitProcess(0xC000013A)
@@ -809,7 +869,13 @@ Windows; the normal example protocol tests remain portable.
 - [ ] **Step 4:** Linux helpers and workspace tests GREEN; Windows all-targets
   compiles. Windows CI verifies the actual console event, root Job descendant
   death, h03b, and at least 20 repeated starts/cancels without a leaked process.
-  Unix h16 signal/ignored-signal tests keep their original contract and reasons.
+  Unix h16 signal/ignored-signal tests keep their original contract. h16, h17
+  and h18 are `#[cfg(target_os = "linux")]` today and observe processes through
+  `/proc`; spec §4.2 says Ctrl-C on macOS behaves as on Linux, and signals exist
+  there, so skipping them would describe a test implementation detail, not an
+  absent behaviour (criterion 34). This task therefore adds a macOS variant of
+  h16, h17 and h18 that observes liveness with `kill(pid, 0)` and reaps its own
+  children, as already done for `alive`, and runs it on both macOS CI jobs.
 - [ ] **Step 5:** commit with
   `git commit -m "feat: cancel Windows helpers through the shared Supervisor"`.
 
@@ -898,7 +964,9 @@ SEARCHFOR_BIN="$CARGO_TARGET_DIR/release/s4" SEARCHFOR_BENCH_REPORT="$CARGO_TARG
 
 **Files:** modify `src/app.rs:421` (`Ctx`, worker closure, `Target`, `reader`,
 `search_raw`, `Out::print`), `src/matcher.rs:14` (`PatternMatcher` cloning),
-`src/formats/detector.rs:117` (`docs_by_path`, lowercase fast path).
+`src/formats/detector.rs` (the per-call `ext.to_ascii_lowercase()` copies in
+`may_be_document` at :129, `detect` at :212 and `builtin_may_be_document` at :252;
+`may_be_document` itself starts at :117).
 Keep C9's later pipeline integration independent of output layout changes.
 
 ```rust
@@ -1031,6 +1099,36 @@ fn m5b_mmap_binary_stats_follow_the_native_reference() {
 }
 ```
 
+Add this complete Windows test to `tests/rg_compat.rs` for spec §4.2's hidden
+file row; rg decides what the hidden attribute means and s4 must match it with
+and without `--hidden`:
+
+```rust
+#[test]
+#[cfg(windows)]
+fn m5b_windows_hidden_attribute_matches_the_reference() {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_HIDDEN, SetFileAttributesW};
+    if !common::reference_rg() { return; }
+    let fx = Fixture::new();
+    std::fs::write(fx.file("visible.txt"), "needle\n").unwrap();
+    std::fs::write(fx.file("attr-hidden.txt"), "needle\n").unwrap();
+    let wide: Vec<u16> = fx.file("attr-hidden.txt").as_os_str()
+        .encode_wide().chain(Some(0)).collect();
+    assert_ne!(unsafe { SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_HIDDEN) }, 0);
+    for extra in [&[][..], &["--hidden"][..]] {
+        let mut args = vec!["--no-heading", "--color=never", "--sort=path"];
+        args.extend_from_slice(extra);
+        args.extend(["needle", "."]);
+        let a = run(fx.s4(args.clone()).args(["--no-trail", "--no-docs"]));
+        let b = run(&mut fx.rg(args));
+        assert_eq!(code(&a), code(&b), "{extra:?}");
+        assert_eq!(a.stdout, b.stdout, "{extra:?}");
+    }
+}
+```
+
 - [ ] **Step 2:** run
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test rg_compat m5b_mmap_binary_stats`
   and the header's Windows GNU cross-check. Native macOS runs
@@ -1054,7 +1152,8 @@ fn m5b_mmap_binary_stats_follow_the_native_reference() {
   All rg commands in rg_compat.rs use common::rg_path().
 - [ ] **Step 4:** rg_compat and Source tests GREEN on Linux; Windows GNU checks
   compile. Native macOS verifies binary offsets and bytes_searched; Windows CI
-  checks slow pipes, path separator, hidden attribute, ANSI and console output.
+  runs `m5b_windows_hidden_attribute_matches_the_reference` and checks slow
+  pipes, path separator, ANSI and console output.
 - [ ] **Step 5:** commit with
   `git commit -m "fix: preserve native mmap pipe and console search semantics"`.
 
@@ -1076,45 +1175,66 @@ pub fn rg_path() -> std::path::PathBuf;
 pub fn reference_rg() -> bool;
 pub fn workspace_bin(package: &str, bin: &str, features: &[&str]) -> std::path::PathBuf;
 // New pure helper, tested without mutating process-wide environment:
-pub fn select_rg(override_path: Option<std::ffi::OsString>, unix: bool) -> std::path::PathBuf;
+pub fn select_rg(override_path: Option<std::ffi::OsString>, unix: bool,
+                 usr_bin_rg_exists: bool) -> std::path::PathBuf;
 ```
 
-- [ ] **Step 1:** add these complete tests inside tests/common/mod.rs.
+`common` itself carries no tests: a `#[cfg(test)]` module in `tests/common/mod.rs`
+is compiled and run by every integration binary that declares `mod common;`
+(twelve today), so the same tests would run twelve times. They live in
+`tests/cli.rs`, which C4 already owns.
+
+- [ ] **Step 1:** add these complete tests to tests/cli.rs.
 
 ```rust
-#[cfg(test)]
 mod m5b_tests {
-    use super::*;
+    use super::common::select_rg;
+    use std::path::{Path, PathBuf};
     #[test]
     fn explicit_reference_wins_without_path_search() {
-        assert_eq!(select_rg(Some("/tmp/rg reference".into()), true),
+        assert_eq!(select_rg(Some("/tmp/rg reference".into()), true, true),
                    PathBuf::from("/tmp/rg reference"));
-        assert_eq!(select_rg(Some(r"C:\tools\rg.exe".into()), false),
+        assert_eq!(select_rg(Some(r"C:\tools\rg.exe".into()), false, false),
                    PathBuf::from(r"C:\tools\rg.exe"));
-        assert_eq!(select_rg(None, true), PathBuf::from("/usr/bin/rg"));
-        assert_eq!(select_rg(None, false), PathBuf::from("rg"));
+        assert_eq!(select_rg(None, true, true), PathBuf::from("/usr/bin/rg"));
+        // Unix without /usr/bin/rg (a Mac with Homebrew): PATH is the last resort.
+        assert_eq!(select_rg(None, true, false), PathBuf::from("rg"));
+        assert_eq!(select_rg(None, false, false), PathBuf::from("rg"));
     }
     #[test]
     fn fixture_attributes_keep_synthetic_bytes() {
         let attrs = std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR")).join(".gitattributes")).unwrap();
-        assert!(attrs.lines().any(|l| l.trim() == "tests/fixtures/** -text"));
-        assert!(attrs.lines().any(|l| l.trim() == "*.sh text eol=lf"));
+        let has = |rule: &str| attrs.lines().any(|l| l.trim() == rule);
+        // Repo-wide: checkout never rewrites LF to CRLF, so docs/examples,
+        // insta snapshots and fixtures keep their exact bytes on Windows.
+        assert!(has("* -text"));
+        assert!(has("*.sh text eol=lf"));
+        assert!(has("tests/fixtures/** -text"));
     }
 }
 ```
 
 - [ ] **Step 2:** run
-  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli common::m5b_tests`.
+  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli m5b_tests`.
   Expected RED: missing select_rg/attributes. C1/C3 already use rg_path unchanged.
-- [ ] **Step 3:** delegate rg_path to select_rg(var_os, cfg!(unix)); keep Unix
-  fallback exactly /usr/bin/rg and Windows PATH fallback rg, verify version via
+- [ ] **Step 3:** delegate rg_path to select_rg(var_os, cfg!(unix),
+  Path::new("/usr/bin/rg").exists()); keep the Unix order exactly
+  `SEARCHFOR_RG`, then /usr/bin/rg if it exists, then `rg` from PATH as the last
+  resort (spec §5.2 asks for the /usr/bin/rg fallback and does not forbid the
+  next one; without it every comparison skips silently on a Mac with rg in
+  /opt/homebrew/bin and no SEARCHFOR_REQUIRE_REFERENCE). Windows uses the PATH
+  `rg`. Verify the version via
   reference_rg. Replace every fixed/PATH rg in owned tests/scripts. Unit tests
   in unrelated modules are owned by C8/C10 as graph notes say. In scripts use
   `rg="${SEARCHFOR_RG:-/usr/bin/rg}"`, quote "$rg", validate 14.1.1.
-  Add fixture attributes before a Windows checkout. Put the general
-  `*.sh text eol=lf` rule before `tests/fixtures/** -text`; the fixture rule
-  wins last, including deliberately unusual synthetic .sh fixture bytes. Rewrite shell/chmod-based
+  Add `.gitattributes` before a Windows checkout, in this order: the repo-wide
+  `* -text` first (docs/examples/sample.ini is compared byte for byte by Task
+  12.1 and `tests/snapshots/*.snap` are insta snapshots, so neither may be
+  converted on checkout; the Windows runner images may set `core.autocrlf=true`,
+  unverified), then `*.sh text eol=lf`, then `tests/fixtures/** -text`; the
+  later, more specific rules win, including deliberately unusual synthetic .sh
+  fixture bytes. Rewrite shell/chmod-based
   generators as Rust byte writes or self-contained helper programs; add native
   path expectations only where path spelling is asserted. Never globally turn
   backslashes into slashes in searched bytes, JSON paths or regexes.
@@ -1123,7 +1243,8 @@ mod m5b_tests {
   PDF reference tools may skip only if optional; CI explicitly installs the
   tools required by SEARCHFOR_REQUIRE_REFERENCE. SQLite's python reference
   uses the CI-configured Python executable, including Windows `python`.
-- [ ] **Step 4:** command GREEN; run
+- [ ] **Step 4:** command GREEN (the two tests run once, in the `cli` binary);
+  run
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli --test cli_m2 --test cli_m3 --test rg_compat_m5`.
   Linux GREEN; Windows cross-check compiles after tanda 1 merges. Native CI
   compares raw --no-trail bytes to native rg, including drive paths.
@@ -1288,6 +1409,9 @@ tests from test output. Compare inventory against `cargo test -- --list`.
 Document Linux-only GNU time, strace and /proc; Unix signals/non-UTF8 bytes;
 Windows console equivalents; macOS PCRE2 JIT unavailability on arm64. Every
 rewrite in C1/C2/C3/C5/C6/C8/C10 sends C4 its inventory row before merge.
+`/proc` is documented as the Linux way of observing processes, never as the
+reason a macOS test is absent: the Ctrl-C tests h16, h17 and h18 have a macOS
+variant (Task 2.3) and are not skipped inventory rows there.
 
 - [ ] **Step 4:** contract test GREEN locally, fmt/check/clippy local checks as
   available. CI jobs must actually execute the native suite and print skip
@@ -1357,6 +1481,9 @@ fn reader_wire_path_roundtrips_unpaired_utf16() {
   fallible allocation error and stderr/exit-status diagnostics together.
   Serialize Windows OsStrings as u16 little endian in this internal protocol;
   check even length before decoding and retain Unix raw-byte encoding.
+  Migrate the reader start in `spawn` from `Supervisor::launch_reader` to
+  `Supervisor::launch_managed` (added by C2 beside it, taking a
+  `platform::Child`); leave the deletion of `launch_reader` to C6.
 - [ ] **Step 4:** rerun unit tests and
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m4 m4_22 -- --nocapture`.
   Expected GREEN on Linux/macOS/Windows. Windows CI separately lowers the Job
@@ -1483,7 +1610,10 @@ fn waiting_for_exit_does_not_hold_the_cancel_lock() {
   `fn wait_without_lock<T>(child: &Mutex<T>, wait: impl FnOnce())` only if used
   by production ordering: lock only to capture the WaitToken, explicitly drop
   the guard, then invoke wait. A helper unused by production is insufficient.
-- [ ] **Step 3:** route starts through platform::spawn under launch_reader.
+- [ ] **Step 3:** route starts through platform::spawn under
+  `Supervisor::launch_managed` (C2 added it beside `launch_reader`; C5 migrates
+  its own call in `src/docs/isolated.rs`). Once no caller of `launch_reader`
+  remains after rebasing on C5's merge, delete `launch_reader`.
   Capture WaitToken once before starting blocking wait; release mutex, wait,
   reacquire only for final reap/status. Unix waitid remains supported where
   safe, or use bounded try_wait under brief locks; Windows WaitForSingleObject
@@ -1776,7 +1906,8 @@ fn windows_pre_bare_name_does_not_search_cwd() {
 (binary_name, directory tests), `src/cli/mod.rs` help, and
 `src/processors/external.rs` temporary cleanup is **deferred to C10** (ownership
 note: C10 owns this Processor file in tanda 3; C8 specifies the contract here).
-Create `docs/grammar-index.schema.json`.
+Modify `docs/grammar-index.schema.json` (it already exists), and create
+`tests/grammar_dirs.rs` (new, owned by C8).
 
 ```rust
 // index.rs private; accepts existing unescaped local test URLs as well as
@@ -1825,7 +1956,9 @@ fn index_schema_accepts_required_c_sharp_identity() {
 
 - [ ] **Step 2:** run
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --lib grammars::index::tests`.
-  Expected RED: c-sharp rejected, file escapes treated literally, schema absent.
+  Expected RED: c-sharp rejected by `valid_name`, file escapes treated literally,
+  and `index_schema_accepts_required_c_sharp_identity` fails because the existing
+  schema's `name` pattern `^[a-z0-9_]+$` rejects `c-sharp`.
 - [ ] **Step 3:** permit single/internal hyphens while rejecting leading/trailing
   ones and all separators/dots; preserve old underscores. Implement file URL
   parsing with existing dependencies or a small strict decoder (no new URL
@@ -1836,18 +1969,58 @@ fn index_schema_accepts_required_c_sharp_identity() {
   may prevent rename, so fail cleanly with old binary intact and retry only
   bounded sharing violations. Document native dirs via dirs::config_dir and
   data_dir, never hard-code Linux directories into Windows/macOS help.
+  In the existing schema, change the `name` pattern to allow single internal
+  hyphens (`^[a-z0-9]+([-_][a-z0-9]+)*$`, or an equivalent that still rejects
+  leading/trailing separators), and check that the `propertyNames` pattern of
+  `binaries`, `^[a-z0-9]+-[a-z0-9_]+$`, still accepts all five system keys
+  (`linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64`,
+  `windows-x86_64`); it does, so leave it unless that check fails.
   C10's RunTemp cleanup retries deletion after response when a helper still
   holds a file, then relinquishes it to system temp cleanup; always use temp_dir.
 - [ ] **Step 4:** unit tests GREEN; install rollback/hash mismatch existing
-  tests GREEN. Native CI tests drive paths, replacement sharing failures and
-  per-system dirs with temporary overrides; it never writes real user dirs.
+  tests GREEN. Native CI tests drive paths and replacement sharing failures. Add
+  this complete per-system test to `tests/grammar_dirs.rs` (spec §4.2's data and
+  config directory row); it never writes to a real user directory.
+
+```rust
+use assert_cmd::Command;
+
+#[test]
+fn m5b_help_names_the_native_data_and_config_directories() {
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = Command::cargo_bin("s4").unwrap();
+    cmd.arg("--help")
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join("xdg-config"))
+        .env("XDG_DATA_HOME", home.path().join("xdg-data"))
+        .env("APPDATA", home.path().join("appdata"))
+        .env("LOCALAPPDATA", home.path().join("localappdata"))
+        .env_remove("SEARCHFOR_FORMATS_DIR")
+        .env_remove("SEARCHFOR_GRAMMARS_DIR")
+        .env_remove("SEARCHFOR_CONFIG_PATH")
+        .env_remove("RIPGREP_CONFIG_PATH");
+    let out = String::from_utf8(cmd.output().unwrap().stdout).unwrap();
+    // Unix: the overrides above decide `dirs`. Windows resolves Known Folders
+    // and ignores them; the directory is only printed there, never written.
+    let (data, config) = if cfg!(windows) {
+        (dirs::data_dir().unwrap(), dirs::config_dir().unwrap())
+    } else if cfg!(target_os = "macos") {
+        let support = home.path().join("Library").join("Application Support");
+        (support.clone(), support)
+    } else {
+        (home.path().join("xdg-data"), home.path().join("xdg-config"))
+    };
+    assert!(out.contains(&data.join("searchfor").join("grammars").display().to_string()), "{out}");
+    assert!(out.contains(&config.join("searchfor").join("formats").display().to_string()), "{out}");
+}
+```
 - [ ] **Step 5:** commit with
   `git commit -m "feat: support portable grammar indexes and c-sharp names"`.
 
 ### Task 8.3: six features, real Grammar loading and target-aware build artifacts
 
-**Files:** modify `helpers/grammar/Cargo.toml`, `src/main.rs`,
-`tests/protocol.rs`; create `helpers/grammar/definitions/{c,cpp,java,ruby,c-sharp,elixir}.toml`
+**Files:** modify `helpers/grammar/Cargo.toml`, `helpers/grammar/src/main.rs`
+(where `grammar()` lives) and `helpers/grammar/tests/protocol.rs`; create `helpers/grammar/definitions/{c,cpp,java,ruby,c-sharp,elixir}.toml`
 and `grammars/<lang>/<lang>.toml` for each of the six; modify
 `scripts/build-grammar-helper.sh`. Definitions have one source of truth under
 `grammars/`; helper copies are generated/checked identical if retained.
@@ -1871,7 +2044,8 @@ elixir = ["dep:tree-sitter-elixir"]
 grammar's generated C and do not move the tree-sitter pin. The load test of Step 1 proves each of
 the six loads.
 
-- [ ] **Step 1:** put this complete feature-sensitive test in helper main.rs.
+- [ ] **Step 1:** put this complete feature-sensitive test in
+  `helpers/grammar/src/main.rs`.
 
 ```rust
 #[cfg(test)]
@@ -1914,6 +2088,12 @@ done
   expected `sample`/`Sample`/`run` names in protocol trails and names replies.
   Each request frees tree/source/Outline; preserve 500/5000-request RSS checks.
   The six pinned crates are ABI 14 (D-ABI), so every load test goes green.
+  Rewrite `the_committed_index_is_empty_and_valid` in
+  `helpers/grammar/tests/protocol.rs`, which today requires
+  `{"version": 1, "grammars": []}`: Task 11.4's gate 3 commits the index with six
+  Grammars and the test would start failing, and no other chunk names it. The new
+  contract is "valid against the schema, and either empty or holding exactly the
+  six names of Q57.gramaticas (c, cpp, java, ruby, c-sharp, elixir)".
 
 Script interface and output are fixed now:
 
@@ -2042,7 +2222,7 @@ fallback). New internal interfaces:
 
 ```rust
 pub const FILE_SPOOL_THRESHOLD: usize = 8 * 1024 * 1024;
-pub struct FileSpool { /* memory prefix or owned tempfile; no retained duplicate */ }
+pub struct FileSpool { /* memory prefix or unnamed tempfile; no retained duplicate */ }
 impl FileSpool {
     pub fn new(dir: &std::path::Path) -> std::io::Result<Self>;
     pub fn is_spilled(&self) -> bool;
@@ -2093,10 +2273,13 @@ mod tests {
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --lib output::spool::tests`.
   Expected RED: missing spool implementation. Threshold includes exactly 8 MiB
   in memory and spills on the next byte, including a single huge write.
-- [ ] **Step 3:** create tempfile lazily on crossing threshold, write memory
-  prefix once, release Vec capacity, continue file writes. On completion seek
-  to start, acquire stdout lock once for whole file, copy with bounded scratch,
-  add emitted byte counts once and remove temp file. Keep separators atomic
+- [ ] **Step 3:** create the file lazily on crossing threshold with
+  `tempfile::tempfile_in(dir)` (unnamed, mode 0600, deleted by the OS when closed
+  or when `s4` dies, so a crash between the spill and the copy leaves nothing on
+  disk), write memory prefix once, release Vec capacity, continue file writes.
+  On completion seek to start, acquire stdout lock once for whole file, copy with
+  bounded scratch and add emitted byte counts once; dropping the spool releases
+  the file. Keep separators atomic
   with the file; sorted/-j1 output keeps existing progressive Spill semantics.
   On BrokenPipe stop quietly and clean temp output. On error preserve already
   emitted bytes only where existing sequential behaviour does; parallel output
@@ -2351,7 +2534,11 @@ fn json_cursor_matches_model_for_repeated_values_and_broken_tail() {
 - [ ] **Step 4:** both tests GREEN; full C9 differential GREEN. Record 50 MiB
   CSV/JSONL flat and JSON memory/time baseline versus sparse/--no-trail for C10;
   dense output with several workers must cross FileSpool threshold and leave
-  no whole-file match/Trail vectors in worker state.
+  no whole-file match/Trail vectors in worker state. Note in that test that on
+  the shared Linux machine `/tmp` is tmpfs (`df` shows it), so the spool lives in
+  RAM there and an RSS measurement does not see the spilled bytes; the test
+  checks spill and cleanup, not disk usage, and its `TMPDIR` points at a disk
+  directory when one is available.
 - [ ] **Step 5:** commit with
   `git commit -m "perf: add record and value cursors for CSV and JSON"`.
 
@@ -2630,7 +2817,6 @@ fn m5b_dense_seven_families_have_bounded_match_retention() {
             let (tp, rp) = measure_drained(&sfor_bin(), &fx, &once, 0).unwrap();
             let (t0, r0) = measure_drained(&sfor_bin(), &fx, &raw, 0).unwrap();
             assert!(rd <= rp + (32 << 20), "{format}/{layout}: dense {rd}, once {rp}");
-            assert!(rd <= r0 + rp + (32 << 20), "{format}/{layout}: base {r0}, prep {rp}");
             if timing_enabled() {
                 let factor = if layout == "--json" { 6.0 } else { 4.0 };
                 assert!(td.as_secs_f64() <= tp.as_secs_f64() +
@@ -2666,7 +2852,14 @@ fn m5b_dense_parallel_output_is_bounded() {
 }
 ```
 
-- [ ] **Step 2:** build release and run
+- [ ] **Step 2:** build release. Before running the whole test, measure once the
+  `rs` family alone: run `measure_drained` on `dense.rs` with the once pattern
+  `ONCE_M5B` (so tree-sitter parses all ~1.5 million lines of the 50 MiB file,
+  and the size of that tree is not estimated anywhere in this plan) and record
+  `rp`. If `rp` exceeds 4 GiB, the chunk stops there and reports to the
+  orchestrator, as a question for Sebastián, whether the code-family fixture
+  should be smaller than 50 MiB; it does not let the test discover the limit
+  through an out-of-memory kill on this shared machine or a CI runner. Then run
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --release --test perf m5b_dense_seven -- --ignored --nocapture`.
   Expected RED before C9/C10: CSV/JSON and others retain per-Match models and
   exceed Rone+32 MiB. Baseline can be run with SEARCHFOR_BIN pointing to saved
@@ -2695,7 +2888,9 @@ fn m5b_dense_parallel_output_is_bounded() {
   Match counts, rather than passing a perf ceiling with a Plain fallback.
   Preparation is time/RSS of the once-pattern command on the same bytes, as
   specified; report R0, Rone and inferred incremental preparation separately.
-  The stronger density inequality is mandatory even if the additive one passes.
+  The one density inequality `rd <= rp + 32 MiB` is mandatory. (A second one,
+  `rd <= r0 + rp + 32 MiB`, was dropped: `rp` already contains `r0`, so it counted
+  the base twice and was weaker than the first.)
 - [ ] **Step 4:** command GREEN with timing unset (RSS), then repeat with
   SEARCHFOR_PERF_TIMING=1 on a quiet local machine with uptime. Expected GREEN
   at spec factors 4/6 + prep + 0.1 s; any failure is reported and investigated.
@@ -2794,9 +2989,14 @@ PY
 - [ ] **Step 4:** plan validator GREEN. Run
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo package --offline --locked --allow-dirty`
   and locally `dist build --target x86_64-unknown-linux-gnu` as a host-only probe
-  if supported, without adding GNU to configured release targets. For release
-  host use musl build; unpack archive and run its own s4 --version, expected
-  `s4 1.0.0`. Verify file listing contains one executable + four docs/licenses.
+  if supported, without adding GNU to configured release targets. The local probe
+  uses the `x86_64-unknown-linux-gnu` target because this machine cannot build
+  musl (no musl C toolchain); the musl archive is built and verified only in the
+  Linux CI job, where `dist` installs `musl-tools`. Unpack the probe archive and
+  run its own s4 --version, expected `s4 1.0.0`; CI does the same with the musl
+  archive. Verify file listing contains one executable + four docs/licenses.
+  Do not run `release.yml` by `workflow_dispatch` with a real tag (see the limits
+  at the top); validate it with `dist plan` and the build-only paths.
 - [ ] **Step 5:** commit with
   `git commit -m "build: prepare version 1.0 distribution with dist"`.
 
@@ -2816,10 +3016,16 @@ use std::alloc::System as Backing;
 // accounting/refused/arm semantics remain byte-for-byte the same contract.
 ```
 
-- [ ] **Step 1:** before any allocator change build GNU and musl in the same
-  target dir (sequentially, cleaning intermediate objects if space requires).
-  Run C3's M4 corpus probe in 40 alternated pairs, stdout drained, same thread
-  counts and priority, uptime recorded. Calculate median musl/GNU ratio.
+- [ ] **Step 1:** the measurement runs in the Linux CI job, not on this machine:
+  the runner installs `musl-tools`, while this machine has no musl C toolchain
+  (`cargo build -p pcre2-sys --target x86_64-unknown-linux-musl` fails here with
+  `failed to find tool "x86_64-linux-musl-gcc"`) and nothing is installed with
+  sudo. Add a Linux CI step that builds the GNU and musl release binaries in the
+  same target dir (sequentially), runs C3's M4 corpus probe in 40 alternated
+  pairs, stdout drained, same thread counts and priority, `uptime` printed, and
+  prints the median musl/GNU ratio to the job log. The decision rule is unchanged
+  (a ratio above 1.1 triggers jemalloc). The result is recorded in this plan and
+  in the commit body, copied from that CI log, as a CI-evidence entry.
   Complete evaluation test for the measurement decision:
 
 ```bash
@@ -2858,14 +3064,14 @@ fn selected_backing_can_allocate_reallocate_and_free() {
 }
 ```
 
-- [ ] **Step 4:** run memory tests locally under GNU and musl with common cargo
-  prefix, then repeat paired benchmark. Expected GREEN ratio ≤1.1 and unchanged
-  m4_22/memory warning. Linux aarch64 static linkage and runtime are release CI
+- [ ] **Step 4:** run memory tests locally under GNU with the common cargo
+  prefix and under musl in the Linux CI job, then repeat the paired benchmark
+  there. Expected GREEN ratio ≤1.1 and unchanged m4_22/memory warning. Linux aarch64 static linkage and runtime are release CI
   checks. Verify no dynamic libc dependency via readelf; record unstripped
   Linux x86-64 release size ≤23,000,000 bytes. A missed threshold or size cap is
   reported, not loosened. No mimalloc/extra crate is authorized here.
-- [ ] **Step 5:** commit measured report in commit body and any conditional
-  changes with `git commit -m "perf: validate static Linux allocator and reader limits"`.
+- [ ] **Step 5:** commit the measured report (from the CI log) in the commit body
+  and any conditional changes with `git commit -m "perf: validate static Linux allocator and reader limits"`.
   If no file change is needed, attach measurement evidence to chunk handoff;
   do not create an empty commit solely for this step.
 
@@ -3033,7 +3239,11 @@ must be reviewable. Remaining ABI or packaging blockers are reported explicitly.
   execute each on its native platform and record provenance commit/workflow.
 - [ ] **Step 3 — prepare Grammar release:** present thirty built binaries,
   exact SHA-256s, validated index diff, grammars-v1 asset names and file://
-  smoke results. Check installable URLs will exist before index commit.
+  smoke results. List what committing the index changes: besides the
+  discoverability of six Grammars, the test
+  `the_committed_index_is_empty_and_valid` in `helpers/grammar/tests/protocol.rs`,
+  which Task 8.3 rewrote to accept either an empty index or exactly the six
+  Q57.gramaticas names, must pass with the committed index. Check installable URLs will exist before index commit.
 - [ ] **Ask Sebastián 3 — publish Grammar assets and index:** approve uploading
   the six × five Grammar binaries to `grammars-v1` and pushing the index that
   points at them. Stop and report. After OK publish assets, verify remote bytes
@@ -3081,7 +3291,7 @@ The Python scripts have this executable contract (no shell/chmod needed):
 # Fixture sample.ini:
 # [server]
 # host = needle.example
-# Portability: invoke [PYTHON, SCRIPT] as Definition command, never shebang.
+# Portability: invoke [PYTHON, SCRIPT] as the Helper Definition command (no shebang there; --pre recipes are below).
 ```
 
 - [ ] **Step 1:** create tests/guide.rs with this complete test code.
@@ -3197,7 +3407,11 @@ fn m5b_guide_names_and_errors_keep_request_ids() {
   standard streams, and returns the Python process exit status. The test
   compiles that native launcher and executes the actual s4 --pre recipe on
   every host. Document `rustc docs/examples/pre-launcher.rs -o ini-pre-launcher`
-  and the two environment variables; a shebang alternative is Unix-specific.
+  and the two environment variables. Document both recipes by system: on Unix
+  the natural recipe is a script with a shebang line (`#!/usr/bin/env python3`,
+  executable bit), which is how rg users already write `--pre`; on Windows
+  there is no shebang, so the compiled launcher is the recipe. The test keeps
+  compiling the launcher on all four systems.
 - [ ] **Step 4:** guide test GREEN on Linux and all four CI systems with Python;
   run `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test guide m5b_guide_names`
   for the complete names/error transcript test as well.
@@ -3289,6 +3503,8 @@ commit and report locally; they do not push branches on their own.
 - [ ] Run explicit Linux RSS/bomb tests and short fuzz jobs; inspect nightly
   no-change gate with same/different SHA, scheduled/manual events and a failed
   previous run. Confirm failure artifacts contain replayable seed and bytes.
+- [ ] Read the Linux job's musl-versus-glibc ratio (Task 11.2) from its log and
+  record it in the plan; above 1.1 sends C11 back to add jemalloc.
 - [ ] Verify packaging native jobs, local Homebrew/npm installs, crate dry-run,
   all five archives/30 Grammar artifacts and the acceptance matrix below.
 - [ ] Report GREEN/remaining blockers to Sebastián. Resume C11's individual
@@ -3325,7 +3541,7 @@ commit and report locally; they do not push branches on their own.
 | §6.2 Parallel spool | C9.2, C10.3 multi-worker test |
 | §6.3 Criterion | C10.3, C3 baseline handoff |
 | §7 Per-file cost | C3.1/C3.2, allocator measured last |
-| §8.1 dist/musl | C11.1/C11.2 |
+| §8.1 dist/musl | C11.1/C11.2 (musl build and measurement in the Linux CI job) |
 | §8.2 Homebrew | C11.3 and gates 1/4 |
 | §8.3 npm | C11.3 and gates 1/4 |
 | §8.4 crates.io | C11.1/C11.3 and gate 5 |
@@ -3347,6 +3563,7 @@ commit and report locally; they do not push branches on their own.
 | Windows process/file-sharing rules | Hash/rollback algorithms and wire path encoding tests | Temp files still open, exe replacement failure, drive/UNC URL and native path bytes |
 | 1.05 per-file gate may remain missed | Paired raw data, strace/perf, slopes, allocator cost last | Timing stays local; report share and ask Sebastián before any criterion change |
 | Whole-tree preparation may dominate dense RSS | Same bytes sparse/dense baselines, seven families, bounded spool | CI Linux RSS only; never infer bounded history merely from shared Trail types |
+| No musl C toolchain on this machine (no `musl-gcc`; PCRE2 builds from C; no sudo) | Rust musl target installed, GNU probe only | Linux job installs `musl-tools`, builds the musl archive and prints the musl/glibc ratio (> 1.1 triggers jemalloc) |
 | Reference digests unavailable offline | Configuration/digest validation and exact version checks | Setup obtains official bytes/checksums; orchestrator verifies before push |
 | dist schema/package installer details | Installed 0.33.0 help, generated plan/build validation | Native formula/npm install from own archives, five-target archive manifests |
 | OIDC attestations cannot be issued locally | Subject list/configuration review, dist plan/build | First approved RC verifies every archive/script/checksum with gh |
