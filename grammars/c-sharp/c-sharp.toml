@@ -1,0 +1,20 @@
+# C#: namespaces, classes, structs, interfaces, enums, records, methods and constructors
+# (spec §5.3), through the C# Grammar Helper (spec §7).
+name       = "c-sharp"
+extensions = ["cs"]
+processor  = "treesitter"
+
+[params]
+grammar = "c-sharp"
+query = '''
+(namespace_declaration name: (_) @name) @segment
+(file_scoped_namespace_declaration name: (_) @name) @segment
+(class_declaration name: (identifier) @name) @segment
+(struct_declaration name: (identifier) @name) @segment
+(interface_declaration name: (identifier) @name) @segment
+(enum_declaration name: (identifier) @name) @segment
+(record_declaration name: (identifier) @name) @segment
+(method_declaration name: (identifier) @name) @segment
+(constructor_declaration name: (identifier) @name) @segment
+'''
+kinds = { namespace_declaration = "namespace", file_scoped_namespace_declaration = "namespace", class_declaration = "class", struct_declaration = "struct", interface_declaration = "interface", enum_declaration = "enum", record_declaration = "record", method_declaration = "method", constructor_declaration = "constructor" }

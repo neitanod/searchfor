@@ -1,0 +1,17 @@
+# C: functions, structs, unions and enums (spec §5.3), through the C Grammar Helper (spec §7).
+name       = "c"
+extensions = ["c", "h"]
+processor  = "treesitter"
+
+[params]
+grammar = "c"
+query = '''
+(function_definition
+  declarator: [(function_declarator declarator: (identifier) @name)
+               (pointer_declarator declarator: (function_declarator declarator: (identifier) @name))
+               (pointer_declarator declarator: (pointer_declarator declarator: (function_declarator declarator: (identifier) @name)))]) @segment
+(struct_specifier name: (type_identifier) @name body: (_)) @segment
+(union_specifier name: (type_identifier) @name body: (_)) @segment
+(enum_specifier name: (type_identifier) @name body: (_)) @segment
+'''
+kinds = { function_definition = "function", struct_specifier = "struct", union_specifier = "union", enum_specifier = "enum" }

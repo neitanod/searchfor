@@ -1,4 +1,6 @@
-//! The Lua Grammar Helper over its pipes (spec §4.4, §7), without s4.
+//! The Grammar Helper over its pipes (spec §4.4, §7), without s4: the Lua build the workspace
+//! tests by default, and each of the six Grammars of v1.0 when built with its feature alone
+//! (`--no-default-features --features <lang>`; M5b plan, Task 8.3).
 use searchfor::formats::definition::FormatDefinition;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
@@ -10,6 +12,7 @@ struct H {
     out: BufReader<ChildStdout>,
 }
 
+#[cfg(feature = "lua")]
 fn fixture() -> String {
     format!("{}/tests/fixtures/player.lua", env!("CARGO_MANIFEST_DIR"))
 }
@@ -45,8 +48,11 @@ impl H {
         serde_json::from_str(&l).unwrap_or_else(|e| panic!("{e}: {l:?}"))
     }
     fn hello_with(&mut self, params: Value, threads: usize) -> Value {
+        self.hello_as("lua", params, threads)
+    }
+    fn hello_as(&mut self, format: &str, params: Value, threads: usize) -> Value {
         self.send(
-            json!({"op":"hello","id":0,"protocol":1,"format":"lua","params":params,"threads":threads}),
+            json!({"op":"hello","id":0,"protocol":1,"format":format,"params":params,"threads":threads}),
         );
         self.recv()
     }
@@ -84,6 +90,7 @@ fn names(reply: &Value) -> Vec<Vec<String>> {
         .collect()
 }
 
+#[cfg(feature = "lua")]
 #[test]
 fn hello_answers_protocol_one_and_the_helper_name() {
     let mut h = H::start();
@@ -93,6 +100,7 @@ fn hello_answers_protocol_one_and_the_helper_name() {
     assert_eq!(r["name"], "searchfor-grammar-lua", "{r}");
 }
 
+#[cfg(feature = "lua")]
 #[test]
 fn trails_of_a_method_and_a_local_function() {
     let mut h = H::start();
@@ -114,6 +122,7 @@ fn trails_of_a_method_and_a_local_function() {
     );
 }
 
+#[cfg(feature = "lua")]
 #[test]
 fn names_list_the_functions() {
     let mut h = H::start();
@@ -137,6 +146,7 @@ fn names_list_the_functions() {
     }
 }
 
+#[cfg(feature = "lua")]
 #[test]
 fn a_file_over_max_bytes_is_not_parsed() {
     // Spec §5.3 (review m2-code-r1, Codex #2): s4 stops such a file before the request, and
@@ -158,6 +168,7 @@ fn a_file_over_max_bytes_is_not_parsed() {
     }
 }
 
+#[cfg(feature = "lua")]
 #[test]
 fn a_query_that_does_not_compile_is_an_error_naming_the_query() {
     let mut h = H::start();
@@ -170,6 +181,7 @@ fn a_query_that_does_not_compile_is_an_error_naming_the_query() {
     assert!(e.contains("query"), "{e}");
 }
 
+#[cfg(feature = "lua")]
 #[test]
 fn another_grammar_is_an_error_naming_both() {
     let mut h = H::start();
@@ -184,7 +196,7 @@ fn another_grammar_is_an_error_naming_both() {
 /// 8458: memory does not grow from one file to the next (D23). Linux only. It takes 266 s in
 /// release (each request parses 140 KB), so it runs with the ceilings:
 /// `cargo test --release -p searchfor-grammar -- --ignored`.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "lua"))]
 #[test]
 #[ignore]
 fn memory_stays_flat_over_five_thousand_requests() {
@@ -264,13 +276,114 @@ fn entry(name: &str, system: &str, url: &str, sha: &str) -> Value {
     })
 }
 
+/// The six Grammars of v1.0 (Q57.gramaticas), the only ones the committed index may hold.
+const SIX: [&str; 6] = ["c", "cpp", "java", "ruby", "c-sharp", "elixir"];
+
+/// The committed index is valid against the schema and s4 reads it; it lists no Grammar until
+/// the `grammars-v1` release publishes them, and then exactly the six (Task 11.4, gate 3).
 #[test]
-fn the_committed_index_is_empty_and_valid() {
+fn the_committed_index_is_valid_and_empty_or_the_six() {
     let index = read_json("grammars/index.json");
-    assert_eq!(index, json!({"version": 1, "grammars": []}));
     assert_eq!(errors(&index_validator(), &index), Vec::<String>::new());
     let bytes = serde_json::to_vec(&index).unwrap();
-    searchfor::grammars::index::Index::parse(&bytes).unwrap();
+    let parsed = searchfor::grammars::index::Index::parse(&bytes).unwrap();
+    let mut names: Vec<&str> = parsed.grammars.iter().map(|g| g.name.as_str()).collect();
+    names.sort_unstable();
+    let mut six = SIX.to_vec();
+    six.sort_unstable();
+    assert!(names.is_empty() || names == six, "{names:?}");
+}
+
+/// Each Definition has one source, `grammars/<lang>/<lang>.toml`; the helper's copy under
+/// `definitions/` is the same text, and it describes its Grammar as `--install-grammar`
+/// requires (name, grammar and processor).
+#[test]
+fn the_six_definitions_have_one_source_and_install_as_their_grammar() {
+    for lang in SIX {
+        let source = std::fs::read_to_string(root().join(format!("grammars/{lang}/{lang}.toml")))
+            .unwrap_or_else(|e| panic!("{lang}: {e}"));
+        let copy = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("definitions/{lang}.toml")),
+        )
+        .unwrap_or_else(|e| panic!("{lang}: {e}"));
+        assert_eq!(
+            copy, source,
+            "definitions/{lang}.toml differs from grammars/{lang}/"
+        );
+        let def = FormatDefinition::parse(&source, |p| p == "treesitter").unwrap();
+        assert_eq!(def.name, lang);
+        assert_eq!(def.processor, "treesitter");
+        assert_eq!(def.params["grammar"].as_str(), Some(lang), "{lang}");
+    }
+}
+
+/// The Grammar this build carries (one of the six), the fixture's extension, the Trail of
+/// the fixture's `needle` and the names `names` lists, in order.
+#[cfg(not(feature = "lua"))]
+const SAMPLE: (&str, &str, &[&str], &[&str]) = if cfg!(feature = "c") {
+    ("c", "sample.c", &["sample"], &["Sample", "sample"])
+} else if cfg!(feature = "cpp") {
+    (
+        "cpp",
+        "sample.cpp",
+        &["demo", "Sample", "run"],
+        &["demo", "Sample", "run"],
+    )
+} else if cfg!(feature = "java") {
+    (
+        "java",
+        "Sample.java",
+        &["Sample", "run"],
+        &["Sample", "run"],
+    )
+} else if cfg!(feature = "ruby") {
+    (
+        "ruby",
+        "sample.rb",
+        &["Demo", "Sample", "run"],
+        &["Demo", "Sample", "run"],
+    )
+} else if cfg!(feature = "c-sharp") {
+    (
+        "c-sharp",
+        "sample.cs",
+        &["Demo", "Sample", "Run"],
+        &["Demo", "Sample", "Run"],
+    )
+} else {
+    (
+        "elixir",
+        "sample.ex",
+        &["Sample", "run"],
+        &["Sample", "run"],
+    )
+};
+
+/// Task 8.3: the helper of one of the six Grammars, with the Definition the index ships,
+/// gives its fixture's `needle` the Trail the compiled-in Grammars give (one Segment per
+/// enclosing definition, by name) and lists the same names.
+#[cfg(not(feature = "lua"))]
+#[test]
+fn the_grammar_gives_the_trail_and_the_names_of_its_fixture() {
+    let (lang, file, trail, listed) = SAMPLE;
+    let src = std::fs::read_to_string(root().join(format!("grammars/{lang}/{lang}.toml"))).unwrap();
+    let def = FormatDefinition::parse(&src, |p| p == "treesitter").unwrap();
+    let params = serde_json::to_value(&def.params).unwrap();
+    let fixture = format!("{}/tests/fixtures/{file}", env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(&fixture).unwrap();
+    let at = text.find("needle").unwrap() as u64;
+    let mut h = H::start();
+    let r = h.hello_as(lang, params, 2);
+    assert_eq!(r["name"], format!("searchfor-grammar-{lang}"), "{r}");
+    h.trails(1, &fixture, &[at]);
+    let r = h.recv();
+    assert_eq!(names(&r), vec![trail.to_vec()], "{r}");
+    h.send(json!({"op":"names","id":2,"path":fixture}));
+    let r = h.recv();
+    let list = r["names"].as_array().unwrap_or_else(|| panic!("{r}"));
+    let texts: Vec<&str> = list.iter().map(|n| n["text"].as_str().unwrap()).collect();
+    assert_eq!(texts, listed, "{r}");
 }
 
 #[test]
@@ -291,9 +404,21 @@ fn the_schema_accepts_an_entry_and_refuses_broken_ones() {
             "file:///tmp/searchfor-grammar-lua",
             &sha,
         ),
+        entry("c-sharp", "windows-x86_64", "file:///C:/g.exe", &sha),
     ];
     for e in ok {
         let index = wrap(e);
+        assert_eq!(errors(&v, &index), Vec::<String>::new(), "{index}");
+    }
+    // The keys of the five release targets (M5b spec §8.1).
+    for system in [
+        "linux-x86_64",
+        "linux-aarch64",
+        "macos-x86_64",
+        "macos-aarch64",
+        "windows-x86_64",
+    ] {
+        let index = wrap(entry("c", system, "https://example.org/x", &sha));
         assert_eq!(errors(&v, &index), Vec::<String>::new(), "{index}");
     }
     let mut no_license = entry("lua", "linux-x86_64", "https://example.org/x", &sha);
@@ -302,6 +427,10 @@ fn the_schema_accepts_an_entry_and_refuses_broken_ones() {
         (
             "a name outside [a-z0-9_]",
             entry("Lua", "linux-x86_64", "https://example.org/x", &sha),
+        ),
+        (
+            "a leading hyphen in the name",
+            entry("-c", "linux-x86_64", "https://example.org/x", &sha),
         ),
         (
             "a path in the name",
@@ -340,8 +469,9 @@ fn the_schema_accepts_an_entry_and_refuses_broken_ones() {
     assert!(!v.is_valid(&json!({"version": 1})), "accepted no grammars");
 }
 
-/// Task 8.2: the build script's entry, wrapped as an index, validates against the schema, and
-/// the binary it names is a working Lua Grammar Helper for this system. It rebuilds the helper
+/// Task 8.3: the build script's entry, wrapped as an index, validates against the schema, and
+/// s4's installer takes the binary it names through its `file://` URL, checking its SHA-256;
+/// the installed binary is a working Lua Grammar Helper for this system. It rebuilds the helper
 /// in release, so it runs only with `SEARCHFOR_TEST_BUILD_SCRIPT=1`.
 #[test]
 fn the_build_script_prints_a_valid_index_entry() {
@@ -351,8 +481,9 @@ fn the_build_script_prints_a_valid_index_entry() {
         );
         return;
     }
-    let out = std::env::temp_dir().join(format!("searchfor-gh-{}", std::process::id()));
-    let o = Command::new("scripts/build-grammar-helper.sh")
+    let out = tempfile_dir("searchfor-gh");
+    let o = Command::new("bash")
+        .arg("scripts/build-grammar-helper.sh")
         .arg("lua")
         .arg(&out)
         .current_dir(root())
@@ -375,11 +506,11 @@ fn the_build_script_prints_a_valid_index_entry() {
         .binaries
         .get(&system)
         .unwrap_or_else(|| panic!("no {system} in {e}"));
-    let path = bin.url.strip_prefix("file://").unwrap();
-    let sha = Command::new("sha256sum").arg(path).output().unwrap();
-    let sha = String::from_utf8(sha.stdout).unwrap();
-    assert_eq!(sha.split_whitespace().next(), Some(bin.sha256.as_str()));
-    let mut child = Command::new(path)
+    let suffix = format!("-{system}{}", std::env::consts::EXE_SUFFIX);
+    assert!(bin.url.ends_with(&suffix), "{}", bin.url);
+    let installed_dir = out.join("installed");
+    let installed = searchfor::grammars::install::install(&parsed, "lua", &installed_dir).unwrap();
+    let mut child = Command::new(&installed.binary)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -393,4 +524,12 @@ fn the_build_script_prints_a_valid_index_entry() {
     assert_eq!(h.hello(1)["name"], "searchfor-grammar-lua");
     drop(h);
     let _ = std::fs::remove_dir_all(out);
+}
+
+/// A new directory under the system's temporary directory, named after `prefix` and this
+/// process.
+fn tempfile_dir(prefix: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    d
 }

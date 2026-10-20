@@ -8,9 +8,51 @@ use searchfor::processors::treesitter::{Compiled, DEFAULT_MAX_BYTES, compile, ou
 use searchfor::trail::{names_of, trail_for};
 use std::path::Path;
 
-#[cfg(feature = "lua")]
+/// How many Grammar features this build enables: exactly one (M5b plan, D17).
+const GRAMMARS: usize = cfg!(feature = "lua") as usize
+    + cfg!(feature = "c") as usize
+    + cfg!(feature = "cpp") as usize
+    + cfg!(feature = "java") as usize
+    + cfg!(feature = "ruby") as usize
+    + cfg!(feature = "c-sharp") as usize
+    + cfg!(feature = "elixir") as usize;
+
+#[cfg(not(any(
+    feature = "lua",
+    feature = "c",
+    feature = "cpp",
+    feature = "java",
+    feature = "ruby",
+    feature = "c-sharp",
+    feature = "elixir"
+)))]
+compile_error!(
+    "searchfor-grammar carries one Grammar: build it with --no-default-features --features <lang>"
+);
+
+const _: () = assert!(
+    GRAMMARS <= 1,
+    "searchfor-grammar carries one Grammar: enable exactly one Grammar feature, with --no-default-features"
+);
+
+/// The Grammar this build carries: its name, as the Definition's `grammar` says it, and its
+/// Language.
+#[allow(unreachable_code)]
 fn grammar() -> (&'static str, tree_sitter::Language) {
-    ("lua", tree_sitter_lua::LANGUAGE.into())
+    #[cfg(feature = "lua")]
+    return ("lua", tree_sitter_lua::LANGUAGE.into());
+    #[cfg(feature = "c")]
+    return ("c", tree_sitter_c::LANGUAGE.into());
+    #[cfg(feature = "cpp")]
+    return ("cpp", tree_sitter_cpp::LANGUAGE.into());
+    #[cfg(feature = "java")]
+    return ("java", tree_sitter_java::LANGUAGE.into());
+    #[cfg(feature = "ruby")]
+    return ("ruby", tree_sitter_ruby::LANGUAGE.into());
+    #[cfg(feature = "c-sharp")]
+    return ("c-sharp", tree_sitter_c_sharp::LANGUAGE.into());
+    #[cfg(feature = "elixir")]
+    return ("elixir", tree_sitter_elixir::LANGUAGE.into());
 }
 
 /// The compiled query, and the Definition's `max_bytes` (spec §5.3).
@@ -93,5 +135,33 @@ fn main() {
     if let Err(e) = r {
         eprintln!("{e:#}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod m5b_tests {
+    use super::*;
+    #[test]
+    fn selected_grammar_actually_loads_and_parses() {
+        let (name, language) = grammar();
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&language)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let source = match name {
+            "c" | "cpp" => "int sample(void) { return 1; }",
+            "java" => "class Sample { int run() { return 1; } }",
+            "ruby" => "class Sample\n def run\n  1\n end\nend\n",
+            "c-sharp" => "class Sample { int Run() { return 1; } }",
+            "elixir" => "defmodule Sample do\n def run(), do: 1\nend\n",
+            "lua" => "function sample() return 1 end",
+            other => panic!("unexpected grammar: {other}"),
+        };
+        let tree = parser.parse(source, None).unwrap();
+        assert!(
+            !tree.root_node().has_error(),
+            "{name}: {}",
+            tree.root_node().to_sexp()
+        );
     }
 }

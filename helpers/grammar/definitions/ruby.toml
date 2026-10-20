@@ -1,0 +1,16 @@
+# Ruby: modules, classes and methods (spec §5.3), through the Ruby Grammar Helper (spec §7).
+name       = "ruby"
+extensions = ["rb", "rake", "gemspec"]
+shebangs   = ["ruby"]
+processor  = "treesitter"
+
+[params]
+grammar = "ruby"
+query = '''
+(module name: (_) @name) @segment
+(class name: (_) @name) @segment
+(singleton_class value: (_) @name) @segment
+(method name: (_) @name) @segment
+(singleton_method object: (_) @prefix name: (_) @name) @segment
+'''
+kinds = { module = "module", class = "class", singleton_class = "class", method = "method", singleton_method = "method" }

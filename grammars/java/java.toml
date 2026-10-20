@@ -1,0 +1,18 @@
+# Java: classes, interfaces, enums, records, methods and constructors (spec §5.3), through the
+# Java Grammar Helper (spec §7).
+name       = "java"
+extensions = ["java"]
+processor  = "treesitter"
+
+[params]
+grammar = "java"
+query = '''
+(class_declaration name: (identifier) @name) @segment
+(interface_declaration name: (identifier) @name) @segment
+(enum_declaration name: (identifier) @name) @segment
+(record_declaration name: (identifier) @name) @segment
+(annotation_type_declaration name: (identifier) @name) @segment
+(method_declaration name: (identifier) @name) @segment
+(constructor_declaration name: (identifier) @name) @segment
+'''
+kinds = { class_declaration = "class", interface_declaration = "interface", enum_declaration = "enum", record_declaration = "record", annotation_type_declaration = "annotation", method_declaration = "method", constructor_declaration = "constructor" }

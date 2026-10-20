@@ -12,7 +12,9 @@ pub(crate) fn hex(b: &[u8]) -> String {
 /// `<dir>/<lang>/` (binary, Definition, installed.json), replacing an older install.
 pub fn install(index: &Index, lang: &str, dir: &Path) -> anyhow::Result<Installed> {
     if !valid_name(lang) {
-        anyhow::bail!("`{lang}` is not a Grammar name (lowercase letters, digits and _)");
+        anyhow::bail!(
+            "`{lang}` is not a Grammar name (lowercase letters and digits, joined by single - or _)"
+        );
     }
     let e = index.get(lang).ok_or_else(|| {
         anyhow::anyhow!("the Grammar index has no `{lang}` (see --list-grammars)")
@@ -87,12 +89,15 @@ fn replace(dir: &Path, lang: &str, staging: &Path) -> anyhow::Result<()> {
     std::fs::remove_dir(&old)?;
     let had_old = target.exists();
     if had_old {
-        std::fs::rename(&target, &old)?;
+        // A running helper may hold it on Windows; the previous install then stays as it is.
+        rename_shared(&target, &old).map_err(|err| {
+            anyhow::anyhow!("{}: {err}; the previous install was kept", target.display())
+        })?;
     }
-    if let Err(err) = std::fs::rename(staging, &target) {
+    if let Err(err) = rename_shared(staging, &target) {
         // Put the previous install back before reporting.
         if had_old {
-            let _ = std::fs::rename(&old, &target);
+            let _ = rename_shared(&old, &target);
         }
         return Err(anyhow::anyhow!(
             "{}: {err}; the previous install was kept",
@@ -103,6 +108,49 @@ fn replace(dir: &Path, lang: &str, staging: &Path) -> anyhow::Result<()> {
         let _ = std::fs::remove_dir_all(&old);
     }
     Ok(())
+}
+
+/// `std::fs::rename`, tried again for about a second while Windows reports the file busy.
+fn rename_shared(from: &Path, to: &Path) -> std::io::Result<()> {
+    rename_with_retry(
+        from,
+        to,
+        |a, b| std::fs::rename(a, b),
+        sharing_violation,
+        10,
+        std::time::Duration::from_millis(100),
+    )
+}
+
+/// Windows refuses to rename a file another process holds open — a Grammar Helper that is
+/// running, an antivirus scan — with a sharing or lock violation, or with access denied for a
+/// directory that holds one; those end by themselves, so they are waited out. Unix renames
+/// open files.
+fn sharing_violation(e: &std::io::Error) -> bool {
+    // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION.
+    cfg!(windows) && matches!(e.raw_os_error(), Some(5 | 32 | 33))
+}
+
+/// `rename(from, to)`, at most `attempts` times, `pause` apart, while its error is
+/// `retryable`; the last error otherwise.
+fn rename_with_retry(
+    from: &Path,
+    to: &Path,
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+    retryable: impl Fn(&std::io::Error) -> bool,
+    attempts: u32,
+    pause: std::time::Duration,
+) -> std::io::Result<()> {
+    let mut left = attempts.max(1);
+    loop {
+        match rename(from, to) {
+            Err(e) if left > 1 && retryable(&e) => {
+                left -= 1;
+                std::thread::sleep(pause);
+            }
+            r => return r,
+        }
+    }
 }
 
 /// The text of `--list-grammars`: one line per Grammar, `name  state  detail`. The warning for
@@ -401,5 +449,71 @@ mod tests {
         let mut i = index(src.path(), b"x", None);
         i.grammars[0].binaries.clear();
         assert!(!list(&["php"], &[], Ok(&i)).contains("lua"));
+    }
+
+    #[test]
+    fn a_rename_retries_only_bounded_sharing_violations() {
+        use std::cell::Cell;
+        use std::time::{Duration, Instant};
+        let busy = || std::io::Error::from_raw_os_error(32);
+        let retryable = |e: &std::io::Error| e.raw_os_error() == Some(32);
+        let pause = Duration::from_millis(20);
+        let (a, b) = (Path::new("a"), Path::new("b"));
+        let calls = Cell::new(0);
+        // Busy twice, then free.
+        let began = Instant::now();
+        rename_with_retry(
+            a,
+            b,
+            |_, _| {
+                calls.set(calls.get() + 1);
+                if calls.get() < 3 { Err(busy()) } else { Ok(()) }
+            },
+            retryable,
+            5,
+            pause,
+        )
+        .unwrap();
+        assert_eq!(calls.get(), 3);
+        assert!(began.elapsed() >= 2 * pause, "{:?}", began.elapsed());
+        // Always busy: it gives up after the bound, with the last error.
+        calls.set(0);
+        let began = Instant::now();
+        let e = rename_with_retry(
+            a,
+            b,
+            |_, _| {
+                calls.set(calls.get() + 1);
+                Err(busy())
+            },
+            retryable,
+            5,
+            pause,
+        )
+        .unwrap_err();
+        let took = began.elapsed();
+        assert_eq!((calls.get(), e.raw_os_error()), (5, Some(32)));
+        assert!(
+            took >= 4 * pause && took < Duration::from_secs(2),
+            "{took:?}"
+        );
+        // Any other error is final at once.
+        calls.set(0);
+        let e = rename_with_retry(
+            a,
+            b,
+            |_, _| {
+                calls.set(calls.get() + 1);
+                Err(std::io::ErrorKind::NotFound.into())
+            },
+            retryable,
+            5,
+            pause,
+        )
+        .unwrap_err();
+        assert_eq!((calls.get(), e.kind()), (1, std::io::ErrorKind::NotFound));
+        // Only Windows has sharing violations to wait out.
+        assert_eq!(sharing_violation(&busy()), cfg!(windows));
+        assert!(!sharing_violation(&std::io::ErrorKind::NotFound.into()));
     }
 }

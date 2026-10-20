@@ -1,0 +1,20 @@
+# C++: namespaces, classes, structs, enums, functions and methods (spec §5.3), through the C++
+# Grammar Helper (spec §7).
+name       = "cpp"
+extensions = ["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++"]
+processor  = "treesitter"
+
+[params]
+grammar = "cpp"
+query = '''
+(namespace_definition name: (_) @name) @segment
+(class_specifier name: (_) @name body: (_)) @segment
+(struct_specifier name: (_) @name body: (_)) @segment
+(union_specifier name: (_) @name body: (_)) @segment
+(enum_specifier name: (_) @name body: (_)) @segment
+(function_definition
+  declarator: [(function_declarator declarator: (_) @name)
+               (pointer_declarator declarator: (function_declarator declarator: (_) @name))
+               (reference_declarator (function_declarator declarator: (_) @name))]) @segment
+'''
+kinds = { namespace_definition = "namespace", class_specifier = "class", struct_specifier = "struct", union_specifier = "union", enum_specifier = "enum", function_definition = "function" }

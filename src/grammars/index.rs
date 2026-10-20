@@ -31,11 +31,17 @@ pub struct Binary {
     pub sha256: String,
 }
 
-/// D30: Grammar names become directory and file names.
+/// D30: Grammar names become directory and file names: runs of lowercase letters and digits,
+/// joined by single `_` or `-` (`c-sharp`, `old_name`; M5b plan, D17). No dot, separator or
+/// leading or trailing `-`/`_` can make one a path.
 pub fn valid_name(n: &str) -> bool {
     !n.is_empty()
-        && n.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        && n.split(['_', '-']).all(|run| {
+            !run.is_empty()
+                && run
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        })
 }
 
 /// D14: `linux-x86_64`, `macos-aarch64`, `windows-x86_64`, …
@@ -74,10 +80,71 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
+/// The local path of a `file://` URL. Accepts the unescaped local paths tests and older
+/// indexes write (`file:///tmp/a b`, `file://C:\dir\i.json`) as well as standard URLs, whose
+/// path is percent-decoded once: an empty or `localhost` host, `/C:/…` for a Windows drive, and
+/// on Windows another host as a UNC share. Unix keeps the decoded bytes as they are; Windows
+/// needs them to be UTF-8. A malformed escape, a NUL or a host on Unix is refused.
+fn file_url_path(url: &str) -> anyhow::Result<std::path::PathBuf> {
+    let bad = |why: &str| anyhow::anyhow!("{url}: {why}");
+    let rest = url
+        .strip_prefix("file://")
+        .ok_or_else(|| bad("not a file:// URL"))?;
+    let b = rest.as_bytes();
+    // An unescaped Windows path right after `file://`: a drive, no host.
+    let drive = b.len() >= 2
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && b.get(2).is_none_or(|c| *c == b'/' || *c == b'\\');
+    let (host, path) = if rest.starts_with('/') || drive {
+        ("", rest)
+    } else {
+        rest.split_at(rest.find('/').unwrap_or(rest.len()))
+    };
+    let mut bytes = Vec::with_capacity(path.len());
+    let mut it = path.bytes();
+    while let Some(c) = it.next() {
+        if c != b'%' {
+            bytes.push(c);
+            continue;
+        }
+        let hex = |c: Option<u8>| c.and_then(|c| (c as char).to_digit(16));
+        match (hex(it.next()), hex(it.next())) {
+            (Some(h), Some(l)) => bytes.push((h * 16 + l) as u8),
+            _ => return Err(bad("a `%` that is not followed by two hex digits")),
+        }
+    }
+    if bytes.contains(&0) {
+        return Err(bad("the path holds a NUL"));
+    }
+    let local = host.is_empty() || host.eq_ignore_ascii_case("localhost");
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        if !local {
+            return Err(bad("a file:// URL with a host other than localhost"));
+        }
+        Ok(std::ffi::OsString::from_vec(bytes).into())
+    }
+    #[cfg(not(unix))]
+    {
+        let path = String::from_utf8(bytes).map_err(|_| bad("the path is not UTF-8"))?;
+        let path = path.replace('/', "\\");
+        if !local {
+            return Ok(format!(r"\\{host}{path}").into());
+        }
+        // `/C:/x` is the drive path `C:/x`.
+        let p = path.as_bytes();
+        let drive = p.len() >= 3 && p[0] == b'\\' && p[1].is_ascii_alphabetic() && p[2] == b':';
+        Ok(if drive { &path[1..] } else { &path[..] }.into())
+    }
+}
+
 /// The bytes at `url`: `https://` through `agent()`, `file://` from disk; anything else is
 /// refused.
 pub fn fetch(url: &str) -> anyhow::Result<Vec<u8>> {
-    if let Some(path) = url.strip_prefix("file://") {
+    if url.starts_with("file://") {
+        let path = file_url_path(url)?;
         return std::fs::read(path).map_err(|e| anyhow::anyhow!("{url}: {e}"));
     }
     if !url.starts_with("https://") {
@@ -98,6 +165,7 @@ pub fn fetch(url: &str) -> anyhow::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     const INDEX: &str = r#"{"version":1,"grammars":[{"name":"lua","version":"0.2.0","source":"https://example.org/lua","license":"MIT","definition":"name = 'lua'\nprocessor = 'treesitter'\n","binaries":{"linux-x86_64":{"url":"file:///tmp/x","sha256":"00"}},"future_field":1}]}"#;
 
@@ -178,11 +246,91 @@ mod tests {
 
     #[test]
     fn names_are_checked() {
-        for ok in ["lua", "c_sharp", "x86asm"] {
+        for ok in ["lua", "c_sharp", "x86asm", "a-b"] {
             assert!(valid_name(ok), "{ok}");
         }
-        for bad in ["", "Lua", "../x", "a/b", "a.b", "a-b"] {
+        for bad in ["", "Lua", "../x", "a/b", "a.b", "a--b", "a-_b"] {
             assert!(!valid_name(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn grammar_identifiers_include_c_sharp_without_traversal() {
+        for name in ["c", "cpp", "java", "ruby", "c-sharp", "elixir", "old_name"] {
+            assert!(valid_name(name), "{name}");
+        }
+        for name in [
+            "", ".", "..", "../c", "c/sharp", "c\\sharp", "-c", "c-", "C",
+        ] {
+            assert!(!valid_name(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn file_urls_decode_spaces_and_percent_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a b%20");
+        std::fs::write(&p, b"local index").unwrap();
+        let raw = p.to_str().unwrap().replace('\\', "/");
+        let raw = if cfg!(windows) {
+            format!("/{raw}")
+        } else {
+            raw
+        };
+        let url = format!("file://{}", raw.replace('%', "%25").replace(' ', "%20"));
+        assert_eq!(fetch(&url).unwrap(), b"local index");
+        assert!(file_url_path("file:///x%00y").is_err());
+        assert!(file_url_path("file:///x%Q0").is_err());
+    }
+
+    #[test]
+    fn index_schema_accepts_required_c_sharp_identity() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../docs/grammar-index.schema.json")).unwrap();
+        let doc = serde_json::json!({"version":1,"grammars":[{
+            "name":"c-sharp","version":"0.23.1","source":"https://example.org/csharp",
+            "license":"MIT","definition":"name = 'c-sharp'",
+            "binaries":{"windows-x86_64":{"url":"file:///C:/g.exe",
+                "sha256":"a".repeat(64)}}}]});
+        assert!(jsonschema::is_valid(&schema, &doc));
+    }
+
+    /// The forms of `file://` URL an index may hold: an unescaped local path (what the tests
+    /// and older indexes write), `localhost`, a percent-encoded path, and on Windows a drive
+    /// (`/C:/…`) or a UNC host. A host elsewhere, NUL and a broken escape are refused.
+    #[test]
+    fn file_url_forms() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let p = |u: &str| file_url_path(u).unwrap();
+            assert_eq!(p("file:///tmp/a b"), PathBuf::from("/tmp/a b"));
+            assert_eq!(p("file://localhost/tmp/x"), PathBuf::from("/tmp/x"));
+            assert_eq!(p("file:///tmp/%C3%A9%2Fx"), PathBuf::from("/tmp/é/x"));
+            // Bytes that are not UTF-8 survive on Unix.
+            assert_eq!(p("file:///tmp/%FF").as_os_str().as_bytes(), b"/tmp/\xff");
+            assert!(file_url_path("file://server/share/x").is_err());
+        }
+        #[cfg(windows)]
+        {
+            let p = |u: &str| file_url_path(u).unwrap();
+            assert_eq!(
+                p("file:///C:/a%20b/i.json"),
+                PathBuf::from(r"C:\a b\i.json")
+            );
+            assert_eq!(p("file://localhost/C:/x"), PathBuf::from(r"C:\x"));
+            assert_eq!(
+                p(r"file://C:\Users\x y\i.json"),
+                PathBuf::from(r"C:\Users\x y\i.json")
+            );
+            assert_eq!(
+                p("file://server/share/i.json"),
+                PathBuf::from(r"\\server\share\i.json")
+            );
+            assert!(file_url_path("file:///C:/%FF").is_err());
+        }
+        assert!(file_url_path("file:///x%0").is_err());
+        assert!(file_url_path("file:///x\0y").is_err());
+        assert!(file_url_path("https://example.org/x").is_err());
     }
 }
