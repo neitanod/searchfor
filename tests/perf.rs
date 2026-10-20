@@ -82,13 +82,32 @@ fn measure_with(
     stdin: Option<&str>,
     code: i32,
 ) -> Option<(Duration, u64)> {
-    measure_to(bin, fx, args, stdin, Stdio::null(), code).map(|(t, rss, _)| (t, rss))
+    measure_to(bin, fx, args, stdin, Out::Null, code).map(|(t, rss, _)| (t, rss))
 }
 
 /// `measure` with stdout read and thrown away: ripgrep stops at the first Match when its
-/// stdout is /dev/null, as `-q` does, so a comparison with rg must not give it /dev/null.
+/// stdout is /dev/null, as `-q` does, so a comparison with rg must not give it /dev/null. A
+/// thread reads it to the end and keeps none of it: the output of a dense file is gigabytes
+/// (M5b plan, Task 10.3).
 fn measure_drained(bin: &Path, fx: &Fixture, args: &[&str], code: i32) -> Option<(Duration, u64)> {
-    measure_out(bin, fx, args, code).map(|(t, rss, _)| (t, rss))
+    measure_to(bin, fx, args, None, Out::Drain, code).map(|(t, rss, _)| (t, rss))
+}
+
+/// What `measure_to` does with the measured program's stdout.
+enum Out {
+    /// /dev/null.
+    Null,
+    /// Read and returned.
+    Keep,
+    /// Read to the end and thrown away.
+    Drain,
+}
+
+/// Whether the perf tests assert ratios of time and wall-time ceilings: only with
+/// `SEARCHFOR_PERF_TIMING=1` (M5b plan, D18). Memory, refusal, exit code and output assertions
+/// run always; time on a shared CI runner is noise.
+fn timing_enabled() -> bool {
+    std::env::var_os("SEARCHFOR_PERF_TIMING").is_some_and(|v| v == "1")
 }
 
 /// `measure` with stdout read and returned, for the Trails of a positive search.
@@ -98,7 +117,7 @@ fn measure_out(
     args: &[&str],
     code: i32,
 ) -> Option<(Duration, u64, String)> {
-    measure_to(bin, fx, args, None, Stdio::piped(), code)
+    measure_to(bin, fx, args, None, Out::Keep, code)
 }
 
 fn measure_to(
@@ -106,7 +125,7 @@ fn measure_to(
     fx: &Fixture,
     args: &[&str],
     stdin: Option<&str>,
-    stdout: Stdio,
+    out: Out,
     code: i32,
 ) -> Option<(Duration, u64, String)> {
     let time = Path::new("/usr/bin/time");
@@ -128,11 +147,24 @@ fn measure_to(
             None => Stdio::null(),
             Some(f) => Stdio::from(std::fs::File::open(fx.file(f)).unwrap()),
         })
-        .stdout(stdout)
+        .stdout(match out {
+            Out::Null => Stdio::null(),
+            Out::Keep | Out::Drain => Stdio::piped(),
+        })
         .stderr(Stdio::piped());
     let started = Instant::now();
-    let o = c.output().unwrap();
+    let mut child = c.spawn().unwrap();
+    let drain = match out {
+        Out::Drain => child.stdout.take().map(|mut o| {
+            std::thread::spawn(move || std::io::copy(&mut o, &mut std::io::sink()).unwrap())
+        }),
+        _ => None,
+    };
+    let o = child.wait_with_output().unwrap();
     let elapsed = started.elapsed();
+    if let Some(d) = drain {
+        d.join().unwrap();
+    }
     let err = String::from_utf8_lossy(&o.stderr);
     // /usr/bin/time exits with the command's code.
     assert_eq!(
@@ -201,21 +233,31 @@ fn ceiling(name: &str, args: &[&str]) {
         SIZE / 1_048_576
     );
     assert!(rss < 4 * SIZE as u64, "RSS {rss} is not below 4 × {SIZE}");
-    assert!(
-        t <= base * 3,
-        "{t:?} is more than 3 × the {base:?} of --no-trail"
-    );
+    if timing_enabled() {
+        assert!(
+            t <= base * 3,
+            "{t:?} is more than 3 × the {base:?} of --no-trail"
+        );
+    }
 }
 
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn inverted_search_on_a_big_plain_file_stays_under_the_ceilings() {
     let _alone = alone();
     ceiling("big.txt", &["--flat", "-v", "zzz"]);
 }
 
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn every_line_matching_in_a_big_plain_file_stays_under_the_ceilings() {
     let _alone = alone();
     ceiling("big.txt", &["--flat", "text"]);
@@ -246,21 +288,31 @@ fn markdown_ceiling(args: &[&str]) {
         rss < parse_rss + 3 * SIZE as u64,
         "RSS {rss} is not below {parse_rss} + 3 × {SIZE}"
     );
-    assert!(
-        t <= (parse + base) * 3,
-        "{t:?} is more than 3 × ({parse:?} + {base:?})"
-    );
+    if timing_enabled() {
+        assert!(
+            t <= (parse + base) * 3,
+            "{t:?} is more than 3 × ({parse:?} + {base:?})"
+        );
+    }
 }
 
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn inverted_search_on_a_big_markdown_file_stays_under_the_ceilings() {
     let _alone = alone();
     markdown_ceiling(&["--flat", "-v", "zzz"]);
 }
 
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn tree_output_of_a_big_markdown_file_stays_under_the_ceilings() {
     let _alone = alone();
     markdown_ceiling(&["--tree", "text"]);
@@ -269,7 +321,11 @@ fn tree_output_of_a_big_markdown_file_stays_under_the_ceilings() {
 /// Code review r1, Fable #2: a walked binary file without Matches costs what it costs ripgrep,
 /// which stops reading it at the NUL in its first buffer (spec §3.1, search first).
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn walked_binary_files_are_not_read_before_the_search() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -286,10 +342,12 @@ fn walked_binary_files_are_not_read_before_the_search() {
     };
     let (base, _) = best_of_three(&fx, &["--no-docs", "--no-trail", "zzqq", "bin"], 1).unwrap();
     eprintln!("40 walked binaries of 7 MiB: --flat {t:?}, --no-trail {base:?}");
-    assert!(
-        t.as_secs_f64() <= base.as_secs_f64() * 1.5,
-        "{t:?} is more than 1.5 × the {base:?} of --no-trail"
-    );
+    if timing_enabled() {
+        assert!(
+            t.as_secs_f64() <= base.as_secs_f64() * 1.5,
+            "{t:?} is more than 1.5 × the {base:?} of --no-trail"
+        );
+    }
 }
 
 /// `count` copies of `unit`, written to `name` in the fixture copy.
@@ -301,7 +359,11 @@ fn repeated(fx: &Fixture, name: &str, unit: &str, count: usize) -> String {
 /// Code review r2, Fable #2 and Codex #4: an explicit Markdown file (searched in memory, as
 /// ripgrep) without Matches costs its search; its Processor does not run (spec §3.1).
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn an_explicit_markdown_file_without_matches_skips_the_processor() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -313,10 +375,12 @@ fn an_explicit_markdown_file_without_matches_skips_the_processor() {
     };
     let (base, _) = best_of_three(&fx, &["--no-docs", "--no-trail", "zzqq", &file], 1).unwrap();
     eprintln!("20 MB explicit Markdown, no Match: --flat {t:?}, --no-trail {base:?}");
-    assert!(
-        t <= base * 3,
-        "{t:?} is more than 3 × the {base:?} of --no-trail"
-    );
+    if timing_enabled() {
+        assert!(
+            t <= base * 3,
+            "{t:?} is more than 3 × the {base:?} of --no-trail"
+        );
+    }
 }
 
 /// Code review r2, Fable #1: headings inside list items (or blockquotes) close their Sections in
@@ -324,7 +388,11 @@ fn an_explicit_markdown_file_without_matches_skips_the_processor() {
 /// the fix: 40 s against 0.4 s). The review asked for 3 × `--no-trail`, which no dense Markdown
 /// file reaches: pulldown-cmark alone parses these 2 MB in 130 ms, and `--no-trail` takes 30 ms.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn headings_inside_items_stay_under_the_ceiling() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -341,16 +409,22 @@ fn headings_inside_items_stay_under_the_ceiling() {
     eprintln!(
         "2 MB of headings in items: {t:?}; items without headings: {base:?}; --no-trail: {raw:?}"
     );
-    assert!(
-        t <= base * 3,
-        "{t:?} is more than 3 × the {base:?} of the items without headings"
-    );
+    if timing_enabled() {
+        assert!(
+            t <= base * 3,
+            "{t:?} is more than 3 × the {base:?} of the items without headings"
+        );
+    }
 }
 
 /// Code review r2, Fable #3: `--json` writes its messages without intermediate values, and a
 /// single file's output is printed as it grows instead of held until the end.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn json_of_a_big_plain_file_stays_under_the_ceilings() {
     let _alone = alone();
     ceiling("big.txt", &["--json", "-v", "zzz"]);
@@ -360,7 +434,11 @@ fn json_of_a_big_plain_file_stays_under_the_ceilings() {
 /// grep-printer's own JSON (`--no-trail`) takes to write the same messages without Trails
 /// (before the fix: 46.7 s against 0.9 s + 3.3 s); RSS as `markdown_ceiling`.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn json_of_a_big_markdown_file_stays_under_the_ceilings() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -381,10 +459,12 @@ fn json_of_a_big_markdown_file_stays_under_the_ceilings() {
         rss < parse_rss + 3 * SIZE as u64,
         "RSS {rss} is not below {parse_rss} + 3 × {SIZE}"
     );
-    assert!(
-        t <= parse + raw * 3 / 2,
-        "{t:?} is more than {parse:?} + 1.5 × {raw:?}"
-    );
+    if timing_enabled() {
+        assert!(
+            t <= parse + raw * 3 / 2,
+            "{t:?} is more than {parse:?} + 1.5 × {raw:?}"
+        );
+    }
 }
 
 /// Code review r4, Fable #1: grep-printer's JSON printer writes each message in many pieces,
@@ -392,7 +472,11 @@ fn json_of_a_big_markdown_file_stays_under_the_ceilings() {
 /// 10 MB of Match lines, `--json --no-trail` takes at most 1.25 × rg's `--json` (before the
 /// fix: 1.51 s against 1.11 s, 1.36 ×).
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn json_without_trails_of_a_big_file_is_as_fast_as_ripgrep() {
     let _alone = alone();
     let Some(rg) = rg_bin() else {
@@ -415,10 +499,12 @@ fn json_without_trails_of_a_big_file_is_as_fast_as_ripgrep() {
         eprintln!("10 MB {pattern:?}: --json --no-trail {t:?}, rg --json {base:?}");
         // It runs in about rg's time; the margin is for a loaded machine, and the bug it
         // guards against was 1.36 × (code review r5, Fable #5).
-        assert!(
-            t.as_secs_f64() <= base.as_secs_f64() * 1.25,
-            "{t:?} is more than 1.25 × the {base:?} of rg --json"
-        );
+        if timing_enabled() {
+            assert!(
+                t.as_secs_f64() <= base.as_secs_f64() * 1.25,
+                "{t:?} is more than 1.25 × the {base:?} of rg --json"
+            );
+        }
     }
 }
 
@@ -428,7 +514,11 @@ fn json_without_trails_of_a_big_file_is_as_fast_as_ripgrep() {
 /// the Source). Before the fix the search kept an empty submatch per line: 289 MiB against
 /// 97 MiB.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn the_binary_probe_of_in_headings_keeps_no_lines() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -458,7 +548,11 @@ fn the_binary_probe_of_in_headings_keeps_no_lines() {
 /// It is searched with a reader, as `--within ''` searches it, without reading it whole: 50 MiB
 /// without a NUL cost 52 MiB more than `--within ''` before the fix.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn a_walked_plain_file_is_not_read_whole_with_in_headings() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -550,7 +644,11 @@ fn sfor_output(fx: &Fixture, args: &[&str]) -> (String, String) {
 /// M2 plan, Task 11.4: keypath walks a 50 MB minified JSON at 50 MB/s at least, and its
 /// collector keeps the three Trails it needs, not the keys.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn keypath_json_scans_at_fifty_megabytes_a_second() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -599,10 +697,12 @@ fn keypath_json_scans_at_fifty_megabytes_a_second() {
         rss / 1_048_576,
         base_rss / 1_048_576
     );
-    assert!(
-        t <= base + Duration::from_secs(1),
-        "{t:?} is more than rg's {base:?} + 1 s"
-    );
+    if timing_enabled() {
+        assert!(
+            t <= base + Duration::from_secs(1),
+            "{t:?} is more than rg's {base:?} + 1 s"
+        );
+    }
     assert!(
         rss <= base_rss + 32 * 1_048_576,
         "RSS {rss} is more than rg's {base_rss} + 32 MiB"
@@ -612,7 +712,11 @@ fn keypath_json_scans_at_fifty_megabytes_a_second() {
 /// D21: a code file over `max_bytes` (16 MiB by default) is not parsed: one warning naming
 /// `max_bytes`, Plain output, and at most 2 × rg's time.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn treesitter_skips_files_over_max_bytes() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -640,13 +744,19 @@ fn treesitter_skips_files_over_max_bytes() {
         return;
     };
     eprintln!("20 MB JavaScript over max_bytes: s4 {t:?}, rg {base:?}");
-    assert!(t <= base * 2, "{t:?} is more than 2 × rg's {base:?}");
+    if timing_enabled() {
+        assert!(t <= base * 2, "{t:?} is more than 2 × rg's {base:?}");
+    }
 }
 
 /// D3 and Task 3.2: a 1 MB Cargo.lock broken 300 lines before its end by an unclosed `"""`
 /// keeps the Trail of the `needle` just before the error, within rg's time + 2 s.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn broken_toml_recovers_in_bounded_time() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -687,16 +797,22 @@ fn broken_toml_recovers_in_bounded_time() {
         return;
     };
     eprintln!("1 MB broken Cargo.lock: s4 {t:?}, rg {base:?}; {out}");
-    assert!(
-        t <= base + Duration::from_secs(2),
-        "{t:?} is more than rg's {base:?} + 2 s"
-    );
+    if timing_enabled() {
+        assert!(
+            t <= base + Duration::from_secs(2),
+            "{t:?} is more than rg's {base:?} + 2 s"
+        );
+    }
 }
 
 /// D2: tree-sitter-yaml breaks over 32 768 lines; keypath gives the Trail of a `needle` at the
 /// end of 40 000 lines, within rg's time + 1 s.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn yaml_beyond_the_tree_sitter_limit() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -715,17 +831,23 @@ fn yaml_beyond_the_tree_sitter_limit() {
         return;
     };
     eprintln!("40 000-line YAML: s4 {t:?}, rg {base:?}");
-    assert!(
-        t <= base + Duration::from_secs(1),
-        "{t:?} is more than rg's {base:?} + 1 s"
-    );
+    if timing_enabled() {
+        assert!(
+            t <= base + Duration::from_secs(1),
+            "{t:?} is more than rg's {base:?} + 1 s"
+        );
+    }
 }
 
 /// Review m2-code-r1, Codex #3: 40 000 `[[a]]` tables, each with a `[[a.b]]`, and a `needle`
 /// in the last one keep the TOML Outline linear: within rg's time + 1 s (it took 7 s when every
 /// header searched every other one for the table that covers it).
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn many_arrays_of_tables_stay_linear() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -743,16 +865,22 @@ fn many_arrays_of_tables_stay_linear() {
         return;
     };
     eprintln!("40 000 [[a]] tables: s4 {t:?}, rg {base:?}");
-    assert!(
-        t <= base + Duration::from_secs(1),
-        "{t:?} is more than rg's {base:?} + 1 s"
-    );
+    if timing_enabled() {
+        assert!(
+            t <= base + Duration::from_secs(1),
+            "{t:?} is more than rg's {base:?} + 1 s"
+        );
+    }
 }
 
 /// M3 review r1, Codex #1 and Fable #1: a parent with 200 000 distinct child tags costs
 /// constant time per child (82 s before the sibling index, against rg's 0.01 s).
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn markup_many_distinct_sibling_tags_stay_linear() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -768,16 +896,22 @@ fn markup_many_distinct_sibling_tags_stay_linear() {
     let Some(((t, _), (base, _))) = against_rg(&fx, &args) else {
         return;
     };
-    assert!(
-        t <= base + Duration::from_millis(500),
-        "{t:?} against rg's {base:?}"
-    );
+    if timing_enabled() {
+        assert!(
+            t <= base + Duration::from_millis(500),
+            "{t:?} against rg's {base:?}"
+        );
+    }
 }
 
 /// M3 review r1, Codex #2: one Match in 50 MB of line breaks keeps no index of the lines
 /// (467 MiB of RSS before the fix, against rg's 56 MiB).
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn markup_keeps_no_index_of_the_lines() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -793,10 +927,12 @@ fn markup_keeps_no_index_of_the_lines() {
     let Some(((t, rss), (base, base_rss))) = against_rg(&fx, &args) else {
         return;
     };
-    assert!(
-        t <= base + Duration::from_secs(1),
-        "{t:?} against rg's {base:?}"
-    );
+    if timing_enabled() {
+        assert!(
+            t <= base + Duration::from_secs(1),
+            "{t:?} against rg's {base:?}"
+        );
+    }
     assert!(
         rss <= base_rss + 32 * 1_048_576,
         "RSS {rss} is more than rg's {base_rss} + 32 MiB"
@@ -818,16 +954,22 @@ fn markup_linear(name: &str, body: String, segments: usize) {
         return;
     };
     eprintln!("{name}: s4 {t:?}, rg {base:?}");
-    assert!(
-        t <= base + Duration::from_secs(1),
-        "{name}: {t:?} against rg's {base:?}"
-    );
+    if timing_enabled() {
+        assert!(
+            t <= base + Duration::from_secs(1),
+            "{name}: {t:?} against rg's {base:?}"
+        );
+    }
 }
 
 /// 40 000 nested `div`s: a start tag finds the `p` it ends without searching the stack (3.96 s
 /// before `html::Reach`).
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn markup_deep_nesting_stays_linear() {
     let _alone = alone();
     let body = format!(
@@ -841,7 +983,11 @@ fn markup_deep_nesting_stays_linear() {
 /// 20 000 end tags with no element of their tag open: each is ignored at once (2.88 s before
 /// the open counts).
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn markup_end_tags_with_nothing_open_stay_linear() {
     let _alone = alone();
     let body = format!(
@@ -856,7 +1002,11 @@ fn markup_end_tags_with_nothing_open_stay_linear() {
 /// 20 000 elements ended together at the end of the file, after 200 000 spaces: the white
 /// space is trimmed once (5.65 s before).
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn markup_implied_ends_at_one_byte_stay_linear() {
     let _alone = alone();
     let body = format!("{}needle{}", "<x>".repeat(20_000), " ".repeat(200_000));
@@ -925,10 +1075,12 @@ fn m3_ceiling(
         rss / 1_048_576,
         base_rss / 1_048_576
     );
-    assert!(
-        t <= base + Duration::from_secs(1),
-        "{file}: {t:?} is more than rg's {base:?} + 1 s"
-    );
+    if timing_enabled() {
+        assert!(
+            t <= base + Duration::from_secs(1),
+            "{file}: {t:?} is more than rg's {base:?} + 1 s"
+        );
+    }
     assert!(
         rss <= base_rss + 32 * 1_048_576,
         "{file}: RSS {rss} is more than rg's {base_rss} + 32 MiB"
@@ -936,7 +1088,11 @@ fn m3_ceiling(
 }
 
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn markup_html_walks_at_fifty_megabytes_a_second() {
     let _alone = alone();
     m3_ceiling(
@@ -954,7 +1110,11 @@ fn markup_html_walks_at_fifty_megabytes_a_second() {
 }
 
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn markup_xml_walks_at_fifty_megabytes_a_second() {
     let _alone = alone();
     m3_ceiling(
@@ -972,7 +1132,11 @@ fn markup_xml_walks_at_fifty_megabytes_a_second() {
 }
 
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn csv_reads_at_fifty_megabytes_a_second() {
     let _alone = alone();
     m3_ceiling(
@@ -995,7 +1159,11 @@ fn csv_reads_at_fifty_megabytes_a_second() {
 }
 
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn subtitles_read_at_fifty_megabytes_a_second() {
     let _alone = alone();
     m3_ceiling(
@@ -1014,7 +1182,11 @@ fn subtitles_read_at_fifty_megabytes_a_second() {
 }
 
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn tsv_reads_at_fifty_megabytes_a_second() {
     let _alone = alone();
     m3_ceiling(
@@ -1028,7 +1200,11 @@ fn tsv_reads_at_fifty_megabytes_a_second() {
 }
 
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn vtt_reads_at_fifty_megabytes_a_second() {
     let _alone = alone();
     m3_ceiling(
@@ -1046,7 +1222,11 @@ fn vtt_reads_at_fifty_megabytes_a_second() {
 /// and one of Latin-1 bytes 327 MiB, against 14 MiB with `--no-trail`. What stays is linear: the
 /// Source and csv-core's decoded header, whose buffer doubles.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn a_huge_header_cell_costs_no_memory_per_escape() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -1102,7 +1282,11 @@ fn a_huge_header_cell_costs_no_memory_per_escape() {
 /// children that can be Segments counts them. Before the fix a million nested elements (7 MB)
 /// cost 295 MiB, about 300 bytes each.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn a_million_nested_elements_cost_little_each() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -1140,7 +1324,11 @@ fn a_million_nested_elements_cost_little_each() {
 /// their size must not cost memory per piece. Before the fix 4 million classes cost 160 MiB
 /// and an 8 MB identifier of Latin-1 bytes 297 MiB, against 21 and 22 MiB with `--no-trail`.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn a_huge_name_costs_no_memory_per_piece() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -1197,7 +1385,11 @@ fn a_huge_name_costs_no_memory_per_piece() {
 /// 270 bytes per cell, against 13 MiB with `--no-trail`; what stays is the header's fields and
 /// decoded text, 40 bytes per cell.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn a_header_of_a_million_columns_names_only_the_columns_matched() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -1235,7 +1427,11 @@ fn a_header_of_a_million_columns_names_only_the_columns_matched() {
 /// once per row. Before the fix 20 000 Matches in one CSV row took 6.3 s with `--flat`, against
 /// 0.03 s for the same line in a `.txt` file.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn the_rows_of_one_wide_line_cost_the_line_once() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -1255,10 +1451,12 @@ fn the_rows_of_one_wide_line_cost_the_line_once() {
         };
         let (t, _) = best_of_three(&fx, &[layout, "needle", "wide.csv"], 0).unwrap();
         eprintln!("{n} Matches in one CSV row, {layout}: {t:?}; as .txt: {base:?}");
-        assert!(
-            t <= base * 5 + Duration::from_millis(250),
-            "{layout}: {t:?} is more than 5 × the {base:?} of the .txt + 0.25 s"
-        );
+        if timing_enabled() {
+            assert!(
+                t <= base * 5 + Duration::from_millis(250),
+                "{layout}: {t:?} is more than 5 × the {base:?} of the .txt + 0.25 s"
+            );
+        }
     }
 }
 
@@ -1318,10 +1516,12 @@ fn object_ceiling(symbols: usize) {
         rss / 1_048_576,
         base_rss / 1_048_576
     );
-    assert!(
-        t <= base + Duration::from_secs(1),
-        "{t:?} is more than rg -a's {base:?} + 1 s"
-    );
+    if timing_enabled() {
+        assert!(
+            t <= base + Duration::from_secs(1),
+            "{t:?} is more than rg -a's {base:?} + 1 s"
+        );
+    }
     assert!(
         rss <= base_rss + 64 * 1_048_576,
         "RSS {rss} is more than rg -a's {base_rss} + 64 MiB"
@@ -1329,14 +1529,22 @@ fn object_ceiling(symbols: usize) {
 }
 
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn object_rows_of_a_big_elf_stay_under_rg_a() {
     let _alone = alone();
     object_ceiling(0);
 }
 
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn an_elf_with_two_hundred_thousand_symbols_stays_under_rg_a() {
     let _alone = alone();
     object_ceiling(200_000);
@@ -1453,13 +1661,19 @@ fn document_ceiling(kind: &str, units: usize, rate: f64, cells: usize) {
         rss / 1_048_576,
         base_rss / 1_048_576
     );
-    assert!(t <= budget, "{kind}: {t:?} is over {budget:?}");
+    if timing_enabled() {
+        assert!(t <= budget, "{kind}: {t:?} is over {budget:?}");
+    }
     let bound = base_rss + 6 * text as u64 + 400 * cells as u64 + 64 * 1_048_576;
     assert!(rss <= bound, "{kind}: RSS {rss} is over {bound}");
 }
 
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn documents_extract_within_their_ceilings() {
     let _alone = alone();
     // The rates are about a third of what the M4 probe measured (M4 plan, D23).
@@ -1481,7 +1695,11 @@ fn documents_extract_within_their_ceilings() {
 /// is 512 MiB, past that bound: read whole, a part of 300 MiB stayed under it (RSS 304 MiB
 /// without `Zip::bytes`' `take`; M4 plan, Task 13.1, Step 2).
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn a_zip_bomb_is_refused_within_its_limit() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -1492,14 +1710,16 @@ fn a_zip_bomb_is_refused_within_its_limit() {
     std::fs::write(fx.file("bomb.docx"), &bomb).unwrap();
     let Some(rg) = rg_bin() else { return };
     let args = ["--docs", "--flat", "needle", "bomb.docx"];
-    let (t, rss, _) = measure_to(&sfor_bin(), &fx, &args, None, Stdio::null(), 1).unwrap();
+    let (t, rss, _) = measure_to(&sfor_bin(), &fx, &args, None, Out::Null, 1).unwrap();
     let (_, base_rss) = measure(&rg, &fx, &["needle", "bomb.docx"], 1).unwrap();
     eprintln!(
         "zip bomb of {} KiB: {t:?}, RSS {} MiB",
         bomb.len() >> 10,
         rss / 1_048_576
     );
-    assert!(t <= Duration::from_secs(5), "{t:?}");
+    if timing_enabled() {
+        assert!(t <= Duration::from_secs(5), "{t:?}");
+    }
     assert!(rss <= base_rss + (256 + 64) * 1_048_576, "RSS {rss}");
     let o = common::run(
         Command::new(sfor_bin())
@@ -1634,14 +1854,16 @@ fn refuses_the_bomb(name: &str, bytes: &[u8], extra_mib: u64, warning: &str, cod
     std::fs::write(fx.file(name), bytes).unwrap();
     let Some(rg) = rg_bin() else { return };
     let args = ["--docs", "--flat", "needle", name];
-    let (t, rss, _) = measure_to(&sfor_bin(), &fx, &args, None, Stdio::null(), code).unwrap();
+    let (t, rss, _) = measure_to(&sfor_bin(), &fx, &args, None, Out::Null, code).unwrap();
     let (_, base_rss) = measure(&rg, &fx, &["needle", name], code).unwrap();
     eprintln!(
         "{name} of {} KiB: {t:?}, RSS {} MiB",
         bytes.len() >> 10,
         rss / 1_048_576
     );
-    assert!(t <= Duration::from_secs(5), "{t:?}");
+    if timing_enabled() {
+        assert!(t <= Duration::from_secs(5), "{t:?}");
+    }
     assert!(rss <= base_rss + (extra_mib + 64) * 1_048_576, "RSS {rss}");
     let o = common::run(
         Command::new(sfor_bin())
@@ -1665,7 +1887,11 @@ fn refuses_the_bomb(name: &str, bytes: &[u8], extra_mib: u64, warning: &str, cod
 /// a warning, quickly and within 64 MiB plus rg's memory and 64 MiB, and is then searched as
 /// rg searches it.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn a_pdf_bomb_is_refused_within_its_limit() {
     let _alone = alone();
     refuses_the_bomb(
@@ -1682,7 +1908,11 @@ fn a_pdf_bomb_is_refused_within_its_limit() {
 /// refused with a warning, quickly and within 256 MiB plus rg's memory and 64 MiB, and is then
 /// searched as rg searches it.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn a_zip_bomb_of_many_parts_is_refused_within_its_limit() {
     let _alone = alone();
     let names = ["S1", "S2", "S3", "S4", "S5", "S6"];
@@ -1714,7 +1944,11 @@ fn a_zip_bomb_of_many_parts_is_refused_within_its_limit() {
 /// refused by the work budget as it is read, without becoming a list of operations: lopdf's
 /// took 6 GB for one.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn a_pdf_page_of_millions_of_operations_is_refused_within_its_limit() {
     let _alone = alone();
     refuses_the_bomb(
@@ -1729,7 +1963,11 @@ fn a_pdf_page_of_millions_of_operations_is_refused_within_its_limit() {
 /// D17 (M4 plan r2, Fable #1): an object stream of 63 MiB of small integers is refused before
 /// lopdf parses it: parsed, 32 MiB took 2 GB.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn a_pdf_object_stream_bomb_is_refused_within_its_limit() {
     let _alone = alone();
     refuses_the_bomb(
@@ -1745,7 +1983,11 @@ fn a_pdf_object_stream_bomb_is_refused_within_its_limit() {
 /// D17 (M4 plan r2, Codex #1): a ToUnicode range of 2³² codes is read as one range: lopdf's
 /// reader listed every code.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn a_pdf_map_range_of_every_code_is_read_within_its_limit() {
     let _alone = alone();
     let map = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
@@ -1765,7 +2007,11 @@ fn a_pdf_map_range_of_every_code_is_read_within_its_limit() {
 /// 4 MiB of it, is decoded at most `MAX_GROWTH` bytes for each byte of the string: it made 512 MiB
 /// of text, 9 s and 1.7 GB, from a 5 KB file.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn a_pdf_map_of_long_text_is_read_within_its_limit() {
     let _alone = alone();
     let mut map = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
@@ -1790,7 +2036,11 @@ fn a_pdf_map_of_long_text_is_read_within_its_limit() {
 /// called: its reader passes 1 GiB and is ended, with one warning, within 10 s. Made by qpdf;
 /// without it the test says so and passes.
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn a_pdf_past_the_readers_memory_is_refused_within_its_limit() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -1831,10 +2081,12 @@ fn a_pdf_past_the_readers_memory_is_refused_within_its_limit() {
     }
     let Some(rg) = rg_bin() else { return };
     let args = ["--docs", "--flat", "needle", "enc.pdf"];
-    let (t, rss, _) = measure_to(&sfor_bin(), &fx, &args, None, Stdio::null(), 1).unwrap();
+    let (t, rss, _) = measure_to(&sfor_bin(), &fx, &args, None, Out::Null, 1).unwrap();
     let (_, base_rss) = measure(&rg, &fx, &["needle", "enc.pdf"], 1).unwrap();
     eprintln!("enc.pdf: {t:?}, RSS {} MiB", rss / 1_048_576);
-    assert!(t <= Duration::from_secs(10), "{t:?}");
+    if timing_enabled() {
+        assert!(t <= Duration::from_secs(10), "{t:?}");
+    }
     assert!(rss <= base_rss + (1024 + 64) * 1_048_576, "RSS {rss}");
     let o = common::run(
         Command::new(sfor_bin())
@@ -1892,7 +2144,7 @@ fn cpu_time(fx: &Fixture, args: &[&str], code: i32) -> Duration {
 
 /// The system calls s4 with `args` makes, all its threads and children included, as
 /// `strace -f -c` counts them; None without strace, or where it cannot trace.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn system_calls(fx: &Fixture, args: &[&str], code: i32) -> Option<u64> {
     let out = fx.path().join("strace.txt");
     let _ = std::fs::remove_file(&out);
@@ -1922,7 +2174,7 @@ fn system_calls(fx: &Fixture, args: &[&str], code: i32) -> Option<u64> {
 /// Trail. With `-L` too, through a tree that
 /// has a link to one of its directories (code review r7, Fable #2): a name below a root is
 /// resolved only where the walker followed a link.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore]
 fn files_without_an_extension_cost_by_default_what_they_cost_without_documents() {
@@ -1962,13 +2214,17 @@ fn files_without_an_extension_cost_by_default_what_they_cost_without_documents()
         match (system_calls(&fx, &default, 1), system_calls(&fx, &off, 1)) {
             (Some(d), Some(o)) => {
                 eprintln!("{trail:?}: {d} system calls by default, {o} with --no-docs");
-                assert!(d as f64 <= 1.05 * o as f64, "{d} > 1.05 × {o}");
+                if timing_enabled() {
+                    assert!(d as f64 <= 1.05 * o as f64, "{d} > 1.05 × {o}");
+                }
             }
             _ => eprintln!("{trail:?}: strace cannot trace here: system calls not counted"),
         }
         let ratio = paired_cpu_ratio(&fx, &default, &off, 1, 15);
         eprintln!("{trail:?}: CPU {ratio:.3} × by default that of --no-docs");
-        assert!(ratio <= 1.1, "{trail:?}: CPU {ratio:.3} × > 1.1 ×");
+        if timing_enabled() {
+            assert!(ratio <= 1.1, "{trail:?}: CPU {ratio:.3} × > 1.1 ×");
+        }
     }
 }
 
@@ -1978,7 +2234,7 @@ fn files_without_an_extension_cost_by_default_what_they_cost_without_documents()
 /// burst of it in one run moves one ratio, which the median leaves out (code review m4-code r8,
 /// Fable #6: the medians of each side, nine runs apart, gave 1.117 × on a loaded machine where
 /// the system calls gave 0.81 ×).
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn paired_cpu_ratio(fx: &Fixture, a: &[&str], b: &[&str], code: i32, pairs: usize) -> f64 {
     let mut ratios = Vec::new();
     let (mut ta, mut tb) = (Vec::new(), Vec::new());
@@ -2012,7 +2268,7 @@ fn paired_cpu_ratio(fx: &Fixture, a: &[&str], b: &[&str], code: i32, pairs: usiz
 
 /// The system calls s4 with `args` makes, as `strace -f -e trace=…` writes them, one per line;
 /// None without strace, or where it cannot trace.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn traced(fx: &Fixture, args: &[&str], calls: &str, code: i32) -> Option<String> {
     let out = fx.path().join("trace.txt");
     let _ = std::fs::remove_file(&out);
@@ -2031,7 +2287,7 @@ fn traced(fx: &Fixture, args: &[&str], calls: &str, code: i32) -> Option<String>
 /// only then (the `readlink` and `getcwd` of --no-docs); s4 by default takes at most 1.05 × the CPU time of
 /// --no-docs, the medians of 31 alternated runs. A file without an extension is opened once:
 /// its first bytes, read to tell a document, are what is searched, in memory too.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore]
 fn one_file_that_is_no_document_costs_what_it_costs_without_documents() {
@@ -2085,10 +2341,12 @@ fn one_file_that_is_no_document_costs_what_it_costs_without_documents() {
         o.sort();
         let (d, o) = (d[15], o[15]);
         eprintln!("{trail:?}: CPU {d:?} by default, {o:?} with --no-docs");
-        assert!(
-            d.as_secs_f64() <= 1.05 * o.as_secs_f64(),
-            "{d:?} > 1.05 × {o:?}"
-        );
+        if timing_enabled() {
+            assert!(
+                d.as_secs_f64() <= 1.05 * o.as_secs_f64(),
+                "{d:?} > 1.05 × {o:?}"
+            );
+        }
     }
 }
 
@@ -2097,7 +2355,7 @@ fn one_file_that_is_no_document_costs_what_it_costs_without_documents() {
 /// search of a file that is no document still loads no Format Definition: s4 opens no file of
 /// the Grammar. Once a file may be a document, the Definitions load with the Grammar's, as
 /// they load for the Trails.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn an_installed_grammar_leaves_a_search_without_documents_unloaded() {
     let fx = Fixture::new();
@@ -2138,7 +2396,11 @@ fn an_installed_grammar_leaves_a_search_without_documents_unloaded() {
 /// M5a plan, D7 and Task 10.1: PCRE2 and multi-line searches cost what rg's cost, with
 /// `--no-trail` over a 10 MB file (PCRE2's scratch space per thread: `matcher::Pcre2`).
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn pcre2_and_multiline_without_trails_are_as_fast_as_ripgrep() {
     let _alone = alone();
     let Some(rg) = rg_bin() else {
@@ -2158,17 +2420,23 @@ fn pcre2_and_multiline_without_trails_are_as_fast_as_ripgrep() {
         args.splice(0..0, ["--no-docs", "--no-trail"]);
         let (t, _) = best_of_three(&fx, &args, 0).unwrap();
         eprintln!("10 MB {flags:?}: s4 {t:?}, rg {base:?}");
-        assert!(
-            t.as_secs_f64() <= base.as_secs_f64() * 1.25,
-            "{t:?} is more than 1.25 × the {base:?} of rg"
-        );
+        if timing_enabled() {
+            assert!(
+                t.as_secs_f64() <= base.as_secs_f64() * 1.25,
+                "{t:?} is more than 1.25 × the {base:?} of rg"
+            );
+        }
     }
 }
 
 /// `--files` lists 20 000 files from the walker's threads, as rg does: within 1.25 × rg's
 /// time (the sequential walk of the probe's first version took 6 ×).
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn files_lists_as_fast_as_ripgrep() {
     let _alone = alone();
     let Some(rg) = rg_bin() else {
@@ -2188,7 +2456,9 @@ fn files_lists_as_fast_as_ripgrep() {
     };
     let (t, _) = best_of_three_drained(&sfor_bin(), &fx, &["--files", "many"], 0).unwrap();
     eprintln!("--files over 20 000 files: s4 {t:?}, rg {base:?}");
-    assert!(t.as_secs_f64() <= base.as_secs_f64() * 1.25 + 0.01);
+    if timing_enabled() {
+        assert!(t.as_secs_f64() <= base.as_secs_f64() * 1.25 + 0.01);
+    }
 }
 
 /// M5a plan, D4: the rows of rg's output flags in the Trail layouts cost about what the
@@ -2196,7 +2466,11 @@ fn files_lists_as_fast_as_ripgrep() {
 /// -b`, `-o`, `--vimgrep`, `-r` and `--trim` within 1.25 × the default's time and its RSS
 /// plus 16 MiB (`-o`, `--vimgrep` and `-r` take the model's path, `output::rg::streams`).
 #[test]
-#[ignore]
+#[cfg_attr(target_os = "linux", ignore)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires GNU time -v RSS measurement"
+)]
 fn output_flags_in_the_trail_layouts_stay_under_the_ceilings() {
     let _alone = alone();
     let fx = Fixture::new();
@@ -2226,10 +2500,12 @@ fn output_flags_in_the_trail_layouts_stay_under_the_ceilings() {
         args.extend(["needle", "big.md"]);
         let (t, rss) = best_of_three(&fx, &args, 0).unwrap();
         eprintln!("{flags:?}: {t:?} {rss} B, default {base:?} {base_rss} B");
-        assert!(
-            t.as_secs_f64() <= base.as_secs_f64() * 1.25,
-            "{flags:?}: {t:?}"
-        );
+        if timing_enabled() {
+            assert!(
+                t.as_secs_f64() <= base.as_secs_f64() * 1.25,
+                "{flags:?}: {t:?}"
+            );
+        }
         assert!(rss <= base_rss + (16 << 20), "{flags:?}: {rss} B");
     }
 }
@@ -2324,9 +2600,209 @@ fn null_data_records_and_their_sections_cost_linear_time() {
             slow.push(format!("{case:?}: {small:?} and {large:?}"));
         }
     }
+    if timing_enabled() {
+        assert!(
+            slow.is_empty(),
+            "4 N Matches cost six times N or more:\n{}",
+            slow.join("\n")
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn dense_m5b_bytes(format: &str) -> Vec<u8> {
+    dense_m5b_bytes_of(format, SIZE)
+}
+
+/// `dense_m5b_bytes` of `size` bytes.
+#[cfg(target_os = "linux")]
+fn dense_m5b_bytes_of(format: &str, size: usize) -> Vec<u8> {
+    // Equal-length rows make exact 50 MiB without a syntactically broken tail.
+    let row = match format {
+        "md" => "# needle heading\nneedle body\n".to_owned(),
+        "jsonl" => "{\"needle\":\"needle\"}\n".to_owned(),
+        "csv" => "needle,needle\n".to_owned(),
+        "yaml" => "needle: needle\n".to_owned(),
+        "rs" => "fn needle() { let needle = 1; }\n".to_owned(),
+        "html" => "<p>needle</p>\n".to_owned(),
+        "srt" => "1\n00:00:01,000 --> 00:00:02,000\nneedle\n\n".to_owned(),
+        _ => unreachable!(),
+    };
+    let mut out = Vec::with_capacity(size);
+    // A unique match on the same bytes measures Source + preparation.
+    let marker = match format {
+        "jsonl" => "{\"ONCE_M5B\":\"needle\"}\n",
+        "csv" => "ONCE_M5B,needle\n",
+        "yaml" => "ONCE_M5B: needle\n",
+        "rs" => "// ONCE_M5B needle\n",
+        "html" => "<!-- ONCE_M5B needle -->\n",
+        "srt" => "1\n00:00:00,000 --> 00:00:00,500\nONCE_M5B needle\n\n",
+        _ => "# ONCE_M5B needle\n",
+    };
+    out.extend_from_slice(marker.as_bytes());
+    while out.len() + row.len() <= size {
+        out.extend_from_slice(row.as_bytes());
+    }
+    // Tail padding is outside syntax where possible; exact bytes are identical
+    // for dense/one-Match/--no-trail runs, including tolerated malformed tails.
+    out.resize(size, b' ');
+    out
+}
+
+#[test]
+#[ignore = "50 MiB RSS criterion; selected explicitly in Linux CI"]
+#[cfg(target_os = "linux")]
+fn m5b_dense_seven_families_have_bounded_match_retention() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let mut rust: toml::Table = toml::from_str(include_str!("../formats/rust.toml")).unwrap();
+    rust["params"]
+        .as_table_mut()
+        .unwrap()
+        .insert("max_bytes".into(), toml::Value::Integer((SIZE + 1) as i64));
+    std::fs::write(
+        fx.formats.path().join("rust.toml"),
+        toml::to_string(&rust).unwrap(),
+    )
+    .unwrap();
+    for format in ["md", "jsonl", "csv", "yaml", "rs", "html", "srt"] {
+        let name = format!("dense.{format}");
+        let bytes = dense_m5b_bytes(format);
+        assert_eq!(bytes.len(), SIZE);
+        std::fs::write(fx.file(&name), bytes).unwrap();
+        let sample = common::run(&mut fx.s4(["--no-docs", "--json", "-m3", "needle", &name]));
+        assert!(sample.status.success());
+        let messages: Vec<serde_json::Value> = sample
+            .stdout
+            .split(|&b| b == b'\n')
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_slice(l).unwrap())
+            .collect();
+        let structured = messages.iter().filter(|m| m["type"] == "match").any(|m| {
+            let data = &m["data"];
+            assert!(data["format"].is_string(), "Plain fallback for {format}");
+            data["trail"].as_array().is_some_and(|a| !a.is_empty())
+                || data["submatches"].as_array().is_some_and(|a| {
+                    a.iter()
+                        .any(|sub| sub["trail"].as_array().is_some_and(|t| !t.is_empty()))
+                })
+        });
+        assert!(structured, "no structured Match in {format}");
+        let raw_sample =
+            common::run(&mut fx.s4(["--no-docs", "--json", "--no-trail", "-m1", "needle", &name]));
+        for line in raw_sample
+            .stdout
+            .split(|&b| b == b'\n')
+            .filter(|l| !l.is_empty())
+        {
+            let v: serde_json::Value = serde_json::from_slice(line).unwrap();
+            if v["type"] == "match" {
+                assert!(v["data"].get("trail").is_none());
+            }
+        }
+        for layout in ["--flat", "--json"] {
+            let args = ["--no-docs", layout, "-j1", "needle|^", name.as_str()];
+            let once = ["--no-docs", layout, "-j1", "ONCE_M5B", name.as_str()];
+            let raw = [
+                "--no-docs",
+                layout,
+                "--no-trail",
+                "-j1",
+                "needle|^",
+                name.as_str(),
+            ];
+            let (td, rd) = measure_drained(&sfor_bin(), &fx, &args, 0).unwrap();
+            let (tp, rp) = measure_drained(&sfor_bin(), &fx, &once, 0).unwrap();
+            let (t0, r0) = measure_drained(&sfor_bin(), &fx, &raw, 0).unwrap();
+            assert!(
+                rd <= rp + (32 << 20),
+                "{format}/{layout}: dense {rd}, once {rp}"
+            );
+            if timing_enabled() {
+                let factor = if layout == "--json" { 6.0 } else { 4.0 };
+                assert!(
+                    td.as_secs_f64() <= tp.as_secs_f64() + factor * t0.as_secs_f64() + 0.1,
+                    "{format}/{layout}: dense {td:?}, prep {tp:?}, base {t0:?}"
+                );
+            }
+            eprintln!("m5b {format} {layout} dense={td:?}/{rd} once={tp:?}/{rp} raw={t0:?}/{r0}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "multi-worker dense RSS; selected explicitly in Linux CI"]
+#[cfg(target_os = "linux")]
+fn m5b_dense_parallel_output_is_bounded() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let files = fx.file("parallel");
+    std::fs::create_dir(&files).unwrap();
+    for n in 0..4 {
+        std::fs::write(files.join(format!("{n}.csv")), dense_m5b_bytes("csv")).unwrap();
+    }
+    let dense = ["--no-docs", "--json", "-j4", "needle|^", "parallel"];
+    let once = ["--no-docs", "--json", "-j4", "ONCE_M5B", "parallel"];
+    let (_, rd) = measure_drained(&sfor_bin(), &fx, &dense, 0).unwrap();
+    let (_, rp) = measure_drained(&sfor_bin(), &fx, &once, 0).unwrap();
+    assert!(rd <= rp + (32 << 20), "parallel dense={rd} once={rp}");
+}
+
+/// Plan Task 10.3, Step 3: four workers over the seven dense families at once. Each file's
+/// output, past the 8 MiB that sends it to a spool file, comes out whole, never interleaved
+/// with another file's, and the spool files are gone when s4 ends.
+#[test]
+#[ignore = "several-worker dense directory; selected explicitly in Linux CI"]
+#[cfg(target_os = "linux")]
+fn m5b_dense_directory_keeps_each_file_whole_and_removes_its_spool() {
+    use std::io::BufRead;
+    let _alone = alone();
+    let fx = Fixture::new();
+    let dir = fx.file("seven");
+    let spool = fx.file("spool");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::create_dir(&spool).unwrap();
+    let families = ["md", "jsonl", "csv", "yaml", "rs", "html", "srt"];
+    for format in families {
+        let bytes = dense_m5b_bytes_of(format, SIZE / 8);
+        std::fs::write(dir.join(format!("dense.{format}")), bytes).unwrap();
+    }
+    let mut child = fx
+        .s4(["--no-docs", "--flat", "-j4", "needle|^", "seven"])
+        .env("TMPDIR", &spool)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // (file, bytes of its block), in the order the blocks come; read as they come and kept
+    // only as counts.
+    let mut blocks: Vec<(String, u64)> = Vec::new();
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut line = Vec::new();
+    while out.read_until(b'\n', &mut line).unwrap() > 0 {
+        let path = line.split(|&b| b == b':').next().unwrap();
+        match blocks.last_mut() {
+            Some((p, n)) if p.as_bytes() == path => *n += line.len() as u64,
+            _ => blocks.push((
+                String::from_utf8_lossy(path).into_owned(),
+                line.len() as u64,
+            )),
+        }
+        line.clear();
+    }
+    assert!(child.wait().unwrap().success());
+    let mut files: Vec<&str> = blocks.iter().map(|(p, _)| p.as_str()).collect();
+    files.sort();
+    let mut expected: Vec<String> = families
+        .iter()
+        .map(|f| format!("seven/dense.{f}"))
+        .collect();
+    expected.sort();
+    assert_eq!(files, expected, "one block per file: {blocks:?}");
     assert!(
-        slow.is_empty(),
-        "4 N Matches cost six times N or more:\n{}",
-        slow.join("\n")
+        blocks.iter().all(|(_, n)| *n > 8 << 20),
+        "every output spooled: {blocks:?}"
     );
+    let left: Vec<_> = std::fs::read_dir(&spool).unwrap().collect();
+    assert!(left.is_empty(), "spool files left: {left:?}");
 }
