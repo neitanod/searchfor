@@ -123,7 +123,7 @@ fn run_processors(args: &Args, threads: usize) -> processors::Processors {
 
 /// `--list-grammars` (spec §7): the compiled-in and installed Grammars, and those the index
 /// offers for this system; an unreadable index is a warning, and the exit code stays 0 (D28).
-fn list_grammars(msgs: &Messages) -> i32 {
+fn list_grammars(msgs: &Messages) -> std::io::Result<i32> {
     use crate::grammars::{self, index::Index, install};
     let index = grammars::index::fetch(&grammars::index_url())
         .and_then(|b| Index::parse(&b))
@@ -134,15 +134,16 @@ fn list_grammars(msgs: &Messages) -> i32 {
     let installed = grammars::grammars_dir()
         .map(|d| grammars::installed(&d))
         .unwrap_or_default();
-    print!(
+    printed(write!(
+        std::io::stdout().lock(),
         "{}",
         install::list(
             processors::treesitter::grammars::COMPILED_IN,
             &installed,
             index.as_ref().map_err(String::as_str),
         )
-    );
-    0
+    ))?;
+    Ok(0)
 }
 
 /// `--install-grammar <LANG>` (spec §7): exit 0 once installed, 2 on any error.
@@ -153,15 +154,22 @@ fn install_grammar(lang: &str) -> i32 {
             anyhow::anyhow!("there is no Grammar directory (no data directory, and SEARCHFOR_GRAMMARS_DIR is not set)")
         })?;
         let index = Index::parse(&grammars::index::fetch(&grammars::index_url())?)?;
-        install::install(&index, lang, &dir)
+        let i = install::install(&index, lang, &dir)?;
+        let mut out = std::io::stdout().lock();
+        printed(writeln!(
+            out,
+            "installed {} {} in {}",
+            i.name,
+            i.version,
+            i.dir.display()
+        ))?;
+        anyhow::Ok(())
     })();
     match done {
-        Ok(i) => {
-            println!("installed {} {} in {}", i.name, i.version, i.dir.display());
-            0
-        }
+        Ok(()) => 0,
         Err(e) => {
-            eprintln!("s4: {e:#}");
+            // A closed stderr is no panic (code review r2, Codex #4).
+            let _ = writeln!(std::io::stderr(), "s4: {e:#}");
             2
         }
     }
@@ -184,7 +192,11 @@ fn main(args: &Args) -> anyhow::Result<i32> {
     };
     // Actions (step 3). `--pcre2-version` is rg's special mode: it wins over everything.
     if args.pcre2_version {
-        println!("{}", crate::matcher::pcre2_version());
+        printed(writeln!(
+            std::io::stdout().lock(),
+            "{}",
+            crate::matcher::pcre2_version()
+        ))?;
         return Ok(0);
     }
     if let Some(kind) = &args.generate {
@@ -199,7 +211,7 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         return Ok(0);
     }
     if args.list_grammars {
-        return Ok(list_grammars(&msgs));
+        return Ok(list_grammars(&msgs)?);
     }
     if let Some(lang) = &args.install_grammar {
         return Ok(install_grammar(lang));
@@ -210,19 +222,23 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         if args.list_formats {
             // Built for the listing only: it reads the Grammar directory and starts nothing.
             let procs = run_processors(args, 1);
-            print!("{}", registry.list_with(&|d| procs.available(d)));
+            let list = registry.list_with(&|d| procs.available(d));
+            printed(write!(std::io::stdout().lock(), "{list}"))?;
             return Ok(0);
         }
         let dir = args.export_formats.as_deref().expect("checked above");
         return Ok(match formats::export_builtin(dir, user_dir.as_deref()) {
             Ok(written) => {
-                for p in written {
-                    println!("{}", p.display());
-                }
+                let mut out = std::io::stdout().lock();
+                printed(
+                    written
+                        .iter()
+                        .try_for_each(|p| writeln!(out, "{}", p.display())),
+                )?;
                 0
             }
             Err(e) => {
-                eprintln!("s4: {e:#}");
+                let _ = writeln!(std::io::stderr(), "s4: {e:#}");
                 2
             }
         });

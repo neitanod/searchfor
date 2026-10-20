@@ -1308,9 +1308,10 @@ fn m5_24_the_last_mode_flag_wins_as_ripgrep() {
     assert!(ok(&fx, &["-l", "--generate", "man"]).contains(".TH s4"));
 }
 
-/// Code review r1, Fable #1: a reader that closes stdout before the end ends `--type-list` and
-/// `--generate` with exit 0 and no message, as rg and s4's searches; and an error is still
-/// exit 2 with stderr closed, without a panic.
+/// Code review r1, Fable #1: a reader that closes stdout before the end ends `--type-list`,
+/// `--generate` and the other actions with exit 0 and no message, as rg and s4's searches; and
+/// an error is still exit 2 with stderr closed, without a panic. Code review r2, Codex #4:
+/// `--pcre2-version`, `--list-formats` and `--export-formats` too.
 #[test]
 fn m5_25_a_closed_stdout_ends_the_actions_quietly() {
     let fx = Fixture::new();
@@ -1319,10 +1320,20 @@ fn m5_25_a_closed_stdout_ends_the_actions_quietly() {
         drop(r);
         w
     };
-    for args in [
-        &["--type-list"][..],
-        &["--generate", "man"],
-        &["--generate", "complete-bash"],
+    let export = tempfile::tempdir().unwrap();
+    let (out1, out2) = (export.path().join("1"), export.path().join("2"));
+    for (args, again) in [
+        (&["--type-list"][..], None),
+        (&["--generate", "man"], None),
+        (&["--generate", "complete-bash"], None),
+        (&["--pcre2-version"], None),
+        (&["--list-formats"], None),
+        (&["--help"], None),
+        (&["--version"], None),
+        (
+            &["--export-formats", out1.to_str().unwrap()],
+            Some(&["--export-formats", out2.to_str().unwrap()][..]),
+        ),
     ] {
         let o = fx
             .s4(args)
@@ -1332,19 +1343,71 @@ fn m5_25_a_closed_stdout_ends_the_actions_quietly() {
             .unwrap();
         assert_eq!((code(&o), stderr(&o).as_str()), (0, ""), "{args:?}");
         let o = fx
-            .s4(args)
+            .s4(again.unwrap_or(args))
             .stdout(closed())
             .stderr(closed())
             .output()
             .unwrap();
         assert_eq!(code(&o), 0, "{args:?} with stderr closed");
     }
+    // `--list-grammars` warns that the index is not available, and prints the list all the same.
     let o = fx
-        .s4(["--type-list", "-t", "zzz"])
-        .stderr(closed())
+        .s4(["--list-grammars"])
+        .stdout(closed())
+        .stderr(std::process::Stdio::piped())
         .output()
         .unwrap();
-    assert_eq!(code(&o), 2);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(!stderr(&o).contains("panicked"), "{}", stderr(&o));
+    // `--install-grammar` installs, and its closing line meets a closed stdout. The payload is
+    // no Grammar Helper: the install does not run it.
+    let payload = export.path().join("payload");
+    std::fs::write(&payload, b"not a helper").unwrap();
+    let sum: String = {
+        use sha2::Digest;
+        sha2::Sha256::digest(b"not a helper")
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    };
+    let definition = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/helpers/grammar/definitions/lua.toml"
+    ))
+    .unwrap();
+    let index = export.path().join("index.json");
+    std::fs::write(
+        &index,
+        json!({"version": 1, "grammars": [{
+            "name": "lua", "version": "0.2.0", "source": "test", "license": "MIT",
+            "definition": definition,
+            "binaries": {(searchfor::grammars::index::system()): {
+                "url": format!("file://{}", payload.display()), "sha256": sum,
+            }},
+        }]})
+        .to_string(),
+    )
+    .unwrap();
+    let o = fx
+        .s4(["--install-grammar", "lua"])
+        .env(
+            "SEARCHFOR_GRAMMAR_INDEX",
+            format!("file://{}", index.display()),
+        )
+        .stdout(closed())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!((code(&o), stderr(&o).as_str()), (0, ""));
+    let file = fx.file("md/guide.md");
+    for args in [
+        &["--type-list", "-t", "zzz"][..],
+        &["--install-grammar", "zzz"],
+        &["--export-formats", file.to_str().unwrap()],
+    ] {
+        let o = fx.s4(args).stderr(closed()).output().unwrap();
+        assert_eq!(code(&o), 2, "{args:?}");
+    }
 }
 
 /// Code review r1, Codex #6 and Fable #2: M5a is v0.5, as the README says.
