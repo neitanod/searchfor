@@ -40,7 +40,8 @@ pub fn run(argv: Vec<OsString>) -> i32 {
             return e.exit_code();
         }
         Err(e) => {
-            eprintln!("{e}");
+            // A closed stderr is no panic (code review r1, Fable #1).
+            let _ = writeln!(std::io::stderr(), "{e}");
             return 2;
         }
     };
@@ -48,7 +49,7 @@ pub fn run(argv: Vec<OsString>) -> i32 {
     let code = match main(&args) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("s4: {e:#}");
+            let _ = writeln!(std::io::stderr(), "s4: {e:#}");
             2
         }
     };
@@ -166,6 +167,15 @@ fn install_grammar(lang: &str) -> i32 {
     }
 }
 
+/// What an action wrote on stdout: a reader that closed it before the end is no error, as in
+/// rg and `files()`, which exit 0 without a message (code review r1, Fable #1).
+fn printed(written: std::io::Result<()>) -> std::io::Result<()> {
+    match written {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        r => r,
+    }
+}
+
 fn main(args: &Args) -> anyhow::Result<i32> {
     let msgs = Messages {
         silent: args.no_messages,
@@ -178,7 +188,10 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         return Ok(0);
     }
     if let Some(kind) = &args.generate {
-        cli::generate::generate(kind, &mut std::io::stdout().lock())?;
+        // Written whole into memory first: clap_complete panics when its writer fails.
+        let mut out = Vec::new();
+        cli::generate::generate(kind, &mut out)?;
+        printed(std::io::stdout().lock().write_all(&out))?;
         return Ok(0);
     }
     if args.mcp {
@@ -224,9 +237,10 @@ fn main(args: &Args) -> anyhow::Result<i32> {
         // rg's `types` (review r2 of the M5a plan, Codex #3).
         let defs = search::file_types(args)?.definitions();
         let mut out = std::io::stdout().lock();
-        for d in &defs {
-            writeln!(out, "{}: {}", d.name(), d.globs().join(", "))?;
-        }
+        printed(
+            defs.iter()
+                .try_for_each(|d| writeln!(out, "{}: {}", d.name(), d.globs().join(", "))),
+        )?;
         return Ok(if defs.is_empty() { 1 } else { 0 });
     }
     if args.files {
@@ -1931,7 +1945,9 @@ impl<'a> Ctx<'a> {
             ) {
                 Ok((fm, stats)) => {
                     st.binary_quit = self.quit_at_binary(t, &stats);
-                    self.count_quiet_json(&stats, fm.is_some());
+                    // With `--passthru` a file without a Match has a model too.
+                    let found = fm.as_ref().is_some_and(|f| f.matches().next().is_some());
+                    self.count_quiet_json(&stats, found);
                     Ok(fm.map(|fm| (src, fm)))
                 }
                 Err(e) => {
@@ -2021,7 +2037,10 @@ impl<'a> Ctx<'a> {
             self.count_quiet_json(&stats, found);
         }
         st.failed = failed;
-        if !found {
+        // `--passthru` prints an input without a Match too, every line a context line, as rg's
+        // (code review r1, Codex #2); `found` stays the flag of a Match.
+        let printed = st.unnumbered.passthru() && !sink.items.is_empty();
+        if !found && !printed {
             return Ok(None);
         }
         let src = match (kept, &t.fs) {

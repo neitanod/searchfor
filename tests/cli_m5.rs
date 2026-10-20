@@ -1200,3 +1200,157 @@ fn m5_21_mcp_memory_of_a_line_with_many_trails() {
         .unwrap();
     assert!(peak < 64 * 1024, "{peak} kB");
 }
+
+/// s4 with `input` on stdin.
+fn piped(fx: &Fixture, args: &[&str], input: &[u8]) -> std::process::Output {
+    let mut child = fx
+        .s4(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+/// Code review r1, Codex #2: `--passthru` prints an input without a Match, its lines as
+/// context, as rg does, whether it is read with a reader (stdin, a walked file) or in memory
+/// (an explicit file); and it is no Match: exit 1, and `--stats` counts no file with Matches.
+#[test]
+fn m5_23_passthru_prints_an_input_without_a_match() {
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("pt")).unwrap();
+    std::fs::write(fx.file("pt/c.txt"), "nothing\n").unwrap();
+    // The tree heads stdin and indents its lines, with a Match or without.
+    for (layout, want) in [
+        ("--flat", "1-nothing\n"),
+        ("--tree", "<stdin>\n  1-nothing\n"),
+    ] {
+        let o = piped(&fx, &[layout, "--passthru", "needle"], b"nothing\n");
+        assert_eq!((code(&o), stdout(&o).as_str()), (1, want), "{layout}");
+    }
+    let o = run(&mut fx.s4(["--flat", "--passthru", "needle", "pt"]));
+    assert_eq!((code(&o), stdout(&o).as_str()), (1, "pt/c.txt-1-nothing\n"));
+    let o = run(&mut fx.s4(["--tree", "--passthru", "needle", "pt"]));
+    assert_eq!(
+        (code(&o), stdout(&o).as_str()),
+        (1, "pt/c.txt\n  1-nothing\n")
+    );
+    for path in ["pt", "pt/c.txt"] {
+        let o = run(&mut fx.s4(["--flat", "--stats", "--passthru", "needle", path]));
+        assert_eq!(code(&o), 1, "{path}");
+        assert!(
+            stdout(&o).contains("\n0 files contained matches\n"),
+            "{path}: {}",
+            stdout(&o)
+        );
+    }
+}
+
+/// Code review r1, Codex #4: the last mode flag wins, as rg 14.1.1's `Mode::update`, where a
+/// search mode (-c, --count-matches, -l, --files-without-match, --json, and --no-json after
+/// --json) given after `--files`, `--type-list` or `--generate` searches again; on the command
+/// line and from the configuration file, against the reference rg.
+#[test]
+fn m5_24_the_last_mode_flag_wins_as_ripgrep() {
+    if !common::reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let both = |args: &[&str], config: Option<&str>| {
+        let (mut s, mut r) = (fx.s4(["--sort", "path"]), fx.rg(["--sort", "path"]));
+        s.args(args);
+        r.args(args);
+        if let Some(c) = config {
+            let path = fx.file("modes-rc");
+            std::fs::write(&path, c).unwrap();
+            s.env("SEARCHFOR_CONFIG_PATH", &path);
+            r.env("RIPGREP_CONFIG_PATH", &path);
+        }
+        let (s, r) = (run(&mut s), run(&mut r));
+        assert_eq!(
+            (code(&s), stdout(&s)),
+            (code(&r), stdout(&r)),
+            "{args:?} with {config:?}: {}",
+            stderr(&s)
+        );
+        assert_eq!(code(&s), 0, "{args:?} with {config:?}");
+    };
+    for args in [
+        &["--files", "-l", "^#", "md"][..],
+        &["-l", "--files", "md"],
+        &["--files", "-c", "Plan", "md"],
+        &["--files", "--count-matches", "Plan", "md"],
+        &["--files", "--files-without-match", "needle-pkg", "md"],
+        &["--type-list", "-l", "Plan", "md"],
+        &["--generate", "man", "-l", "Plan", "md"],
+        &["--generate", "man", "--files", "md"],
+        &["--type-list", "--files", "md"],
+        &["--files", "--type-list"],
+        &["-c", "--type-list"],
+        &["--json", "--files", "--no-json", "md"],
+        &["--files", "--no-json", "md"],
+        &["--json", "-l", "--no-json", "Plan", "md"],
+    ] {
+        both(args, None);
+    }
+    both(&["-l", "Plan", "md"], Some("--files\n"));
+    both(&["--files", "md"], Some("-l\n"));
+    both(&["--type-list"], Some("--files\n"));
+    both(&["-c", "Plan", "md"], Some("--generate=man\n"));
+    // `--no-json` after `--json` searches again, in s4's own layout.
+    let plain = ok(&fx, &["Plan", "md"]);
+    assert_eq!(
+        ok(&fx, &["--files", "--json", "--no-json", "Plan", "md"]),
+        plain
+    );
+    assert!(ok(&fx, &["-l", "--generate", "man"]).contains(".TH s4"));
+}
+
+/// Code review r1, Fable #1: a reader that closes stdout before the end ends `--type-list` and
+/// `--generate` with exit 0 and no message, as rg and s4's searches; and an error is still
+/// exit 2 with stderr closed, without a panic.
+#[test]
+fn m5_25_a_closed_stdout_ends_the_actions_quietly() {
+    let fx = Fixture::new();
+    let closed = || {
+        let (r, w) = std::io::pipe().unwrap();
+        drop(r);
+        w
+    };
+    for args in [
+        &["--type-list"][..],
+        &["--generate", "man"],
+        &["--generate", "complete-bash"],
+    ] {
+        let o = fx
+            .s4(args)
+            .stdout(closed())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .unwrap();
+        assert_eq!((code(&o), stderr(&o).as_str()), (0, ""), "{args:?}");
+        let o = fx
+            .s4(args)
+            .stdout(closed())
+            .stderr(closed())
+            .output()
+            .unwrap();
+        assert_eq!(code(&o), 0, "{args:?} with stderr closed");
+    }
+    let o = fx
+        .s4(["--type-list", "-t", "zzz"])
+        .stderr(closed())
+        .output()
+        .unwrap();
+    assert_eq!(code(&o), 2);
+}
+
+/// Code review r1, Codex #6 and Fable #2: M5a is v0.5, as the README says.
+#[test]
+fn m5_26_the_version_is_0_5() {
+    let fx = Fixture::new();
+    let v = ok(&fx, &["--version"]);
+    assert!(v.starts_with("s4 0.5"), "{v}");
+}
