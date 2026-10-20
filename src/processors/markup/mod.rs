@@ -4,8 +4,8 @@
 pub mod html;
 pub mod scan;
 
-use super::Processor;
-use crate::model::{Input, Name, Trail};
+use super::{Capability, Cursor, Prepared, Processor};
+use crate::model::{Input, Name, Segment, SharedTrail, Trail};
 use crate::processors::keypath::collect::Collector;
 use crate::trail::{Outline, OutlineSegment, TrailCursor, names_of};
 use scan::{Scanner, Step, Tag};
@@ -28,6 +28,7 @@ pub(crate) enum Syntax {
     Xml,
 }
 
+#[derive(Clone, Copy)]
 struct Params {
     syntax: Syntax,
     name_chars: usize,
@@ -65,6 +66,9 @@ struct Frame {
     /// `counts`, 1-based ordinal).
     slot: usize,
     ordinal: u32,
+    /// Its place among the file's elements that may be Segments, in the order their start tags
+    /// come (`Census`); `NO_SEQ` for the others.
+    seq: u32,
     /// Its children that may be Segments, from the first one on: a leaf, and every element
     /// past MAX_DEPTH, costs only the Frame (M3 code review r1, Fable #4).
     children: Option<Box<Children>>,
@@ -75,6 +79,8 @@ struct Frame {
 struct Children {
     /// Children seen so far, by tag name: (a name of that tag, count).
     counts: Vec<(Range<usize>, u32)>,
+    /// The `seq` of the first child counted in each slot of `counts`.
+    first: Vec<u32>,
     /// Past `LINEAR` distinct tags, the slot in `counts` of each tag's key (`fill_key`), so a
     /// parent with thousands of distinct child tags costs constant time per child (M3 review
     /// r1, Codex #1). Memory: one entry per distinct child tag of each open element.
@@ -95,18 +101,24 @@ impl Frame {
             seg: false,
             slot: 0,
             ordinal: 0,
+            seq: NO_SEQ,
             children: None,
         }
     }
 }
+
+/// `Frame::seq` of an element that is no Segment.
+const NO_SEQ: u32 = u32::MAX;
 
 /// The walk builds a Segment only when its element closes and holds an anchor (`keeps`), so
 /// the elements without Matches cost no allocation (M3 plan, design note 3).
 struct Walk<'s, 'c, 'a> {
     src: &'s [u8],
     p: Params,
-    c: &'c mut Collector<'a>,
+    mode: Mode<'c, 'a>,
     stack: Vec<Frame>,
+    /// The `seq` of the next element that may be a Segment.
+    next_seq: u32,
     /// HTML: an id per distinct tag (`fill_key`) of the file, and how many elements of each are
     /// open: an end tag with none open is ignored at once instead of searching the stack (M3
     /// review r2, Codex #1). One allocation per distinct tag; a closing element finds its count
@@ -119,6 +131,23 @@ struct Walk<'s, 'c, 'a> {
     /// starts: many elements ended at one byte trim its white space once.
     trimmed: (usize, usize),
 }
+
+/// What a walk does with the elements it closes.
+enum Mode<'c, 'a> {
+    /// Hands the Segments to a Collector (`Processor::trails`, `names`).
+    Collect(&'c mut Collector<'a>),
+    /// The preparation of a cursor: records each element's end and whether its tag repeats
+    /// among its siblings (`Census`).
+    Census(Census),
+    /// The walk of a cursor: keeps the open elements only (`MarkupCursor`).
+    Follow,
+}
+
+/// Per element that may be a Segment, by its `seq`: where it ends, with `REPEATS` set when
+/// another sibling has its tag (its name then ends in `[n]`). 8 bytes per element, the
+/// preparation of a markup file (M5b spec §6.1).
+type Census = Vec<u64>;
+const REPEATS: u64 = 1 << 63;
 
 /// FNV-1a: the maps of the walk hash short tag names, where SipHash's cost per lookup showed in
 /// the walk's time; nothing in them comes from an attacker who can choose collisions that
@@ -155,7 +184,7 @@ fn fill_key(buf: &mut Vec<u8>, name: &[u8], syntax: Syntax) {
     }
 }
 
-impl Walk<'_, '_, '_> {
+impl<'a> Walk<'_, '_, 'a> {
     fn same(&self, a: &Range<usize>, b: &Range<usize>) -> bool {
         let (a, b) = (&self.src[a.clone()], &self.src[b.clone()]);
         match self.p.syntax {
@@ -204,7 +233,7 @@ impl Walk<'_, '_, '_> {
 
     /// Counts a child named `name` in the current element; returns its slot in `counts` and
     /// its 1-based ordinal among its siblings of that tag.
-    fn slot(&mut self, name: &Range<usize>) -> (usize, u32) {
+    fn slot(&mut self, name: &Range<usize>, seq: u32) -> (usize, u32) {
         let src = self.src;
         let syntax = self.p.syntax;
         let parent = self.stack.last_mut().unwrap();
@@ -230,6 +259,7 @@ impl Walk<'_, '_, '_> {
             return (k, ch.counts[k].1);
         }
         ch.counts.push((name.clone(), 1));
+        ch.first.push(seq);
         let k = ch.counts.len() - 1;
         if indexed {
             let counts = &ch.counts;
@@ -266,8 +296,19 @@ impl Walk<'_, '_, '_> {
         if self.p.syntax == Syntax::Html {
             self.open[f.id as usize] -= 1;
         }
+        let keep = match &mut self.mode {
+            Mode::Collect(c) => f.seg && c.keeps(f.tag.start, end),
+            Mode::Census(census) => {
+                if f.seq != NO_SEQ {
+                    let e = &mut census[f.seq as usize];
+                    *e = (*e & REPEATS) | end as u64;
+                }
+                return;
+            }
+            Mode::Follow => return,
+        };
         self.flush(&mut f);
-        if f.seg && self.c.keeps(f.tag.start, end) {
+        if keep {
             let (text, pieces, has_id) = self.name_of(&f);
             let mut s = OutlineSegment::new("tag", text, f.tag.start..end, f.tag.clone());
             // `html` and `body` are hidden and not searchable by name (D7, M3 review r1,
@@ -276,13 +317,21 @@ impl Walk<'_, '_, '_> {
             s.name_anchor = f.name.start;
             s.hidden = f.info.hidden;
             if has_id {
-                self.c.closed(s, end);
+                self.collector().closed(s, end);
             } else {
                 // A Segment's parent counted it, so it has its children.
                 let parent = self.stack.last_mut().unwrap();
                 let ch = parent.children.as_mut().expect("counted by `slot`");
                 ch.pending.push((s, f.slot, f.ordinal));
             }
+        }
+    }
+
+    /// The Collector of a `Mode::Collect` walk, the only one with pending children.
+    fn collector(&mut self) -> &mut Collector<'a> {
+        match &mut self.mode {
+            Mode::Collect(c) => c,
+            _ => unreachable!("only a collecting walk keeps Segments"),
         }
     }
 
@@ -297,7 +346,7 @@ impl Walk<'_, '_, '_> {
                 s.segment.name.push_str(&format!("[{ordinal}]"));
             }
             let end = s.range.end;
-            self.c.closed(s, end);
+            self.collector().closed(s, end);
         }
     }
 
@@ -341,10 +390,32 @@ impl Walk<'_, '_, '_> {
         }
         // Only a child that may be a Segment needs its place among its siblings.
         let seg = self.stack.len() <= MAX_DEPTH;
-        let (slot, ordinal) = if seg { self.slot(&name) } else { (0, 0) };
         // An empty element (`<x/>`, a void element) holds nothing but its tag: no Segment, but
         // it counts among its siblings.
-        if self_closing || info.void {
+        let empty = self_closing || info.void;
+        let seq = if seg && !empty {
+            self.next_seq += 1;
+            self.next_seq - 1
+        } else {
+            NO_SEQ
+        };
+        let (slot, ordinal) = if seg { self.slot(&name, seq) } else { (0, 0) };
+        if let Mode::Census(census) = &mut self.mode
+            && seg
+        {
+            if seq != NO_SEQ {
+                census.push(if ordinal >= 2 { REPEATS } else { 0 });
+            }
+            if ordinal == 2 {
+                // The first sibling of this tag repeats too, now that there is a second.
+                let parent = self.stack.last().unwrap();
+                let first = parent.children.as_ref().expect("counted by `slot`").first[slot];
+                if first != NO_SEQ {
+                    census[first as usize] |= REPEATS;
+                }
+            }
+        }
+        if empty {
             return;
         }
         let raw = info.raw_text;
@@ -369,6 +440,7 @@ impl Walk<'_, '_, '_> {
             seg,
             slot,
             ordinal,
+            seq,
             children: None,
         });
         if raw {
@@ -411,43 +483,245 @@ impl Walk<'_, '_, '_> {
     fn run(&mut self) -> usize {
         let mut sc = Scanner::new(self.src, self.p.syntax == Syntax::Xml);
         let end = loop {
-            match sc.step() {
-                Step::Tag(Tag::Start {
-                    name,
-                    tag,
-                    self_closing,
-                }) => self.start(name, tag, self_closing, &mut sc),
-                Step::Tag(Tag::End { name, tag }) => {
-                    if let Err(at) = self.end(name, tag) {
-                        break at;
-                    }
-                }
-                Step::Eof => break self.src.len(),
-                Step::Error(at) => break at,
+            if let Some(end) = self.apply(sc.step(), &mut sc) {
+                break end;
             }
         };
+        self.finish(end);
+        end
+    }
+
+    /// One step of the scanner: Some with where the structure ends once it ends.
+    fn apply(&mut self, step: Step, sc: &mut Scanner) -> Option<usize> {
+        match step {
+            Step::Tag(Tag::Start {
+                name,
+                tag,
+                self_closing,
+            }) => self.start(name, tag, self_closing, sc),
+            Step::Tag(Tag::End { name, tag }) => {
+                if let Err(at) = self.end(name, tag) {
+                    return Some(at);
+                }
+            }
+            Step::Eof => return Some(self.src.len()),
+            Step::Error(at) => return Some(at),
+        }
+        None
+    }
+
+    /// Closes what is still open where the structure ends.
+    fn finish(&mut self, end: usize) {
         while self.stack.len() > 1 {
             self.close_implied(end);
         }
         let mut root = self.stack.pop().unwrap();
         self.flush(&mut root);
-        end
+    }
+}
+
+impl<'s, 'c, 'a> Walk<'s, 'c, 'a> {
+    fn new(src: &'s [u8], p: Params, mode: Mode<'c, 'a>) -> Self {
+        Walk {
+            src,
+            p,
+            mode,
+            stack: vec![Frame::root()],
+            next_seq: 0,
+            ids: Map::default(),
+            open: Vec::new(),
+            buf: Vec::new(),
+            trimmed: (usize::MAX, 0),
+        }
     }
 }
 
 fn outline(src: &[u8], p: Params, mut c: Collector<'_>) -> Outline {
-    let end = Walk {
-        src,
-        p,
-        c: &mut c,
-        stack: vec![Frame::root()],
-        ids: Map::default(),
-        open: Vec::new(),
-        buf: Vec::new(),
-        trimmed: (usize::MAX, 0),
-    }
-    .run();
+    let end = Walk::new(src, p, Mode::Collect(&mut c)).run();
     c.finish(end, src)
+}
+
+/// A markup file prepared for its cursor (M5b spec §6.1): one walk over the whole file
+/// records where each element ends and whether its tag repeats among its siblings, which a
+/// Trail needs before the walk that follows the Matches reaches them.
+struct MarkupPrepared<'a> {
+    input: Input<'a>,
+    params: &'a toml::Table,
+    p: Params,
+    census: Census,
+}
+
+fn census(src: &[u8], p: Params) -> Census {
+    let mut w = Walk::new(src, p, Mode::Census(Vec::new()));
+    w.run();
+    match w.mode {
+        Mode::Census(c) => c,
+        _ => unreachable!("a census walk"),
+    }
+}
+
+impl Prepared for MarkupPrepared<'_> {
+    fn cursor(&self) -> Box<dyn Cursor + '_> {
+        Box::new(MarkupCursor::new(self.input.bytes, self.p, &self.census))
+    }
+
+    fn names(&self) -> anyhow::Result<Vec<Name>> {
+        Markup.names(&self.input, self.params)
+    }
+
+    fn streams(&self) -> bool {
+        true
+    }
+}
+
+/// The Trails of a markup file in file order: a second walk follows the Matches, and the open
+/// elements at a Match, with their ends and `[n]` from the census, are its Trail.
+struct MarkupCursor<'s> {
+    src: &'s [u8],
+    p: Params,
+    census: &'s [u64],
+    walk: Walk<'s, 'static, 'static>,
+    sc: Scanner<'s>,
+    /// The step read and not applied yet: a tag past the last offset asked.
+    pending: Option<Step>,
+    done: bool,
+    at: usize,
+    /// The line of byte `.0`, the last Segment start counted.
+    lines: (usize, u64),
+    /// The last Trail given, by the `seq` of its elements, and its Segments.
+    last: Option<(Vec<u32>, SharedTrail)>,
+    seqs: Vec<u32>,
+}
+
+impl<'s> MarkupCursor<'s> {
+    fn new(src: &'s [u8], p: Params, census: &'s [u64]) -> Self {
+        MarkupCursor {
+            src,
+            p,
+            census,
+            walk: Walk::new(src, p, Mode::Follow),
+            sc: Scanner::new(src, p.syntax == Syntax::Xml),
+            pending: None,
+            done: false,
+            at: 0,
+            lines: (0, 1),
+            last: None,
+            seqs: Vec::new(),
+        }
+    }
+
+    /// The walk up to `byte`: every start tag that starts at or before it, and every end tag
+    /// that ends at or before it, so an element whose end tag holds `byte` is still open.
+    fn reach(&mut self, byte: usize) {
+        while !self.done {
+            let step = match self.pending.take() {
+                Some(s) => s,
+                None => self.sc.step(),
+            };
+            let apply = match &step {
+                Step::Tag(Tag::Start { tag, .. }) => tag.start <= byte,
+                Step::Tag(Tag::End { tag, .. }) => tag.end <= byte,
+                Step::Eof | Step::Error(_) => true,
+            };
+            if !apply {
+                self.pending = Some(step);
+                return;
+            }
+            // Where the structure ends, the census closed what is open: its ends say so.
+            self.done = self.walk.apply(step, &mut self.sc).is_some();
+        }
+    }
+
+    fn end_of(&self, seq: u32) -> usize {
+        (self.census[seq as usize] & !REPEATS) as usize
+    }
+
+    /// The line of `byte`, counted on from the last one asked.
+    fn line_of(&mut self, byte: usize) -> u64 {
+        let (at, line) = self.lines;
+        let line = if byte >= at {
+            line + memchr::memchr_iter(b'\n', &self.src[at..byte]).count() as u64
+        } else {
+            line - memchr::memchr_iter(b'\n', &self.src[byte..at]).count() as u64
+        };
+        self.lines = (byte, line);
+        line
+    }
+
+    /// The Segment of the open element at `k` in the walk's stack.
+    fn segment(&mut self, k: usize) -> Segment {
+        let f = &self.walk.stack[k];
+        let (start, seq, ordinal) = (f.tag.start, f.seq, f.ordinal);
+        let (mut name, _, has_id) = self.walk.name_of(f);
+        if !has_id && self.census[seq as usize] & REPEATS != 0 {
+            name.push_str(&format!("[{ordinal}]"));
+        }
+        let end = self.end_of(seq);
+        let line = self.line_of(start);
+        let last = end.saturating_sub(1).max(start).min(self.src.len());
+        let end_line = line + memchr::memchr_iter(b'\n', &self.src[start..last]).count() as u64;
+        Segment {
+            kind: "tag".into(),
+            name,
+            line,
+            end_line,
+            level: None,
+            signature: None,
+        }
+    }
+}
+
+impl Cursor for MarkupCursor<'_> {
+    fn trail_at(&mut self, byte: usize) -> anyhow::Result<SharedTrail> {
+        if byte < self.at {
+            // An offset before the last one walks again from the start.
+            self.walk = Walk::new(self.src, self.p, Mode::Follow);
+            self.sc = Scanner::new(self.src, self.p.syntax == Syntax::Xml);
+            self.pending = None;
+            self.done = false;
+        }
+        self.at = byte;
+        self.reach(byte);
+        // The open elements hold `byte` unless they ended before it (an implied end the walk has
+        // not reached); a hidden element and one whose start tag holds `byte` are left out, as
+        // `TrailCursor` leaves them.
+        let mut seqs = std::mem::take(&mut self.seqs);
+        seqs.clear();
+        let mut ks = Vec::new();
+        for (k, f) in self.walk.stack.iter().enumerate().skip(1) {
+            if f.seq != NO_SEQ
+                && !f.info.hidden
+                && !f.tag.contains(&byte)
+                && self.end_of(f.seq) > byte
+            {
+                seqs.push(f.seq);
+                ks.push(k);
+            }
+        }
+        if let Some((s, t)) = &self.last
+            && *s == seqs
+        {
+            let t = t.clone();
+            self.seqs = seqs;
+            return Ok(t);
+        }
+        let mut trail = Vec::with_capacity(ks.len());
+        for (i, &k) in ks.iter().enumerate() {
+            // A Segment of the last Trail is the same element: its Segment is copied.
+            let known = self
+                .last
+                .as_ref()
+                .and_then(|(s, t)| s.iter().position(|&q| q == seqs[i]).map(|j| t[j].clone()));
+            trail.push(match known {
+                Some(seg) => seg,
+                None => self.segment(k),
+            });
+        }
+        let t: SharedTrail = std::rc::Rc::from(trail);
+        self.last = Some((seqs.clone(), t.clone()));
+        self.seqs = seqs;
+        Ok(t)
+    }
 }
 
 impl Processor for Markup {
@@ -473,6 +747,25 @@ impl Processor for Markup {
     fn names(&self, input: &Input, params: &toml::Table) -> anyhow::Result<Vec<Name>> {
         let p = self::params(params)?;
         Ok(names_of(&outline(input.bytes, p, Collector::for_names())))
+    }
+
+    /// The census of the file's elements, then a cursor that follows the Matches.
+    fn prepare<'a>(
+        &'a self,
+        input: Input<'a>,
+        params: &'a toml::Table,
+    ) -> anyhow::Result<Box<dyn Prepared + 'a>> {
+        let p = self::params(params)?;
+        Ok(Box::new(MarkupPrepared {
+            census: census(input.bytes, p),
+            input,
+            params,
+            p,
+        }))
+    }
+
+    fn capability(&self, _: &toml::Table) -> Capability {
+        Capability::Native
     }
 }
 
@@ -739,5 +1032,83 @@ mod tests {
         let deep = format!("{}needle{}", "<x>".repeat(100_000), "</x>".repeat(100_000));
         let t = needles(deep.as_bytes(), "xml");
         assert_eq!(t[0].1.matches('›').count() + 1, MAX_DEPTH);
+    }
+
+    #[test]
+    fn markup_preparation_keeps_sibling_numbers_and_implicit_closures() {
+        use crate::processors::Processor;
+        let params: toml::Table = toml::from_str("syntax = 'html'").unwrap();
+        for src in [
+            &b"<ul><li>needle<li>needle</ul>"[..],
+            &b"<nav><p>needle</p><p>needle</p></nav>"[..],
+        ] {
+            let input = crate::model::Input {
+                bytes: src,
+                path: std::path::Path::new("x.html"),
+                format: "html",
+                disk: None,
+            };
+            let anchors: Vec<_> = memchr::memmem::find_iter(src, b"needle").collect();
+            let expected = Markup.trails(&input, &params, &anchors).unwrap();
+            let prepared = Markup.prepare(input, &params).unwrap();
+            assert!(prepared.streams());
+            let mut c = prepared.cursor();
+            for (at, t) in anchors.into_iter().zip(expected) {
+                assert_eq!(c.trail_at(at).unwrap().as_ref(), t.as_slice());
+            }
+        }
+    }
+
+    /// The cursor against `trails` at every byte of `src`, then once more from the start.
+    fn every_byte(src: &[u8], syntax: &str) {
+        let input = Input {
+            bytes: src,
+            path: Path::new("x"),
+            format: syntax,
+            disk: None,
+        };
+        let params = params(syntax);
+        let anchors: Vec<usize> = (0..src.len()).collect();
+        let expected = Markup.trails(&input, &params, &anchors).unwrap();
+        let prepared = Markup.prepare(input, &params).unwrap();
+        let mut c = prepared.cursor();
+        for (&at, t) in anchors.iter().zip(&expected) {
+            let got = c.trail_at(at).unwrap();
+            assert_eq!(got.as_ref(), t.as_slice(), "byte {at} of {syntax}");
+        }
+        if let Some(t) = expected.first() {
+            assert_eq!(c.trail_at(0).unwrap().as_ref(), t.as_slice());
+        }
+    }
+
+    #[test]
+    fn the_markup_cursor_gives_the_trails_of_every_byte() {
+        every_byte(&fixture("page.html"), "html");
+        every_byte(&fixture("feed.xml"), "xml");
+        every_byte(&fixture("broken.xml"), "xml");
+        // Implied ends, white space before them, ids, raw text, void and empty elements.
+        every_byte(
+            b"<ul>\n<li>a\n<li>b  \n  \n</ul>\n<p>x<p>y\n<div id=k><p>z</p><p>w</div>\n",
+            "html",
+        );
+        every_byte(
+            b"<html><body><table><tr><td>a<td>b<tr><td>c</table><script>if (a<b) {}</script>\n<br><br><p/><P>q</p></BODY>",
+            "html",
+        );
+        // An XML error: what is open ends there.
+        every_byte(b"<a><b>x</b><c>y</c>\n<b>z</b></x><b>tail</b>", "xml");
+        // Past `LINEAR` distinct sibling tags, and past `MAX_DEPTH`.
+        let mut wide = b"<r>".to_vec();
+        for i in 0..12 {
+            wide.extend(format!("<t{i}>a</t{i}>\n<t{i}>b</t{i}>").bytes());
+        }
+        wide.extend(b"</r>");
+        every_byte(&wide, "xml");
+        let deep = format!(
+            "{}x{}",
+            "<d>".repeat(MAX_DEPTH + 4),
+            "</d>".repeat(MAX_DEPTH + 4)
+        );
+        every_byte(deep.as_bytes(), "xml");
     }
 }

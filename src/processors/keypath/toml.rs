@@ -61,19 +61,18 @@ pub fn outline(src: &[u8]) -> Outline {
     Outline::build(b.segments, src)
 }
 
-/// Whether `prepare` gives a native cursor: not yet, the model fallback (plan Task 9.4; Task
-/// 10.2 gives TOML its cursor).
-pub(crate) const NATIVE: bool = false;
+/// Whether `prepare` gives a native cursor: yes (plan Task 10.2).
+pub(crate) const NATIVE: bool = true;
 
-/// The prepared TOML file: the model fallback (`ModelPrepared`) until its cursor (Task 10.2).
+/// The prepared TOML file (plan Task 10.2): toml_edit parses the whole Document once, or the
+/// longest prefix that parses (D3), into the whole Outline, which the cursor walks. The
+/// Outline is the preparation: its Segments are the file's tables and keys, not its Matches.
 pub(crate) fn prepare<'a>(
     input: crate::model::Input<'a>,
-    params: &'a ::toml::Table,
+    _: &'a ::toml::Table,
 ) -> anyhow::Result<Box<dyn crate::processors::Prepared + 'a>> {
-    Ok(Box::new(crate::processors::cursor::ModelPrepared::new(
-        &super::Keypath,
-        input,
-        params,
+    Ok(Box::new(crate::processors::cursor::OutlinePrepared::new(
+        outline(input.bytes),
     )))
 }
 
@@ -772,6 +771,66 @@ mod tests {
                 vec![], // in a header's own text
                 vec!["fruit", "apple", "texture", "smooth"],
             ]
+        );
+    }
+
+    #[test]
+    fn toml_cursor_preserves_table_arrays_and_broken_tail() {
+        use crate::processors::{Processor, keypath::Keypath};
+        let src = b"[[products]]\nname='needle'\n[[products]]\nname='needle'\nbroken=[\n";
+        let params: ::toml::Table = ::toml::from_str("syntax = 'toml'").unwrap();
+        let input = crate::model::Input {
+            bytes: src,
+            path: std::path::Path::new("x.toml"),
+            format: "toml",
+            disk: None,
+        };
+        let anchors: Vec<_> = memchr::memmem::find_iter(src, b"needle").collect();
+        let expected = Keypath.trails(&input, &params, &anchors).unwrap();
+        let p = super::prepare(input, &params).unwrap();
+        assert!(p.streams());
+        let mut c = p.cursor();
+        for (at, trail) in anchors.into_iter().zip(expected) {
+            assert_eq!(c.trail_at(at).unwrap().as_ref(), trail.as_slice());
+        }
+    }
+
+    /// The cursor against `Keypath::trails` at every byte of `src`, then once more from the
+    /// start.
+    fn every_byte(src: &[u8], syntax: &str) {
+        use crate::processors::{Processor, keypath::Keypath};
+        let params: ::toml::Table = ::toml::from_str(&format!("syntax = '{syntax}'")).unwrap();
+        let input = crate::model::Input {
+            bytes: src,
+            path: std::path::Path::new("x"),
+            format: syntax,
+            disk: None,
+        };
+        let anchors: Vec<usize> = (0..src.len()).collect();
+        let expected = Keypath.trails(&input, &params, &anchors).unwrap();
+        let p = super::prepare(input, &params).unwrap();
+        let mut c = p.cursor();
+        for (&at, t) in anchors.iter().zip(&expected) {
+            assert_eq!(c.trail_at(at).unwrap().as_ref(), t.as_slice(), "byte {at}");
+        }
+        if let Some(t) = expected.first() {
+            assert_eq!(c.trail_at(0).unwrap().as_ref(), t.as_slice());
+        }
+    }
+
+    #[test]
+    fn the_toml_cursor_gives_the_trails_of_every_byte() {
+        every_byte(&fixture(), "toml");
+        every_byte(
+            &std::fs::read(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/data/interleaved.toml"),
+            )
+            .unwrap(),
+            "toml",
+        );
+        every_byte(
+            b"a.b = 1\n[t]\nx = { y = [1, 2] }\n[[t.u]]\nz = 'q'\nbroken = [\n",
+            "toml",
         );
     }
 }

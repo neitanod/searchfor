@@ -4,7 +4,7 @@
 pub mod grammars;
 mod quoted;
 
-use super::Processor;
+use super::{Capability, Prepared, Processor};
 use crate::model::{Input, Name, Trail};
 use crate::trail::{Outline, OutlineSegment, TrailCursor, names_of, trail_for};
 use std::cell::RefCell;
@@ -297,6 +297,32 @@ impl Processor for TreeSitter {
             return Ok(Vec::new());
         };
         Ok(names_of(&outline(&c, &tree, input.bytes, None)))
+    }
+
+    /// The file parsed once and its whole Outline built from one query run; the tree is freed
+    /// as soon as the Outline is built, and the cursor walks the Outline (M5b spec §6.1). A
+    /// failed query or a file over `max_bytes` fails as `trails` does; a file that does not
+    /// parse has no Trails.
+    fn prepare<'a>(
+        &'a self,
+        input: Input<'a>,
+        params: &'a toml::Table,
+    ) -> anyhow::Result<Box<dyn Prepared + 'a>> {
+        let Some(c) = self.compiled(input.format, params)? else {
+            return Err(crate::helper::Unavailable.into());
+        };
+        if self.too_big(&input, params)? {
+            return Err(crate::helper::Unavailable.into());
+        }
+        let outline = match parse(&c, input.bytes) {
+            Some(tree) => outline(&c, &tree, input.bytes, None),
+            None => Outline::default(),
+        };
+        Ok(Box::new(super::cursor::OutlinePrepared::new(outline)))
+    }
+
+    fn capability(&self, _: &toml::Table) -> Capability {
+        Capability::Native
     }
 }
 
@@ -831,11 +857,14 @@ mod tests {
     /// files of the cargo registry that match `impl Drop for`, with and without the byte range
     /// of the real anchors. Run with `cargo test --release -- --ignored --nocapture query_share`.
     #[test]
-    #[ignore]
+    #[ignore = "developer-only: reads the local Cargo registry (CARGO_HOME) with rg (SEARCHFOR_RG)"]
     fn query_share_on_the_cargo_registry() {
         use std::time::{Duration, Instant};
-        let home = std::env::var("HOME").unwrap();
-        let roots: Vec<_> = std::fs::read_dir(Path::new(&home).join(".cargo/registry/src"))
+        let cargo_home = std::env::var_os("CARGO_HOME").map_or_else(
+            || std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cargo"),
+            std::path::PathBuf::from,
+        );
+        let roots: Vec<_> = std::fs::read_dir(cargo_home.join("registry/src"))
             .unwrap()
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| {
@@ -843,7 +872,8 @@ mod tests {
                     .is_some_and(|n| n.to_string_lossy().starts_with("index.crates.io-"))
             })
             .collect();
-        let out = std::process::Command::new("rg")
+        let rg = std::env::var_os("SEARCHFOR_RG").unwrap_or_else(|| "rg".into());
+        let out = std::process::Command::new(rg)
             .args(["-l", "-t", "rust", "impl Drop for"])
             .args(&roots)
             .output()
@@ -886,5 +916,91 @@ mod tests {
             t_range.as_secs_f64(),
             segments.1
         );
+    }
+
+    #[test]
+    fn code_preparation_uses_one_tree_and_matches_legacy_trails() {
+        use crate::processors::Processor;
+        let params: toml::Table = toml::from_str(
+            r#"
+            grammar = 'rust'
+            query = '(function_item name: (identifier) @name) @segment'
+            kinds = { function_item = 'function' }
+        "#,
+        )
+        .unwrap();
+        let src = b"fn sample() { let needle = 1; let again = needle; }\n";
+        let input = crate::model::Input {
+            bytes: src,
+            path: std::path::Path::new("x.rs"),
+            format: "rust",
+            disk: None,
+        };
+        let ts = TreeSitter::default();
+        let anchors: Vec<_> = memchr::memmem::find_iter(src, b"needle").collect();
+        let expected = ts.trails(&input, &params, &anchors).unwrap();
+        let prepared = ts.prepare(input, &params).unwrap();
+        assert!(prepared.streams());
+        let mut c = prepared.cursor();
+        let a = c.trail_at(anchors[0]).unwrap();
+        let b = c.trail_at(anchors[1]).unwrap();
+        assert_eq!(a.as_ref(), expected[0].as_slice());
+        assert_eq!(b.as_ref(), expected[1].as_slice());
+        assert!(std::rc::Rc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn the_code_cursor_gives_the_trails_of_every_byte() {
+        use crate::processors::Processor;
+        for (format, file) in [
+            ("rust", "thing.rs"),
+            ("go", "server.go"),
+            ("python", "outer.py"),
+            ("php", "cart.php"),
+            ("typescript", "shape.ts"),
+            ("tsx", "view.tsx"),
+            ("javascript", "widget.js"),
+            ("bash", "deploy.sh"),
+        ] {
+            let src = fixture(file);
+            let input = Input {
+                bytes: &src,
+                path: Path::new(file),
+                format,
+                disk: None,
+            };
+            let params = params(format);
+            let ts = TreeSitter::default();
+            let anchors: Vec<usize> = (0..src.len()).collect();
+            let expected = ts.trails(&input, &params, &anchors).unwrap();
+            let prepared = ts.prepare(input, &params).unwrap();
+            let mut c = prepared.cursor();
+            for (&at, t) in anchors.iter().zip(&expected) {
+                assert_eq!(
+                    c.trail_at(at).unwrap().as_ref(),
+                    t.as_slice(),
+                    "{file} byte {at}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn code_preparation_refuses_a_file_over_max_bytes_once() {
+        use crate::processors::Processor;
+        let mut params = params("rust");
+        params.insert("max_bytes".into(), toml::Value::Integer(4));
+        let src = b"fn needle() {}\n";
+        let input = Input {
+            bytes: src,
+            path: Path::new("x.rs"),
+            format: "rust",
+            disk: None,
+        };
+        let ts = TreeSitter::default();
+        let first = ts.prepare(input, &params).err().unwrap();
+        assert!(first.downcast_ref::<crate::helper::Unavailable>().is_none());
+        let again = ts.prepare(input, &params).err().unwrap();
+        assert!(again.downcast_ref::<crate::helper::Unavailable>().is_some());
     }
 }

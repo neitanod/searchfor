@@ -5,7 +5,7 @@
 //! and the Segments still open close at the error (D3).
 use super::collect::Collector;
 use crate::trail::OutlineSegment;
-use saphyr_parser::{Event, Marker, Parser, ScalarStyle};
+use saphyr_parser::{Event, Marker, Parser, ScalarStyle, StrInput};
 use std::ops::Range;
 
 /// A complex key (`? [a, b]`) is named by its first 40 characters (spec §5.2).
@@ -85,27 +85,105 @@ fn slice(text: &str, r: Range<usize>) -> &str {
     text.get(r).unwrap_or("")
 }
 
+/// What a walk reports: the events of `Collector`, which receives them for `trails` and
+/// `names`; the preparation of a cursor (`Census`) and its walk (`Follow`) receive them too.
+trait Sink {
+    fn open(&mut self, seg: OutlineSegment);
+    fn close(&mut self, end: usize);
+    fn hide_top(&mut self);
+    fn reveal(&mut self, kind: &str);
+}
+
+impl Sink for Collector<'_> {
+    fn open(&mut self, seg: OutlineSegment) {
+        Collector::open(self, seg)
+    }
+
+    fn close(&mut self, end: usize) {
+        Collector::close(self, end)
+    }
+
+    fn hide_top(&mut self) {
+        Collector::hide_top(self)
+    }
+
+    fn reveal(&mut self, kind: &str) {
+        Collector::reveal(self, kind)
+    }
+}
+
 /// Walks `src`, reporting its Segments to `c`; returns where the walk ended (the end of the
 /// file, or a syntax error), where `Collector::finish` closes what is still open.
 pub fn walk(src: &[u8], c: &mut Collector) -> usize {
-    let Ok(text) = std::str::from_utf8(src) else {
-        return 0;
-    };
-    let mut bytes = Bytes {
-        text,
-        ascii: text.is_ascii(),
-        at: (0, 0),
-    };
-    let mut frames: Vec<Frame> = Vec::new();
-    let mut docs = 0;
-    let mut last_end = 0;
-    let parser = Parser::new_from_str(text);
-    for next in parser {
-        let (ev, span) = match next {
-            Ok(e) => e,
-            Err(e) => return bytes.of(e.marker()).min(src.len()),
+    let mut w = Walker::new(src);
+    loop {
+        match w.next() {
+            Next::Event(ev, s, e) => w.apply(ev, s, e, c),
+            Next::Done(end) => return end,
+        }
+    }
+}
+
+/// An event of the walk with its Source range, or where the walk ended.
+enum Next<'t> {
+    Event(Event<'t>, usize, usize),
+    Done(usize),
+}
+
+/// The walk over saphyr-parser's events, one at a time, so a cursor can stop it between two
+/// Matches and go on later.
+struct Walker<'t> {
+    text: &'t str,
+    bytes: Bytes<'t>,
+    frames: Vec<Frame>,
+    docs: usize,
+    last_end: usize,
+    /// None when `src` is not UTF-8: the walk ends at once, at 0.
+    parser: Option<Parser<'t, StrInput<'t>>>,
+    done: Option<usize>,
+}
+
+impl<'t> Walker<'t> {
+    fn new(src: &'t [u8]) -> Self {
+        let text = std::str::from_utf8(src).ok();
+        Walker {
+            text: text.unwrap_or(""),
+            bytes: Bytes {
+                text: text.unwrap_or(""),
+                ascii: text.is_some_and(str::is_ascii),
+                at: (0, 0),
+            },
+            frames: Vec::new(),
+            docs: 0,
+            last_end: 0,
+            parser: text.map(Parser::new_from_str),
+            done: text.is_none().then_some(0),
+        }
+    }
+
+    /// The next event, with the bytes of its span.
+    fn next(&mut self) -> Next<'t> {
+        if let Some(end) = self.done {
+            return Next::Done(end);
+        }
+        let parser = self.parser.as_mut().expect("a UTF-8 file");
+        let end = match parser.next() {
+            Some(Ok((ev, span))) => {
+                let (s, e) = (self.bytes.of(&span.start), self.bytes.of(&span.end));
+                return Next::Event(ev, s, e);
+            }
+            Some(Err(e)) => self.bytes.of(e.marker()).min(self.text.len()),
+            None => self.text.len(),
         };
-        let (s, e) = (bytes.of(&span.start), bytes.of(&span.end));
+        self.done = Some(end);
+        Next::Done(end)
+    }
+
+    /// Reports what event `ev`, over `s..e`, opens and closes.
+    fn apply<S: Sink + ?Sized>(&mut self, ev: Event<'t>, s: usize, e: usize, c: &mut S) {
+        let text = self.text;
+        let frames = &mut self.frames;
+        let last_end = &mut self.last_end;
         if let Some(Frame::Complex { start, depth }) = frames.last_mut() {
             match ev {
                 Event::MappingStart(..) | Event::SequenceStart(..) => *depth += 1,
@@ -113,19 +191,20 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
                     *depth -= 1;
                     // A flow collection's end event spans its `]` or `}`; a block one is empty.
                     if e > s {
-                        last_end = last_end.max(e);
+                        *last_end = (*last_end).max(e);
                     }
                 }
-                Event::Scalar(..) | Event::Alias(_) => last_end = e,
+                Event::Scalar(..) | Event::Alias(_) => *last_end = e,
                 _ => {}
             }
             if *depth == 0 {
                 let start = *start;
                 frames.pop();
-                let raw = slice(text, start..last_end.max(start));
+                let raw = slice(text, start..(*last_end).max(start));
                 let first = raw.lines().next().unwrap_or("");
                 let name: String = first.chars().take(COMPLEX_KEY_CHARS).collect();
-                let mut k = OutlineSegment::new("key", name.clone(), start..start, start..last_end);
+                let mut k =
+                    OutlineSegment::new("key", name.clone(), start..start, start..*last_end);
                 // The name is a prefix of the key's first line: verbatim.
                 k.name = Some(vec![(0..name.len(), start..start + name.len())]);
                 k.name_anchor = start;
@@ -135,11 +214,12 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
                     *key_name = name;
                 }
             }
-            continue;
+            return;
         }
         match ev {
             Event::DocumentStart(_) => {
-                docs += 1;
+                self.docs += 1;
+                let docs = self.docs;
                 if docs == 2 {
                     c.reveal("document");
                 }
@@ -150,13 +230,13 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
             }
             Event::DocumentEnd => {
                 frames.pop();
-                c.close(last_end.max(s));
+                c.close((*last_end).max(s));
             }
-            Event::MappingStart(..) | Event::SequenceStart(..) if expecting_key(&frames) => {
+            Event::MappingStart(..) | Event::SequenceStart(..) if expecting_key(frames) => {
                 frames.push(Frame::Complex { start: s, depth: 1 });
             }
             Event::MappingStart(..) => {
-                begin_value(&mut frames, c, s);
+                begin_value(frames, c, s);
                 frames.push(Frame::Map {
                     key: false,
                     key_name: String::new(),
@@ -164,7 +244,7 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
             }
             Event::SequenceStart(..) => {
                 let at_top = matches!(frames.last(), None | Some(Frame::Doc));
-                let holder = begin_value(&mut frames, c, s);
+                let holder = begin_value(frames, c, s);
                 if !at_top {
                     // The key or element that holds the sequence is hidden (spec §5.2).
                     c.hide_top();
@@ -175,13 +255,13 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
                 // A flow collection's end event spans its `]` or `}` (`a: {}` ends at byte 5); a
                 // block collection's is empty, at the next token, so it ends at its last scalar.
                 if e > s {
-                    last_end = last_end.max(e);
+                    *last_end = (*last_end).max(e);
                 }
                 frames.pop();
-                end_value(&mut frames, c, last_end);
+                end_value(frames, c, *last_end);
             }
-            Event::Scalar(value, style, ..) if expecting_key(&frames) => {
-                last_end = e;
+            Event::Scalar(value, style, ..) if expecting_key(frames) => {
+                *last_end = e;
                 let (name, pieces) = match style {
                     ScalarStyle::Literal | ScalarStyle::Folded => block_name(text, s..e, &value),
                     _ => (value.to_string(), name_pieces(text, s..e, &value, style)),
@@ -195,9 +275,9 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
                     *key_name = name;
                 }
             }
-            Event::Alias(_) if expecting_key(&frames) => {
+            Event::Alias(_) if expecting_key(frames) => {
                 // An alias used as a key (`*a : x`) is named by its source text.
-                last_end = e;
+                *last_end = e;
                 let name = slice(text, s..e).to_string();
                 let mut k = OutlineSegment::new("key", name.clone(), s..s, s..e);
                 k.name = Some(vec![(0..name.len(), s..e)]);
@@ -209,14 +289,13 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
                 }
             }
             Event::Scalar(..) | Event::Alias(_) => {
-                last_end = e;
-                begin_value(&mut frames, c, s);
-                end_value(&mut frames, c, e);
+                *last_end = e;
+                begin_value(frames, c, s);
+                end_value(frames, c, e);
             }
             _ => {}
         }
     }
-    src.len()
 }
 
 /// The top frame is a mapping waiting for a key.
@@ -227,7 +306,7 @@ fn expecting_key(frames: &[Frame]) -> bool {
 /// A value starts at `s`. In a sequence it opens the element Segment `holder[n]` and returns
 /// that name; in a mapping the open key already holds it, and its name is returned; at the top
 /// of a document the name is empty, so a top-level sequence's elements are `[0]`, `[1]`…
-fn begin_value(frames: &mut [Frame], c: &mut Collector, s: usize) -> String {
+fn begin_value<S: Sink + ?Sized>(frames: &mut [Frame], c: &mut S, s: usize) -> String {
     match frames.last_mut() {
         Some(Frame::Seq { holder, n }) => {
             let name = format!("{holder}[{n}]");
@@ -244,7 +323,7 @@ fn begin_value(frames: &mut [Frame], c: &mut Collector, s: usize) -> String {
 }
 
 /// The value that began last ends at `end`: it closes the key or the element that holds it.
-fn end_value(frames: &mut [Frame], c: &mut Collector, end: usize) {
+fn end_value<S: Sink + ?Sized>(frames: &mut [Frame], c: &mut S, end: usize) {
     match frames.last_mut() {
         Some(Frame::Map { key, .. }) if *key => {
             c.close(end);
@@ -481,20 +560,266 @@ fn unescape(part: &str) -> String {
     out
 }
 
-/// Whether `prepare` gives a native cursor: not yet, the model fallback (plan Task 9.4; Task
-/// 10.2 gives YAML its cursor).
-pub(crate) const NATIVE: bool = false;
+/// Whether `prepare` gives a native cursor: yes (plan Task 10.2).
+pub(crate) const NATIVE: bool = true;
 
-/// The prepared YAML file: the model fallback (`ModelPrepared`) until its cursor (Task 10.2).
+/// The prepared YAML file (plan Task 10.2): one walk over the whole file records where each
+/// Segment ends and whether it is hidden (a key that holds a sequence; the document while it is
+/// the only one), which a Trail needs before the walk that follows the Matches reaches them.
+struct YamlPrepared<'a> {
+    input: crate::model::Input<'a>,
+    params: &'a ::toml::Table,
+    census: Vec<u64>,
+}
+
+/// Per Segment, in the order the walk opens them: where it ends, with `HIDDEN` set when it is
+/// hidden. 8 bytes per Segment, the preparation of a YAML file (M5b spec §6.1).
+const HIDDEN: u64 = 1 << 63;
+
+/// The `Sink` of the preparation: `Census`'s ends and hidden marks, with the Segments open and
+/// the documents seen.
+#[derive(Default)]
+struct Census {
+    ends: Vec<u64>,
+    /// Open Segments: their place in `ends` and their start.
+    open: Vec<(u32, usize)>,
+    docs: Vec<u32>,
+}
+
+impl Sink for Census {
+    fn open(&mut self, seg: OutlineSegment) {
+        let k = self.ends.len() as u32;
+        if seg.segment.kind == "document" {
+            self.docs.push(k);
+        }
+        self.ends.push(if seg.hidden { HIDDEN } else { 0 });
+        self.open.push((k, seg.range.start));
+    }
+
+    fn close(&mut self, end: usize) {
+        if let Some((k, start)) = self.open.pop() {
+            let e = &mut self.ends[k as usize];
+            *e = (*e & HIDDEN) | end.max(start) as u64;
+        }
+    }
+
+    fn hide_top(&mut self) {
+        if let Some(&(k, _)) = self.open.last() {
+            self.ends[k as usize] |= HIDDEN;
+        }
+    }
+
+    fn reveal(&mut self, kind: &str) {
+        // The walk reveals documents only.
+        debug_assert_eq!(kind, "document");
+        for &k in &self.docs {
+            self.ends[k as usize] &= !HIDDEN;
+        }
+    }
+}
+
+/// The prepared YAML file: the census, then a cursor that follows the Matches.
 pub(crate) fn prepare<'a>(
     input: crate::model::Input<'a>,
     params: &'a ::toml::Table,
 ) -> anyhow::Result<Box<dyn crate::processors::Prepared + 'a>> {
-    Ok(Box::new(crate::processors::cursor::ModelPrepared::new(
-        &super::Keypath,
+    let mut c = Census::default();
+    let mut w = Walker::new(input.bytes);
+    let end = loop {
+        match w.next() {
+            Next::Event(ev, s, e) => w.apply(ev, s, e, &mut c),
+            Next::Done(end) => break end,
+        }
+    };
+    while !c.open.is_empty() {
+        c.close(end);
+    }
+    Ok(Box::new(YamlPrepared {
         input,
         params,
-    )))
+        census: c.ends,
+    }))
+}
+
+impl crate::processors::Prepared for YamlPrepared<'_> {
+    fn cursor(&self) -> Box<dyn crate::processors::Cursor + '_> {
+        Box::new(YamlCursor {
+            src: self.input.bytes,
+            census: &self.census,
+            walk: Walker::new(self.input.bytes),
+            follow: Follow::default(),
+            pending: None,
+            at: 0,
+            lines: (0, 1),
+            last: None,
+        })
+    }
+
+    fn names(&self) -> anyhow::Result<Vec<crate::model::Name>> {
+        use crate::processors::Processor;
+        super::Keypath.names(&self.input, self.params)
+    }
+
+    fn streams(&self) -> bool {
+        true
+    }
+}
+
+/// The `Sink` of the cursor's walk: the Segments open where the walk is, and those closed at an
+/// end past the offset asked (a scalar that holds the offset closes its key at its own end), in
+/// the order they opened, each with its place in the census.
+#[derive(Default)]
+struct Follow {
+    segs: Vec<(u32, OutlineSegment, bool)>,
+    next: u32,
+    /// The offset asked: a Segment that ends at or before it is dropped as it closes.
+    target: usize,
+}
+
+impl Sink for Follow {
+    fn open(&mut self, seg: OutlineSegment) {
+        self.segs.push((self.next, seg, false));
+        self.next += 1;
+    }
+
+    fn close(&mut self, end: usize) {
+        let Some(i) = self.segs.iter().rposition(|(_, _, closed)| !closed) else {
+            return;
+        };
+        if end.max(self.segs[i].1.range.start) <= self.target {
+            self.segs.remove(i);
+        } else {
+            self.segs[i].2 = true;
+        }
+    }
+
+    // Hidden marks come from the census, which knows how the file ends.
+    fn hide_top(&mut self) {}
+
+    fn reveal(&mut self, _: &str) {}
+}
+
+/// The Trails of a YAML file in file order.
+struct YamlCursor<'s> {
+    src: &'s [u8],
+    census: &'s [u64],
+    walk: Walker<'s>,
+    follow: Follow,
+    /// The event read and not applied yet: it starts past the last offset asked.
+    pending: Option<(Event<'s>, usize, usize)>,
+    at: usize,
+    /// The line of byte `.0`, the last Segment start counted.
+    lines: (usize, u64),
+    /// The last Trail given, by the census places of its Segments.
+    last: Option<(Vec<u32>, crate::model::SharedTrail)>,
+}
+
+impl YamlCursor<'_> {
+    fn end_of(&self, k: u32) -> usize {
+        (self.census[k as usize] & !HIDDEN) as usize
+    }
+
+    /// The walk up to `byte`: every event that starts at or before it.
+    fn reach(&mut self, byte: usize) {
+        self.follow.target = byte;
+        // What closed at an end now passed is dropped.
+        let census = self.census;
+        self.follow
+            .segs
+            .retain(|(k, _, closed)| !closed || (census[*k as usize] & !HIDDEN) as usize > byte);
+        loop {
+            let (ev, s, e) = match self.pending.take() {
+                Some(p) => p,
+                None => match self.walk.next() {
+                    Next::Event(ev, s, e) => (ev, s, e),
+                    // Where the walk ends, the census closed what is open.
+                    Next::Done(_) => return,
+                },
+            };
+            if s > byte {
+                self.pending = Some((ev, s, e));
+                return;
+            }
+            self.walk.apply(ev, s, e, &mut self.follow);
+        }
+    }
+
+    /// The line of `byte`, counted on from the last one asked.
+    fn line_of(&mut self, byte: usize) -> u64 {
+        let (at, line) = self.lines;
+        let line = if byte >= at {
+            line + memchr::memchr_iter(b'\n', &self.src[at..byte]).count() as u64
+        } else {
+            line - memchr::memchr_iter(b'\n', &self.src[byte..at]).count() as u64
+        };
+        self.lines = (byte, line);
+        line
+    }
+}
+
+impl crate::processors::Cursor for YamlCursor<'_> {
+    fn trail_at(&mut self, byte: usize) -> anyhow::Result<crate::model::SharedTrail> {
+        if byte < self.at {
+            // An offset before the last one walks again from the start.
+            self.walk = Walker::new(self.src);
+            self.follow = Follow::default();
+            self.pending = None;
+        }
+        self.at = byte;
+        self.reach(byte);
+        // The Segments that hold `byte`, in the order of `Outline::build`: by start, the longer
+        // first, and of two equal ranges the inner one, which closed first, first.
+        let mut held: Vec<(u32, usize, usize)> = self
+            .follow
+            .segs
+            .iter()
+            .filter(|(k, seg, _)| {
+                let c = self.census[*k as usize];
+                c & HIDDEN == 0
+                    && seg.range.start <= byte
+                    && (c & !HIDDEN) as usize > byte
+                    && !seg.label.contains(&byte)
+            })
+            .map(|(k, seg, _)| (*k, seg.range.start, self.end_of(*k)))
+            .collect();
+        held.sort_by(|a, b| a.1.cmp(&b.1).then(b.2.cmp(&a.2)).then(b.0.cmp(&a.0)));
+        let keys: Vec<u32> = held.iter().map(|h| h.0).collect();
+        if let Some((k, t)) = &self.last
+            && *k == keys
+        {
+            return Ok(t.clone());
+        }
+        let mut trail = Vec::with_capacity(held.len());
+        for &(k, start, end) in &held {
+            let known = self
+                .last
+                .as_ref()
+                .and_then(|(ks, t)| ks.iter().position(|&q| q == k).map(|j| t[j].clone()));
+            let seg = match known {
+                Some(seg) => seg,
+                None => {
+                    let mut seg = self
+                        .follow
+                        .segs
+                        .iter()
+                        .find(|(q, _, _)| *q == k)
+                        .expect("a held Segment")
+                        .1
+                        .segment
+                        .clone();
+                    seg.line = self.line_of(start);
+                    let last = end.saturating_sub(1).max(start).min(self.src.len());
+                    seg.end_line = seg.line
+                        + memchr::memchr_iter(b'\n', &self.src[start..last]).count() as u64;
+                    seg
+                }
+            };
+            trail.push(seg);
+        }
+        let t: crate::model::SharedTrail = std::rc::Rc::from(trail);
+        self.last = Some((keys, t.clone()));
+        Ok(t)
+    }
 }
 
 #[cfg(test)]
@@ -759,5 +1084,69 @@ mod tests {
             needles(src, "yaml"),
             vec![vec!["b"], vec!["*x"], vec!["it's"]]
         );
+    }
+
+    #[test]
+    fn yaml_second_document_is_known_before_the_first_trail_prints() {
+        use crate::processors::{Processor, keypath::Keypath};
+        let src = b"a: needle\n---\nb: needle\n";
+        let params: ::toml::Table = ::toml::from_str("syntax = 'yaml'").unwrap();
+        let input = crate::model::Input {
+            bytes: src,
+            path: std::path::Path::new("x.yaml"),
+            format: "yaml",
+            disk: None,
+        };
+        let anchors: Vec<_> = memchr::memmem::find_iter(src, b"needle").collect();
+        let expected = Keypath.trails(&input, &params, &anchors).unwrap();
+        let p = super::prepare(input, &params).unwrap();
+        assert!(p.streams());
+        let mut c = p.cursor();
+        for (at, trail) in anchors.into_iter().zip(expected) {
+            assert_eq!(c.trail_at(at).unwrap().as_ref(), trail.as_slice());
+        }
+    }
+
+    /// The cursor against `Keypath::trails` at every byte of `src`, then once more from the
+    /// start.
+    fn every_byte(src: &[u8], syntax: &str) {
+        use crate::processors::{Processor, keypath::Keypath};
+        let params: ::toml::Table = ::toml::from_str(&format!("syntax = '{syntax}'")).unwrap();
+        let input = crate::model::Input {
+            bytes: src,
+            path: std::path::Path::new("x"),
+            format: syntax,
+            disk: None,
+        };
+        let anchors: Vec<usize> = (0..src.len()).collect();
+        let expected = Keypath.trails(&input, &params, &anchors).unwrap();
+        let p = super::prepare(input, &params).unwrap();
+        let mut c = p.cursor();
+        for (&at, t) in anchors.iter().zip(&expected) {
+            assert_eq!(c.trail_at(at).unwrap().as_ref(), t.as_slice(), "byte {at}");
+        }
+        if let Some(t) = expected.first() {
+            assert_eq!(c.trail_at(0).unwrap().as_ref(), t.as_slice());
+        }
+    }
+
+    #[test]
+    fn the_yaml_cursor_gives_the_trails_of_every_byte() {
+        every_byte(&fixture("config.yaml"), "yaml");
+        every_byte(&fixture("multi.yaml"), "yaml");
+        // A mapping in a sequence element starts with its first key; flow collections; a
+        // complex key; block scalars; an alias key; documents ended by `...`; not ASCII.
+        every_byte(
+            "- a: 1\n  b: [x, {y: z}]\n- - c\n  - d: |\n      text\n      more\n? [k, l]\n: v\n"
+                .as_bytes(),
+            "yaml",
+        );
+        every_byte(
+            "--- \nk: &x é\n*x : w\n...\n---\nñ: >\n  folded\n  lines\n\n# end\n".as_bytes(),
+            "yaml",
+        );
+        // A syntax error: what is open ends there.
+        every_byte(b"a:\n  b: 1\n  c: [2\nd: 3\n", "yaml");
+        every_byte(b"a: 1\nb: needle\n", "yaml");
     }
 }
