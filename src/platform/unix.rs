@@ -5,6 +5,8 @@ use super::{Child, Input, Limits, Output, PipeReader, PipeWriter, SpawnSpec};
 use std::io;
 use std::os::fd::OwnedFd;
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
@@ -54,8 +56,9 @@ pub(super) fn watch_console(
 
 pub(super) struct Process {
     child: std::process::Child,
-    /// Set once `wait` or `try_wait` reaped it: its pid may then belong to another process.
-    status: Option<ExitStatus>,
+    /// Set once `wait` or `try_wait` reaped it, and shared with every `WaitToken`: its pid may
+    /// then belong to another process.
+    reaped: Arc<AtomicBool>,
 }
 
 pub(super) fn spawn(spec: SpawnSpec, _limits: Limits) -> io::Result<Child> {
@@ -99,7 +102,7 @@ pub(super) fn spawn(spec: SpawnSpec, _limits: Limits) -> io::Result<Child> {
             .map(|p| PipeReader(OwnedFd::from(p).into())),
         process: Process {
             child,
-            status: None,
+            reaped: Arc::new(AtomicBool::new(false)),
         },
     })
 }
@@ -117,70 +120,67 @@ impl Process {
     pub(super) fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         let s = self.child.try_wait()?;
         if s.is_some() {
-            self.status = s;
+            self.reaped.store(true, SeqCst);
         }
         Ok(s)
     }
 
     pub(super) fn wait(&mut self) -> io::Result<ExitStatus> {
         let s = self.child.wait()?;
-        self.status = Some(s);
+        self.reaped.store(true, SeqCst);
         Ok(s)
     }
 
     pub(super) fn wait_token(&self) -> io::Result<WaitToken> {
         Ok(WaitToken {
             pid: self.child.id() as libc::pid_t,
-            reaped: self.status.is_some(),
+            reaped: self.reaped.clone(),
         })
     }
 }
 
 /// Unix has no handle to a process that outlives its reaping, so the token asks the kernel
-/// about the pid with `waitid(WNOWAIT)`, which reports an ended child without reaping it, and
-/// polls. A pid its owner reaped meanwhile is no longer s4's child (`ECHILD`): it ended.
+/// about the pid with `waitid(WNOWAIT)`, which reports an ended child without reaping it:
+/// blocked in it without a timeout, polling with one. The owner's reap is shared with the
+/// token, which then stops asking about a pid that may be another child's; a reap the token
+/// was blocked through leaves the pid no child of s4's (`ECHILD`): it ended.
 pub(super) struct WaitToken {
     pid: libc::pid_t,
-    reaped: bool,
+    reaped: Arc<AtomicBool>,
 }
 
 impl WaitToken {
     pub(super) fn wait(&self, timeout: Option<Duration>) -> io::Result<bool> {
-        if self.reaped {
-            return Ok(true);
-        }
-        let deadline = timeout.map(|t| Instant::now() + t);
+        let Some(timeout) = timeout else {
+            return self.ended(true);
+        };
+        let deadline = Instant::now() + timeout;
         let mut pause = Duration::from_millis(1);
         loop {
-            if self.ended()? {
+            if self.ended(false)? {
                 return Ok(true);
             }
-            let left = match deadline {
-                Some(d) => match d.checked_duration_since(Instant::now()) {
-                    Some(left) if !left.is_zero() => left,
-                    _ => return Ok(false),
-                },
-                None => pause,
+            let left = match deadline.checked_duration_since(Instant::now()) {
+                Some(left) if !left.is_zero() => left,
+                _ => return Ok(false),
             };
             std::thread::sleep(pause.min(left));
             pause = (pause * 2).min(Duration::from_millis(10));
         }
     }
 
-    fn ended(&self) -> io::Result<bool> {
+    /// Whether the process ended; `block` waits in the kernel until it does.
+    fn ended(&self, block: bool) -> io::Result<bool> {
+        let flags = libc::WEXITED | libc::WNOWAIT | if block { 0 } else { libc::WNOHANG };
         loop {
+            if self.reaped.load(SeqCst) {
+                return Ok(true);
+            }
             // SAFETY: waitid writes into the zeroed siginfo_t it is given, and nothing else.
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            let rc = unsafe {
-                libc::waitid(
-                    libc::P_PID,
-                    self.pid as libc::id_t,
-                    &mut info,
-                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-                )
-            };
+            let rc = unsafe { libc::waitid(libc::P_PID, self.pid as libc::id_t, &mut info, flags) };
             if rc == 0 {
-                return Ok(siginfo_pid(&info) != 0);
+                return Ok(block || siginfo_pid(&info) != 0);
             }
             let e = io::Error::last_os_error();
             match e.raw_os_error() {
@@ -222,6 +222,44 @@ mod tests {
         assert!(c.wait_token().unwrap().wait(Some(Duration::ZERO)).unwrap());
         // A kill after the reap signals nothing and is not an error.
         assert!(c.kill().is_ok());
+    }
+
+    /// A token made before its owner reaped learns of the reap from the owner, not from the
+    /// pid: once reaped, the pid may be another child of s4's, still running, and the token
+    /// must not wait for that one.
+    #[test]
+    fn a_token_does_not_wait_for_a_reused_pid() {
+        let mut a = spawn(SpawnSpec::new("true"), Limits::default()).unwrap();
+        let mut token = a.wait_token().unwrap().0;
+        assert!(a.wait().unwrap().success());
+        let mut s = SpawnSpec::new("sleep");
+        s.args = vec!["5".into()];
+        let mut b = spawn(s, Limits::default()).unwrap();
+        // The kernel gave the reaped pid to `b`.
+        token.pid = b.id() as libc::pid_t;
+        let began = Instant::now();
+        assert!(token.wait(Some(Duration::from_secs(3))).unwrap());
+        assert!(token.wait(None).unwrap());
+        let took = began.elapsed();
+        assert!(took < Duration::from_secs(1), "{took:?}");
+        b.kill().unwrap();
+        b.wait().unwrap();
+    }
+
+    /// Without a timeout the token blocks until the end and returns at it.
+    #[test]
+    fn a_token_without_a_timeout_returns_when_the_process_ends() {
+        let mut s = SpawnSpec::new("sleep");
+        s.args = vec!["0.3".into()];
+        let mut c = spawn(s, Limits::default()).unwrap();
+        let token = c.wait_token().unwrap();
+        let began = Instant::now();
+        assert!(token.wait(None).unwrap());
+        let took = began.elapsed();
+        assert!(took >= Duration::from_millis(250), "{took:?}");
+        assert!(took < Duration::from_secs(10), "{took:?}");
+        // Still not reaped by the token.
+        assert!(c.try_wait().unwrap().unwrap().success());
     }
 
     #[cfg(target_os = "linux")]
