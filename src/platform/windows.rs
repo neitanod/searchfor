@@ -923,13 +923,15 @@ mod tests {
     #[test]
     fn windows_explicit_path_without_suffix_finds_the_exe() {
         let dir = tempfile::tempdir().unwrap();
-        let cmd = std::path::Path::new(&std::env::var_os("SystemRoot").unwrap())
-            .join("System32")
-            .join("cmd.exe");
-        // Only `helper.exe` exists; the caller names `helper`.
-        std::fs::copy(cmd, dir.path().join("helper.exe")).unwrap();
+        // Only `helper.exe` exists; the caller names `helper`. A copy of this test binary:
+        // a copy of cmd.exe outside System32 lacks its language resources and exits 1.
+        std::fs::copy(
+            std::env::current_exe().unwrap(),
+            dir.path().join("helper.exe"),
+        )
+        .unwrap();
         let mut s = SpawnSpec::new(dir.path().join("helper").into_os_string());
-        s.args = ["/c", "exit", "7"].into_iter().map(Into::into).collect();
+        s.args = ["--list"].into_iter().map(Into::into).collect();
         s.stdout = Output::Null;
         s.stderr = Output::Null;
         let mut c = spawn(
@@ -939,7 +941,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(c.wait().unwrap().code(), Some(7));
+        assert_eq!(c.wait().unwrap().code(), Some(0));
     }
 
     #[test]

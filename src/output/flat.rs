@@ -595,8 +595,12 @@ mod tests {
         let (s, d) = nested();
         insta::assert_snapshot!("plain", plain(&d, &s, &flat()));
         let out = ansi(&d, &s, &flat());
+        // rg's default path colour is magenta, and cyan on Windows.
+        let path = if cfg!(windows) { "36" } else { "35" };
         assert!(
-            out.starts_with("\x1b[0m\x1b[35mdocs/a.md\x1b[0m:\x1b[0m\x1b[32m3\x1b[0m: \x1b[0m\x1b[36mA › B\x1b[0m"),
+            out.starts_with(&format!(
+                "\x1b[0m\x1b[{path}mdocs/a.md\x1b[0m:\x1b[0m\x1b[32m3\x1b[0m: \x1b[0m\x1b[36mA › B\x1b[0m"
+            )),
             "{out:?}"
         );
     }

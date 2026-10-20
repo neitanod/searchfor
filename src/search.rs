@@ -1224,12 +1224,18 @@ mod tests {
     #[test]
     fn streaming_searcher_maps_only_when_asked() {
         // In memory (rg on one explicit file): line 2, offset 13; with a reader: line 3, 18.
+        // On macOS grep-searcher never maps, so both read (M5b spec §4.2).
         let p = fixture("misc/bin.dat");
+        let mapped = if cfg!(target_os = "macos") {
+            (3, 18)
+        } else {
+            (2, 13)
+        };
         assert_eq!(
             summary(&stream_path(true, true, &p))
                 .last()
                 .map(|m| (m.0, m.1)),
-            Some((2, 13))
+            Some(mapped)
         );
         assert_eq!(
             summary(&stream_path(false, true, &p))
@@ -1333,8 +1339,10 @@ mod tests {
             })
             .collect();
         let a = args(&["s4", "x"]);
-        assert!(rg_in_memory(&a, &files[..1], false));
-        assert!(rg_in_memory(&a, &files[..10], false));
+        // grep-searcher never maps on macOS, so neither does rg there (M5b spec §4.2).
+        let maps = !cfg!(target_os = "macos");
+        assert_eq!(rg_in_memory(&a, &files[..1], false), maps);
+        assert_eq!(rg_in_memory(&a, &files[..10], false), maps);
         assert!(!rg_in_memory(&a, &files, false));
         assert!(!rg_in_memory(&a, &files[..1], true));
         assert!(!rg_in_memory(&a, &[], false));
@@ -1695,7 +1703,7 @@ mod tests {
         let a = args(&["s4", "-g", "sub/*.md", "x"]);
         assert_eq!(
             walk_names(&a, &[d.path().join("sub")], d.path()),
-            ["sub/x.md"]
+            [format!("sub{}x.md", std::path::MAIN_SEPARATOR)]
         );
     }
 

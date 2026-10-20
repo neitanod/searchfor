@@ -187,7 +187,13 @@ mod tests {
     #[test]
     fn palette_of_colors_specs() {
         let d = Palette::default();
-        assert_eq!(d.spec("path").fg(), Some(&Color::Magenta));
+        // rg's default path colour: magenta, and cyan on Windows (grep-printer's defaults).
+        let path = if cfg!(windows) {
+            Color::Cyan
+        } else {
+            Color::Magenta
+        };
+        assert_eq!(d.spec("path").fg(), Some(&path));
         assert_eq!(d.spec("trail").fg(), Some(&Color::Cyan));
         assert!(d.spec("match").bold());
         let p = Palette::new(&[

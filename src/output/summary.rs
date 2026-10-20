@@ -149,8 +149,10 @@ mod tests {
             &mut w,
         )
         .unwrap();
-        // rg 14.1.1 --color always -c: reset, magenta, path, reset, `:N`.
-        assert_eq!(w.into_inner(), b"\x1b[0m\x1b[35ma.md\x1b[0m:2\n");
+        // rg 14.1.1 --color always -c: reset, magenta (cyan on Windows), path, reset, `:N`.
+        let colour: &[u8] = if cfg!(windows) { b"36" } else { b"35" };
+        let want = [b"\x1b[0m\x1b[".as_slice(), colour, b"ma.md\x1b[0m:2\n"].concat();
+        assert_eq!(w.into_inner(), want);
     }
 
     /// M5a plan, D4: `-0`, `--path-separator` and `--include-zero`, as rg's summary printer.

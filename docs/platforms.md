@@ -42,8 +42,6 @@ merge. The owner is the chunk of the M5b plan that owns the file.
 
 | Test | File | Skipped on | Missing feature | Owner |
 |---|---|---|---|---|
-| `a_worker_reaped_before_its_pipes_are_taken_is_an_error` | `src/docs/isolated.rs` | windows | runs `true` and `sh`, POSIX tools | C5 |
-| `a_dead_workers_stderr_is_read_to_its_end_before_why` | `src/docs/isolated.rs` | windows | runs `sh`, a POSIX shell | C5 |
 | `a_non_utf8_file_name_still_reaches_magic_and_shebang` | `src/formats/detector.rs` | windows | file names of arbitrary bytes (Windows names are UTF-16) | C3 |
 | `the_system_key_is_os_dash_arch` | `src/grammars/index.rs` | macos-arm64, macos-x86_64, windows | one variant per system: this one checks the Linux x86-64 key | C8 |
 | `the_system_key_on_apple_silicon` | `src/grammars/index.rs` | linux, macos-x86_64, windows | one variant per system: this one checks the macOS arm64 key | C8 |

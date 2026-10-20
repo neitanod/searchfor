@@ -490,9 +490,10 @@ mod tests {
     #[test]
     fn refusing_through_dotdot_and_symlinked_ancestors() {
         let base = tempfile::tempdir().unwrap();
-        std::fs::create_dir(base.path().join("aux")).unwrap();
+        // Not `aux`: it is a reserved device name on Windows.
+        std::fs::create_dir(base.path().join("other")).unwrap();
         let user = base.path().join("formats");
-        let sneaky = base.path().join("aux/../formats");
+        let sneaky = base.path().join("other/../formats");
         assert!(
             export_builtin(&sneaky, Some(&user))
                 .unwrap_err()
