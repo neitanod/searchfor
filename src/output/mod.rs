@@ -453,6 +453,7 @@ fn write_preview(
 type Subs = Vec<(usize, usize)>;
 
 /// One line for tree or flat: a Match line under one of its Trails, or a context line.
+#[derive(Clone)]
 pub(crate) struct Row<'a> {
     pub trail: &'a [Segment],
     pub line_number: u64,
@@ -1156,14 +1157,41 @@ impl<'a> Iterator for Pieces<'a> {
     }
 }
 
-/// The submatches of the printed Match lines, by line number (for --expand).
-pub(crate) fn match_lines(d: &Described) -> HashMap<u64, Vec<(usize, usize)>> {
-    let mut map: HashMap<u64, Vec<(usize, usize)>> = HashMap::new();
-    for item in printed_items(d) {
-        if let Item::Match(m) = item {
-            map.entry(m.line_number)
-                .or_default()
-                .extend(subs_of(&m.submatches));
+/// The rows of the printed Match lines by line number, for --expand's Sections: each Match's
+/// rows made as any row's (`match_rows`), so a Section's Match lines take `-r`, `--column`,
+/// `-b`, `-o`, `--vimgrep` and the terminators as the rows do (code review r1 of M5a, Codex
+/// #3). The rows of a line under several Trails are one row with all their submatches, as a
+/// Section has one Trail; `-o` and `--vimgrep` keep a row per Match.
+pub(crate) fn section_rows<'a>(
+    d: &'a Described,
+    src: &'a [u8],
+    o: &RenderOptions,
+) -> HashMap<u64, Vec<Row<'a>>> {
+    let per_match = o.look.only_matching || o.look.per_match;
+    let mut map: HashMap<u64, Vec<Row<'a>>> = HashMap::new();
+    let matches = printed_items(d).iter().filter_map(|item| match item {
+        Item::Match(m) => Some(m),
+        Item::Context(_) => None,
+    });
+    for (i, m) in matches.enumerate() {
+        for r in match_rows(d, i, m, src, o) {
+            let rows = map.entry(r.line_number).or_default();
+            match rows.last_mut() {
+                Some(last) if !per_match && Rc::ptr_eq(&last.line, &r.line) => {
+                    last.subs.extend(r.subs);
+                    last.column = match (last.column, r.column) {
+                        (Some(a), Some(b)) => Some(a.min(b)),
+                        (a, b) => a.or(b),
+                    };
+                }
+                _ => rows.push(r),
+            }
+        }
+    }
+    // The submatches of a line's Trails, back in the line's order once, as each Trail's are.
+    for rows in map.values_mut() {
+        for r in rows {
+            r.subs.sort_unstable();
         }
     }
     map
@@ -1194,6 +1222,35 @@ impl<'s> SectionLines<'s> {
             .split_inclusive(|&b| b == b'\n')
             .zip(start.max(1)..)
             .map(|(l, n)| (n, l))
+    }
+
+    /// The rows of lines `start..=end`: a Match line's rows from `matches` (`section_rows`),
+    /// any other line a context row at its byte offset, its terminator left out as a row's.
+    pub(crate) fn rows<'m>(
+        &'m self,
+        start: u64,
+        end: u64,
+        matches: &'m HashMap<u64, Vec<Row<'s>>>,
+        o: &'m RenderOptions,
+    ) -> impl Iterator<Item = Row<'s>> + 'm {
+        self.lines(start, end).flat_map(move |(n, line)| {
+            if let Some(rows) = matches.get(&n) {
+                return rows.clone();
+            }
+            let starts = self.starts.get().expect("read by lines");
+            let at = starts[(n as usize - 1).min(starts.len() - 1)];
+            vec![Row {
+                trail: &[],
+                line_number: n,
+                offset: None,
+                line: Rc::new(LineText::with_cut(Cow::Borrowed(line), cut_of(line, o))),
+                subs: Vec::new(),
+                is_match: false,
+                gap_before: false,
+                column: None,
+                byte_offset: at as u64,
+            }]
+        })
     }
 }
 
@@ -1901,7 +1958,7 @@ pub(crate) mod tests {
     }
 
     /// A Replacer of `pattern` by `with`, as `-r` builds it.
-    fn replacer(pattern: &str, with: &[u8]) -> Look {
+    pub(crate) fn replacer(pattern: &str, with: &[u8]) -> Look {
         let a = crate::cli::parse(["s4", "x"].iter().map(Into::into).collect()).unwrap();
         let m = crate::matcher::build(&a, &[pattern.into()]).unwrap();
         let r = replace::Replacer::new(

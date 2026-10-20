@@ -322,7 +322,7 @@ pub fn render(
     w: &mut dyn WriteColor,
 ) -> std::io::Result<()> {
     let kept = if o.expand {
-        super::match_lines(d)
+        super::section_rows(d, src, o)
     } else {
         Default::default()
     };
@@ -352,10 +352,10 @@ pub fn render(
                 w.write_all(b"\n")?;
                 // Each line as any other: whole, as Fragments, or -M's message (spec §6.3).
                 let no_prefix = |_: &mut dyn WriteColor| Ok(());
-                for (n, line) in sections.lines(start, end) {
-                    let subs = kept.get(&n);
-                    let s = subs.map_or(&[][..], |v| v.as_slice());
-                    super::write_line(w, &no_prefix, line, s, subs.is_some(), o.width, o)?;
+                for r in sections.rows(start, end, &kept, o) {
+                    super::write_line_text(
+                        w, &no_prefix, &r.line, &r.subs, r.is_match, o.width, o,
+                    )?;
                 }
                 w.write_all(b"\n")?;
             }
@@ -765,6 +765,25 @@ mod tests {
             ..flat()
         };
         insta::assert_snapshot!("expand", plain(&d, &s, &o));
+    }
+
+    /// Code review r1 of M5a, Codex #3: a Section's Match lines are replaced (`-r`), and with
+    /// `--crlf` its lines leave their `\r` out.
+    #[test]
+    fn expand_prints_its_lines_as_rows() {
+        let s = b"# A\r\none needle\r\nplain\r\n".to_vec();
+        let a = h(1, "A", 1, 3);
+        let mut d = described(&s, vec![mat(&s, 2)], vec![vec![vec![a]]]);
+        d.sections = vec![vec![Some((1, 3))]];
+        let o = RenderOptions {
+            expand: true,
+            look: super::super::Look {
+                crlf: true,
+                ..crate::output::tests::replacer("needle", b"X")
+            },
+            ..flat()
+        };
+        assert_eq!(plain(&d, &s, &o), "docs/a.md:1-3: A\n# A\none X\nplain\n\n");
     }
 
     #[test]

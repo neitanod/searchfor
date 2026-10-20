@@ -88,21 +88,8 @@ pub(crate) struct Numbers<'a> {
     pub path: Option<&'a std::path::Path>,
 }
 
-/// One line at `depth`: indentation, numbers, text.
-pub(crate) fn write_row(
-    w: &mut dyn WriteColor,
-    depth: usize,
-    numbers: &Numbers,
-    bytes: &[u8],
-    subs: &[(usize, usize)],
-    is_match: bool,
-    o: &RenderOptions,
-) -> std::io::Result<()> {
-    let line = super::LineText::new(bytes);
-    write_row_text(w, depth, numbers, &line, subs, is_match, o)
-}
-
-/// `write_row` for a line whose text the rows before may have worked out already.
+/// One line at `depth`: indentation, numbers, text; the text one the rows before may have
+/// worked out already.
 fn write_row_text(
     w: &mut dyn WriteColor,
     depth: usize,
@@ -267,28 +254,28 @@ impl TreeState {
         Ok(())
     }
 
-    /// With --expand: a Section's Trail and its lines; `kept` has the submatches of its Match
-    /// lines.
-    fn section(
+    /// With --expand: a Section's Trail and its lines; `kept` has the rows of its Match lines
+    /// (`section_rows`).
+    fn section<'s>(
         &mut self,
         w: &mut dyn WriteColor,
         (trail, start, end): (&[Segment], u64, u64),
-        sections: &super::SectionLines,
-        kept: &std::collections::HashMap<u64, Vec<(usize, usize)>>,
+        sections: &super::SectionLines<'s>,
+        kept: &std::collections::HashMap<u64, Vec<super::Row<'s>>>,
         o: &RenderOptions,
     ) -> std::io::Result<()> {
         write_trail(w, &self.printed, trail, &Seen::new(), o)?;
         self.printed = trail.to_vec();
         self.seen.clear();
-        for (n, line) in sections.lines(start, end) {
-            let subs = kept.get(&n);
-            let s = subs.map_or(&[][..], |v| v.as_slice());
+        for r in sections.rows(start, end, kept, o) {
             let numbers = Numbers {
-                line: n,
+                line: r.line_number,
+                offset: r.offset,
+                column: r.column,
+                byte_offset: Some(r.byte_offset),
                 path: self.path.as_deref(),
-                ..Numbers::default()
             };
-            write_row(w, trail.len(), &numbers, line, s, subs.is_some(), o)?;
+            write_row_text(w, trail.len(), &numbers, &r.line, &r.subs, r.is_match, o)?;
         }
         Ok(())
     }
@@ -303,7 +290,7 @@ pub fn render(
     let mut state = TreeState::default();
     state.header(w, &d.file.path, o)?;
     let kept = if o.expand {
-        super::match_lines(d)
+        super::section_rows(d, src, o)
     } else {
         Default::default()
     };
@@ -604,6 +591,49 @@ mod tests {
             ..opts()
         };
         insta::assert_snapshot!("expand_shared", plain(&d, &s, &o));
+    }
+
+    /// Code review r1 of M5a, Codex #3: a Section's lines are rows as any other's: a Match
+    /// line with its Matches replaced (`-r`), its column and byte offset (`--column`, `-b`),
+    /// once with every submatch of its Trails; the other lines with their byte offset and the
+    /// context separator; and with `--crlf`, none keeps its `\r`.
+    #[test]
+    fn expand_prints_its_lines_as_rows() {
+        use crate::output::Look;
+        let s = src(&["# A", "one needle needle", "plain"]);
+        let (a, b) = (h(1, "A", 1, 3), seg("key", "B", 2, 2));
+        let mut d = described(
+            &s,
+            vec![mat(&s, 2)],
+            vec![vec![vec![a.clone()], vec![a, b]]],
+        );
+        d.sections = vec![vec![Some((1, 3)), Some((1, 3))]];
+        let o = |look| RenderOptions {
+            expand: true,
+            look,
+            ..opts()
+        };
+        let look = Look {
+            column: true,
+            byte_offset: true,
+            ..crate::output::tests::replacer("needle", b"X")
+        };
+        assert_eq!(
+            plain(&d, &s, &o(look)),
+            "docs/a.md\n  # A\n    1-0-# A\n    2:5:4:one X X\n    3-22-plain\n"
+        );
+        let s = b"# A\r\none needle\r\nplain\r\n".to_vec();
+        let a = h(1, "A", 1, 3);
+        let mut d = described(&s, vec![mat(&s, 2)], vec![vec![vec![a]]]);
+        d.sections = vec![vec![Some((1, 3))]];
+        let look = Look {
+            crlf: true,
+            ..Look::default()
+        };
+        assert_eq!(
+            plain(&d, &s, &o(look)),
+            "docs/a.md\n  # A\n    1-# A\n    2:one needle\n    3-plain\n"
+        );
     }
 
     #[test]
