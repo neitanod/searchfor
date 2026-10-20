@@ -1673,6 +1673,7 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-typescript",
  "ureq",
+ "windows-sys 0.61.2",
  "zip",
 ]
 
@@ -1683,6 +1684,7 @@ dependencies = [
  "anyhow",
  "searchfor",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

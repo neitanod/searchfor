@@ -13,3 +13,7 @@ searchfor = { path = "../.." }
 
 [dev-dependencies]
 serde_json = "1"
+
+# `--test-console-driver` (M5b plan, Task 2.3): a private console and its Ctrl-C.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }

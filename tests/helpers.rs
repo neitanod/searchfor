@@ -517,12 +517,53 @@ fn h12_helper_stderr_is_relayed() {
     assert_eq!(stdout(&o), INI_TRAILS);
 }
 
+/// Whether the process `pid` still runs: on Linux it is under /proc and not a zombie (M5b
+/// spec §4.4: one implementation per system). A zombie has ended; only its parent's reap is
+/// missing.
 #[cfg(target_os = "linux")]
 fn alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    // The state follows the command name, which is in parentheses and may hold spaces.
+    let state = stat
+        .rsplit_once(')')
+        .and_then(|(_, rest)| rest.trim_start().chars().next());
+    !matches!(state, Some('Z' | 'X') | None)
 }
 
-#[cfg(target_os = "linux")]
+/// macOS: a signal 0 reaches it (EPERM: it exists, owned by someone else). A child the test
+/// started is reaped by the test before it asks.
+#[cfg(target_os = "macos")]
+fn alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks that the process exists.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Windows: a handle to it can be opened and it has not ended.
+#[cfg(windows)]
+fn alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+    // SAFETY: the handle is checked, waited on without blocking, and closed.
+    unsafe {
+        let h = OpenProcess(
+            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            pid,
+        );
+        if h.is_null() {
+            return false;
+        }
+        let running = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+        CloseHandle(h);
+        running
+    }
+}
+
 #[test]
 fn h13_helpers_exit_with_the_run() {
     for mode in ["pool", "concurrent", "oneshot"] {
@@ -701,7 +742,7 @@ fn wait_for(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
 }
 
 /// Waits up to `limit` for `child` to exit.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn exit_within(child: &mut std::process::Child, limit: Duration) -> std::process::ExitStatus {
     let mut status = None;
     wait_for(limit, || {
@@ -715,17 +756,49 @@ fn exit_within(child: &mut std::process::Child, limit: Duration) -> std::process
     })
 }
 
-#[cfg(target_os = "linux")]
-fn sigint(target: &str) {
-    let ok = Command::new("kill")
-        .args(["-INT", "--", target])
-        .status()
-        .unwrap()
-        .success();
-    assert!(ok, "kill -INT -- {target}");
+/// SIGINT to `target`: a pid, or a process group as a negative number, as `kill -INT --`.
+#[cfg(unix)]
+fn sigint(target: i32) {
+    // SAFETY: kill only sends the signal.
+    let ok = unsafe { libc::kill(target, libc::SIGINT) } == 0;
+    assert!(
+        ok,
+        "kill -INT -- {target}: {}",
+        std::io::Error::last_os_error()
+    );
 }
 
+/// Whether the process `pid` has `path` open: /proc on Linux.
 #[cfg(target_os = "linux")]
+fn has_open(pid: u32, path: &Path) -> bool {
+    std::fs::read_dir(format!("/proc/{pid}/fd")).is_ok_and(|d| {
+        d.filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
+            .any(|t| t == path)
+    })
+}
+
+/// Whether the process `pid` has `path` open: `lsof -p`, which lists each descriptor with its
+/// path, on macOS (the locked libc lacks the declarations `proc_pidfdinfo` needs for paths).
+#[cfg(target_os = "macos")]
+fn has_open(pid: u32, path: &Path) -> bool {
+    let Ok(out) = Command::new("lsof")
+        .args(["-n", "-P", "-p", &pid.to_string()])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    let listed = String::from_utf8_lossy(&out.stdout);
+    // lsof prints the real path: /var is a link to /private/var.
+    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    listed
+        .lines()
+        .any(|l| l.ends_with(&*path.to_string_lossy()) || l.ends_with(&*real.to_string_lossy()))
+}
+
+/// Linux, and macOS, where signals and Ctrl-C behave as on Linux (M5b spec §4.2): liveness
+/// through `alive`, the FIFO's opening through `has_open`.
+#[cfg(unix)]
 #[test]
 fn h16_ctrl_c_ends_every_helper() {
     use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -753,11 +826,7 @@ fn h16_ctrl_c_ends_every_helper() {
         let pid = child.id();
         // (a) the terminal's Ctrl-C reaches the whole group, whose id is s4's pid; (b) s4
         // alone.
-        sigint(&if group {
-            format!("-{pid}")
-        } else {
-            pid.to_string()
-        });
+        sigint(if group { -(pid as i32) } else { pid as i32 });
         let status = exit_within(&mut child, Duration::from_secs(2));
         assert_eq!(status.signal(), Some(SIGINT), "group {group}: {status:?}");
         let left: Vec<_> = pids(&log).into_iter().filter(|p| alive(*p)).collect();
@@ -788,20 +857,16 @@ fn h16_ctrl_c_ends_every_helper() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let fd_dir = format!("/proc/{}/fd", child.id());
-    let opened = wait_for(Duration::from_secs(10), || {
-        std::fs::read_dir(&fd_dir).is_ok_and(|d| {
-            d.filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
-                .any(|t| t == fifo)
-        })
-    });
+    let pid = child.id();
+    let opened = wait_for(Duration::from_secs(10), || has_open(pid, &fifo));
     assert!(opened, "s4 did not open the FIFO");
-    sigint(&child.id().to_string());
+    sigint(pid as i32);
     let status = exit_within(&mut child, Duration::from_secs(2));
     assert_eq!(status.signal(), Some(SIGINT), "{status:?}");
 }
 
-#[cfg(target_os = "linux")]
+/// The helper's child is a copy of the example helper in `--test-hold-pipes` mode (M5b plan,
+/// Task 2.3), so this runs on every system.
 #[test]
 fn h17_a_helpers_child_cannot_hold_sfor() {
     let fx = Fixture::new();
@@ -815,7 +880,7 @@ fn h17_a_helpers_child_cannot_hold_sfor() {
 }
 
 /// Runs `c` with `ini/app.ini` on stdin, as a regular file or through a pipe.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn with_app_on_stdin(fx: &Fixture, mut c: Command, pipe: bool) -> (Output, Duration) {
     let app = std::fs::read(fx.file("ini/app.ini")).unwrap();
     let started = Instant::now();
@@ -840,7 +905,7 @@ fn with_app_on_stdin(fx: &Fixture, mut c: Command, pipe: bool) -> (Output, Durat
     (o, started.elapsed())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn assert_app_trails(what: &str, o: &Output, took: Duration) {
     let err = stderr(o);
     assert_eq!(code(o), 0, "{what}: {err}");
@@ -854,7 +919,7 @@ fn assert_app_trails(what: &str, o: &Output, took: Duration) {
     assert!(took < Duration::from_secs(4), "{what}: took {took:?}");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[test]
 fn h18_streams_named_on_the_command_line_go_through_a_temporary_file() {
     let fx = Fixture::new();
@@ -938,4 +1003,169 @@ fn h19_a_failing_helper_is_plain_like_rg() {
         .collect();
     assert_eq!(m.len(), 1, "{}", stdout(&o));
     assert!(m[0]["data"]["format"].is_null(), "{}", m[0]);
+}
+
+/// M5b Task 2.1: the arguments a process started by the platform layer receives, read back by
+/// the example helper's `--test-echo-args` mode. On Windows this checks the command-line
+/// builder; on Unix the delegation to std.
+#[test]
+fn m5b_managed_spawn_delivers_the_exact_arguments() {
+    use searchfor::platform::{Limits, Output, SpawnSpec, spawn};
+    let fx = Fixture::new();
+    let out = fx.file("args.txt");
+    let tricky: Vec<std::ffi::OsString> = [
+        "",
+        "plain",
+        "a b",
+        "tab\there",
+        "quote\"inside",
+        "two \"\" quotes",
+        "ends with slash\\",
+        "ends with two\\\\",
+        "\\\"",
+        "C:\\Program Files\\x y\\",
+        "é ñ 日本",
+        "--flag=value",
+        "-",
+        "%PATH%",
+        "&|^<>",
+    ]
+    .into_iter()
+    .map(Into::into)
+    .collect();
+    let mut s = SpawnSpec::new(example_helper().into_os_string());
+    s.args = vec!["--test-echo-args".into(), out.clone().into_os_string()];
+    s.args.extend(tricky.iter().cloned());
+    s.stdout = Output::Null;
+    s.stderr = Output::Null;
+    let mut c = spawn(
+        s,
+        Limits {
+            process_memory_bytes: None,
+        },
+    )
+    .unwrap();
+    assert!(c.wait().unwrap().success());
+    let want: String = tricky.iter().map(|a| format!("{a:?}\n")).collect();
+    assert_eq!(std::fs::read_to_string(out).unwrap(), want);
+}
+
+#[test]
+fn m5b_alive_checks_a_live_and_a_reaped_child() {
+    let mut c = Command::new(example_helper())
+        .arg("--test-hold-pipes")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = c.id();
+    assert!(alive(pid));
+    c.kill().unwrap();
+    c.wait().unwrap();
+    assert!(!alive(pid));
+}
+
+#[test]
+fn m5b_native_pre_fixtures_work_without_shell_scripts() {
+    let fx = Fixture::new();
+    let input = fx.file("input");
+    std::fs::write(&input, b"needle\n").unwrap();
+    for (stem, want_code, want_out, want_err) in [
+        ("s4-test-pre-upper", 0, &b"NEEDLE\n"[..], &b""[..]),
+        ("s4-test-pre-fail", 3, &b""[..], &b"oops\n"[..]),
+    ] {
+        let path = fx.file(&format!("{stem}{}", std::env::consts::EXE_SUFFIX));
+        std::fs::copy(example_helper(), &path).unwrap();
+        let out = Command::new(path).arg(&input).output().unwrap();
+        assert_eq!(out.status.code(), Some(want_code));
+        assert_eq!(out.stdout, want_out);
+        assert_eq!(out.stderr, want_err);
+    }
+}
+
+/// Kills and reaps the child it holds when dropped.
+struct Reap(Option<std::process::Child>);
+
+impl Drop for Reap {
+    fn drop(&mut self) {
+        if let Some(c) = &mut self.0 {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
+
+/// The wait knobs of the example helper (M5b plan, Task 2.3): at its first `trails` request a
+/// copy logs its pid and s4's, which s4 passes in PROCESS_PARENT_ENV, and holds the answer
+/// until the release file exists.
+#[test]
+fn m5b_wait_knobs_log_both_pids_and_hold_until_the_release() {
+    let fx = Fixture::new();
+    ini(&fx, "pool", 30_000);
+    let ready = fx.file("ready.log");
+    let release = fx.file("release");
+    let mut c = fx.s4(["needle", "ini/app.ini", "--flat"]);
+    c.env("SEARCHFOR_EXAMPLE_WAIT_READY", &ready)
+        .env("SEARCHFOR_EXAMPLE_WAIT_RELEASE", &release)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // A failed assertion kills and reaps s4 instead of leaving it held for 30 s.
+    let mut guard = Reap(Some(c.spawn().unwrap()));
+    let child = guard.0.as_mut().unwrap();
+    let s4 = child.id();
+    let logged = || std::fs::read_to_string(&ready).unwrap_or_default();
+    assert!(
+        wait_for(Duration::from_secs(20), || logged().ends_with('\n')),
+        "no copy logged its readiness"
+    );
+    let line = logged();
+    let v: serde_json::Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
+    assert_eq!(v["search_pid"].as_u64(), Some(s4 as u64), "{line}");
+    let helper = v["helper_pid"].as_u64().unwrap() as u32;
+    assert_ne!(helper, s4);
+    // Held: s4 has not finished half a second later.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(child.try_wait().unwrap().is_none(), "s4 did not wait");
+    let released = Instant::now();
+    std::fs::write(&release, "").unwrap();
+    let o = guard.0.take().unwrap().wait_with_output().unwrap();
+    let took = released.elapsed();
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(stdout(&o), APP_TRAILS);
+    assert!(took < Duration::from_secs(5), "{took:?} after the release");
+    assert!(
+        wait_for(Duration::from_secs(5), || !alive(helper)),
+        "the helper outlived s4"
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn m5b_console_ctrl_c_kills_and_reaps_managed_processes() {
+    let fx = Fixture::new();
+    ini(&fx, "pool", 2000);
+    generate(&fx, 8);
+    let result = fx.file("console-result.json");
+    let out = Command::new(example_helper())
+        .arg("--test-console-driver")
+        .arg(assert_cmd::cargo::cargo_bin("s4"))
+        .arg(fx.path())
+        .arg(fx.file("helper.log"))
+        .arg(&result)
+        .env("SEARCHFOR_FORMATS_DIR", fx.formats.path())
+        .env("SEARCHFOR_GRAMMARS_DIR", fx.grammars.path())
+        .env("SEARCHFOR_GRAMMAR_INDEX", fx.no_index())
+        .env_remove("SEARCHFOR_CONFIG_PATH")
+        .env_remove("RIPGREP_CONFIG_PATH")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(result).unwrap()).unwrap();
+    assert_eq!(v["status"].as_u64(), Some(0xC000013A));
+    assert_eq!(v["alive"], serde_json::json!([]));
+    assert!(pids(&fx.file("helper.log")).len() >= 2);
 }
