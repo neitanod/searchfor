@@ -606,3 +606,59 @@ fn m5_vimgrep_offsets_equal_ripgrep() {
         diffs.join("\n")
     );
 }
+
+/// Code review r3 of M5a, Codex #2: a `-U` Match over several `--null-data` records prints a
+/// row per record, numbered as rg numbers them, its text without the NUL; `-o` a row per
+/// record of the Match's text, `--vimgrep` the first, with the record's column and offset; and
+/// a context record after it is not a gap. Each s4 row, `\n`-terminated and with a space
+/// before its text, is compared with rg's NUL-terminated line.
+#[test]
+fn m5_records_of_a_multi_line_match_equal_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::write(
+        fx.file("records.dat"),
+        b"a needle\0b needle\0c\0d\0e\0f needle\0",
+    )
+    .unwrap();
+    let flags: &[&[&str]] = &[
+        &[],
+        &["-o"],
+        &["-C1"],
+        &["--column", "-b"],
+        &["--vimgrep"],
+        &["--vimgrep", "-b"],
+    ];
+    let mut diffs = Vec::new();
+    for engine in [&[][..], &["-P"][..]] {
+        for f in flags {
+            let mut a = vec!["-U", "--null-data"];
+            a.extend(engine);
+            a.extend(*f);
+            a.extend(["needle\\x00b needle|f needle", "records.dat"]);
+            let mut want = vec!["-n"];
+            want.extend(&a);
+            let want: Vec<String> = stdout(&rg(&fx, &want))
+                .split_terminator('\0')
+                .map(String::from)
+                .collect();
+            let mut got = vec!["--no-docs", "--flat"];
+            got.extend(&a);
+            let got: Vec<String> = stdout(&run(&mut fx.s4(&got)))
+                .split_terminator('\n')
+                .map(|l| l.replacen(": ", ":", 1))
+                .collect();
+            if want != got {
+                diffs.push(format!("== {a:?}\n-- rg:\n{want:?}\n-- s4:\n{got:?}"));
+            }
+        }
+    }
+    assert!(
+        diffs.is_empty(),
+        "{} case(s) differ:\n{}",
+        diffs.len(),
+        diffs.join("\n")
+    );
+}
