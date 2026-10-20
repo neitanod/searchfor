@@ -344,9 +344,9 @@ yourself: in the helper, stdin is the protocol's pipe.
 created in the system's temporary directory (`$TMPDIR` or `/tmp` on Unix, `%TEMP%` on Windows)
 when the first one is needed. Each file is named `<n>-<file name>`, so the helper still sees
 the extension, and s4 removes it after the answer. Read it and leave it alone: do not modify,
-move or keep it. On Unix the directory gets the permissions of the user's umask; if other
-users of the machine must not read what you search from stdin or through `--pre`, point
-`TMPDIR` at a directory only you can read. If the helper needs scratch files of its own,
+move or keep it. Only you can read them: on Unix the directory is created 0700 and its files
+0600, and on Windows the user's temporary directory is already private to the user. If the
+helper needs scratch files of its own,
 create them with the language's safe temporary-file function (Python's `tempfile`), never
 under a fixed name in a shared directory, and remove them before answering.
 

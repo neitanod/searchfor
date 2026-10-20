@@ -354,9 +354,9 @@ vuelvas a abrir un stream por tu cuenta: en el helper, el stdin es el pipe del p
 `searchfor-<random>`, creado en el directorio temporal del sistema (`$TMPDIR` o `/tmp` en Unix,
 `%TEMP%` en Windows) cuando hace falta el primero. Cada archivo se llama `<n>-<file name>`, así
 el helper sigue viendo la extensión, y s4 lo borra después de la respuesta. Leelo y dejalo como
-está: no lo modifiques, ni lo muevas, ni lo guardes. En Unix el directorio toma los permisos
-del umask del usuario; si otros usuarios de la máquina no deben leer lo que buscás desde stdin
-o con `--pre`, apuntá `TMPDIR` a un directorio que sólo vos puedas leer. Si el helper necesita
+está: no lo modifiques, ni lo muevas, ni lo guardes. Sólo vos podés leerlos: en Unix el
+directorio se crea 0700 y sus archivos 0600, y en Windows el directorio temporal del usuario ya
+es privado del usuario. Si el helper necesita
 archivos de trabajo propios, crealos con la función segura de archivos temporales de su
 lenguaje (`tempfile` en Python), nunca con un nombre fijo en un directorio compartido, y
 borralos antes de contestar.

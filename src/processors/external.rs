@@ -211,10 +211,18 @@ impl RunTemp {
         let dir = self
             .dir
             .get_or_init(|| {
-                tempfile::Builder::new()
-                    .prefix("searchfor-")
-                    .tempdir()
-                    .map_err(|e| e.to_string())
+                let mut b = tempfile::Builder::new();
+                b.prefix("searchfor-");
+                // What a search reads from stdin or gets from `--pre` lands here: on Unix the
+                // directory is created 0700 by mkdir itself, never widened and then narrowed. On
+                // Windows the system's temporary directory is already the user's own
+                // (%LOCALAPPDATA%\Temp), and what is created in it inherits that.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    b.permissions(std::fs::Permissions::from_mode(0o700));
+                }
+                b.tempdir().map_err(|e| e.to_string())
             })
             .as_ref()
             .map_err(|e| std::io::Error::other(e.clone()))?;
@@ -234,8 +242,15 @@ impl RunTemp {
             })
             .collect();
         let p = dir.path().join(format!("{n}-{file}"));
-        std::fs::write(&p, bytes)?;
-        Ok(TempFile(p))
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create_new(true);
+        // 0600 from open(2) itself, as the directory.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+        let mut f = o.open(&p)?;
+        let t = TempFile(p);
+        std::io::Write::write_all(&mut f, bytes)?;
+        Ok(t)
     }
 }
 
@@ -553,6 +568,25 @@ mod tests {
         assert!(!sharing_violation(&std::io::Error::from_raw_os_error(32)));
         #[cfg(windows)]
         assert!(sharing_violation(&std::io::Error::from_raw_os_error(32)));
+    }
+
+    /// What a search reads from stdin or gets from `--pre` stays the user's own: the run's
+    /// directory is 0700 and its files 0600, whatever the umask lets through.
+    #[cfg(unix)]
+    #[test]
+    fn the_run_directory_and_its_files_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = RunTemp::new();
+        let f = t.write(Path::new("<stdin>"), b"secret").unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = f.path().parent().unwrap();
+        assert_eq!(mode(dir), 0o700, "{}", dir.display());
+        assert_eq!(mode(f.path()), 0o600, "{}", f.path().display());
+        assert_eq!(std::fs::read(f.path()).unwrap(), b"secret");
+        // Each file is new: a name already there is never reused.
+        let g = t.write(Path::new("<stdin>"), b"other").unwrap();
+        assert_ne!(f.path(), g.path());
+        assert_eq!(mode(g.path()), 0o600);
     }
 
     /// The Windows case itself: a file open without delete sharing, as a helper in Python or C
