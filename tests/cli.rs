@@ -1235,6 +1235,42 @@ mod m5b_tests {
     }
 
     #[test]
+    fn m5b_ci_names_four_native_systems_and_required_reference() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        for marker in [
+            "ubuntu-24.04",
+            "macos-15",
+            "macos-15-intel",
+            "windows-2022",
+            "SEARCHFOR_REQUIRE_REFERENCE",
+            "SEARCHFOR_RG",
+            "120",
+            "cargo clippy",
+            "cargo test",
+            "--workspace",
+            "--release",
+        ] {
+            assert!(ci.contains(marker), "missing workflow contract: {marker}");
+        }
+        let docs = std::fs::read_to_string(root.join("docs/platforms.md")).unwrap();
+        for reason in [
+            "/proc",
+            "GNU time",
+            "POSIX",
+            "PCRE2",
+            "arm64",
+            "invoked by a parent test",
+            "selected explicitly in CI",
+        ] {
+            assert!(
+                docs.contains(reason),
+                "missing platform inventory: {reason}"
+            );
+        }
+    }
+
+    #[test]
     fn fixture_attributes_keep_synthetic_bytes() {
         let attrs =
             std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(".gitattributes"))
