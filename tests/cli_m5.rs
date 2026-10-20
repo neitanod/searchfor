@@ -1348,11 +1348,19 @@ fn m5_24_the_last_mode_flag_wins_as_ripgrep() {
     both(&["--type-list"], Some("--files\n"));
     both(&["-c", "Plan", "md"], Some("--generate=man\n"));
     // `--no-json` after `--json` searches again, in s4's own layout.
-    let plain = ok(&fx, &["Plan", "md"]);
-    assert_eq!(
-        ok(&fx, &["--files", "--json", "--no-json", "Plan", "md"]),
-        plain
-    );
+    // In path order: two parallel walks print their files in any order (code review r3,
+    // Fable #2).
+    let plain = ok(&fx, &["--sort", "path", "Plan", "md"]);
+    let again = [
+        "--sort",
+        "path",
+        "--files",
+        "--json",
+        "--no-json",
+        "Plan",
+        "md",
+    ];
+    assert_eq!(ok(&fx, &again), plain);
     assert!(ok(&fx, &["-l", "--generate", "man"]).contains(".TH s4"));
 }
 
