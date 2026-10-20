@@ -47,7 +47,8 @@
   `[target.'cfg(windows)'.dependencies]`, features `Win32_Foundation`,
   `Win32_Security`, `Win32_System_JobObjects`, `Win32_System_Threading`,
   `Win32_System_Console`, `Win32_System_Pipes`, `Win32_Storage_FileSystem`,
-  `Win32_System_IO`; helper-only `tree-sitter-c =0.23.4`,
+  `Win32_System_IO`, `Win32_System_SystemInformation` (`GetSystemDirectoryW` and
+  `GetWindowsDirectoryW`, for D20 and D22); helper-only `tree-sitter-c =0.23.4`,
   `tree-sitter-cpp =0.23.4`, `tree-sitter-java =0.23.5`, `tree-sitter-ruby
   =0.23.1`, `tree-sitter-c-sharp =0.23.1`, and `tree-sitter-elixir =0.3.5`, every
   one an ABI-14 grammar (`LANGUAGE_VERSION 14` in its `src/parser.c`, checked by the
@@ -750,9 +751,10 @@ ends with the closing `"`; the script path is quoted and refused when it
 contains `"` or ends in `\`; an argument is quoted when it is empty, ends in
 `\`, has an ASCII character other than letters, digits and `#$*+-./:?@\_`, or has
 a control character; inside a quoted argument `"` is doubled and the backslashes
-before it are doubled; each `%` and `\r` is preceded by `%%cd:~,` so `cmd.exe`
-does not expand `%VAR%`; an argument containing `\r` or `\n` is refused with
-`InvalidInput`. The suspended process is that `cmd.exe`; it is assigned to the
+before it are doubled; each `%` is preceded by `%%cd:~,` so `cmd.exe` does not
+expand `%VAR%`; an argument containing `\r` or `\n` is refused with `InvalidInput`
+before any escaping (std's `append_bat_arg` also escapes `\r`, a path
+`make_bat_command_line` never reaches). The suspended process is that `cmd.exe`; it is assigned to the
 Job before `ResumeThread` like any other child, so the batch file and everything
 it starts die with the Job. The pure part compiles and is tested on every
 system:
@@ -1011,11 +1013,15 @@ pub fn watch_console(stopped: &'static std::sync::atomic::AtomicBool, cancel: fn
 // --test-hold-pipes: sleep 30 s, inherited output, no protocol handling.
 // --test-echo-args OUT ARG...: Task 2.1's real-arguments mode.
 // SEARCHFOR_EXAMPLE_ACT_AS=hold-pipes: whatever its argv, the binary behaves as
-// --test-hold-pipes, so a copy can stand in for a program s4 launches with fixed
-// arguments (a --hostname-bin program, a `gzip` found on PATH). It appends its own
-// PID, one per line, to the file named by SEARCHFOR_EXAMPLE_PIDS; when
-// SEARCHFOR_EXAMPLE_FORK is set it first starts one descendant of itself in the
-// same mode, which appends its PID the same way (Task 8.1's process-tree tests).
+// --test-hold-pipes but sleeps 300 s, so a copy can stand in for a program s4
+// launches with fixed arguments (a --hostname-bin program, a `gzip` found on PATH)
+// and cannot end by itself inside a test's window. It appends its own PID, one per
+// line, to the file named by SEARCHFOR_EXAMPLE_PIDS; when SEARCHFOR_EXAMPLE_FORK is
+// set it first starts one descendant of itself in the same mode, with
+// SEARCHFOR_EXAMPLE_FORK removed from that descendant's environment (env_remove),
+// so exactly two processes exist: the program and one descendant. The descendant
+// appends its PID the same way (Task 8.1's process-tree tests). --test-hold-pipes
+// with SEARCHFOR_EXAMPLE_FORK removes it from its descendant too.
 // --test-pre-upper PATH: uppercase ASCII bytes to stdout, exit 0.
 // --test-pre-fail PATH: stderr "oops", exit 3.
 // When argv[0] stem is s4-test-pre-upper or s4-test-pre-fail, use that
@@ -1337,33 +1343,41 @@ fn m5b_worker_matchers_keep_reference_output() {
 
 This second complete test in tests/rg_compat.rs runs without `--sort`, so the
 walker really uses several workers, each with its own matcher clone and some
-files with Matches and some without. Under `--heading` the output of one file is
-one block, and blocks are separated by an empty line; the order between files may
-differ from rg's, but the bytes inside each block may not:
+files with Matches and some without, in a directory of their own (`par/`, so the
+fixtures `Fixture::new()` copies are not searched). Under `--heading` the output of
+one file is one block, and blocks are separated by an empty line; the order between
+files may differ from rg's, but the bytes inside each block may not. The output's
+last `\n` belongs to the last line of whichever file came last, not to a block, so
+exactly one trailing `\n` is removed before splitting on `"\n\n"`; the test first
+checks that the comparator accepts the same blocks in another order:
 
 ```rust
 #[test]
 fn m5b_parallel_workers_keep_each_files_block() {
     if !common::reference_rg() { return; }
     let fx = Fixture::new();
+    std::fs::create_dir_all(fx.file("par")).unwrap();
     for i in 0..64 {
         let body = if i % 4 == 0 {
             "nothing here\n".to_string()
         } else {
             format!("ñ needle {i}\nmiddle\nneedle again {i}\n")
         };
-        std::fs::write(fx.file(&format!("par-{i:02}.txt")), body).unwrap();
+        std::fs::write(fx.file(&format!("par/par-{i:02}.txt")), body).unwrap();
     }
-    let blocks = |out: &std::process::Output| {
-        let mut v: Vec<String> = String::from_utf8(out.stdout.clone()).unwrap()
-            .split("\n\n").map(str::to_owned).collect();
+    fn split_blocks(stdout: &[u8]) -> Vec<String> {
+        let text = String::from_utf8(stdout.to_vec()).unwrap();
+        let text = text.strip_suffix('\n').unwrap_or(&text);
+        let mut v: Vec<String> = text.split("\n\n").map(str::to_owned).collect();
         v.sort();
         v
-    };
+    }
+    assert_eq!(split_blocks(b"a\nL\n\nb\nL\n"), split_blocks(b"b\nL\n\na\nL\n"));
+    let blocks = |out: &std::process::Output| split_blocks(&out.stdout);
     for engine in ["default", "pcre2"] {
         for j in ["2", "4", "12"] {
             let args = ["--heading", "--color=never", "-j", j, "--engine", engine,
-                        "needle", "."];
+                        "needle", "par"];
             let mut s = fx.s4(args);
             s.args(["--no-docs", "--no-trail"]);
             let a = run(&mut s);
@@ -2400,16 +2414,45 @@ fn announced_pids(file: &Path) -> Vec<u32> {
         .lines().filter_map(|l| l.trim().parse().ok()).collect()
 }
 
-/// Waits until the synthetic program and its descendant announced themselves, kills
-/// s4, and requires both to be gone soon after.
-fn kill_s4_and_expect_no_survivors(mut s4: Child, announced: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+/// Kills and reaps whatever a process-tree test started when the test ends, by
+/// success or by panic: s4 (if still held) and every announced PID still alive.
+/// The panic message is built before this runs, so the evidence is kept.
+struct TreeCleanup {
+    s4: Option<Child>,
+    announced: PathBuf,
+}
+
+impl Drop for TreeCleanup {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.s4.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        for pid in announced_pids(&self.announced) {
+            if alive(pid) {
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/T", "/PID", &pid.to_string()])
+                    .stdout(Stdio::null()).stderr(Stdio::null()).status();
+            }
+        }
+    }
+}
+
+/// Waits until the synthetic program and its descendant announced themselves
+/// (exactly two PIDs), kills s4 within 20 s of its start, and requires both to be
+/// gone soon after; the synthetic program sleeps 300 s, so only the Job can end it.
+fn kill_s4_and_expect_no_survivors(s4: Child, announced: &Path) {
+    let spawned = Instant::now();
+    let mut guard = TreeCleanup { s4: Some(s4), announced: announced.to_path_buf() };
+    let deadline = spawned + Duration::from_secs(20);
     while announced_pids(announced).len() < 2 {
         assert!(Instant::now() < deadline,
                 "the synthetic program never started: {:?}", announced_pids(announced));
         std::thread::sleep(Duration::from_millis(50));
     }
     let started = announced_pids(announced);
+    assert_eq!(started.len(), 2, "exactly the program and one descendant: {started:?}");
+    let mut s4 = guard.s4.take().unwrap();
     s4.kill().unwrap();
     s4.wait().unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -2431,7 +2474,9 @@ fn m5b_killed_s4_leaves_no_hostname_program_or_descendant() {
     std::fs::copy(example_helper(), &bin).unwrap();
     let input = fx.file("a.txt");
     std::fs::write(&input, "needle\n").unwrap();
-    let mut c = fx.s4(["--hyperlink-format", "default", "--color=always", "needle"]);
+    // `default` is `file://{path}` on Windows (grep-printer's aliases), with no
+    // `{host}`, so it would never run --hostname-bin; `file` has `{host}` everywhere.
+    let mut c = fx.s4(["--hyperlink-format", "file", "--color=always", "needle"]);
     c.arg("--hostname-bin").arg(&bin).arg(&input)
         .env("SEARCHFOR_EXAMPLE_ACT_AS", "hold-pipes")
         .env("SEARCHFOR_EXAMPLE_FORK", "1")
