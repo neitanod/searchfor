@@ -74,8 +74,11 @@ pub(crate) struct FileHead {
     /// The last Trail fitted, the room it had, and the result and its width: consecutive rows
     /// usually share them. A streamed row's Trail is kept by its `Rc`, compared by address
     /// (code review r1, Fable #2).
-    fitted: std::cell::RefCell<Option<(Fitted, usize, std::rc::Rc<str>, usize)>>,
+    fitted: std::cell::RefCell<Option<FitCache>>,
 }
+
+/// `FileHead::fit`'s last Trail, its room, and the fitted text and its width.
+type FitCache = (Fitted, usize, std::rc::Rc<str>, usize);
 
 /// The Trail `FileHead::fit` fitted last.
 enum Fitted {
