@@ -466,7 +466,8 @@ fn m5_json_equals_ripgrep() {
 
 /// Code review r1 of M5a, Codex #3: `--expand`'s Sections print their lines as the rows do. In
 /// the tree each Match line of a Section is `line:column:offset:text` with its Matches
-/// replaced, rg's `-n --column -b -r` line, and with `--crlf` no line keeps its `\r`.
+/// replaced, rg's `-n --column -b -r` line, and with `--crlf` no line keeps its `\r`; in the
+/// one-line layout `line:column:offset: text` (code review r2, Codex #2).
 #[test]
 fn m5_expand_rows_equal_ripgreps_lines() {
     if !reference_rg() {
@@ -499,17 +500,29 @@ fn m5_expand_rows_equal_ripgreps_lines() {
             .lines()
             .map(|l| l.trim_end_matches('\r').to_string())
             .collect();
-        let mut got = vec!["--no-docs", "--tree", "--expand"];
-        got.extend(&a);
-        let out = stdout(&run(&mut fx.s4(&got)));
-        assert!(!out.contains('\r'), "{file}: {out:?}");
-        let got: std::collections::BTreeSet<String> = out
-            .lines()
-            .map(str::trim_start)
-            .filter(is_match_row)
-            .map(String::from)
-            .collect();
-        assert_eq!(got, want, "{file}:\n{out:?}");
+        // Code review r2 of M5a, Codex #2: the one-line layout's too, whose rows put a space
+        // before the text.
+        for layout in ["--tree", "--flat"] {
+            let mut got = vec!["--no-docs", layout, "--expand"];
+            got.extend(&a);
+            let out = stdout(&run(&mut fx.s4(&got)));
+            assert!(!out.contains('\r'), "{file} {layout}: {out:?}");
+            let got: std::collections::BTreeSet<String> = out
+                .lines()
+                .map(str::trim_start)
+                .filter(is_match_row)
+                .map(|l| {
+                    let f: Vec<&str> = l.splitn(4, ':').collect();
+                    let text = if layout == "--flat" {
+                        f[3].strip_prefix(' ').unwrap_or(f[3])
+                    } else {
+                        f[3]
+                    };
+                    format!("{}:{text}", f[..3].join(":"))
+                })
+                .collect();
+            assert_eq!(got, want, "{file} {layout}:\n{out:?}");
+        }
     }
 }
 
