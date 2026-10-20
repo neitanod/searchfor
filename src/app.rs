@@ -1222,10 +1222,7 @@ impl<'a> Ctx<'a> {
 
     /// The built-in Processor of `def` when it gives a native cursor for its params
     /// (`Processor::capability`), looked up in `Ctx::outliners` by the Definition's name.
-    fn outliner(
-        &self,
-        def: &formats::definition::FormatDefinition,
-    ) -> Option<&dyn Processor> {
+    fn outliner(&self, def: &formats::definition::FormatDefinition) -> Option<&dyn Processor> {
         // A compiled-in Grammar: the run's treesitter, which prepares its file once. A Grammar
         // that is not compiled in is never looked up here, so it warns only for a Match.
         let grammar = def.params.get("grammar").and_then(|v| v.as_str());
