@@ -1524,12 +1524,13 @@ fn m5_25_a_closed_stdout_ends_the_actions_quietly() {
     }
 }
 
-/// Code review r1, Codex #6 and Fable #2: M5a is v0.5, as the README says.
+/// Code review r1, Codex #6 and Fable #2: the version is the milestone's. M5b is v1.0 (M5b
+/// spec §11), the version every release package prints.
 #[test]
-fn m5_26_the_version_is_0_5() {
+fn m5_26_the_version_is_1_0() {
     let fx = Fixture::new();
     let v = ok(&fx, &["--version"]);
-    assert!(v.starts_with("s4 0.5"), "{v}");
+    assert_eq!(v.trim_end(), "s4 1.0.0", "{v}");
 }
 
 /// Code review r3, Codex #4: every diagnostic of a search or an action is written without a

@@ -1,14 +1,27 @@
 [package]
 name = "searchfor"
-version = "0.5.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.90"
 description = "ripgrep-compatible search that shows where each match lives: headings, functions, key paths"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/neitanod/searchfor"
+homepage = "https://github.com/neitanod/searchfor"
 readme = "README.md"
 keywords = ["grep", "search", "markdown", "ripgrep", "cli"]
 categories = ["command-line-utilities", "text-processing"]
+# What the crate carries (M5b spec §8.4): the code, the built-in Formats it compiles in, the
+# Grammar index, the licenses and both READMEs. The tests and their fixtures stay in the
+# repository, and with them the unit tests that read tests/fixtures.
+include = [
+    "/src/**",
+    "/formats/**",
+    "/grammars/index.json",
+    "/LICENSE-MIT",
+    "/LICENSE-APACHE",
+    "/README.md",
+    "/README.es.md",
+]
 
 [[bin]]
 name = "s4"
@@ -118,6 +131,11 @@ regex-lite = "0.1"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
 
 [workspace]
 members = ["helpers/example", "helpers/grammar"]

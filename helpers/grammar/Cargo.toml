@@ -19,6 +19,10 @@ ruby = ["dep:tree-sitter-ruby"]
 c-sharp = ["dep:tree-sitter-c-sharp"]
 elixir = ["dep:tree-sitter-elixir"]
 
+# Only s4 goes into the release archives (M5b spec §8.1).
+[package.metadata.dist]
+dist = false
+
 [dependencies]
 anyhow = "1"
 searchfor = { path = "../.." }

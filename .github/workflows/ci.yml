@@ -3,7 +3,8 @@
 # job checks formatting (Linux), clippy, the release build and the whole suite against the
 # rg 14.1.1 its system's official archive provides, verified by the SHA-256 written below
 # (M5b plan, D16); then prints which tests did not run there and why (docs/platforms.md).
-# The packaging jobs of releases come later (M5b plan, Chunk 11); the job id `build` stays.
+# The job `package` builds the release's packages on the same four systems with dist and checks
+# them without publishing anything (M5b spec §8, plan Chunk 11).
 name: ci
 
 on:
@@ -253,3 +254,251 @@ jobs:
           name: fuzz-cases-ci-${{ github.sha }}
           path: ${{ runner.temp }}/fuzz-artifacts
           if-no-files-found: ignore
+
+  # The release's packages (M5b spec §8 and §12 #39; plan Chunk 11), built by the dist the
+  # release uses, for the target each runner releases natively. Nothing here publishes: no
+  # token is available to the job, and it never runs `cargo publish` or `npm publish`.
+  package:
+    name: package (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            prio: nice -n 19 ionice -c3
+          - name: macos-arm64
+            os: macos-15
+            target: aarch64-apple-darwin
+            prio: nice -n 19
+          - name: macos-x86_64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            prio: nice -n 19
+          - name: windows
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            prio: ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      PRIO: ${{ matrix.prio }}
+      SYSTEM: ${{ matrix.name }}
+      TARGET: ${{ matrix.target }}
+      DIST: dist
+    steps:
+      - name: Low priority (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: (Get-Process -Id $PID).Parent.PriorityClass = 'BelowNormal'
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.90.0'
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: package-${{ matrix.name }}-${{ matrix.target }}-${{ runner.arch }}-rust1.90.0-${{ hashFiles('Cargo.lock') }}
+
+      # The generator the release uses, at the version dist-workspace.toml pins.
+      - name: Install dist 0.33.0 (Unix)
+        if: runner.os != 'Windows'
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-installer.sh | sh
+      - name: Install dist 0.33.0 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: irm https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-installer.ps1 | iex
+      - name: Check dist
+        run: |
+          "$DIST" --version
+          [ "$("$DIST" --version)" = 'cargo-dist 0.33.0' ]
+      # The static Linux archive links musl, and PCRE2 and the Grammars are C.
+      - name: musl C toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Fetch the locked crates
+        run: cargo fetch --locked
+
+      # dist's plan: five targets, four installers, version 1.0.0, and only s4 (plan Task 11.1).
+      - name: dist plan (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          plan="$RUNNER_TEMP/dist-plan.json"
+          "$DIST" plan --output-format=json > "$plan"
+          python3 - "$plan" <<'PY'
+          import json, sys
+          p = json.load(open(sys.argv[1], encoding='utf-8'))
+          strings = []
+          def walk(x):
+              if isinstance(x, dict):
+                  for k, v in x.items():
+                      strings.append(str(k)); walk(v)
+              elif isinstance(x, list):
+                  for v in x: walk(v)
+              elif isinstance(x, str): strings.append(x)
+          walk(p)
+          text = '\n'.join(strings)
+          for target in ['x86_64-unknown-linux-musl', 'aarch64-unknown-linux-musl',
+                         'aarch64-apple-darwin', 'x86_64-apple-darwin', 'x86_64-pc-windows-msvc']:
+              assert target in text, target
+          # dist 0.33.0 names the formula's installer "Homebrew": compare without case.
+          for installer in ['shell', 'powershell', 'homebrew', 'npm']:
+              assert any(installer in s.lower() for s in strings), installer
+          assert not any('searchfor-example-helper' in s for s in strings)
+          assert not any('searchfor-grammar-' in s for s in strings)
+          assert '1.0.0' in text
+          # Stricter than the names: one app, and each archive holds s4 and the four documents.
+          assert [r['app_name'] for r in p['releases']] == ['searchfor'], p['releases']
+          installers = sorted(a['name'] for a in p['artifacts'].values() if a['kind'] == 'installer')
+          assert installers == ['searchfor-installer.ps1', 'searchfor-installer.sh',
+                                'searchfor-npm-package.tar.gz', 'searchfor.rb'], installers
+          archives = [a for a in p['artifacts'].values() if a['kind'] == 'executable-zip']
+          assert len(archives) == 5, [a['name'] for a in archives]
+          for a in archives:
+              names = sorted(x['path'] for x in a['assets'])
+              exe = 's4.exe' if 'windows' in a['name'] else 's4'
+              assert names == sorted(['LICENSE-APACHE', 'LICENSE-MIT', 'README.es.md', 'README.md', exe]), (a['name'], names)
+          print('five targets, four installers, only s4: PASS')
+          PY
+
+      # release.yml is dist's output plus two patches (dist-workspace.toml): check that it still
+      # is, and that regeneration kept the conditions publication depends on.
+      # To regenerate it locally: run this step's script with RELEASE_WORKFLOW_WRITE=1.
+      - name: Release workflow (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import difflib, json, os, re, subprocess, sys
+          from pathlib import Path
+          dist = os.environ.get('DIST', 'dist')
+          wf, cfg = Path('.github/workflows/release.yml'), Path('dist-workspace.toml')
+          committed = wf.read_text(encoding='utf-8')
+          config = cfg.read_text(encoding='utf-8')
+          allow = 'allow-dirty = ["ci"]\n'
+          assert config.count(allow) == 1, 'dist-workspace.toml must keep allow-dirty = ["ci"]'
+          try:
+              cfg.write_text(config.replace(allow, ''), encoding='utf-8')
+              subprocess.run([dist, 'generate', '--mode=ci'], check=True)
+              generated = wf.read_text(encoding='utf-8')
+          finally:
+              cfg.write_text(config, encoding='utf-8')
+              wf.write_text(committed, encoding='utf-8')
+          patches = [
+              ("on:\n  pull_request:\n  push:\n    tags:\n      - '**[0-9]+.[0-9]+.[0-9]+*'\n",
+               "# searchfor: only v<semver> tags release s4; grammars-v* tags belong to grammars.yml.\n"
+               "on:\n  pull_request:\n  push:\n    tags:\n      - 'v[0-9]+.[0-9]+.[0-9]+*'\n"),
+              ('name: Release\npermissions:\n  "contents": "write"\n',
+               'name: Release\n# searchfor: read-only by default; the host job declares the write it needs.\n'
+               'permissions:\n  "contents": "read"\n'),
+          ]
+          expected = generated
+          for old, new in patches:
+              n = expected.count(old)
+              assert n == 1, f'dist generate writes {old!r} {n} times, not once: review the patches'
+              expected = expected.replace(old, new)
+          if os.environ.get('RELEASE_WORKFLOW_WRITE') == '1':
+              wf.write_text(expected, encoding='utf-8')
+              committed = expected
+          elif committed != expected:
+              sys.stdout.writelines(difflib.unified_diff(
+                  expected.splitlines(True), committed.splitlines(True),
+                  'dist generate + patches', 'release.yml'))
+              sys.exit('release.yml is not what dist generate and the two patches write')
+          # The conditions publication depends on, checked on the committed file.
+          head, body = committed.split('\njobs:\n', 1)
+          parts = re.split(r'(?m)^  ([A-Za-z0-9_-]+):\n', body)
+          jobs = dict(zip(parts[1::2], parts[2::2]))
+          assert re.findall(r"(?m)^      - '([^']*)'$", head) == ['v[0-9]+.[0-9]+.[0-9]+*'], 'tags'
+          assert 'workflow_dispatch' not in committed, 'a manual dispatch could publish'
+          assert re.search(r'(?m)^permissions:\n  "contents": "read"\n(?!  )', head), 'permissions'
+          assert 'secrets.' not in head and 'cargo publish' not in committed
+          for secret, owner in [('secrets.NPM_TOKEN', 'publish-npm'),
+                                ('secrets.HOMEBREW_TAP_TOKEN', 'publish-homebrew-formula')]:
+              assert [j for j, b in jobs.items() if secret in b] == [owner], secret
+          for grant in ['"contents": "write"', '"id-token": "write"', '"attestations": "write"']:
+              assert [j for j, b in jobs.items() if grant in b] == ['host'], grant
+          guard = ('if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease'
+                   ' || fromJson(needs.plan.outputs.val).publish_prereleases }}')
+          for j in ['publish-npm', 'publish-homebrew-formula']:
+              assert guard in jobs[j] and '      - host\n' in jobs[j], j
+          host = jobs['host']
+          for built in ['build-local-artifacts', 'build-global-artifacts']:
+              assert f"needs.{built}.result == 'success'" in host, built
+          attest = host.index('uses: actions/attest@')
+          assert 'subject-path: |\n            artifacts/*\n' in host[attest:]
+          assert attest < host.index('gh release create'), 'attest before the release exists'
+          # A release candidate publishes nothing to npm or Homebrew; the stable tag does.
+          def plan(tag):
+              out = subprocess.run([dist, 'plan', '--output-format=json', f'--tag={tag}', '--force-tag'],
+                                   check=True, capture_output=True, text=True).stdout
+              return json.loads(out)
+          rc, stable = plan('v1.0.0-rc.1'), plan('v1.0.0')
+          assert rc['announcement_is_prerelease'] is True and rc['publish_prereleases'] is False
+          assert stable['announcement_is_prerelease'] is False
+          print('release.yml: dist generate + 2 patches; tags, secrets, permissions, guards: PASS')
+          PY
+
+      # The archive of this runner's target, the installers and the checksums (Task 11.1).
+      - name: dist build
+        run: |
+          $PRIO "$DIST" build --artifacts=all --target="$TARGET" --output-format=json > "$RUNNER_TEMP/dist-build.json"
+          ls -l target/distrib
+      - name: Unpack the archive
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/archive"
+          python3 - "target/distrib" "$TARGET" "$dir" <<'PY'
+          import sys, tarfile, zipfile
+          from pathlib import Path
+          distrib, target, out = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+          windows = 'windows' in target
+          archive = distrib / f"searchfor-{target}.{'zip' if windows else 'tar.xz'}"
+          out.mkdir(parents=True)
+          if windows:
+              zipfile.ZipFile(archive).extractall(out)
+          else:
+              with tarfile.open(archive, 'r:xz') as t:
+                  t.extractall(out, filter='tar')
+          print(archive, '->', out)
+          PY
+          echo "ARTIFACT_DIR=$dir" >> "$GITHUB_ENV"
+      # Run from the unpacked archive, never target/ or PATH (plan Task 11.3, Step 1).
+      - name: Archive smoke
+        working-directory: ${{ runner.temp }}
+        run: |
+          python3 - "$ARTIFACT_DIR" <<'PY'
+          from pathlib import Path
+          import os, subprocess, sys
+          root = Path(sys.argv[1])
+          files = [p for p in root.rglob('*') if p.is_file()]
+          for name in ['LICENSE-MIT', 'LICENSE-APACHE', 'README.md', 'README.es.md']:
+              assert any(p.name == name for p in files), name
+          exes = [p for p in files if p.name in ('s4', 's4.exe')]
+          assert len(exes) == 1
+          v = subprocess.check_output([str(exes[0]), '--version'], text=True).strip()
+          assert v == 's4 1.0.0', v
+          assert not any('grammar' in p.name or 'example-helper' in p.name for p in files)
+          print('native archive smoke: PASS')
+          PY

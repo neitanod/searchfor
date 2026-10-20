@@ -7,6 +7,10 @@ license = "MIT OR Apache-2.0"
 publish = false
 description = "Example Helper Processor for searchfor: INI sections and keys, over protocol v1"
 
+# Only s4 goes into the release archives (M5b spec §8.1).
+[package.metadata.dist]
+dist = false
+
 [dependencies]
 anyhow = "1"
 searchfor = { path = "../.." }
