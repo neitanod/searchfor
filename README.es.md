@@ -35,15 +35,16 @@ Los ejemplos sobre `/bin/ls`, sobre el script de `--pre` de
 
 ## Estado
 
-**v0.4: Markdown, archivos de configuración, código, markup, tablas, subtítulos, archivos objeto
-y documentos.** El motor de búsqueda son los crates de ripgrep, así que la
-búsqueda se comporta como `rg`; encima de eso, Markdown, YAML, JSON, TOML, el código en ocho
+**v0.5: todos los flags de ripgrep, y un servidor MCP.** El motor de búsqueda son los crates de
+ripgrep, así que la búsqueda se comporta como `rg`, y funcionan todos los flags de ripgrep
+14.1.1 (ver [Compatibilidad con ripgrep](#compatibilidad-con-ripgrep)); encima de eso, Markdown, YAML, JSON, TOML, el código en ocho
 lenguajes, HTML, XML, CSV, TSV, SubRip y WebVTT tienen Trails, y también los resultados que
 ripgrep encuentra en binarios ELF, PE y Mach-O (ver [Formatos](#formatos)). Los archivos PDF,
 Word, Excel, PowerPoint, OpenDocument, EPUB y SQLite se buscan por defecto en su texto, con su
 estructura, y `--no-docs` lo apaga (ver [Documentos](#documentos)). Las líneas largas se muestran como
-Fragmentos, y `--within`, `--expand` e `--in-headings` filtran y expanden por estructura. Los
-flags `--pre`, `--pre-glob` y `-z` de ripgrep funcionan como en ripgrep. Otros lenguajes se
+Fragmentos, y `--within`, `--expand` e `--in-headings` filtran y expanden por estructura.
+`s4 --mcp` ofrece la búsqueda a los agentes de IA por el Model Context Protocol (ver
+[Para agentes de IA](#para-agentes-de-ia)). Otros lenguajes se
 pueden describir con un [Helper Processor](#helper-processors), un programa aparte con el que s4
 se comunica. Cualquier otro archivo es **Plain**: sus
 resultados se imprimen con el Trail vacío. Los demás Formatos llegan por hito (ver
@@ -59,8 +60,8 @@ El glosario está en [CONTEXT.md](CONTEXT.md), el diseño en
 cargo install searchfor
 ```
 
-Eso instala la última versión publicada en crates.io. Hasta que v0.4.0 esté publicada ahí,
-v0.4 se instala desde el repositorio:
+Eso instala la última versión publicada en crates.io. Hasta que v0.5.0 esté publicada ahí,
+v0.5 se instala desde el repositorio:
 
 ```
 cargo install --git https://github.com/neitanod/searchfor
@@ -441,6 +442,7 @@ de Fragmentos.
 | `--export-formats <DIR>` | escribe las Definiciones de Formato incluidas en `DIR` |
 | `--list-grammars` | lista las Grammars compiladas, las instaladas y las disponibles (ver [Grammars](#grammars)) |
 | `--install-grammar <LANG>` | instala un Grammar Helper desde el índice de Grammars |
+| `--mcp` | ofrece la búsqueda como servidor MCP por stdin y stdout (ver [Para agentes de IA](#para-agentes-de-ia)) |
 
 Las Definiciones de Formato son archivos TOML. Un archivo en `searchfor/formats/` dentro del
 directorio de configuración del usuario (`~/.config` o `$XDG_CONFIG_HOME` en Linux) con el
@@ -449,14 +451,34 @@ nombre de un Formato incluido o instalado lo reemplaza, y un nombre nuevo agrega
 ### Compatibilidad con ripgrep
 
 ripgrep 14.1.1 tiene 146 nombres de flag (104 flags, 30 negaciones `--no-` y 12 negaciones de
-otra forma). v0.4 implementa 56. Los otros 90 se aceptan por nombre y fallan con
-`s4: --<flag> is not supported yet` y código de salida 2, así que ninguno se ignora en
-silencio. La tabla está en [docs/rg-compat.md](docs/rg-compat.md). Los códigos de salida son
-los de ripgrep: 0 si algo coincidió, 1 si nada, 2 si hubo un error.
+otra forma), y s4 los implementa todos; la tabla está en [docs/rg-compat.md](docs/rg-compat.md).
+Los códigos de salida son los de ripgrep: 0 si algo coincidió, 1 si nada, 2 si hubo un error.
+`SEARCHFOR_CONFIG_PATH` nombra un archivo de configuración con el formato del
+`RIPGREP_CONFIG_PATH` de ripgrep, y `--no-config` lo saltea.
 
 Con `--no-trail`, la salida la escribe el propio printer de ripgrep, y `--json --no-trail`
 imprime los mismos mensajes que `rg --json`, salvo los tiempos. Los documentos son la
 excepción: para tener también sobre ellos la salida de ripgrep, sumá `--no-docs`.
+
+Los flags de salida de ripgrep también cambian las salidas con Trail: `--column` y `-b` agregan
+la columna y el offset en bytes, `-o` imprime cada resultado solo bajo su propio Trail,
+`--vimgrep` una línea por resultado para un editor, `-r` reemplaza los resultados, `-U` imprime
+cada línea de un resultado que ocupa varias, y los separadores, `-0`, `--path-separator`,
+`--colors` (con un tipo `trail` propio) y `--hyperlink-format` funcionan como en ripgrep.
+`--heading` es el árbol y `--no-heading` la salida de una línea:
+
+```
+$ s4 --flat --column -o 'needle-\w+' md/guide.md
+7:22: Deploy guide › Install │ needle-intro
+12:13: Deploy guide › Install › Linux › bash │ needle-pkg
+16:12: Deploy guide › Install › Linux › step one │ needle-item
+23:10: Deploy guide › Install › Plans › Price │ needle-10
+…
+$ s4 --vimgrep needle-pkg md
+md/guide.md:12:13: Deploy guide › Install › Linux › bash │ apt install needle-pkg
+$ s4 -P --flat 'needle-(?=pkg)' md
+md/guide.md:12: Deploy guide › Install › Linux › bash │ apt install needle-pkg
+```
 
 `--pre`, `--pre-glob`, `--no-pre`, `-z` y `--no-search-zip` funcionan como en ripgrep 14.1.1,
 errores y códigos de salida incluidos, y entre `-z` y `--pre` gana el último que se pasa. Lo que
@@ -479,6 +501,13 @@ Diferencias conocidas con ripgrep 14.1.1:
 - Los documentos se buscan por defecto en su texto, también con `--no-trail`, `-c`, `-l`, `-q`
   y `--json`, y cada uno se extrae, lo que cuesta más que la búsqueda de ripgrep en sus bytes.
   `--no-docs` da la salida y el costo de ripgrep (ver [Documentos](#documentos)).
+- En las salidas con Trail, un archivo cuyo Formato no lo decide su nombre, stdin entre ellos,
+  se lee entero antes de imprimir sus filas; `--no-trail` imprime cada línea como ripgrep.
+- `--debug` imprime los mensajes de los crates de ripgrep como ripgrep, y los propios de s4;
+  `--generate` escribe la página de manual y los completados de s4; `-P` usa el PCRE2 con el
+  que se compiló s4.
+
+La lista completa está en [docs/rg-compat.md](docs/rg-compat.md#known-deviations).
 
 ## Helper Processors
 
@@ -565,6 +594,34 @@ en el que corre e imprime su entrada del índice. `SEARCHFOR_GRAMMAR_INDEX` apun
 Un agente que encuentra un resultado con `rg` suele abrir el archivo entero para saber en qué
 sección cae la línea. `s4` imprime esa sección en el Trail, y `--expand` imprime la sección
 misma, así que el agente lee la parte del archivo que importa y nada más.
+
+### Servidor MCP
+
+`s4 --mcp` habla el Model Context Protocol por stdin y stdout y ofrece una herramienta,
+`search`, con `pattern`, `paths`, `within`, `expand`, `glob`, `case_insensitive` y
+`max_results` (100 si no se pasa, 1 000 como máximo). Responde con la ruta, la línea, el Trail
+y el texto de cada resultado, y con `expand` su Sección, en 256 KiB como máximo: una línea con
+resultados bajo dos Trails llega una vez por Trail, una línea larga como su Fragmento, una
+Sección larga cortada, una Sección que comparten varios resultados una sola vez, y `truncated`
+avisa que la búsqueda encontró más de lo que entra en la respuesta, y `truncated_by` por qué
+(`max_results`, `bytes`, o `long_line` por una línea de más de 4 MiB, cuyo archivo nombra
+`errors`, las primeras 20, y cuenta las demás).
+Sus búsquedas no leen ningún archivo de configuración, así que un `--pre` en
+`SEARCHFOR_CONFIG_PATH` nunca corre para un cliente. Para sumarlo a Claude Code:
+
+```
+claude mcp add searchfor -- s4 --mcp
+```
+
+Una llamada a la herramienta, y su respuesta:
+
+```
+{"name":"search","arguments":{"pattern":"needle","paths":["md"],"within":"Install › Linux"}}
+{"matches":[{"path":"md/guide.md","line":12,"trail":["Deploy guide","Install","Linux","bash"],
+  "text":"apt install needle-pkg","format":"markdown"}, …],"truncated":false}
+```
+
+### Desde la línea de comandos
 
 En qué sección cae cada resultado:
 
@@ -684,7 +741,8 @@ recetas; para instalarlo, copiá ese directorio a `~/.claude/skills/`.
 | M2 | v0.2 | rutas de claves en YAML, JSON y TOML (`server › ports[2] › host`); código (PHP, JavaScript, TypeScript, TSX, Bash, Go, Rust, Python) como `Cart › addItem`, con las Grammars de tree-sitter compiladas adentro; Helper Processors (`processor = "external"`); `--install-grammar` y `--list-grammars` |
 | M3 (terminado, 2026-10-17) | v0.3 | rutas de elementos en HTML y XML (`section#pricing › table › tr[3] › td[2]`); filas y columnas en CSV y TSV (`row 2 › Plan`); cues de SubRip y WebVTT (`cue 2 00:00:04,000`); los caracteres de control de los nombres impresos como escapes |
 | M4 (terminado, 2026-10-19) | v0.4 | archivos objeto (ELF, PE, Mach-O, Mach-O fat) como `ELF x86-64 › .rodata › main.version+0xe`; documentos buscados por defecto (`--no-docs` lo apaga), con Extractores para PDF, Word, Excel, PowerPoint, texto, planilla y presentación de OpenDocument, EPUB y SQLite, cada documento leído en un proceso aparte que cuenta su propia memoria; los flags `--pre`, `--pre-glob`, `--no-pre`, `-z` y `--no-search-zip` de ripgrep; el benchmark de M4, los techos de rendimiento y los fuzz targets |
-| M5 | v1.0 | un servidor MCP, el resto de los flags de ripgrep, binarios precompilados (GitHub Releases), Homebrew y npm; Windows y macOS en CI, donde se corre la cuenta de memoria de los lectores, y un Job Object de Windows sobre cada lector de documentos como segunda barrera; los binarios de los Grammar Helpers publicados en el índice de Grammars; releases firmados; la guía para escribir un Helper Processor; los Trails en streaming para los archivos donde coinciden casi todas las líneas |
+| M5a | v0.5 | todos los flags de ripgrep 14.1.1, en `--no-trail` como los imprime ripgrep y en las salidas con Trail (PCRE2, búsqueda en varias líneas, codificaciones, los flags de ignorar y de ordenar, `--files`, `-o`, `--column`, `--vimgrep`, `-r`, `--stats`, hipervínculos, un archivo de configuración, `--generate`, `--debug`); un servidor MCP (`s4 --mcp`) |
+| M5b | v1.0 | binarios precompilados (GitHub Releases), Homebrew y npm; Windows y macOS en CI, donde se corre la cuenta de memoria de los lectores, y un Job Object de Windows sobre cada lector de documentos como segunda barrera; los binarios de los Grammar Helpers publicados en el índice de Grammars; releases firmados; la guía para escribir un Helper Processor; los Trails en streaming para los archivos donde coinciden casi todas las líneas |
 | M6 | v1.x | más Formatos: metadatos de imagen y audio, WebAssembly y `.class` de Java (en el offset hexadecimal del resultado, como los archivos objeto); los formatos binarios de Office (`.doc`, `.xls`, `.ppt`); los encabezados, pies de página, notas al pie y comentarios de los documentos de Office |
 
 Los Formatos de empaquetado (zip, tar, 7z, rar, deb, rpm, jar) quedan afuera: searchfor busca

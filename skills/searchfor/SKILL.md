@@ -19,6 +19,16 @@ chapter and page, heading and table, sheet and cell, slide, or table, row and co
 `--expand` it prints the whole Section that holds the match, so you read that part of the
 file and nothing else.
 
+## As an MCP tool
+
+`s4 --mcp` is an MCP server (`claude mcp add searchfor -- s4 --mcp`). Its tool `search` takes
+`pattern`, `paths`, `within`, `expand`, `glob`, `case_insensitive` and `max_results` (100 by
+default, at most 1 000) and returns each match's path, line, Trail and text, in at most 256 KiB
+(`truncated: true` when the search found more, and `truncated_by` why: for `max_results` raise
+it or narrow `paths`, `glob` or `within`; for `bytes` narrow the search or leave out `expand`;
+for `long_line` search the files `errors` names, the first 20, with `s4` in a shell). Prefer it
+to running `s4` in a shell when the tool is there: the answer is structured and bounded.
+
 ## When to prefer `s4` over `rg`
 
 - You would otherwise open the whole file to learn which section, function or key a line
@@ -131,6 +141,28 @@ m4/bin/app-stripped:0x5a: ELF x86-64 › .rodata │ version=1.2.3-needle
 m4/bin/app.exe:0x402: PE x86-64 › .rdata › version_string │ version=1.2.3-needle
 ```
 
+Each match alone, with its column and its Trail (`-o` prints the matched text, `--column` its
+column; `--vimgrep` gives `path:line:column:` lines an editor reads):
+
+```bash
+s4 --flat --column -o 'needle-\w+' md/guide.md
+```
+
+```
+7:22: Deploy guide › Install │ needle-intro
+12:13: Deploy guide › Install › Linux › bash │ needle-pkg
+16:12: Deploy guide › Install › Linux › step one │ needle-item
+…
+```
+
+Look-around and backreferences: `-P` searches with PCRE2 (`--engine auto` falls back to it only
+when the default engine refuses the pattern); `-U` lets a match span lines, and each line of it
+prints as a row:
+
+```bash
+s4 -P --flat 'needle-(?=pkg)' md
+```
+
 Where something is defined, not used: `--in-headings` matches only Segment names (headings,
 keys, function and class names, elements, CSV header cells, cues):
 
@@ -162,8 +194,13 @@ or `--within addItem` is enough when the name is unique.
 - Page, sheet, slide, table, row, column, cell and chapter names are not in a document's text,
   so `--in-headings` finds only headings there; use `--within` to keep the matches under them
   (`--within 'slide 3'`, `--within 'Budget'`).
-- A ripgrep flag that s4 does not implement yet fails with `s4: --<flag> is not supported
-  yet` and exit code 2; drop the flag or use `rg` for that search.
+- Every ripgrep 14.1.1 flag works. With `--no-trail` they print what `rg` prints; in the Trail
+  layouts `--column`, `-b`, `-o`, `--vimgrep`, `-r`, `--trim`, `-0` and the separators change
+  s4's rows the same way, each row keeping its Trail (docs/rg-compat.md lists the details).
+- s4 reads a file named by `SEARCHFOR_CONFIG_PATH` (rg's format) before the command line; add
+  `--no-config` when a search must not depend on it.
+- In the Trail layouts, stdin is read whole before its rows print; for a stream that never ends
+  (`tail -f`), use `--no-trail`.
 - In `--json`, when two matches on one line have different Trails (two table cells), each
   object in `.data.submatches` carries its own `trail`. The `stats` of `end` and `summary`
   count matches before `--within` filters them.

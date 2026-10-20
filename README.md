@@ -33,15 +33,16 @@ and `searchfor::docs::fixture`), with the same contents. The examples over `/bin
 
 ## Status
 
-**v0.4: Markdown, configuration files, code, markup, tables, subtitles, object files and
-documents.** The search engine is ripgrep's own crates, so the search behaves like
-`rg`; on top of it, Markdown, YAML, JSON, TOML, code in eight languages, HTML, XML, CSV, TSV,
+**v0.5: every ripgrep flag, and an MCP server.** The search engine is ripgrep's own crates, so
+the search behaves like `rg`, and every flag of ripgrep 14.1.1 works (see
+[ripgrep compatibility](#ripgrep-compatibility)); on top of it, Markdown, YAML, JSON, TOML, code in eight languages, HTML, XML, CSV, TSV,
 SubRip and WebVTT get Trails, and so do the matches ripgrep finds in ELF, PE and Mach-O binaries
 (see [Formats](#formats)). PDF, Word, Excel, PowerPoint, OpenDocument, EPUB and SQLite files
 are searched in their text, with its structure, by default; `--no-docs` turns that off (see
 [Documents](#documents)). Long lines are shown as Fragments, and
-`--within`, `--expand` and `--in-headings` filter and expand by structure. ripgrep's `--pre`,
-`--pre-glob` and `-z` work as in ripgrep. Other languages
+`--within`, `--expand` and `--in-headings` filter and expand by structure. `s4 --mcp` serves
+the search to AI agents over the Model Context Protocol (see [For AI agents](#for-ai-agents)).
+Other languages
 can be described by a [Helper Processor](#helper-processors), a separate program that s4
 talks to. Every other file is **Plain**: its matches print with an empty Trail. More Formats
 come by milestone (see [Roadmap](#roadmap)).
@@ -56,8 +57,8 @@ The glossary is in [CONTEXT.md](CONTEXT.md), the design in
 cargo install searchfor
 ```
 
-That installs the latest version published on crates.io. Until v0.4.0 is published there,
-install v0.4 from the repository:
+That installs the latest version published on crates.io. Until v0.5.0 is published there,
+install v0.5 from the repository:
 
 ```
 cargo install --git https://github.com/neitanod/searchfor
@@ -425,6 +426,7 @@ ripgrep's `-M/--max-columns` keeps its meaning: with it, long lines print ripgre
 | `--export-formats <DIR>` | write the built-in Format Definitions to `DIR` |
 | `--list-grammars` | list the compiled-in, installed and available Grammars (see [Grammars](#grammars)) |
 | `--install-grammar <LANG>` | install a Grammar Helper from the Grammar index |
+| `--mcp` | serve the search as an MCP server over stdin and stdout (see [For AI agents](#for-ai-agents)) |
 
 Format Definitions are TOML files. A file in `searchfor/formats/` under the user config
 directory (`~/.config` or `$XDG_CONFIG_HOME` on Linux) with the name of a built-in or
@@ -432,15 +434,35 @@ installed Format replaces it, and a new name adds a Format.
 
 ### ripgrep compatibility
 
-ripgrep 14.1.1 has 146 flag names (104 flags, 30 `--no-` negations and 12 other negations).
-v0.4 implements 56 of them. The other 90 are accepted by name and fail
-with `s4: --<flag> is not supported yet` and exit code 2, so nothing is silently ignored.
-The table is [docs/rg-compat.md](docs/rg-compat.md). Exit codes are ripgrep's: 0 when
-something matched, 1 when nothing did, 2 on error.
+ripgrep 14.1.1 has 146 flag names (104 flags, 30 `--no-` negations and 12 other negations),
+and s4 implements all of them; the table is [docs/rg-compat.md](docs/rg-compat.md). Exit codes
+are ripgrep's: 0 when something matched, 1 when nothing did, 2 on error. `SEARCHFOR_CONFIG_PATH`
+names a configuration file in the format of ripgrep's `RIPGREP_CONFIG_PATH`, and `--no-config`
+skips it.
 
 With `--no-trail`, the output is written by ripgrep's own printer, and `--json --no-trail`
 prints the same messages as `rg --json`, timings aside. Documents are the exception: add
 `--no-docs` for ripgrep's output over them too.
+
+ripgrep's output flags also change the Trail layouts: `--column` and `-b` add the column and the
+byte offset, `-o` prints each match alone under its own Trail, `--vimgrep` a line per match for
+an editor, `-r` replaces the matches, `-U` prints each line of a match that spans lines, and
+the separators, `-0`, `--path-separator`, `--colors` (with a `trail` type of its own) and
+`--hyperlink-format` work as in ripgrep. `--heading` is the tree and `--no-heading` the one-line
+layout:
+
+```
+$ s4 --flat --column -o 'needle-\w+' md/guide.md
+7:22: Deploy guide › Install │ needle-intro
+12:13: Deploy guide › Install › Linux › bash │ needle-pkg
+16:12: Deploy guide › Install › Linux › step one │ needle-item
+23:10: Deploy guide › Install › Plans › Price │ needle-10
+…
+$ s4 --vimgrep needle-pkg md
+md/guide.md:12:13: Deploy guide › Install › Linux › bash │ apt install needle-pkg
+$ s4 -P --flat 'needle-(?=pkg)' md
+md/guide.md:12: Deploy guide › Install › Linux › bash │ apt install needle-pkg
+```
 
 `--pre`, `--pre-glob`, `--no-pre`, `-z` and `--no-search-zip` work as in ripgrep 14.1.1, errors
 and exit codes included, and of `-z` and `--pre` the one given last wins. What they output is
@@ -462,6 +484,12 @@ Known differences with ripgrep 14.1.1:
 - Documents are searched in their text by default, also with `--no-trail`, `-c`, `-l`, `-q`
   and `--json`, and each one is extracted, which costs more than ripgrep's search of its bytes.
   `--no-docs` gives ripgrep's output and cost (see [Documents](#documents)).
+- In the Trail layouts, a file whose Format its name does not decide, stdin among them, is read
+  whole before its rows are printed; `--no-trail` prints each line as ripgrep does.
+- `--debug` prints the messages of ripgrep's crates as ripgrep does, and s4's own; `--generate`
+  writes s4's man page and completions; `-P` uses the PCRE2 s4 is built with.
+
+The full list is in [docs/rg-compat.md](docs/rg-compat.md#known-deviations).
 
 ## Helper Processors
 
@@ -546,6 +574,33 @@ another index, such as a `file://` one of your own.
 An agent that finds a match with `rg` usually opens the whole file to learn which section the
 line belongs to. `s4` prints that section in the Trail, and `--expand` prints the section
 itself, so the agent reads the part of the file that matters and nothing else.
+
+### MCP server
+
+`s4 --mcp` speaks the Model Context Protocol over stdin and stdout and offers one tool,
+`search`, with `pattern`, `paths`, `within`, `expand`, `glob`, `case_insensitive` and
+`max_results` (100 when not given, at most 1 000). It answers with each match's path, line,
+Trail and text, and with `expand` its Section, in at most 256 KiB: a line with matches under
+two Trails comes once per Trail, a long line as its Fragment, a long Section cut, a Section
+shared by several matches once, and `truncated` says the search found more than the answer
+holds, `truncated_by` why (`max_results`, `bytes`, or `long_line` for a line longer than 4 MiB,
+whose file `errors` names, the first 20 of them, counting the rest). Its searches read no
+configuration file, so a
+`--pre` in `SEARCHFOR_CONFIG_PATH` never runs for a client. To add it to Claude Code:
+
+```
+claude mcp add searchfor -- s4 --mcp
+```
+
+A call of the tool, and its answer:
+
+```
+{"name":"search","arguments":{"pattern":"needle","paths":["md"],"within":"Install › Linux"}}
+{"matches":[{"path":"md/guide.md","line":12,"trail":["Deploy guide","Install","Linux","bash"],
+  "text":"apt install needle-pkg","format":"markdown"}, …],"truncated":false}
+```
+
+### From the command line
 
 Which section is each match in:
 
@@ -663,7 +718,8 @@ copy that directory to `~/.claude/skills/` to install it.
 | M2 | v0.2 | YAML, JSON and TOML key paths (`server › ports[2] › host`); code (PHP, JavaScript, TypeScript, TSX, Bash, Go, Rust, Python) as `Cart › addItem`, with tree-sitter Grammars compiled in; Helper Processors (`processor = "external"`); `--install-grammar` and `--list-grammars` |
 | M3 (done, 2026-10-17) | v0.3 | HTML and XML element paths (`section#pricing › table › tr[3] › td[2]`); CSV and TSV rows and columns (`row 2 › Plan`); SubRip and WebVTT cues (`cue 2 00:00:04,000`); control characters in printed names shown as escapes |
 | M4 (done, 2026-10-19) | v0.4 | object files (ELF, PE, Mach-O, fat Mach-O) as `ELF x86-64 › .rodata › main.version+0xe`; documents searched by default (`--no-docs` turns it off), with Extractors for PDF, Word, Excel, PowerPoint, OpenDocument text, spreadsheet and presentation, EPUB and SQLite, each document read in a worker process that counts its own memory; ripgrep's `--pre`, `--pre-glob`, `--no-pre`, `-z` and `--no-search-zip`; the M4 benchmark, performance ceilings and fuzz targets |
-| M5 | v1.0 | an MCP server, the rest of ripgrep's flags, prebuilt binaries (GitHub Releases), Homebrew and npm; Windows and macOS in CI, where the readers' memory count is run, and a Windows Job Object over each document reader as its second barrier; Grammar Helper binaries published in the Grammar index; signed releases; the guide for writing a Helper Processor; streaming the Trails of files where most lines match |
+| M5a | v0.5 | every ripgrep 14.1.1 flag, in `--no-trail` as ripgrep prints it and in the Trail layouts (PCRE2, multi-line search, encodings, the ignore and sort flags, `--files`, `-o`, `--column`, `--vimgrep`, `-r`, `--stats`, hyperlinks, a configuration file, `--generate`, `--debug`); an MCP server (`s4 --mcp`) |
+| M5b | v1.0 | prebuilt binaries (GitHub Releases), Homebrew and npm; Windows and macOS in CI, where the readers' memory count is run, and a Windows Job Object over each document reader as its second barrier; Grammar Helper binaries published in the Grammar index; signed releases; the guide for writing a Helper Processor; streaming the Trails of files where most lines match |
 | M6 | v1.x | more Formats: image and audio metadata, WebAssembly and Java `.class` (at the hex offset of the match, as object files); the binary Office formats (`.doc`, `.xls`, `.ppt`); the headers, footers, footnotes and comments of Office documents |
 
 Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) stay out: searchfor searches what ripgrep
