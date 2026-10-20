@@ -136,7 +136,7 @@ jobs:
       - name: Check the reference
         run: |
           "$SEARCHFOR_RG" --version
-          "$SEARCHFOR_RG" --version | head -1 | grep -qx 'ripgrep 14.1.1'
+          "$SEARCHFOR_RG" --version | head -1 | grep -Eq '^ripgrep 14\.1\.1( |$)'
 
       # The reference programs SEARCHFOR_REQUIRE_REFERENCE=1 requires, and the decompressors
       # of `-z`.
