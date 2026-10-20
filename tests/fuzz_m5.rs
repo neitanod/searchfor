@@ -2,7 +2,9 @@
 //! run over the fixtures and over files with CRLF lines, NUL records, Latin-1 and long lines.
 //! Nothing may panic, every run ends within 10 s, and the exit code is 0, 1, or 2 with a
 //! message. The generator is seeded: `SEARCHFOR_FUZZ_SEED` and `SEARCHFOR_FUZZ_N` (runs)
-//! change the seed and the count; a failure prints its command line.
+//! change the seed and the count; `SEARCHFOR_FUZZ_SECONDS` repeats rounds of runs, round r with
+//! the seed plus r, until that many seconds have passed (M5b plan, Task 4.2). A failure prints
+//! its command line and how to replay it, and is saved under `SEARCHFOR_FUZZ_ARTIFACT_DIR`.
 mod common;
 
 use common::Fixture;
@@ -83,25 +85,15 @@ fn write_files(fx: &Fixture) {
 /// The longest a run may take.
 const LIMIT: Duration = Duration::from_secs(10);
 
-fn count() -> usize {
-    std::env::var("SEARCHFOR_FUZZ_N")
-        .ok()
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(150)
-}
-
-fn seed() -> u64 {
-    std::env::var("SEARCHFOR_FUZZ_SEED")
-        .ok()
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(0x5eed_f00d_cafe_0005)
-}
+/// Runs of a counted round, and of each round of a timed one (`SEARCHFOR_FUZZ_SECONDS`).
+const COUNTED_N: usize = 150;
+const TIMED_N: usize = 30;
 
 #[test]
 fn m5_flag_combinations_never_panic() {
+    const TEST: &str = "m5_flag_combinations_never_panic";
     let fx = Fixture::new();
     write_files(&fx);
-    let mut rng = Rng(seed());
     let paths: &[&[&str]] = &[
         &["md"],
         &["m5"],
@@ -109,56 +101,72 @@ fn m5_flag_combinations_never_panic() {
         &["m5/records.dat", "m5/crlf.md"],
         &[],
     ];
+    let base = common::fuzz_seed(0x5eed_f00d_cafe_0005);
+    let budget = common::fuzz_budget(common::fuzz_n().unwrap_or(COUNTED_N));
+    let n = common::fuzz_n().unwrap_or(if budget.timed() { TIMED_N } else { COUNTED_N });
+    let in_flight = common::FuzzInFlight::new(TEST);
     let mut failures = Vec::new();
-    for _ in 0..count() {
-        let mut args: Vec<&str> = Vec::new();
-        for _ in 0..1 + rng.below(5) {
-            args.extend_from_slice(FLAGS[rng.below(FLAGS.len())]);
+    let mut tried = 0;
+    // Round r is the counted run of seed `base + r`: SEARCHFOR_FUZZ_SEED and SEARCHFOR_FUZZ_N
+    // replay any of its cases.
+    'rounds: for round in 0u64.. {
+        if !budget.permits(tried) {
+            break;
         }
-        args.push("-e");
-        args.push(PATTERNS[rng.below(PATTERNS.len())]);
-        args.push("--");
-        args.extend_from_slice(paths[rng.below(paths.len())]);
-        let started = Instant::now();
-        let mut child = fx
-            .s4(&args)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut stderr_pipe = child.stderr.take().unwrap();
-        let reader = std::thread::spawn(move || {
-            let mut e = String::new();
-            let _ = std::io::Read::read_to_string(&mut stderr_pipe, &mut e);
-            e
-        });
-        // A run that does not end within the limit is killed: a hang fails the case, not the
-        // test run.
-        let status = loop {
-            if let Some(st) = child.try_wait().unwrap() {
-                break Some(st);
+        let seed = base.wrapping_add(round);
+        let mut rng = Rng(seed);
+        for case in 0..n {
+            if !budget.permits(tried) {
+                break 'rounds;
             }
-            if started.elapsed() > LIMIT {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
+            let mut args: Vec<&str> = Vec::new();
+            for _ in 0..1 + rng.below(5) {
+                args.extend_from_slice(FLAGS[rng.below(FLAGS.len())]);
             }
-            std::thread::sleep(Duration::from_millis(5));
-        };
-        let took = started.elapsed();
-        let err = reader.join().unwrap();
-        let code = status.and_then(|s| s.code()).unwrap_or(-1);
-        let bad = err.contains("panicked")
-            || status.is_none()
-            || !matches!(code, 0..=2)
-            || (code == 2 && err.is_empty());
-        if bad {
-            failures.push(format!(
-                "s4 {} (exit {code}, {took:?}):\n{err}",
-                args.join(" ")
-            ));
+            args.push("-e");
+            args.push(PATTERNS[rng.below(PATTERNS.len())]);
+            args.push("--");
+            args.extend_from_slice(paths[rng.below(paths.len())]);
+            in_flight.at(|| {
+                format!(
+                    "SEARCHFOR_FUZZ_SEED={seed} SEARCHFOR_FUZZ_N={n} case {case}: s4 {args:?}\n"
+                )
+            });
+            tried += 1;
+            let started = Instant::now();
+            // A run that does not end within the limit is killed and reaped: a hang fails the
+            // case, not the test run.
+            let (status, err) = common::run_limited(&mut fx.s4(&args), LIMIT);
+            let took = started.elapsed();
+            let text = String::from_utf8_lossy(&err);
+            let code = status.and_then(|s| s.code()).unwrap_or(-1);
+            let bad = text.contains("panicked")
+                || status.is_none()
+                || !matches!(code, 0..=2)
+                || (code == 2 && err.is_empty());
+            if bad {
+                let what = format!("s4 {} (exit {code}, {took:?})", args.join(" "));
+                let argv: Vec<&std::ffi::OsStr> = args.iter().map(std::ffi::OsStr::new).collect();
+                let saved = common::save_fuzz_case(&common::FuzzCase {
+                    test: TEST,
+                    seed,
+                    n,
+                    case,
+                    argv: &argv,
+                    files: &[],
+                    stderr: &err,
+                    what: &what,
+                });
+                failures.push(format!(
+                    "{what}, replay with SEARCHFOR_FUZZ_SEED={seed} SEARCHFOR_FUZZ_N={n} (case {case}){}:\n{text}",
+                    saved.map(|d| format!(", saved in {}", d.display())).unwrap_or_default()
+                ));
+            }
         }
     }
+    in_flight.finish();
+    eprintln!("fuzz: {tried} runs of s4, {} failures", failures.len());
+    assert!(tried > 0, "no run of s4 within the budget");
     assert!(
         failures.is_empty(),
         "{} run(s) failed:\n{}",

@@ -1159,6 +1159,7 @@ fn t39_the_configuration_file_is_trimmed_as_ripgreps() {
 /// M5b (plan, Chunk 4): the test base itself. These live here, not in `tests/common`, whose
 /// own tests every integration binary declaring `mod common;` would run again.
 mod m5b_tests {
+    use super::common::FuzzBudget;
     use super::common::select_rg;
     use std::path::{Path, PathBuf};
 
@@ -1176,6 +1177,61 @@ mod m5b_tests {
         // Unix without /usr/bin/rg (a Mac with Homebrew): PATH is the last resort.
         assert_eq!(select_rg(None, true, false), PathBuf::from("rg"));
         assert_eq!(select_rg(None, false, false), PathBuf::from("rg"));
+    }
+
+    #[test]
+    fn fuzz_budget_combines_explicit_count_with_a_deadline() {
+        assert!(!FuzzBudget::new(Some(0), None).permits(0));
+        assert!(FuzzBudget::new(Some(60), Some(2)).permits(1));
+        assert!(!FuzzBudget::new(Some(60), Some(2)).permits(2));
+        assert!(FuzzBudget::new(Some(60), None).permits(1_000_000));
+        assert!(!FuzzBudget::new(None, Some(0)).permits(0));
+    }
+
+    /// A failing fuzz case is saved with its replay variables and the exact bytes of its
+    /// command line and files.
+    #[test]
+    fn a_saved_fuzz_case_replays_exactly() {
+        use super::common::{FuzzCase, save_fuzz_case_in};
+        let root = tempfile::tempdir().unwrap();
+        let argv = [std::ffi::OsStr::new("-e"), std::ffi::OsStr::new("ñ|\n")];
+        let dir = save_fuzz_case_in(
+            root.path(),
+            &FuzzCase {
+                test: "t",
+                seed: 7,
+                n: 30,
+                case: 4,
+                argv: &argv,
+                files: &[("input.md", b"\xff\r\n")],
+                stderr: b"boom",
+                what: "panic",
+            },
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(dir.join("case.txt")).unwrap();
+        assert!(
+            text.contains("SEARCHFOR_FUZZ_SEED=7 SEARCHFOR_FUZZ_N=30 (case 4"),
+            "{text}"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("files/input.md")).unwrap(),
+            b"\xff\r\n"
+        );
+        assert_eq!(std::fs::read(dir.join("stderr.bin")).unwrap(), b"boom");
+        let arg = std::fs::read(dir.join("argv-1.bin")).unwrap();
+        if cfg!(windows) {
+            let units: Vec<u16> = "ñ|\n".encode_utf16().collect();
+            assert_eq!(
+                arg,
+                units
+                    .iter()
+                    .flat_map(|u| u.to_le_bytes())
+                    .collect::<Vec<_>>()
+            );
+        } else {
+            assert_eq!(arg, "ñ|\n".as_bytes());
+        }
     }
 
     #[test]
