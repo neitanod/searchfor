@@ -2268,15 +2268,19 @@ fn benchmarks_run_isolated() {
 /// times the first (CPU time of s4, best of three, `cpu_time`). `records`: N records `needle\n`, each Match
 /// ending at its NUL, so the search finds each Match's record at once and only the rows could
 /// cost more; `-r` replaces the NULs away, so looking back for the record's start from each
-/// Match read the item from its start (Codex #3). Not ignored: it measures
+/// Match read the item from its start (Codex #3). `sections`: one record of N Markdown
+/// Sections, each holding a Match, where each Section printed the record's rows of every
+/// other Section (Codex #1, and Fable #1 with `-o` and `--vimgrep`). Not ignored: it measures
 /// CPU time, which other tests running beside it do not change, and runs a few seconds.
 #[cfg(unix)]
 #[test]
-fn null_data_records_cost_linear_time() {
+fn null_data_records_and_their_sections_cost_linear_time() {
     let _alone = alone();
     let fx = Fixture::new();
-    for n in [10_000, 40_000] {
+    for n in [1_000, 4_000, 10_000, 40_000] {
         std::fs::write(fx.file(&format!("records{n}.txt")), b"needle\n\0".repeat(n)).unwrap();
+        let sections: String = (0..n).map(|i| format!("# H{i}\nneedle\n")).collect();
+        std::fs::write(fx.file(&format!("sections{n}.md")), format!("{sections}\0")).unwrap();
     }
     let record = ["-U", "--null-data", "needle\\n\\x00", "records@.txt"];
     let cases: Vec<(usize, Vec<&str>)> = [
@@ -2289,6 +2293,20 @@ fn null_data_records_cost_linear_time() {
     ]
     .iter()
     .map(|(f, a)| (10_000, [*f, *a].concat()))
+    .chain(
+        [
+            &["--tree"][..],
+            &["--flat"],
+            &["--tree", "-o"],
+            &["--flat", "--vimgrep"],
+            &["--tree", "-r", "X"],
+        ]
+        .iter()
+        .map(|f| {
+            let a: &[&str] = &["--expand", "--null-data", "needle", "sections@.md"];
+            (1_000, [*f, a].concat())
+        }),
+    )
     .collect();
     let mut slow = Vec::new();
     for (n, case) in &cases {
