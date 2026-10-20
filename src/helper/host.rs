@@ -698,12 +698,10 @@ pub(crate) mod cancel {
     struct Lifecycle {
         cancelled: bool,
         live: Vec<Weak<Conn>>,
-        /// The readers of documents (M4 plan, D30): the same `Child` their pool and watchdog
-        /// use, so one lock orders every kill and wait, and a pid is never signalled after
-        /// its process was reaped (M4 plan r5, Codex #1).
-        readers: Vec<Weak<Mutex<std::process::Child>>>,
-        /// The processes `launch_managed` started (readers and MCP searches from M5b on), under
-        /// the same rule as `readers`.
+        /// The processes `launch_managed` started, the readers of documents (M4 plan, D30) and
+        /// MCP searches: the same `Child` their pool and watchdog use, so one lock orders
+        /// every kill and wait, and a pid is never signalled after its process was reaped (M4
+        /// plan r5, Codex #1).
         managed: Vec<Weak<Mutex<crate::platform::Child>>>,
     }
 
@@ -718,7 +716,6 @@ pub(crate) mod cancel {
                 state: Mutex::new(Lifecycle {
                     cancelled: false,
                     live: Vec::new(),
-                    readers: Vec::new(),
                     managed: Vec::new(),
                 }),
                 signals,
@@ -746,29 +743,9 @@ pub(crate) mod cancel {
             Ok(started)
         }
 
-        /// `launch` for a reader of documents (M4 plan, D30): started under the lock and
-        /// registered by its pid, so a signal either comes first or sees it.
-        pub(crate) fn launch_reader(
-            &self,
-            start: impl FnOnce() -> std::io::Result<std::process::Child>,
-        ) -> Result<std::io::Result<Arc<Mutex<std::process::Child>>>, Cancelled> {
-            if self.signals {
-                watch();
-            }
-            let mut st = self.state.lock().unwrap();
-            if st.cancelled {
-                return Err(Cancelled);
-            }
-            let started = start().map(|c| Arc::new(Mutex::new(c)));
-            if let Ok(c) = &started {
-                st.readers.retain(|w| w.strong_count() > 0);
-                st.readers.push(Arc::downgrade(c));
-            }
-            Ok(started)
-        }
-
-        /// `launch_reader` for a process of the platform layer (M5b plan, Task 2.1): started
-        /// under the lock and registered, so a signal either comes first or sees it.
+        /// `launch` for a process of the platform layer (M5b plan, Task 2.1) — a document
+        /// reader or an MCP search: started under the lock and registered, so a signal
+        /// either comes first or sees it.
         pub(crate) fn launch_managed(
             &self,
             start: impl FnOnce() -> std::io::Result<crate::platform::Child>,
@@ -810,16 +787,14 @@ pub(crate) mod cancel {
             if self.signals {
                 STOPPED.store(true, SeqCst);
             }
-            let (live, readers, managed): (Vec<Arc<Conn>>, Vec<_>, Vec<_>) = {
+            let (live, managed): (Vec<Arc<Conn>>, Vec<_>) = {
                 let mut st = self.state.lock().unwrap();
                 st.cancelled = true;
                 let live = st.live.iter().filter_map(Weak::upgrade).collect();
-                let readers = st.readers.iter().filter_map(Weak::upgrade).collect();
                 let managed = st.managed.iter().filter_map(Weak::upgrade).collect();
-                (live, readers, managed)
+                (live, managed)
             };
-            reap(&readers);
-            reap_managed(&managed);
+            reap(&managed);
             std::thread::scope(|s| {
                 for c in &live {
                     s.spawn(move || c.abort());
@@ -843,20 +818,10 @@ pub(crate) mod cancel {
         }
     }
 
-    /// Kills and reaps the readers, through their `Child`: one already reaped is not
-    /// signalled again (`Child::kill` after `wait` does nothing).
+    /// Kills and reaps the processes of the platform layer, through their `Child`: one
+    /// already reaped is not signalled again (`Child::kill` after `wait` does nothing).
     #[cfg_attr(not(any(unix, windows)), allow(dead_code))]
-    fn reap(readers: &[Arc<Mutex<std::process::Child>>]) {
-        for r in readers {
-            let mut c = r.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
-
-    /// `reap` for the processes of the platform layer.
-    #[cfg_attr(not(any(unix, windows)), allow(dead_code))]
-    fn reap_managed(managed: &[Arc<Mutex<crate::platform::Child>>]) {
+    fn reap(managed: &[Arc<Mutex<crate::platform::Child>>]) {
         for m in managed {
             let mut c = m.lock().unwrap_or_else(|e| e.into_inner());
             let _ = c.kill();
