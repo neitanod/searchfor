@@ -1921,7 +1921,10 @@ fn m4_29_an_object_file_goblin_panics_on_is_searched_as_rg_searches_it() {
 /// aborts s4: on Unix its data segment (`RLIMIT_DATA`; macOS accepts the limit, which this
 /// installs or fails, and holds to it only what its allocator does not map), on Windows a Job
 /// Object's limit of committed memory (the platform layer's `Limits`).
+// macOS refuses the test's `RLIMIT_DATA` (EINVAL), so its tests that would call this are
+// Linux's and Windows'.
 #[cfg(unix)]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn run_limited(c: &mut std::process::Command, mib: u64) -> std::process::Output {
     let bytes = mib << 20;
     // SAFETY: setrlimit() is async-signal-safe, as pre_exec asks.
