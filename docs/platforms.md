@@ -68,10 +68,8 @@ merge. The owner is the chunk of the M5b plan that owns the file.
 | `m5_22_the_matches_of_a_line_or_a_file_cost_linear_time` | `tests/cli_m5.rs` | macos-arm64, macos-x86_64, windows | `wait4` CPU time of the child | C1 |
 | `m5_19_no_mmap_maps_no_file` | `tests/cli_m5.rs` | macos-arm64, macos-x86_64, windows | `/proc/PID/maps` | C1 |
 | `m5_21_mcp_memory_of_a_line_with_many_trails` | `tests/cli_m5.rs` | macos-arm64, macos-x86_64, windows | RSS from `/proc/PID/status` | C1 |
-| `h13_helpers_exit_with_the_run` | `tests/helpers.rs` | macos-arm64, macos-x86_64, windows | `/proc` to see the helpers | C2 |
-| `h16_ctrl_c_ends_every_helper` | `tests/helpers.rs` | macos-arm64, macos-x86_64, windows | POSIX signals, a FIFO and `/proc` | C2 |
-| `h17_a_helpers_child_cannot_hold_sfor` | `tests/helpers.rs` | macos-arm64, macos-x86_64, windows | `sleep` and `/proc` | C2 |
-| `h18_streams_named_on_the_command_line_go_through_a_temporary_file` | `tests/helpers.rs` | macos-arm64, macos-x86_64, windows | `/dev` streams, a FIFO and a symlink to it | C2 |
+| `h16_ctrl_c_ends_every_helper` | `tests/helpers.rs` | windows | POSIX signals and a FIFO (the console Ctrl-C has its own test) | C2 |
+| `h18_streams_named_on_the_command_line_go_through_a_temporary_file` | `tests/helpers.rs` | windows | `/dev` streams, a FIFO and a symlink to it | C2 |
 | `a_signal_to_the_server_ends_its_search` | `tests/mcp_m5.rs` | macos-arm64, macos-x86_64, windows | POSIX signals, FIFOs and `/proc` (the whole file) | C6 |
 | `a_search_dies_with_its_server` | `tests/mcp_m5.rs` | macos-arm64, macos-x86_64, windows | POSIX signals, FIFOs and `/proc` (the whole file) | C6 |
 | `a_client_that_goes_away_ends_the_search` | `tests/mcp_m5.rs` | macos-arm64, macos-x86_64, windows | POSIX signals, FIFOs and `/proc` (the whole file) | C6 |
