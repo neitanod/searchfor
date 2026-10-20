@@ -1,7 +1,8 @@
 # The long fuzz (M5b spec §5.1, Q57.fuzz-ci): every night and on demand, tests/fuzz.rs and
 # tests/fuzz_m5.rs for 30 minutes each on Linux and 10 minutes each on macOS and Windows. A
-# scheduled night whose `main` head is the commit of the last successful scheduled run ends at
-# once, successfully: a night without new commits runs nothing. A failing case is kept as an
+# scheduled night whose default-branch head is the commit of the last successful scheduled run
+# ends at once, successfully: a night without new commits runs nothing. A run started by hand
+# always runs, on the commit of the branch or tag it was started from. A failing case is kept as an
 # artifact with its seed, N, case index, command line and bytes (SEARCHFOR_FUZZ_ARTIFACT_DIR).
 name: fuzz-nightly
 
@@ -33,25 +34,30 @@ jobs:
       run: ${{ steps.decide.outputs.run }}
       sha: ${{ steps.decide.outputs.sha }}
     steps:
-      - name: Compare main with the last successful scheduled run
+      - name: Compare the branch with its last successful scheduled run
         id: decide
         uses: actions/github-script@v7
+        env:
+          # A scheduled run is on the default branch at its head; a dispatched one on the
+          # branch or tag it was started from, at that ref's commit.
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
         with:
           result-encoding: string
           script: |
-            const branch = 'main';
-            const {data: head} = await github.rest.repos.getCommit({
-              ...context.repo, ref: branch,
-            });
-            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
-              ...context.repo, workflow_id: 'fuzz-nightly.yml', branch,
-              event: 'schedule', status: 'success', per_page: 100,
-            });
-            const last = runs.find(r => r.id !== context.runId &&
-              r.conclusion === 'success' && r.head_branch === branch);
-            const run = context.eventName === 'workflow_dispatch' || !last ||
-              last.head_sha !== head.sha;
-            core.setOutput('sha', head.sha);
+            const branch = process.env.REF_NAME;
+            const sha = process.env.SHA;
+            let run = context.eventName === 'workflow_dispatch';
+            if (!run) {
+              const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+                ...context.repo, workflow_id: 'fuzz-nightly.yml', branch,
+                event: 'schedule', status: 'success', per_page: 100,
+              });
+              const last = runs.find(r => r.id !== context.runId &&
+                r.conclusion === 'success' && r.head_branch === branch);
+              run = !last || last.head_sha !== sha;
+            }
+            core.setOutput('sha', sha);
             core.setOutput('run', String(run));
             return String(run);
 
