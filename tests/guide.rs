@@ -126,3 +126,37 @@ fn m5b_guide_names_and_errors_keep_request_ids() {
     assert_eq!(replies[2]["id"], 9);
     assert!(replies[2]["error"].is_string());
 }
+
+#[test]
+fn m5b_distribution_docs_and_spec_cover_the_v1_contract() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for file in ["README.md", "README.es.md"] {
+        let doc = std::fs::read_to_string(root.join(file)).unwrap();
+        for command in [
+            "cargo install searchfor",
+            "npm install -g searchfor",
+            "brew install neitanod/tap/searchfor",
+            "gh attestation verify",
+            "--install-grammar",
+            "--no-docs",
+        ] {
+            assert!(doc.contains(command), "{file}: {command}");
+        }
+        for system in ["Windows", "macOS", "Linux"] {
+            assert!(doc.contains(system));
+        }
+    }
+    let skill = std::fs::read_to_string(root.join("skills/searchfor/SKILL.md")).unwrap();
+    assert!(skill.contains("Windows"));
+    assert!(skill.contains("--within"));
+    let spec =
+        std::fs::read_to_string(root.join("docs/specs/2026-10-16-searchfor-design.md")).unwrap();
+    assert!(spec.contains("32 MiB"));
+    assert!(spec.contains("grammars-v1"));
+    for number in 34..=42 {
+        assert!(
+            spec.lines().any(|l| l.starts_with(&format!("{number}."))),
+            "{number}"
+        );
+    }
+}

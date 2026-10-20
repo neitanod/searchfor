@@ -33,7 +33,10 @@ and `searchfor::docs::fixture`), with the same contents. The examples over `/bin
 
 ## Status
 
-**v0.5: every ripgrep flag, and an MCP server.** The search engine is ripgrep's own crates, so
+**v1.0 is prepared and not published yet.** It runs on Linux, macOS and Windows, and adds
+prebuilt binaries, Homebrew, npm and install scripts (see [Install](#install)); each channel
+opens when its publication is approved, and until then the version you install from the
+repository is v0.5. **v0.5: every ripgrep flag, and an MCP server.** The search engine is ripgrep's own crates, so
 the search behaves like `rg`, and every flag of ripgrep 14.1.1 works (see
 [ripgrep compatibility](#ripgrep-compatibility)); on top of it, Markdown, YAML, JSON, TOML, code in eight languages, HTML, XML, CSV, TSV,
 SubRip and WebVTT get Trails, and so do the matches ripgrep finds in ELF, PE and Mach-O binaries
@@ -53,18 +56,91 @@ The glossary is in [CONTEXT.md](CONTEXT.md), the design in
 
 ## Install
 
-```
-cargo install searchfor
-```
-
-That installs the latest version published on crates.io. Until v0.5.0 is published there,
-install v0.5 from the repository:
+v1.0 is prepared and not published yet: each channel below opens once its publication is
+approved, and the GitHub Release of v1.0 is the first one. Until then, install from the
+repository, which builds `s4` with Rust 1.90 or later:
 
 ```
 cargo install --git https://github.com/neitanod/searchfor
 ```
 
-Both install the `s4` binary. Prebuilt binaries, Homebrew and npm come in v1.0.
+Once v1.0 is published, any of these installs the `s4` binary:
+
+| Channel | Command | Systems |
+|---|---|---|
+| Homebrew | `brew install neitanod/tap/searchfor` | macOS |
+| npm | `npm install -g searchfor` | the five systems of the table below |
+| crates.io | `cargo install searchfor` | any system with Rust 1.90 or later; it builds from source |
+| Shell script | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/neitanod/searchfor/releases/download/v1.0.0/searchfor-installer.sh \| sh` | Linux and macOS |
+| PowerShell script | `powershell -ExecutionPolicy Bypass -c "irm https://github.com/neitanod/searchfor/releases/download/v1.0.0/searchfor-installer.ps1 \| iex"` | Windows |
+| GitHub Releases | download the archive of your system from https://github.com/neitanod/searchfor/releases | the five systems of the table below |
+
+The prebuilt binaries cover five systems:
+
+| System | Target | Archive |
+|---|---|---|
+| Linux x86-64 | `x86_64-unknown-linux-musl` | `searchfor-x86_64-unknown-linux-musl.tar.xz` |
+| Linux arm64 | `aarch64-unknown-linux-musl` | `searchfor-aarch64-unknown-linux-musl.tar.xz` |
+| macOS arm64 (Apple silicon) | `aarch64-apple-darwin` | `searchfor-aarch64-apple-darwin.tar.xz` |
+| macOS x86-64 (Intel) | `x86_64-apple-darwin` | `searchfor-x86_64-apple-darwin.tar.xz` |
+| Windows x86-64 | `x86_64-pc-windows-msvc` | `searchfor-x86_64-pc-windows-msvc.zip` |
+
+The Linux binaries are static (musl), so they run on any distribution without shared
+libraries. Each archive holds `s4`, the two licenses and both READMEs. Windows on arm64 is
+planned for a 1.x. The binaries are not Authenticode-signed or notarized by Apple: Homebrew,
+npm, cargo and the install scripts download them without the mark that makes SmartScreen or
+Gatekeeper ask, while an archive downloaded with a browser may get that question.
+
+### Verify a download
+
+Each archive has a `.sha256` file beside it, and the release has one `sha256.sum` with every
+checksum. Compute the archive's SHA-256 and compare it with the one in its `.sha256` file:
+
+```
+sha256sum searchfor-x86_64-unknown-linux-musl.tar.xz        # Linux
+shasum -a 256 searchfor-aarch64-apple-darwin.tar.xz         # macOS
+Get-FileHash searchfor-x86_64-pc-windows-msvc.zip           # Windows, PowerShell
+```
+
+Every archive, install script and checksum file also has a GitHub artifact attestation: a
+signature, made by GitHub without any private key of ours (Sigstore, keyless), that binds the
+file to the workflow run and the commit that built it. With the [GitHub CLI](https://cli.github.com/):
+
+```
+gh attestation verify searchfor-x86_64-unknown-linux-musl.tar.xz --repo neitanod/searchfor
+```
+
+It prints the workflow and commit the file came from, and fails if the file was changed after
+the build.
+
+### Supported systems
+
+`s4`, its Helper Processors and its whole test suite build and pass on Linux x86-64, macOS
+arm64, macOS x86-64 and Windows x86-64, in CI on every push (the suite skips on each system
+only the tests whose feature that system lacks, listed in
+[docs/platforms.md](docs/platforms.md)). `--no-docs --no-trail` prints what that system's
+ripgrep 14.1.1 prints. Where the systems differ:
+
+| Area | Linux | macOS | Windows |
+|---|---|---|---|
+| Configuration (Format Definitions, `searchfor/formats/`) | `$XDG_CONFIG_HOME/searchfor` (`~/.config/searchfor`) | `~/Library/Application Support/searchfor` | `%APPDATA%\searchfor` |
+| Data (Grammar Helpers, `searchfor/grammars/`) | `$XDG_DATA_HOME/searchfor` (`~/.local/share/searchfor`) | `~/Library/Application Support/searchfor` | `%APPDATA%\searchfor` |
+| Printed paths | `/` | `/` | as rg: `\` between the components the walker joins; `--path-separator /` changes it |
+| Hyperlinks (`--hyperlink-format`) | `file://{host}{path}` | the same | as rg: `file:///C:/…`, the drive letter kept |
+| Hidden files | dot-files | dot-files | dot-files, and files with the hidden attribute, as rg |
+| Colours | ANSI | ANSI | as rg: ANSI where the console accepts it, the console API otherwise; `--color ansi` forces ANSI |
+| Memory maps (`--mmap`) | as rg | as rg on macOS: a search always reads the file; s4 still maps a file of 8 MiB or more to give its Trails, and a document reader maps its document | as rg |
+| A document reader's memory | its own count, and `RLIMIT_DATA` 64 MiB above it | the same | its own count, and a Job Object memory limit 64 MiB above it |
+| Ctrl-C | s4 ends every helper and reader it started, and then dies by the signal | the same | s4 ends every helper and reader it started, and exits as an unhandled Ctrl-C does (status `0xC000013A`, rg's) |
+| When s4 is killed | its document readers die with it; its helpers get the end of their stdin and exit | the same: each reader watches s4 and exits | a Job Object ends every reader and helper with s4 |
+| `-P` (PCRE2) | with JIT | without JIT on Apple silicon, slower, as that system's rg; `--pcre2-version` says so | with JIT |
+
+`--help` prints the two directories of the running system. The `--pre` program is looked up
+as rg looks it up: on Windows a relative name is searched in `PATH` only, never in the current
+directory, so a program left in the directory you search is never run by accident. When
+several threads search, a file's output past 8 MiB goes to a temporary file until
+the file ends; on Windows, output coloured through the console API stays in memory instead,
+because a copy of its bytes would lose the colours.
 
 ## Formats
 
@@ -321,9 +397,10 @@ Each document is read in a worker process, `s4` itself run again, never an exter
 worker may allocate 1 024 MiB, a count that the worker keeps itself, and may spend 60 s on one
 document. Past either limit, the document gets one warning (`reading it needed more than the
 1024 MiB a reader may use`, or `reading it took more than 60 s`) and is searched as ripgrep
-searches it. The count is the same code on Linux, macOS and Windows, and on Unix `RLIMIT_DATA`,
-64 MiB above it, is a second barrier. It is tested on Linux; on macOS and Windows it compiles,
-and it has not been run there yet. Against decompression
+searches it. The count is the same code on Linux, macOS and Windows, and each system adds a
+second barrier 64 MiB above it: `RLIMIT_DATA` on Linux and macOS (where macOS accepts it), and
+a Job Object memory limit on Windows. The CI runs the count on the four systems, and the Job
+Object's limit on Windows. Against decompression
 bombs, a zip part decompresses to at most 256 MiB and a whole document to 1 GiB, a PDF stream to
 64 MiB, and at most 256 MiB of text is taken from one document.
 
@@ -429,7 +506,8 @@ ripgrep's `-M/--max-columns` keeps its meaning: with it, long lines print ripgre
 | `--mcp` | serve the search as an MCP server over stdin and stdout (see [For AI agents](#for-ai-agents)) |
 
 Format Definitions are TOML files. A file in `searchfor/formats/` under the user config
-directory (`~/.config` or `$XDG_CONFIG_HOME` on Linux) with the name of a built-in or
+directory (`~/.config` or `$XDG_CONFIG_HOME` on Linux, `~/Library/Application Support` on
+macOS, `%APPDATA%` on Windows; see [Supported systems](#supported-systems)) with the name of a built-in or
 installed Format replaces it, and a new name adds a Format.
 
 ### ripgrep compatibility
@@ -542,6 +620,11 @@ app.ini
 The three modes give this same output. The protocol is in
 [spec §4.4](docs/specs/2026-10-16-searchfor-design.md#44-helper-processors-7-84518459).
 
+[docs/external-processors.md](docs/external-processors.md) is the guide for writing one: the
+protocol message by message, the three modes, the failures and how s4 reports them, and a
+worked example in Python that does an INI Format first with `--pre` and then as a Helper
+Processor, with the recipe for each system.
+
 ## Grammars
 
 The Grammars of the eight code Formats are compiled into `s4`. Any other language comes as
@@ -562,12 +645,22 @@ rust           compiled in
 python         compiled in
 ```
 
-The index, [`grammars/index.json`](grammars/index.json), is empty until v1.0 builds and
-publishes the Grammar Helper binaries for each system, so `--install-grammar` has nothing to
-install yet. [`helpers/grammar/`](helpers/grammar) is the template they are built from (Lua
-in v0.3), and [`scripts/build-grammar-helper.sh`](scripts/build-grammar-helper.sh) builds one
-for the running system and prints its index entry. `SEARCHFOR_GRAMMAR_INDEX` points s4 at
-another index, such as a `file://` one of your own.
+v1.0 adds six Grammar Helpers: **c, cpp, java, ruby, c-sharp and elixir**, each built for the
+five systems of [Install](#install) and published in a GitHub Release of their own,
+`grammars-v1`. Once that release is published and the index lists it, this installs one:
+
+```
+s4 --install-grammar ruby
+```
+
+The index, [`grammars/index.json`](grammars/index.json), stays empty until then, so
+`--install-grammar` has nothing to install from the repository yet.
+[`helpers/grammar/`](helpers/grammar) is the template they are built from, and
+[`scripts/build-grammar-helper.sh`](scripts/build-grammar-helper.sh) builds one for the
+running system and prints its index entry (the binary is `<lang>`, and `<lang>.exe` on
+Windows). `SEARCHFOR_GRAMMAR_INDEX` points s4 at another index, such as a `file://` one of
+your own. On macOS and Windows the Grammar directory is under the data directory of
+[Supported systems](#supported-systems).
 
 ## For AI agents
 
@@ -719,7 +812,7 @@ copy that directory to `~/.claude/skills/` to install it.
 | M3 (done, 2026-10-17) | v0.3 | HTML and XML element paths (`section#pricing › table › tr[3] › td[2]`); CSV and TSV rows and columns (`row 2 › Plan`); SubRip and WebVTT cues (`cue 2 00:00:04,000`); control characters in printed names shown as escapes |
 | M4 (done, 2026-10-19) | v0.4 | object files (ELF, PE, Mach-O, fat Mach-O) as `ELF x86-64 › .rodata › main.version+0xe`; documents searched by default (`--no-docs` turns it off), with Extractors for PDF, Word, Excel, PowerPoint, OpenDocument text, spreadsheet and presentation, EPUB and SQLite, each document read in a worker process that counts its own memory; ripgrep's `--pre`, `--pre-glob`, `--no-pre`, `-z` and `--no-search-zip`; the M4 benchmark, performance ceilings and fuzz targets |
 | M5a (done, 2026-10-20) | v0.5 | every ripgrep 14.1.1 flag, in `--no-trail` as ripgrep prints it and in the Trail layouts (PCRE2, multi-line search, encodings, the ignore and sort flags, `--files`, `-o`, `--column`, `--vimgrep`, `-r`, `--stats`, hyperlinks, a configuration file, `--generate`, `--debug`); an MCP server (`s4 --mcp`) |
-| M5b | v1.0 | prebuilt binaries (GitHub Releases), Homebrew and npm; Windows and macOS in CI, where the readers' memory count is run, and a Windows Job Object over each document reader as its second barrier; Grammar Helper binaries published in the Grammar index; signed releases; the guide for writing a Helper Processor; streaming the Trails of files where most lines match |
+| M5b (prepared, 2026-10-20; publication pending) | v1.0 | prebuilt binaries (GitHub Releases), Homebrew and npm; Windows and macOS in CI, where the readers' memory count is run, and a Windows Job Object over each document reader as its second barrier; Grammar Helper binaries published in the Grammar index; signed releases; the guide for writing a Helper Processor; streaming the Trails of files where most lines match |
 | M6 | v1.x | more Formats: image and audio metadata, WebAssembly and Java `.class` (at the hex offset of the match, as object files); the binary Office formats (`.doc`, `.xls`, `.ppt`); the headers, footers, footnotes and comments of Office documents |
 
 Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) stay out: searchfor searches what ripgrep

@@ -3,7 +3,8 @@
 Status: draft · 2026-10-19, aligned with the M1 implementation, the M2 decisions of the Hilo
 (8449–8459), the M2 implementation (v0.2), the decisions of the M3 plan and the M3
 implementation (v0.3), the decisions of the M4 plan and the M4 implementation (v0.4), and the
-decisions of the M5a plan (v0.5, not implemented yet) · Task 768 · source of truth for
+decisions of the M5a plan (v0.5), and amended by [the M5b design](2026-10-20-searchfor-m5b-design.md)
+(v1.0: §3 item 5, §7, §10 and §11 #13 and #34–#42) · Task 768 · source of truth for
 decisions: [grill-respuestas.md](grill-respuestas.md) (numbers below, like **#6**, refer to its
 questions; four-digit numbers are Hilo messages; «M2 plan», «M3 plan», «M4 plan» and «M5a
 plan» mark a decision taken in [the M2 plan](../plans/2026-10-17-searchfor-m2.md),
@@ -16,8 +17,11 @@ and [../../CONTEXT.md](../../CONTEXT.md) for the vocabulary.
 every remaining flag of ripgrep 14.1.1 (§8) and the MCP server (§9); **M5b** (v1.0) brings
 Windows and macOS (with the Windows Job Object of the M4 plan's D31), CI on the three systems,
 the releases and their channels (§10), the Grammar Helper binaries in the Grammar index (§7),
-the External Processor guide (§4.4) and the streaming of dense files (§3, item 5). M5b gets a
-plan of its own once M5a is merged.
+the External Processor guide (§4.4) and the streaming of dense files (§3, item 5). M5b has a
+design of its own, [2026-10-20-searchfor-m5b-design.md](2026-10-20-searchfor-m5b-design.md), which
+amends this document where M5b decides (§3 item 5, §7, §10, §11), and a plan,
+[2026-10-20-searchfor-m5b.md](../plans/2026-10-20-searchfor-m5b.md). The External Processor
+guide is [docs/external-processors.md](../external-processors.md).
 
 ## 1. Goal
 
@@ -104,18 +108,31 @@ paths ─▶ walker (ignore crate: .gitignore, -g, -t, --hidden…)
    `--binary` or `-a` — searchfor searches the whole file and prints each printable string with
    Matches at its hex offset, with its Trail (§5.7). A walked object file without `--binary`, and
    any other binary file, keep ripgrep's behaviour, including `-a/--text` and `--binary`.
-5. **Dense Matches (pending, M5b).** The pipeline keeps the Trails of a whole file before
-   printing it, so a file where every line matches costs time and memory in proportion to its
-   Matches, in every Format. Measured in the M3 plan on 50 MB files where every line matches
-   (2026-10-17): JSON Lines 3.51 s and 876 MiB, Markdown 3.62 s and 409 MiB, CSV 5.36 s and
-   1.48 GiB, against 0.16–0.46 s with `--no-trail`. M3 reports this cost in
-   `scripts/bench-m3.sh` and bounds nothing (M3 plan, D16); streaming the Trails of such a file
-   is left for M5, whose flag work touches the printers anyway. M5a settles the printers'
-   rows for every ripgrep flag; the streaming itself, with its criterion, is M5b's (M5a plan,
-   D1). Measured on M4's code (2026-10-19, 50 MB files where every line matches): Markdown
-   1.30 s and 159 MiB, JSON Lines 1.43 s and 258 MiB, CSV 3.74 s and 946 MiB in the one-line
-   layout, and with `--json` 1.29 s / 159 MiB, 1.90 s / 572 MiB and 4.43 s / 1.88 GiB, against
-   0.11–0.20 s and 54 MiB with `--no-trail`.
+5. **Dense Matches (bounded in M5b).** Until M5a the pipeline kept the Trails of a whole file
+   before printing it, so a file where every line matches cost time and memory in proportion
+   to its Matches, in every Format. Measured in the M3 plan on 50 MB files where every line
+   matches (2026-10-17): JSON Lines 3.51 s and 876 MiB, Markdown 3.62 s and 409 MiB, CSV 5.36 s
+   and 1.48 GiB, against 0.16–0.46 s with `--no-trail`. Measured on M4's code (2026-10-19, the
+   same files): Markdown 1.30 s and 159 MiB, JSON Lines 1.43 s and 258 MiB, CSV 3.74 s and
+   946 MiB in the one-line layout, and with `--json` 1.29 s / 159 MiB, 1.90 s / 572 MiB and
+   4.43 s / 1.88 GiB, against 0.11–0.20 s and 54 MiB with `--no-trail`. M3 reported this cost
+   and bounded nothing (M3 plan, D16); M5a settled the printers' rows for every ripgrep flag
+   (M5a plan, D1).
+   **M5b** ([M5b design §6](2026-10-20-searchfor-m5b-design.md#6-dense-files)) streams the
+   Trails: each Processor prepares what it needs of the file once (its Outline), and a cursor
+   gives the Trail of each Match in file order, so rows print as they are computed and the
+   `--json` fallback writes into the same bounded output. Past 8 MiB, a file's output kept
+   while other threads search goes to a temporary file of the run. The cost is now bounded
+   (criterion 37, the M5b design's §6.3): on 50 MiB files where every line matches, one per
+   Format family (Markdown, JSON Lines, CSV, YAML, a code file, HTML, SubRip), in the one-line
+   layout and with `--json`, each against the same command with `--no-trail` (time `T₀`, peak
+   RSS `R₀`), release build:
+   - **Memory:** peak RSS ≤ `R₀` + the Processor's preparation of that file + 32 MiB, where the
+     preparation is the same file searched with a pattern that matches once; so RSS(dense) ≤
+     RSS(one Match) + 32 MiB in every Format and with `--json`.
+   - **Time:** ≤ the preparation's time + 4 × `T₀` + 0.1 s in the one-line layout, and + 6 ×
+     `T₀` + 0.1 s with `--json`.
+   - The M5a check (`m5_22`, every mode below 6 × from N to 4 N Matches) stays.
 
 ## 4. Formats, Detector and Format Definitions
 
@@ -1089,15 +1106,18 @@ ones easy to add, and a flag that installs them. 8454 replaced the WebAssembly G
   XML, CSV and subtitles use scanners of their own (§4.3, M3 plan), so they need none either.
 - **Grammar Helpers.** Any other language is a **Grammar Helper**: a separate binary, built by
   searchfor from the same `treesitter` code with one Grammar compiled in, that speaks the Helper
-  Processor protocol (§4.4) in `concurrent` mode. It lives in
-  `$XDG_DATA_HOME/searchfor/grammars/<lang>/` (on Linux `~/.local/share/searchfor/grammars/`)
-  together with its Format Definition, `<lang>.toml`, which s4 loads after the built-ins and
+  Processor protocol (§4.4) in `concurrent` mode. Its binary is named `<lang>`, and
+  `<lang>.exe` on Windows. It lives in `searchfor/grammars/<lang>/` under the platform data
+  directory (`$XDG_DATA_HOME`, on Linux `~/.local/share/searchfor/grammars/` by default; on
+  macOS `~/Library/Application Support/searchfor/grammars/`; on Windows
+  `%APPDATA%\searchfor\grammars\`, M5b design §4.2) together with its Format Definition, `<lang>.toml`, which s4 loads after the built-ins and
   before the user formats directory. Its Definition says `processor = "treesitter"` and
   `grammar = "<lang>"`, as a compiled-in one does.
 - **`s4 --install-grammar <lang>`** reads the Grammar index: a JSON file in the GitHub
   repository, `grammars/index.json`, listing for each Grammar its name, version, source
   repository, license and Format Definition, and for each system (`linux-x86_64`,
-  `macos-aarch64`, `windows-x86_64`, …) the URL and SHA-256 of its binary. s4 downloads the
+  `linux-aarch64`, `macos-aarch64`, `macos-x86_64`, `windows-x86_64`, the five release targets of
+  §10) the URL and SHA-256 of its binary. s4 downloads the
   binary for the running system, verifies the checksum, and only then writes the binary, the
   Definition and `installed.json` (version and checksum) to the Grammar directory. A checksum
   mismatch, or no binary for the system, is an error (exit 2) that leaves the directory as it
@@ -1114,9 +1134,18 @@ ones easy to add, and a flag that installs them. 8454 replaced the WebAssembly G
   `--list-formats` as unavailable, and its files are treated as Plain with one warning per run,
   ``s4: <format>: grammar `<lang>` is neither compiled in nor installed (see --list-grammars)``,
   printed only when a file of that Format has a Match (§4.4, Failures).
-- A Grammar Helper binary per Grammar and system is built and published by the release pipeline
-  (§10, M5b). M2 ships the client side, the Grammar Helper template and a script that builds one
-  for the running system (M2 plan).
+- A Grammar Helper binary per Grammar and system is built by the release pipeline (§10, M5b
+  design §9). M2 shipped the client side, the Grammar Helper template and a script that builds
+  one for the running system (M2 plan). M5b builds six Grammar Helpers to start, **c, cpp,
+  java, ruby, c-sharp and elixir** (Q57.gramaticas), each a Format Definition in
+  `grammars/<lang>/<lang>.toml` and a feature of `helpers/grammar`, pinned to ABI-14 grammar
+  releases that tree-sitter `=0.24.7` loads (M5b plan, D-ABI). The workflow `grammars.yml`
+  builds all six for the five targets of §10 on a `grammars-v*` tag and publishes them in a
+  GitHub Release of their own, **`grammars-v1`**, separate from s4's releases
+  (Q57.grammar-host); it writes each binary's SHA-256 and produces the new
+  `grammars/index.json` as an artifact. `docs/grammar-index.schema.json` validates that index
+  in CI. The index committed to `main` is what `--install-grammar` reads, so a Grammar is
+  installable only after that commit, which waits for Sebastián's approval (§10).
 
 Measured in the M2 research (2026-10-16 and 2026-10-17, on this machine): native parsing is
 1.5–1.6× faster than WebAssembly; a stripped release binary with only the seven code Grammars
@@ -1280,16 +1309,39 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
 
 ## 10. Distribution (#17, #18, #20)
 
+Amended by M5b ([M5b design §8](2026-10-20-searchfor-m5b-design.md#8-releases)).
+
 - Public repository: https://github.com/neitanod/searchfor (account chosen in 8366).
-- `dist` (formerly cargo-dist) builds GitHub Releases for Linux, macOS and Windows on x86-64
-  and arm64, and publishes the Homebrew tap and the npm package from the same configuration
-  (M5b; nothing is published without Sebastián's go-ahead).
-- The same pipeline builds a Grammar Helper per Grammar for the same systems and writes their
-  URLs and SHA-256 to `grammars/index.json` (§7, M5b).
+- `dist` 0.33.0 (formerly cargo-dist, its version pinned in `dist-workspace.toml`) builds the
+  release from a `v*` tag for five targets (Q57.plataformas): `x86_64-unknown-linux-musl` and
+  `aarch64-unknown-linux-musl` (static Linux binaries, Q57.linux-static), `aarch64-apple-darwin`,
+  `x86_64-apple-darwin` and `x86_64-pc-windows-msvc`. Windows on arm64 comes in a 1.x.
+- Each target's archive (`.tar.xz` for Linux and macOS, `.zip` for Windows) holds `s4`, the two
+  licenses and both READMEs; each archive has its `.sha256`, and the release has one
+  `sha256.sum`. Only `s4` is packaged: `helpers/example` and `helpers/grammar` set
+  `dist = false`.
+- Four channels (#18) and two installers (Q57.instaladores): the GitHub Release, the Homebrew
+  formula in the tap `neitanod/homebrew-tap` (`brew install neitanod/tap/searchfor`, Q57.brew),
+  the npm package `searchfor` (`npm install -g searchfor`, unscoped, Q57.npm), the crate
+  `searchfor` on crates.io (`cargo install searchfor`, Q57.crate), and the shell and
+  PowerShell install scripts `dist` generates. No MSI.
+- **Signing** (Q57.firma): every archive, installer script and checksum file gets a GitHub
+  artifact attestation (`github-attestations = true`, Sigstore, keyless), verified with
+  `gh attestation verify <file> --repo neitanod/searchfor`. Authenticode and Apple notarization
+  are outside v1.0 (Q57.codesign).
+- The same project builds the Grammar Helper binaries of §7 in the separate `grammars-v1`
+  release, and their URLs and SHA-256 go to `grammars/index.json`.
 - PCRE2 is built into every binary from the C that pcre2-sys bundles (`PCRE2_SYS_STATIC` in
   `.cargo/config.toml`, M5a plan, D7); a `cargo install searchfor` links the system's libpcre2
   when pkg-config finds one, as ripgrep's does.
-- The crate `searchfor` is published on crates.io when v0.1 works (#20).
+- **Staged approvals** (M5b design §8.6). Nothing is published without Sebastián's OK at that
+  step, and each step has its own approval, in this order: (1) creating the tap and the
+  secrets `HOMEBREW_TAP_TOKEN` and `NPM_TOKEN`; (2) pushing the release candidate tag
+  `v1.0.0-rc.1`, a pre-release GitHub Release with archives and attestations that publishes
+  nothing to npm, Homebrew or crates.io (`publish-prereleases = false`); (3) uploading the
+  Grammar Helper binaries and pushing the `grammars/index.json` that lists them; (4) pushing
+  `v1.0.0`: the GitHub Release, the Homebrew formula and the npm package; (5) `cargo publish`.
+  The crate is published at step 5, with v1.0, which replaces #20's «when v0.1 works».
 
 ## 11. Acceptance criteria
 
@@ -1335,7 +1387,9 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
     at most the largest matching file divided by 50 MB/s, plus the size of all the matching files
     divided by 50 MB/s per search thread, plus 0.05 s. A 50 MB file of each of these Formats with
     three Matches gets its Trails within `rg`'s time plus 1 s (`tests/perf.rs`). A pattern that
-    matches every line is measured and reported, not bounded (§3, item 5; pending for M5b). The
+    matches every line is bounded by criterion 37 (§3, item 5, as amended by M5b): peak RSS
+    within the file's preparation plus 32 MiB, and time within the preparation plus 4 × (6 ×
+    with `--json`) the time of `--no-trail`, plus 0.1 s. The
     reference is `/usr/bin/rg`, which must be ripgrep 14.1.1 (another `rg` may come first on
     `PATH`), and a comparison that cannot run makes an acceptance run fail instead of passing
     silently (`SEARCHFOR_REQUIRE_REFERENCE=1`, M3 plan, D33).
@@ -1445,3 +1499,34 @@ Management actions are flags, not subcommands, because `s4 formats` must keep me
 33. **No flag combination panics (M5a).** `tests/fuzz_m5.rs` runs seeded combinations of
     ripgrep's and s4's flags, patterns and paths (CRLF, NUL records, Latin-1, long lines): no
     run panics, none takes more than 10 s, every exit code is 0, 1, or 2 with a message.
+
+**M5b (v1.0)**, from the [M5b design §12](2026-10-20-searchfor-m5b-design.md#12-acceptance-criteria):
+
+34. **Four systems (M5b).** The suite passes on Linux x86-64, macOS arm64, macOS x86-64 and
+    Windows x86-64 in CI with `SEARCHFOR_REQUIRE_REFERENCE=1`; every test skipped on a system
+    is listed with its reason in `docs/platforms.md`, and none is skipped for a reason other
+    than a missing system feature.
+35. **rg's output on each system (M5b).** On each system, `s4 --no-docs --no-trail` prints
+    what that system's rg 14.1.1 prints for the cases of `tests/rg_compat.rs` and
+    `tests/rg_compat_m5.rs` (paths with `\` on Windows).
+36. **Readers and helpers on Windows and macOS (M5b).** On Windows, a document reader past its
+    memory limit gives the memory warning (the Job Object), and after Ctrl-C (a
+    `GenerateConsoleCtrlEvent` test) no reader or helper outlives s4; on macOS, the readers'
+    counter gives the warning (`m4_22`).
+37. **Dense files (M5b).** The criterion of §3, item 5 (the M5b design's §6.3), in
+    `tests/perf.rs`.
+38. **Per-file cost (M5b).** In `scripts/bench-m5b.sh`, over the M4 text corpus, 40 runs
+    alternated, with a pattern no file matches: `s4 --no-docs --no-trail` ≤ 1.05 × rg,
+    `s4 --no-docs` ≤ 1.05 × rg, and the default ≤ 1.05 × `s4 --no-docs` (M5b design §7). The
+    other ceilings of #13, #26 and #32 stay.
+39. **Releases (M5b).** `dist plan` lists the five targets and the four installers;
+    `dist build` for the running system produces an archive whose `s4 --version` prints
+    `1.0.0`; the Homebrew formula installs on macOS, the npm package installs from `npm pack`,
+    and `cargo publish --dry-run` passes, all in CI.
+40. **Grammar Helpers (M5b).** The six Grammar Helpers of §7 build for the five targets;
+    `s4 --install-grammar` installs one from a `file://` index on each system, and its Trails
+    have the form of the compiled-in Grammars' Trails.
+41. **The External Processor guide (M5b).** The examples of `docs/external-processors.md` run
+    and give their documented output (`tests/guide.rs`).
+42. **The M5a leftovers (M5b).** The three findings of the M5b design's §3 have their tests
+    (`tests/cli_m5.rs`).
