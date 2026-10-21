@@ -3951,9 +3951,27 @@ fn a_descriptor(at: &Path) -> bool {
     }
 }
 
-/// A regular file, which can be opened again and read the same: not `/dev/stdin` or a FIFO.
+/// A regular file, which can be opened again and read the same: not `/dev/stdin` or a FIFO,
+/// and on macOS not a regular file named through this process's descriptors either
+/// (`NAME_SHARES_POSITION`).
 fn rewindable(p: &Path) -> bool {
-    std::fs::metadata(p).is_ok_and(|m| m.is_file())
+    rewindable_when(p, NAME_SHARES_POSITION)
+}
+
+/// Whether opening a name of one of this process's descriptors (`/dev/stdin`, `/dev/fd/N`)
+/// gives a descriptor that shares its position, as `dup` does: on macOS and the BSDs, whose
+/// `/dev/fd` duplicates the descriptor. On Linux and Android the name is a link that opens the
+/// file again, at its start. Where the position is shared, the file read once to probe it is
+/// read again from where that read stopped, so such a name is read once, as stdin, which is
+/// what rg does with it (M5b CI on macOS, h18).
+const NAME_SHARES_POSITION: bool = cfg!(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android"))
+));
+
+/// `rewindable`, with whether a name of a descriptor shares its position given.
+fn rewindable_when(p: &Path, shared_position: bool) -> bool {
+    std::fs::metadata(p).is_ok_and(|m| m.is_file()) && !(shared_position && through_descriptors(p))
 }
 
 /// What `Spill` holds before it prints: a file's output is printed in pieces of about this size.
@@ -4346,6 +4364,38 @@ fn run_stats(s: &Stats) -> RunStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CI of M5b on macOS: a file opened as stdin, named `/dev/stdin` or `/dev/fd/N`, is a
+    /// regular file, and on macOS each open of the name shares the descriptor's position, so a
+    /// search that read it once (to probe it, or for its first bytes) read it again from where
+    /// the first read stopped and found nothing. Here a file is opened and its position moved
+    /// on, as a first read moves it: its name is rewindable only where opening the name reads
+    /// the whole file again, and with a shared position it is read once, as a stream.
+    #[cfg(unix)]
+    #[test]
+    fn a_descriptor_whose_position_moved_on_is_read_once_where_its_name_shares_it() {
+        use std::os::fd::AsRawFd;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, b"abcdef").unwrap();
+        let mut open = File::open(&file).unwrap();
+        let mut first = [0u8; 3];
+        open.read_exact(&mut first).unwrap();
+        let name = PathBuf::from(format!("/dev/fd/{}", open.as_raw_fd()));
+        let again = std::fs::read(&name).unwrap();
+        // What this system does, and what s4 decides of it.
+        assert_eq!(rewindable(&name), again == b"abcdef", "{again:?}");
+        assert_eq!(
+            NAME_SHARES_POSITION,
+            again == b"def" || again.is_empty(),
+            "{again:?}"
+        );
+        // Both behaviours, on every system.
+        assert!(rewindable_when(&name, false));
+        assert!(!rewindable_when(&name, true));
+        assert!(rewindable_when(&file, true));
+        assert!(!rewindable_when(dir.path(), false));
+    }
 
     /// Which path files take (plan Task 9.3): the whole-file model, the oracle, or what s4
     /// selects, streaming where a native cursor serves the file.
