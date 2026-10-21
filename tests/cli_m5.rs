@@ -227,9 +227,16 @@ fn m5_05_pcre2_and_the_engines() {
         stderr(&o),
         "s4: PCRE2: error compiling pattern at offset 5: missing closing parenthesis\n"
     );
+    // M5b spec §4.4: pcre2-sys builds no JIT on aarch64-apple-darwin, and that system's rg
+    // says so too.
+    let jit = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "unavailable"
+    } else {
+        "available"
+    };
     let v = ok(&fx, &["--pcre2-version"]);
     assert!(
-        v.starts_with("PCRE2 10.") && v.ends_with(" is available (JIT is available)\n"),
+        v.starts_with("PCRE2 10.") && v.ends_with(&format!(" is available (JIT is {jit})\n")),
         "{v}"
     );
 }
