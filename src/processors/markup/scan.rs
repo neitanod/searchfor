@@ -113,6 +113,17 @@ impl<'a> Scanner<'a> {
         }
     }
 
+    /// A scanner that goes on from where one was: at `pos`, between two steps, with its
+    /// `prolog` (a markup cursor's marks).
+    pub fn resume(src: &'a [u8], xml: bool, pos: usize, prolog: bool) -> Self {
+        Self {
+            src,
+            pos,
+            xml,
+            prolog,
+        }
+    }
+
     /// The byte after `pat`, searched from `from`; None when the file ends first.
     fn after(&self, from: usize, pat: &[u8]) -> Option<usize> {
         memchr::memmem::find(&self.src[from.min(self.src.len())..], pat)
@@ -524,6 +535,11 @@ impl<'a> Scanner<'a> {
 
     pub fn pos(&self) -> usize {
         self.pos
+    }
+
+    /// XML: whether it is still in the prolog (`resume`).
+    pub fn prolog(&self) -> bool {
+        self.prolog
     }
 }
 
