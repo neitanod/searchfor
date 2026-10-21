@@ -599,7 +599,9 @@ impl<'a> CsvPrepared<'a> {
 
     /// A reader and a line counter past the header; None when `headers` is set and the file
     /// has no record, whose Matches have no Trail. A new reader each time: csv-core 0.1.13's
-    /// `Reader::clone` loses its tables, and reads every byte as a record.
+    /// `Reader::clone` loses its tables, and reads every byte as a record. It starts where the
+    /// header row ends, as the header is never read again: a header of a million cells is 24 MB
+    /// of fields (code review r3).
     fn body(&self) -> Option<(Records<'a>, Lines<'a>)> {
         let src = self.input.bytes;
         let mut recs = Records::new(src, &self.p);
@@ -609,17 +611,12 @@ impl<'a> CsvPrepared<'a> {
             line: 1,
         };
         if self.p.headers {
-            self.header.as_ref()?;
-            // The header row again, without its text.
-            let mut fields = Vec::new();
-            recs.next(&mut fields, false);
-            lines.of(fields[0].raw.start);
-            lines.of(fields
-                .last()?
-                .raw
-                .end
-                .saturating_sub(1)
-                .max(fields[0].raw.start));
+            let h = self.header.as_ref()?;
+            let (first, last) = (&h.fields[0], h.fields.last()?);
+            // A record ends at a record boundary, where a new csv-core reader starts too.
+            recs.pos = last.end;
+            lines.at = last.raw.end.saturating_sub(1).max(first.raw.start);
+            lines.line = h.lines.1;
         }
         Some((recs, lines))
     }

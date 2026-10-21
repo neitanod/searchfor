@@ -212,7 +212,8 @@ each against the same command with `--no-trail` (time `T₀`, peak RSS `R₀`), 
 - **Memory**: peak RSS ≤ `R₀` + the Processor's preparation of that file + 32 MiB, where the
   preparation is measured as the same file searched with a pattern that matches once. Densely
   and sparsely matched, the same bytes: RSS(dense) ≤ RSS(one Match) + 32 MiB, in every Format
-  and with `--json`. This is the check that the cost no longer grows with the Matches.
+  and with `--json`. This is the check that the cost no longer grows with the Matches. With N
+  search threads, plus N × the 8 MiB a file's output may hold before it spills (§6.2).
 - **Time**: ≤ the preparation's time + 4 × `T₀` + 0.1 s in the one-line layout, + 6 × `T₀` +
   0.1 s with `--json` (an estimate from Codex's reading of the code, 20/10; the plan's probe
   measures it and may tighten it, never loosen it without saying so).

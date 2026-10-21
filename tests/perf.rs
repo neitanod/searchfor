@@ -2730,10 +2730,15 @@ fn m5b_dense_seven_families_have_bounded_match_retention() {
     }
 }
 
+/// M5b spec §6.3 with several search threads: each may hold up to the 8 MiB of a file's
+/// output that sends it to a spool file (§6.2), so the allowance is 32 MiB plus that per thread
+/// (code review r3: with four threads the run was 32.9 MiB over one Match, with two 15.5 and
+/// with one 0.1).
 #[test]
 #[ignore = "multi-worker dense RSS; selected explicitly in Linux CI"]
 #[cfg(target_os = "linux")]
 fn m5b_dense_parallel_output_is_bounded() {
+    use searchfor::output::spool::FILE_SPOOL_THRESHOLD;
     let _alone = alone();
     let fx = Fixture::new();
     let files = fx.file("parallel");
@@ -2741,11 +2746,17 @@ fn m5b_dense_parallel_output_is_bounded() {
     for n in 0..4 {
         std::fs::write(files.join(format!("{n}.csv")), dense_m5b_bytes("csv")).unwrap();
     }
-    let dense = ["--no-docs", "--json", "-j4", "needle|^", "parallel"];
-    let once = ["--no-docs", "--json", "-j4", "ONCE_M5B", "parallel"];
+    let threads = 4;
+    let j = format!("-j{threads}");
+    let dense = ["--no-docs", "--json", &j, "needle|^", "parallel"];
+    let once = ["--no-docs", "--json", &j, "ONCE_M5B", "parallel"];
     let (_, rd) = measure_drained(&sfor_bin(), &fx, &dense, 0).unwrap();
     let (_, rp) = measure_drained(&sfor_bin(), &fx, &once, 0).unwrap();
-    assert!(rd <= rp + (32 << 20), "parallel dense={rd} once={rp}");
+    let allowance = (32 << 20) + threads * FILE_SPOOL_THRESHOLD as u64;
+    assert!(
+        rd <= rp + allowance,
+        "parallel dense={rd} once={rp} allowance={allowance}"
+    );
 }
 
 /// Plan Task 10.3, Step 3: four workers over the seven dense families at once. Each file's
