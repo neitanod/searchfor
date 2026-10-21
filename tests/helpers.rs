@@ -8,7 +8,7 @@
 //! temporary directory cannot match them by chance.
 mod common;
 
-use common::{Fixture, code, run, stderr, stdout};
+use common::{Fixture, code, native, run, stderr, stdout};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -70,6 +70,23 @@ ini/db.ini:2: primary › url │ url = postgres://needle
 ini/web.ini:2: http › listen │ listen = needle:80
 ";
 
+/// `text` with the path that starts each line, up to its first `:`, in this system's separators,
+/// as rg 14.1.1 prints the paths it walks (`ini\app.ini` on Windows; M5b spec §4.2). The rest
+/// of the line is searched text, kept as it is.
+fn native_lines(text: &str) -> String {
+    text.lines()
+        .map(|l| match l.split_once(':') {
+            Some((path, rest)) => format!("{}:{rest}\n", native(path)),
+            None => format!("{l}\n"),
+        })
+        .collect()
+}
+
+/// `INI_TRAILS` with this system's separators.
+fn ini_trails() -> String {
+    native_lines(INI_TRAILS)
+}
+
 /// The Trails of `app.ini` as `s4 --flat` prints them for a single input.
 const APP_TRAILS: &str = "\
 3: server › host │ host = needle.example
@@ -95,7 +112,7 @@ fn h01_every_mode_gives_the_same_trails() {
         let o = flat_ini(&fx, &[], &[]);
         assert_eq!(code(&o), 0, "{mode}: {}", stderr(&o));
         assert_eq!(stderr(&o), "", "{mode}");
-        assert_eq!(stdout(&o), INI_TRAILS, "{mode}");
+        assert_eq!(stdout(&o), ini_trails(), "{mode}");
     }
 }
 
@@ -178,7 +195,7 @@ fn h02_a_pool_runs_at_most_the_thread_count() {
         assert_eq!(all, 3, "{mode}: {all} requests in flight at most");
         assert_eq!(one, per_process, "{mode}: {one} in one process");
         let want: Vec<String> = (1..=12)
-            .map(|i| format!("gen/g{i:02}.ini:2: s › k │ k = needle"))
+            .map(|i| native(&format!("gen/g{i:02}.ini:2: s › k │ k = needle")))
             .collect();
         assert_eq!(sorted_lines(&o), want, "{mode}");
     }
@@ -230,7 +247,9 @@ fn h03_out_of_order_answers_reach_their_files() {
     });
     assert!(overtaken, "no answer overtook another: {events:?}");
     let mut want: Vec<String> = (1..=8)
-        .flat_map(|i| ["s", "f"].map(|k| format!("gen/{k}{i}.ini:2: {k}{i} › k │ k = needle")))
+        .flat_map(|i| {
+            ["s", "f"].map(|k| native(&format!("gen/{k}{i}.ini:2: {k}{i} › k │ k = needle")))
+        })
         .collect();
     want.sort();
     assert_eq!(sorted_lines(&o), want);
@@ -296,16 +315,16 @@ fn h04_a_crash_is_plain_with_a_warning_and_a_restart() {
         ],
     );
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    let want = INI_TRAILS.replace(
+    let want = native_lines(&INI_TRAILS.replace(
         "ini/db.ini:2: primary › url │ url = postgres://needle",
         "ini/db.ini:2: url = postgres://needle",
-    );
+    ));
     assert_eq!(stdout(&o), want);
     let err = stderr(&o);
     let lines: Vec<_> = err.lines().collect();
     assert_eq!(lines.len(), 1, "{err}");
     assert!(
-        lines[0].contains("ini") && lines[0].contains("ini/db.ini"),
+        lines[0].contains("ini") && lines[0].contains(&native("ini/db.ini")),
         "{err}"
     );
     assert_eq!(starts(&log), 2);
@@ -330,20 +349,20 @@ fn h05_three_failures_disable_the_definition() {
     assert_eq!(disabled.len(), 1, "{err}");
     // The three failures are the first three files', and nothing follows the fourth line.
     for i in 1..=3 {
-        let file = format!("gen/g{i:02}.ini");
+        let file = native(&format!("gen/g{i:02}.ini"));
         assert_eq!(
             lines.iter().filter(|l| l.contains(&file)).count(),
             1,
             "{err}"
         );
     }
-    assert!(!err.contains("gen/g04.ini"), "{err}");
+    assert!(!err.contains(&native("gen/g04.ini")), "{err}");
     // The notice that disables the Definition follows the warning of the file that caused it
     // (review m2-code-r1, Fable #5).
-    assert!(lines[2].contains("gen/g03.ini"), "{err}");
+    assert!(lines[2].contains(&native("gen/g03.ini")), "{err}");
     assert!(lines[3].contains("failed 3 times"), "{err}");
     let want: String = (1..=6)
-        .map(|i| format!("gen/g{i:02}.ini:2: k = needle\n"))
+        .map(|i| native_lines(&format!("gen/g{i:02}.ini:2: k = needle\n")))
         .collect();
     assert_eq!(stdout(&o), want);
 }
@@ -362,10 +381,10 @@ fn h06_a_timeout_kills_and_goes_on() {
         stderr(&o)
     );
     assert!(took < Duration::from_secs(5), "took {took:?}");
-    let want = INI_TRAILS.replace(
+    let want = native_lines(&INI_TRAILS.replace(
         "ini/web.ini:2: http › listen │ listen = needle:80",
         "ini/web.ini:2: listen = needle:80",
-    );
+    ));
     assert_eq!(stdout(&o), want);
 }
 
@@ -382,23 +401,24 @@ fn h07_a_broken_line_is_a_failure() {
         "{}",
         stderr(&o)
     );
-    let want = INI_TRAILS.replace(
+    let want = native_lines(&INI_TRAILS.replace(
         "ini/web.ini:2: http › listen │ listen = needle:80",
         "ini/web.ini:2: listen = needle:80",
-    );
+    ));
     assert_eq!(stdout(&o), want);
 }
 
-/// `INI_TRAILS` as Plain lines: `path:line: text`.
+/// `INI_TRAILS` as Plain lines, `path:line: text`, with this system's separators.
 fn ini_plain() -> String {
-    INI_TRAILS
+    let plain: String = INI_TRAILS
         .lines()
         .map(|l| {
             let (head, text) = l.split_once(" │ ").unwrap();
             let at = head.find(": ").unwrap();
             format!("{}: {text}\n", &head[..at])
         })
-        .collect()
+        .collect();
+    native_lines(&plain)
 }
 
 #[test]
@@ -417,18 +437,25 @@ fn h08_a_missing_command_is_one_warning() {
 fn h08b_a_oneshot_helper_that_exits_before_hello_is_one_warning() {
     // Spec §4.4 (review m2-code-r1, Codex #5): the first process that exits before answering
     // `hello` disables the Definition, in `oneshot` as in the other modes: one start, one
-    // warning, Plain output.
+    // warning, Plain output. The example helper exits at its start, so this runs on every
+    // system, without a shell.
     let fx = Fixture::new();
+    ini(&fx, "oneshot", 2000);
     let log = fx.file("starts.log");
-    let script = format!("echo start >> '{}'; exit 1", log.display());
-    ini_command(&fx, &["/bin/sh", "-c", &script], "oneshot", 2000);
-    let o = flat_ini(&fx, &[], &[]);
+    let o = flat_ini(
+        &fx,
+        &[],
+        &[
+            ("SEARCHFOR_EXAMPLE_EXIT_AT_START", "1"),
+            ("SEARCHFOR_EXAMPLE_LOG", log.to_str().unwrap()),
+        ],
+    );
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let err = stderr(&o);
     assert_eq!(err.lines().count(), 1, "{err}");
     assert!(err.contains("before answering hello"), "{err}");
     assert_eq!(stdout(&o), ini_plain());
-    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1);
+    assert_eq!(starts(&log), 1);
 }
 
 /// The entries of `dir` named `searchfor-*`.
@@ -493,8 +520,8 @@ fn h11_in_headings_asks_for_names() {
     let out = stdout(&o);
     let lines: Vec<_> = out.lines().collect();
     assert_eq!(lines.len(), 2, "{out}");
-    assert!(lines[0].starts_with("ini/app.ini:3:"), "{out}");
-    assert!(lines[1].starts_with("ini/bom.ini:3:"), "{out}");
+    assert!(lines[0].starts_with(&native("ini/app.ini:3:")), "{out}");
+    assert!(lines[1].starts_with(&native("ini/bom.ini:3:")), "{out}");
     assert!(lines.iter().all(|l| l.contains("host")), "{out}");
 }
 
@@ -510,11 +537,11 @@ fn h12_helper_stderr_is_relayed() {
         "{}",
         stderr(&o)
     );
-    assert_eq!(stdout(&o), INI_TRAILS);
+    assert_eq!(stdout(&o), ini_trails());
     let o = flat_ini(&fx, &["-j", "1", "--no-messages"], &knob);
     assert_eq!(code(&o), 0);
     assert_eq!(stderr(&o), "");
-    assert_eq!(stdout(&o), INI_TRAILS);
+    assert_eq!(stdout(&o), ini_trails());
 }
 
 /// Whether the process `pid` still runs: on Linux it is under /proc and not a zombie (M5b
@@ -575,7 +602,7 @@ fn h13_helpers_exit_with_the_run() {
             &["-j", "4"],
             &[("SEARCHFOR_EXAMPLE_LOG", log.to_str().unwrap())],
         );
-        assert_eq!(stdout(&o), INI_TRAILS, "{mode}: {}", stderr(&o));
+        assert_eq!(stdout(&o), ini_trails(), "{mode}: {}", stderr(&o));
         let pids = pids(&log);
         assert!(!pids.is_empty(), "{mode}");
         let left: Vec<_> = pids.into_iter().filter(|p| alive(*p)).collect();
@@ -700,14 +727,19 @@ fn h15b_a_grammar_helper_keeps_max_bytes() {
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert_eq!(
         stdout(&o),
-        "lua/a.lua:4:   self.x = self.x + dt -- needle\n\
-         lua/a.lua:8:   return \"needle\"\n\
-         lua/b.lua:4:   self.x = self.x + dt -- needle\n\
-         lua/b.lua:8:   return \"needle\"\n"
+        native_lines(
+            "lua/a.lua:4:   self.x = self.x + dt -- needle\n\
+             lua/a.lua:8:   return \"needle\"\n\
+             lua/b.lua:4:   self.x = self.x + dt -- needle\n\
+             lua/b.lua:8:   return \"needle\"\n"
+        )
     );
     assert_eq!(
         stderr(&o),
-        "s4: lua/a.lua: larger than `max_bytes` (10); files this large are not parsed (this warning is shown once)\n"
+        format!(
+            "s4: {}: larger than `max_bytes` (10); files this large are not parsed (this warning is shown once)\n",
+            native("lua/a.lua")
+        )
     );
     let o = s4(&["--in-headings", "update", "lua", "--flat", "--sort", "path"]);
     assert_eq!(code(&o), 1, "{}", stdout(&o));
@@ -876,7 +908,7 @@ fn h17_a_helpers_child_cannot_hold_sfor() {
     let took = started.elapsed();
     assert!(took < Duration::from_secs(4), "took {took:?}");
     assert_eq!(code(&o), 0, "{}", stderr(&o));
-    assert_eq!(stdout(&o), INI_TRAILS);
+    assert_eq!(stdout(&o), ini_trails());
 }
 
 /// Runs `c` with `ini/app.ini` on stdin, as a regular file or through a pipe.

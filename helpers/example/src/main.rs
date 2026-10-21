@@ -13,7 +13,8 @@
 //! And at start: `SEARCHFOR_EXAMPLE_LOG` (a file to append `start <pid>` to), `SEARCHFOR_EXAMPLE_TRACE`
 //! (a file to append `begin <pid> <path>` and `end <pid> <path>` to around each request, the
 //! `end` before the answer), `SEARCHFOR_EXAMPLE_NOEXIT` (when set, keep running after the EOF of
-//! stdin, until killed), `SEARCHFOR_EXAMPLE_STDERR`
+//! stdin, until killed), `SEARCHFOR_EXAMPLE_EXIT_AT_START` (when set, exit with code 1 right
+//! after the `start` line, before answering `hello`), `SEARCHFOR_EXAMPLE_STDERR`
 //! (a line to write to stderr), `SEARCHFOR_EXAMPLE_FORK` (when set, start a copy of this binary
 //! in `--test-hold-pipes` mode with this process's stdout and stderr, as a careless helper's
 //! child would).
@@ -356,6 +357,9 @@ fn start_up() {
         // One write: `writeln!` may write in pieces, which the appends of concurrent copies
         // interleave (one `start` line lost in 20 runs of h02 under load).
         append(Path::new(&log), &format!("start {}\n", std::process::id()));
+    }
+    if std::env::var_os("SEARCHFOR_EXAMPLE_EXIT_AT_START").is_some() {
+        std::process::exit(1);
     }
     if let Ok(line) = std::env::var("SEARCHFOR_EXAMPLE_STDERR") {
         eprintln!("{line}");
