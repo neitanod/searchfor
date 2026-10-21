@@ -1293,9 +1293,9 @@ impl<'a> Ctx<'a> {
         } else {
             p
         };
-        // The walker only yields regular files, and its file type costs no system call; a path
-        // named on the command line may be a link to anything, so it alone is looked up.
-        let regular = d.file_type().is_some_and(|t| t.is_file()) || (explicit && rewindable(p));
+        let regular = regular_entry(d, explicit, NAME_SHARES_POSITION, || {
+            self.through_descriptors(d, above)
+        });
         // Only a regular file can be a document: its first bytes are read before the search
         // and the file is opened again, which a FIFO, a descriptor or stdin by name would not
         // survive (code review of the M4 plan r1, Codex #3).
@@ -3969,6 +3969,26 @@ const NAME_SHARES_POSITION: bool = cfg!(all(
     not(any(target_os = "linux", target_os = "android"))
 ));
 
+/// Whether the walked or named `d` is a regular file, read by its name as often as a search
+/// needs (`Target::regular`). The walker only yields regular files, and its file type costs no
+/// system call; a path named on the command line (`explicit`) may be a link to anything, so it
+/// alone is looked up. Where a name of a descriptor shares its position (`shared_position`,
+/// `NAME_SHARES_POSITION`), no name through one (`named_by_descriptor`) is regular, named or
+/// walked below one, whatever type the walker gave it: the walker's type of a name on the
+/// command line is its target's, so `/dev/stdin` redirected from a file is a regular file to
+/// it, and every later read by the name would start where the first stopped (M5b CI on macOS,
+/// h18). It is read once, as stdin.
+fn regular_entry(
+    d: &DirEntry,
+    explicit: bool,
+    shared_position: bool,
+    named_by_descriptor: impl FnOnce() -> bool,
+) -> bool {
+    let file = d.file_type().is_some_and(|t| t.is_file())
+        || (explicit && rewindable_when(d.path(), false));
+    file && !(shared_position && named_by_descriptor())
+}
+
 /// `rewindable`, with whether a name of a descriptor shares its position given.
 fn rewindable_when(p: &Path, shared_position: bool) -> bool {
     std::fs::metadata(p).is_ok_and(|m| m.is_file()) && !(shared_position && through_descriptors(p))
@@ -4395,6 +4415,69 @@ mod tests {
         assert!(!rewindable_when(&name, true));
         assert!(rewindable_when(&file, true));
         assert!(!rewindable_when(dir.path(), false));
+    }
+
+    /// CI of M5b on macOS, h18 again: `/dev/stdin` redirected from a file was still read twice,
+    /// as the walker's type of a name on the command line is its target's, a regular file, which
+    /// made it regular before `rewindable` was asked. Here a file and a directory are opened,
+    /// the file's position moved on, and each named through its descriptor: on the command line
+    /// (the file) and walked below it (the directory's file). Where the name shares the
+    /// position, neither is regular, so no path reads it twice: not the probe and the search,
+    /// not a document's first bytes, nor the helper's copy. Without it, both are; a file named
+    /// directly is regular either way.
+    #[cfg(unix)]
+    #[test]
+    fn every_name_through_a_descriptor_is_read_once_where_its_name_shares_the_position() {
+        use std::os::fd::AsRawFd;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, b"abcdef").unwrap();
+        let mut open = File::open(&file).unwrap();
+        let mut first = [0u8; 3];
+        open.read_exact(&mut first).unwrap();
+        let held = File::open(dir.path()).unwrap();
+        let entries = |root: &Path| -> Vec<DirEntry> {
+            WalkBuilder::new(root)
+                .standard_filters(false)
+                .build()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let named = PathBuf::from(format!("/dev/fd/{}", open.as_raw_fd()));
+        let below = PathBuf::from(format!("/dev/fd/{}", held.as_raw_fd()));
+        let cases = [
+            (named.clone(), entries(&named).remove(0), true, true),
+            (
+                below.join("a.txt"),
+                entries(&below)
+                    .into_iter()
+                    .find(|d| d.depth() == 1)
+                    .expect("the directory's file, walked through its descriptor"),
+                false,
+                true,
+            ),
+            (file.clone(), entries(&file).remove(0), true, false),
+            (
+                file.clone(),
+                entries(dir.path())
+                    .into_iter()
+                    .find(|d| d.depth() == 1)
+                    .unwrap(),
+                false,
+                false,
+            ),
+        ];
+        for (want, d, explicit, through) in cases {
+            assert_eq!(d.path(), want);
+            assert_eq!(through_descriptors(d.path()), through, "{want:?}");
+            let by_name = || through_descriptors(d.path());
+            assert!(regular_entry(&d, explicit, false, by_name), "{want:?}");
+            assert_eq!(
+                regular_entry(&d, explicit, true, by_name),
+                !through,
+                "{want:?}"
+            );
+        }
     }
 
     /// Which path files take (plan Task 9.3): the whole-file model, the oracle, or what s4
