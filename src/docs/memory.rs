@@ -21,10 +21,11 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering::Relaxed}
 
 // The allocator the counter wraps: jemalloc where musl's own malloc measured at least 1.15 ×
 // glibc's under s4's threads (M5b plan, Task 11.2; the dependency is under the same `cfg` in
-// Cargo.toml), the system's everywhere else.
-#[cfg(not(all(target_env = "musl", target_pointer_width = "64")))]
+// Cargo.toml; x86-64 only: jemalloc's configure finds no atomics for aarch64 musl), the
+// system's everywhere else.
+#[cfg(not(all(target_env = "musl", target_arch = "x86_64")))]
 use std::alloc::System as Backing;
-#[cfg(all(target_env = "musl", target_pointer_width = "64"))]
+#[cfg(all(target_env = "musl", target_arch = "x86_64"))]
 use tikv_jemallocator::Jemalloc as Backing;
 
 /// The backing allocator, counting the live bytes once armed.
@@ -323,13 +324,13 @@ mod tests {
         assert_eq!(c.live.load(Relaxed), 0);
     }
 
-    /// M5b plan, Task 11.2 (spec §8.1): the counter wraps jemalloc in the 64-bit musl build,
+    /// M5b plan, Task 11.2 (spec §8.1): the counter wraps jemalloc in the x86-64 musl build,
     /// whose own malloc measured at least 1.15 × glibc's under s4's threads, and the system's
     /// allocator everywhere else.
     #[test]
     fn the_backing_is_jemalloc_on_musl_and_the_system_elsewhere() {
         let name = std::any::type_name::<Backing>();
-        if cfg!(all(target_env = "musl", target_pointer_width = "64")) {
+        if cfg!(all(target_env = "musl", target_arch = "x86_64")) {
             assert_eq!(name, "tikv_jemallocator::Jemalloc");
         } else {
             assert_eq!(name, "std::alloc::System");

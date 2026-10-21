@@ -109,8 +109,10 @@ libc = "0.2"
 
 # The allocator the readers' memory counter wraps in the static Linux binary (M5b spec §8.1; plan
 # Task 11.2): musl's malloc measured at least 1.15 × glibc's under s4's threads, so there the
-# counter wraps jemalloc, as ripgrep's musl build does. Every other target keeps the system's.
-[target.'cfg(all(target_env = "musl", target_pointer_width = "64"))'.dependencies]
+# counter wraps jemalloc, as ripgrep's musl build does. Only on x86-64, the build that was
+# measured: jemalloc's configure finds no atomics for aarch64 musl on the arm64 runner. Every
+# other target keeps the system's.
+[target.'cfg(all(target_env = "musl", target_arch = "x86_64"))'.dependencies]
 tikv-jemallocator = "0.7"
 
 # The process layer on Windows (M5b spec §4.3; plan D3, D4, D5, D20, D22): suspended starts,
