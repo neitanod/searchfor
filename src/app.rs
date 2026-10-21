@@ -4445,9 +4445,11 @@ mod tests {
         };
         let named = PathBuf::from(format!("/dev/fd/{}", open.as_raw_fd()));
         let below = PathBuf::from(format!("/dev/fd/{}", held.as_raw_fd()));
-        let cases = [
-            (named.clone(), entries(&named).remove(0), true, true),
-            (
+        let mut cases = vec![(named.clone(), entries(&named).remove(0), true, true)];
+        // macOS's /dev/fd/N of a directory is not a directory (ENOTDIR), so only Linux walks
+        // below one; rg cannot walk it there either.
+        if cfg!(target_os = "linux") {
+            cases.push((
                 below.join("a.txt"),
                 entries(&below)
                     .into_iter()
@@ -4455,7 +4457,9 @@ mod tests {
                     .expect("the directory's file, walked through its descriptor"),
                 false,
                 true,
-            ),
+            ));
+        }
+        cases.extend([
             (file.clone(), entries(&file).remove(0), true, false),
             (
                 file.clone(),
@@ -4466,7 +4470,7 @@ mod tests {
                 false,
                 false,
             ),
-        ];
+        ]);
         for (want, d, explicit, through) in cases {
             assert_eq!(d.path(), want);
             assert_eq!(through_descriptors(d.path()), through, "{want:?}");
