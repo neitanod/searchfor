@@ -1856,14 +1856,16 @@ fn a_binary_file_with_a_context_deviates_as_documented() {
         return;
     }
     let fx = Fixture::new();
-    std::fs::write(fx.file("nul.txt"), "one\nneedle\n\0\n").unwrap();
+    // Not `nul.txt`: on Windows that name, whatever its extension, is the null device, which
+    // takes every write and reads empty.
+    std::fs::write(fx.file("binary.txt"), "one\nneedle\n\0\n").unwrap();
     let msg = "binary file matches (found \"\\0\" byte around offset 11)\n";
     let mut r = Report(Vec::new());
     for (args, input, rg_prints) in [
-        (&["-B1", "needle", "nul.txt"][..], In::Null, false),
-        (&["-B1", "needle"], In::File("nul.txt"), false),
-        (&["-v", "-C1", "one"], In::File("nul.txt"), false),
-        (&["-A1", "needle", "nul.txt"], In::Null, true),
+        (&["-B1", "needle", "binary.txt"][..], In::Null, false),
+        (&["-B1", "needle"], In::File("binary.txt"), false),
+        (&["-v", "-C1", "one"], In::File("binary.txt"), false),
+        (&["-A1", "needle", "binary.txt"], In::Null, true),
     ] {
         let want = if rg_prints {
             (0, msg.to_string())
@@ -1884,7 +1886,7 @@ fn a_binary_file_with_a_context_deviates_as_documented() {
                 code(&o),
                 stdout(&o)
                     .replace("<stdin>\n  ", "")
-                    .replace("nul.txt\n  ", ""),
+                    .replace("binary.txt\n  ", ""),
             );
             let want = if mode == "--no-trail" {
                 want.clone()
