@@ -3,7 +3,7 @@
 //! `--debug`, `--stats` and rg's message when nothing was searched.
 mod common;
 
-use common::{Fixture, code, run, stderr, stdout};
+use common::{Fixture, code, native, run, stderr, stdout};
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 
@@ -267,15 +267,15 @@ fn m5_07_files_sorting_and_types() {
     let fx = Fixture::new();
     assert_eq!(
         ok(&fx, &["--files", "--sort", "path", "md"]),
-        "md/guide.md\nmd/twice.md\n"
+        native("md/guide.md\nmd/twice.md\n")
     );
     assert_eq!(
         ok(&fx, &["--files", "--sortr", "path", "md"]),
-        "md/twice.md\nmd/guide.md\n"
+        native("md/twice.md\nmd/guide.md\n")
     );
     assert_eq!(
         ok(&fx, &["--files", "-0", "--sort", "path", "md"]),
-        "md/guide.md\0md/twice.md\0"
+        native("md/guide.md\0md/twice.md\0")
     );
     let o = run(&mut fx.s4(["--files", "-g", "*.zzz"]));
     assert_eq!((code(&o), stdout(&o).as_str()), (1, ""));
@@ -284,7 +284,7 @@ fn m5_07_files_sorting_and_types() {
             &fx,
             &["--type-add", "notes:twice.*", "-t", "notes", "-l", "Plan"]
         ),
-        "md/twice.md\n"
+        native("md/twice.md\n")
     );
     let o = run(&mut fx.s4(["--max-filesize", "100", "-l", "needle-pkg", "md"]));
     assert_eq!((code(&o), stdout(&o).as_str()), (1, ""));
@@ -412,7 +412,7 @@ fn m5_11_mcp_server() {
     .unwrap();
     let matches = &r["result"]["structuredContent"]["matches"];
     assert_eq!(r["result"]["isError"], false);
-    assert_eq!(matches[0]["path"], "md/guide.md");
+    assert_eq!(matches[0]["path"], native("md/guide.md"));
     assert_eq!(matches[0]["line"], 12);
     assert_eq!(
         matches[0]["trail"],
@@ -559,7 +559,10 @@ fn m5_13_stats_in_the_trail_layouts() {
     );
     let re = regex_lite::Regex::new(r"[0-9]+\.[0-9]{6} seconds").unwrap();
     let out = re.replace_all(&out, "T seconds");
-    let row = format!("md/guide.md:12: {PKG} │ apt install needle-pkg\n");
+    let row = format!(
+        "{}:12: {PKG} │ apt install needle-pkg\n",
+        native("md/guide.md")
+    );
     assert_eq!(
         out,
         format!(
@@ -672,7 +675,7 @@ fn m5_15_summaries_with_trails() {
                 "-c", "-0", "--sort", "path", "--within", "Linux", "needle", "md"
             ]
         ),
-        "md/guide.md\x002\n"
+        native("md/guide.md\x002\n")
     );
     assert_eq!(
         ok(
@@ -688,7 +691,7 @@ fn m5_15_summaries_with_trails() {
                 "md"
             ]
         ),
-        "md/guide.md:2\nmd/twice.md:0\n"
+        native("md/guide.md:2\nmd/twice.md:0\n")
     );
 }
 
@@ -1182,7 +1185,9 @@ fn m5_20_only_matching_rows_as_ripgrep() {
     let fx = Fixture::new();
     std::fs::write(fx.file("n.txt"), b"needle\nnext\n").unwrap();
     std::fs::write(fx.file("cr.txt"), b"needle\r\n").unwrap();
-    std::fs::write(fx.file("nul.txt"), b"a needle\0b\0c needle\0").unwrap();
+    // Not `nul.txt`: on Windows that name, whatever its extension, is the null device, which
+    // takes every write and reads empty.
+    std::fs::write(fx.file("records.txt"), b"a needle\0b\0c needle\0").unwrap();
     let cases: [&[&str]; 17] = [
         &["-o", "-r", "", "needle", "n.txt"],
         &["-o", "-r", "", "e", "n.txt"],
@@ -1205,10 +1210,10 @@ fn m5_20_only_matching_rows_as_ripgrep() {
         &["-U", "--vimgrep", "--crlf", "$", "cr.txt"],
         // With `--null-data` rg ends each record with its NUL; a row leaves it out (D6), a
         // context row too (review r5 of the plan, Codex #3).
-        &["--null-data", "needle", "nul.txt"],
-        &["--null-data", "-C1", "needle", "nul.txt"],
-        &["--null-data", "--passthru", "needle", "nul.txt"],
-        &["--null-data", "-v", "-C1", "needle", "nul.txt"],
+        &["--null-data", "needle", "records.txt"],
+        &["--null-data", "-C1", "needle", "records.txt"],
+        &["--null-data", "--passthru", "needle", "records.txt"],
+        &["--null-data", "-v", "-C1", "needle", "records.txt"],
     ];
     for case in cases {
         let mut rg = vec!["-n"];
@@ -1305,11 +1310,11 @@ fn m5_23_passthru_prints_an_input_without_a_match() {
         assert_eq!((code(&o), stdout(&o).as_str()), (1, want), "{layout}");
     }
     let o = run(&mut fx.s4(["--flat", "--passthru", "needle", "pt"]));
-    assert_eq!((code(&o), stdout(&o).as_str()), (1, "pt/c.txt-1-nothing\n"));
+    assert_eq!((code(&o), stdout(&o)), (1, native("pt/c.txt-1-nothing\n")));
     let o = run(&mut fx.s4(["--tree", "--passthru", "needle", "pt"]));
     assert_eq!(
-        (code(&o), stdout(&o).as_str()),
-        (1, "pt/c.txt\n  1-nothing\n")
+        (code(&o), stdout(&o)),
+        (1, native("pt/c.txt\n  1-nothing\n"))
     );
     for path in ["pt", "pt/c.txt"] {
         let o = run(&mut fx.s4(["--flat", "--stats", "--passthru", "needle", path]));

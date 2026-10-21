@@ -265,6 +265,13 @@ pub fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
+/// `path`, written with `/`, with this system's separator between its components: how s4 and
+/// rg print a path the walker joined (M5b spec §4.2: `md\guide.md` on Windows). A path named
+/// on the command line is printed as it was typed, so it is not for those.
+pub fn native(path: &str) -> String {
+    path.replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
 pub fn code(o: &Output) -> i32 {
     o.status.code().unwrap_or(-1)
 }
