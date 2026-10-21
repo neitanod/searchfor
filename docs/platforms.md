@@ -31,6 +31,9 @@ table that disagrees with that system's `cargo test -- --list` fails the job.
 - **Windows.** Its equivalents are tested natively instead: a console control event
   (`GenerateConsoleCtrlEvent`) for Ctrl-C, Job Objects for a reader's memory and for the
   children that must die with s4, and drive and `\` paths as rg 14.1.1 prints them.
+- **macOS.** Opening `/dev/stdin` or `/dev/fd/N` duplicates the descriptor, position
+  included (Linux opens the file again, at its start), so s4 reads a regular file named that
+  way once, as stdin, as rg does; h18 checks it there.
 - **macOS arm64.** PCRE2's JIT is unavailable on `aarch64-apple-darwin` (pcre2-sys disables
   it): `-P` works, slower, and `--pcre2-version` says the JIT is unavailable, as that system's
   rg. No test is skipped for it.
@@ -42,6 +45,7 @@ merge. The owner is the chunk of the M5b plan that owns the file.
 
 | Test | File | Skipped on | Missing feature | Owner |
 |---|---|---|---|---|
+| `a_descriptor_whose_position_moved_on_is_read_once_where_its_name_shares_it` | `src/app.rs` | windows | descriptors named as paths (`/dev/fd`) | orchestrator |
 | `a_non_utf8_file_name_still_reaches_magic_and_shebang` | `src/formats/detector.rs` | windows | file names of arbitrary bytes (Windows names are UTF-16) | C3 |
 | `the_system_key_is_os_dash_arch` | `src/grammars/index.rs` | macos-arm64, macos-x86_64, windows | one variant per system: this one checks the Linux x86-64 key | C8 |
 | `the_system_key_on_apple_silicon` | `src/grammars/index.rs` | linux, macos-x86_64, windows | one variant per system: this one checks the macOS arm64 key | C8 |
