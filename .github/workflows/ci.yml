@@ -177,6 +177,8 @@ jobs:
       - name: Build release
         run: $PRIO cargo build --workspace --release --locked --offline
       - name: Full suite
+        # A hung test ends the step with its log (libtest names a test running over 60 s).
+        timeout-minutes: 40
         run: $PRIO cargo test --workspace --release --locked --offline
         env:
           SEARCHFOR_REQUIRE_REFERENCE: '1'
