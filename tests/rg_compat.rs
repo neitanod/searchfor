@@ -1551,6 +1551,10 @@ fn on_a_console_reading(
         // console showed.
         let killed = WaitForSingleObject(pi.hProcess, limit) != WAIT_OBJECT_0;
         if killed {
+            // With stdin the child is cmd.exe, and rg or s4 its grandchild: the whole tree.
+            let _ = std::process::Command::new("taskkill")
+                .args(["/T", "/F", "/PID", &pi.dwProcessId.to_string()])
+                .output();
             TerminateProcess(pi.hProcess, 1);
             WaitForSingleObject(pi.hProcess, 10_000);
         }
