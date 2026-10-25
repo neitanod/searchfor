@@ -646,6 +646,11 @@ impl Watched {
         }
     }
 
+    /// The child's stdin, when `c` piped it.
+    pub fn take_stdin(&mut self) -> std::process::ChildStdin {
+        self.child.stdin.take().expect("a piped stdin")
+    }
+
     /// `Child::wait_with_output` within `limit` of the start. Past it, kills and reaps the
     /// child and panics with the command, how long it ran, `context()` and what it printed.
     pub fn output_within(

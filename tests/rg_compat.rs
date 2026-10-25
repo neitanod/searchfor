@@ -849,15 +849,22 @@ fn bytes_searched_when_the_after_context_crosses_a_buffer() {
     }
     // Through a pipe whose writer pauses after 8 KiB: the second line comes in a second read.
     let chunked = |mut c: Command| {
-        c.stdin(Stdio::piped()).stdout(Stdio::piped());
-        let mut child = c.spawn().unwrap();
-        let mut w = child.stdin.take().unwrap();
-        let line = format!("needle\n{}\ntail\n", "x".repeat(9000));
-        std::io::Write::write_all(&mut w, &line.as_bytes()[..8192]).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        std::io::Write::write_all(&mut w, &line.as_bytes()[8192..]).unwrap();
-        drop(w);
-        child.wait_with_output().unwrap()
+        c.stdin(Stdio::piped());
+        let mut child = Watched::spawn(&mut c);
+        let mut w = child.take_stdin();
+        // Written beside the wait, which bounds both: a child that stops reading is killed,
+        // and the writes fail.
+        let writer = std::thread::spawn(move || {
+            let line = format!("needle\n{}\ntail\n", "x".repeat(9000));
+            std::io::Write::write_all(&mut w, &line.as_bytes()[..8192]).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            std::io::Write::write_all(&mut w, &line.as_bytes()[8192..]).unwrap();
+        });
+        let out = child.output_within(CHILD_LIMIT, &|| {
+            "its stdin got 8 KiB, and the rest 300 ms later".to_string()
+        });
+        writer.join().expect("the writer of the child's stdin");
+        out
     };
     let args = ["--json", "-m1", "-A1", "needle", "-"];
     let want = chunked(fx.rg(args));
@@ -1144,14 +1151,32 @@ fn a_closed_pipe_exits_as_ripgrep() {
         "line of text here\n".repeat(100_000),
     )
     .unwrap();
+    // The line is read beside the wait, and both are bounded: a child that neither prints
+    // nor exits is killed, and the test fails.
     let first_line = |mut c: Command| {
         c.stdout(Stdio::piped());
+        let command = format!("{c:?}");
         let mut child = c.spawn().unwrap();
-        let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
-        let mut line = String::new();
-        std::io::BufRead::read_line(&mut out, &mut line).unwrap();
-        drop(out);
-        (child.wait().unwrap().code().unwrap_or(-1), line.is_empty())
+        let deadline = std::time::Instant::now() + CHILD_LIMIT;
+        let out = child.stdout.take().unwrap();
+        let (tx, line) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut out = std::io::BufReader::new(out);
+            let mut line = String::new();
+            let read = std::io::BufRead::read_line(&mut out, &mut line).map(|_| line);
+            // Closed here: the child writes to a closed pipe.
+            drop(out);
+            let _ = tx.send(read);
+        });
+        let line = line.recv_timeout(CHILD_LIMIT);
+        let status = common::wait_until(&mut child, deadline);
+        match (line, status) {
+            (Ok(Ok(line)), Some(status)) => (status.code().unwrap_or(-1), line.is_empty()),
+            (line, status) => panic!(
+                "{command}: within {CHILD_LIMIT:?}, read {line:?} and exited with {status:?} \
+                 (None: killed)"
+            ),
+        }
     };
     let mut r = Report(Vec::new());
     // With a context, a separator goes between files; one file has none, and prints as it
@@ -1338,16 +1363,14 @@ fn on_a_tty(fx: &Fixture, cmd: &str) -> Option<String> {
     let cmd = cmd
         .replace("rg ", &format!("'{}' ", rg.display()))
         .replace("s4 ", &format!("'{}' --no-trail ", s4.display()));
-    let o = script(&cmd)
+    let o = run(script(&cmd)
         .current_dir(fx.path())
         .env("SEARCHFOR_FORMATS_DIR", fx.formats.path())
         .env("SEARCHFOR_GRAMMARS_DIR", fx.grammars.path())
         .env("SEARCHFOR_GRAMMAR_INDEX", fx.no_index())
         .env_remove("SEARCHFOR_CONFIG_PATH")
         .env_remove("RIPGREP_CONFIG_PATH")
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
+        .stdin(Stdio::null()));
     Some(format!("exit {}\n{}", code(&o), stdout(&o)))
 }
 
@@ -2624,10 +2647,7 @@ fn printf_writes_what_sh_writes() {
     assert_eq!(printf("a\\101\\\\b"), b"aA\\b");
     #[cfg(unix)]
     for fmt in ["# needle\\n", "\\000\\n", "x\\n\\000\\n# **nee**dle 1\\n"] {
-        let o = Command::new("sh")
-            .args(["-c", &format!("printf '{fmt}'")])
-            .output()
-            .unwrap();
+        let o = run(Command::new("sh").args(["-c", &format!("printf '{fmt}'")]));
         assert_eq!(printf(fmt), o.stdout, "{fmt}");
     }
 }
