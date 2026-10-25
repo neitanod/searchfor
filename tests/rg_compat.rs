@@ -2118,8 +2118,10 @@ fn in_headings_follows_the_binary_policy_of_ripgrep() {
     }
     let fx = Fixture::new();
     std::fs::create_dir(fx.file("ihb")).unwrap();
+    // Not `nul.md`: on Windows that name, whatever its extension, is the null device, which
+    // takes every write and reads empty.
     let nul = "# needle\nbody\0\n## needle two\n";
-    std::fs::write(fx.file("ihb/nul.md"), nul).unwrap();
+    std::fs::write(fx.file("ihb/binary.md"), nul).unwrap();
     std::fs::write(fx.file("ihb/ok.md"), "# needle ok\nbody\n").unwrap();
     let late = format!(
         "# needle\n{}\0\n# needle late\n",
@@ -2140,11 +2142,11 @@ fn in_headings_follows_the_binary_policy_of_ripgrep() {
     let mut r = Report(Vec::new());
     let cases: [(&[&str], &[&str], In); 3] = [
         (&["--sort", "path", "needle", "ihb"], &[], In::Null),
-        (&["needle", "ihb/nul.md"], &[], In::Null),
+        (&["needle", "ihb/binary.md"], &[], In::Null),
         (
             &["needle"],
             &["--format", "markdown"],
-            In::File("ihb/nul.md"),
+            In::File("ihb/binary.md"),
         ),
     ];
     for (args, extra, input) in cases {
@@ -2220,7 +2222,12 @@ fn summaries_of_walked_binary_files_equal_ripgrep() {
     }
     let fx = Fixture::new();
     std::fs::create_dir(fx.file("ihb")).unwrap();
-    std::fs::write(fx.file("ihb/nul.md"), "# needle\nbody\0\n## needle two\n").unwrap();
+    // `binary.md`, off the Windows null device's name `nul`.
+    std::fs::write(
+        fx.file("ihb/binary.md"),
+        "# needle\nbody\0\n## needle two\n",
+    )
+    .unwrap();
     std::fs::write(fx.file("ihb/ok.md"), "# needle ok\nbody\n").unwrap();
     let late = format!(
         "# needle\n{}\0\n# needle late\n",
@@ -2959,12 +2966,17 @@ fn names_at_the_end_of_the_last_buffer_before_binary_data_are_searched() {
             path,
         ];
         let got = s4(&fx, &s, input);
-        let file = if path == "-" { "" } else { "edge/big.md" };
-        let rows = kinds_of_rows(&got, file);
+        // A walked path, with the system's separator.
+        let file = if path == "-" {
+            String::new()
+        } else {
+            common::native("edge/big.md")
+        };
+        let rows = kinds_of_rows(&got, &file);
         let matches: Vec<String> = rows.iter().filter(|r| !r.ends_with('-')).cloned().collect();
         r.check(
             format!("{s:?}"),
-            (code(&want), kinds_of_rows(&want, file).join("\n")),
+            (code(&want), kinds_of_rows(&want, &file).join("\n")),
             (code(&got), matches.join("\n")),
         );
         if path == "edge" {
