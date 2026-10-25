@@ -2638,10 +2638,10 @@ const FIONREAD: std::ffi::c_ulong = 0x541B;
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 const FIONREAD: std::ffi::c_ulong = 0x4004_667F;
 
-/// The bytes written to the pipe of `end` and not read yet: `PeekNamedPipe` on Windows, whose
-/// anonymous pipes have a handle and no descriptor.
+/// The bytes written to the pipe of `end` and not read yet, or None once the pipe is broken:
+/// `PeekNamedPipe` on Windows, whose anonymous pipes have a handle and no descriptor.
 #[cfg(windows)]
-fn unread(end: &std::io::PipeReader) -> usize {
+fn unread(end: &std::io::PipeReader) -> Option<usize> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::System::Pipes::PeekNamedPipe;
     let mut n: u32 = 0;
@@ -2656,13 +2656,12 @@ fn unread(end: &std::io::PipeReader) -> usize {
             std::ptr::null_mut(),
         )
     };
-    assert_ne!(r, 0, "PeekNamedPipe: {}", std::io::Error::last_os_error());
-    n as usize
+    (r != 0).then_some(n as usize)
 }
 
 /// The bytes written to the pipe of `end` and not read yet.
 #[cfg(unix)]
-fn unread(end: &std::io::PipeReader) -> usize {
+fn unread(end: &std::io::PipeReader) -> Option<usize> {
     use std::os::fd::AsRawFd;
     unsafe extern "C" {
         fn ioctl(fd: std::ffi::c_int, request: std::ffi::c_ulong, ...) -> std::ffi::c_int;
@@ -2671,48 +2670,130 @@ fn unread(end: &std::io::PipeReader) -> usize {
     // SAFETY: FIONREAD writes one int to the pointer, which outlives the call.
     let r = unsafe { ioctl(end.as_raw_fd(), FIONREAD, &mut n as *mut std::ffi::c_int) };
     assert_eq!(r, 0, "ioctl(FIONREAD): {}", std::io::Error::last_os_error());
-    n as usize
+    Some(n as usize)
+}
+
+/// Returns once the reader of `probe`'s pipe has taken out all that was written to it, its
+/// child has `exited`, or at `deadline`. FIONREAD answers at once.
+#[cfg(unix)]
+fn wait_until_read(
+    probe: std::io::PipeReader,
+    exited: &std::sync::atomic::AtomicBool,
+    deadline: std::time::Instant,
+) {
+    use std::sync::atomic::Ordering;
+    while unread(&probe).is_some_and(|n| n > 0)
+        && !exited.load(Ordering::SeqCst)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// How long a `PeekNamedPipe` that has not returned takes to say that the reader's read is
+/// pending on an empty pipe.
+#[cfg(windows)]
+const PEEK_BLOCKED: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// `wait_until_read` on Windows, where `probe` and the reader's stdin are copies of one
+/// synchronous file object, whose calls the system runs one at a time: while the reader's
+/// `ReadFile` waits for data, `PeekNamedPipe` on `probe` waits for that read, which before
+/// `then` arrives is forever (the hang of CI run 2c5d05b). A pending read means an empty pipe,
+/// so a peek still running after `PEEK_BLOCKED` says the reader took everything. The peeks run
+/// in a thread left behind: its last one returns when the reader's read does.
+#[cfg(windows)]
+fn wait_until_read(
+    probe: std::io::PipeReader,
+    exited: &std::sync::atomic::AtomicBool,
+    deadline: std::time::Instant,
+) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    let base = std::time::Instant::now();
+    let now = move || base.elapsed().as_nanos() as u64 + 1;
+    // When the running peek started (0: none runs), whether one saw an empty pipe, and the
+    // order to stop.
+    let (calling, empty, stop) = (
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    {
+        let (calling, empty, stop) = (calling.clone(), empty.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                calling.store(now(), Ordering::SeqCst);
+                let n = unread(&probe);
+                calling.store(0, Ordering::SeqCst);
+                if n.is_none_or(|n| n == 0) {
+                    empty.store(true, Ordering::SeqCst);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+    }
+    let blocked = PEEK_BLOCKED.as_nanos() as u64;
+    loop {
+        let since = calling.load(Ordering::SeqCst);
+        if empty.load(Ordering::SeqCst)
+            || (since != 0 && now() - since > blocked)
+            || exited.load(Ordering::SeqCst)
+            || std::time::Instant::now() >= deadline
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    stop.store(true, Ordering::SeqCst);
 }
 
 /// Runs `c` with its stdin from a pipe that holds `first` (a printf format) and gets `then` once
 /// the reader has taken all of `first` out of it: the reader sees them in separate reads, however
 /// late it starts on a loaded machine. It used to sleep 200 ms between them, which a reader that
-/// started later than that saw as one read.
+/// started later than that saw as one read. The child runs within `CHILD_LIMIT`; past it, it is
+/// killed and the test fails with what it printed and how far the writer got.
 fn through_a_slow_pipe(mut c: Command, first: &str, then: &str) -> Output {
     use std::io::Write;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
     let (first, then) = (printf(first), printf(then));
     let (reader, mut writer) = std::io::pipe().unwrap();
     // A copy of the read end that only asks how much is left; it never reads.
     let probe = reader.try_clone().unwrap();
-    let child = c
-        .stdin(reader)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let child = Watched::spawn(c.stdin(reader));
     // The Command holds the parent's copy of the read end until dropped.
     drop(c);
     let exited = AtomicBool::new(false);
+    let writer_at = Mutex::new("writing the first part");
+    let context = || {
+        format!(
+            "its stdin got {:?}, then {:?}; the writer was {}",
+            String::from_utf8_lossy(&first),
+            String::from_utf8_lossy(&then),
+            writer_at.lock().unwrap()
+        )
+    };
     std::thread::scope(|s| {
         s.spawn(|| {
+            let say = |what| *writer_at.lock().unwrap() = what;
             // A reader that exited, or stopped reading, gets EPIPE or nothing: both are fine.
             let _ = writer.write_all(&first);
+            say("waiting for the reader to take the first part");
             // Bounded: a reader that never reads gets `then` after a minute, and its test
             // fails on what it printed instead of hanging.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-            while unread(&probe) > 0
-                && !exited.load(Ordering::SeqCst)
-                && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            wait_until_read(probe, &exited, deadline);
+            say("writing the second part");
             let _ = writer.write_all(&then);
             drop(writer);
+            say("done: both parts written and the pipe closed");
         });
-        let out = child.wait_with_output().unwrap();
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            child.output_within(CHILD_LIMIT, &context)
+        }));
         exited.store(true, Ordering::SeqCst);
-        out
+        out.unwrap_or_else(|p| std::panic::resume_unwind(p))
     })
 }
 
@@ -3005,9 +3086,11 @@ fn names_are_searched_up_to_where_ripgrep_detects_binary_data() {
         &["--in-headings", "--flat", "-m1", "^needle", "ih-plain-late"],
         In::Null,
     );
+    // A walked path, with the system's separator.
+    let walked = common::native("ih-plain-late/big.md");
     assert_eq!(
         (code(&got), stdout(&got)),
-        (0, "ih-plain-late/big.md:1: # needle 0\n".to_string())
+        (0, format!("{walked}:1: # needle 0\n"))
     );
     r.assert_empty();
 }
