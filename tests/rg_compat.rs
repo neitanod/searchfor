@@ -1353,12 +1353,13 @@ fn on_a_tty(fx: &Fixture, cmd: &str) -> Option<String> {
 
 /// Windows's terminal is a console: runs `program` with `args` in a pseudo-console (ConPTY) of
 /// 200 × 50 cells, in the fixture copy, with the environment `Fixture::s4` gives, and returns
-/// its exit code and what it wrote, without the console's escape sequences, carriage returns,
-/// trailing blanks and empty last lines. The stdio handles are given as invalid, so the child
+/// its exit code, the screen its output drew (`console_screen`), and the console's output as
+/// sent, quoted, for a failure message. A child still running after `CHILD_LIMIT` is ended and
+/// fails the test with what the console showed. The stdio handles are given as invalid, so the child
 /// takes the console's and not this test's redirected ones (what portable-pty does). Windows
 /// has no `script`; this is its terminal test (M5b plan, Task 3.3).
 #[cfg(windows)]
-fn on_a_console(fx: &Fixture, program: &std::path::Path, args: &[&str]) -> (u32, String) {
+fn on_a_console(fx: &Fixture, program: &std::path::Path, args: &[&str]) -> (u32, String, String) {
     on_a_console_reading(fx, program, args, None)
 }
 
@@ -1370,7 +1371,7 @@ fn on_a_console_reading(
     program: &std::path::Path,
     args: &[&str],
     stdin: Option<std::os::windows::io::OwnedHandle>,
-) -> (u32, String) {
+) -> (u32, String, String) {
     use std::io::Read;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::{AsRawHandle, FromRawHandle};
@@ -1386,8 +1387,8 @@ fn on_a_console_reading(
         CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
         EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
         PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-        PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW, UpdateProcThreadAttribute,
-        WaitForSingleObject,
+        PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
+        UpdateProcThreadAttribute, WaitForSingleObject,
     };
     let wide = |s: &std::ffi::OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
     // SAFETY: every call gets handles and buffers this function owns, alive for the call.
@@ -1414,11 +1415,19 @@ fn on_a_console_reading(
         CloseHandle(in_read);
         CloseHandle(out_write);
         let mut output = std::fs::File::from_raw_handle(out_read);
-        let reader = std::thread::spawn(move || {
-            let mut v = Vec::new();
-            let _ = output.read_to_end(&mut v);
-            v
-        });
+        // What the console sent so far, at hand when the child has to be killed.
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (ended_tx, ended) = std::sync::mpsc::channel();
+        {
+            let sent = sent.clone();
+            std::thread::spawn(move || {
+                let mut chunk = vec![0; 64 * 1024];
+                while let Ok(n @ 1..) = output.read(&mut chunk) {
+                    sent.lock().unwrap().extend_from_slice(&chunk[..n]);
+                }
+                let _ = ended_tx.send(());
+            });
+        }
         // The redirected stdin is inheritable, and the attribute list names it as the only
         // handle the child inherits: none of another test's handles leaks into it.
         let input: [HANDLE; 1] = [stdin
@@ -1514,42 +1523,200 @@ fn on_a_console_reading(
             std::io::Error::last_os_error()
         );
         let started = std::time::Instant::now();
-        let waited = WaitForSingleObject(pi.hProcess, 60_000);
-        assert_eq!(
-            waited,
-            WAIT_OBJECT_0,
-            "{program:?} {args:?} still ran after {:?}",
-            started.elapsed()
-        );
+        let limit = CHILD_LIMIT.as_millis() as u32;
+        // A child still running at its limit is ended, and the test fails below with what the
+        // console showed.
+        let killed = WaitForSingleObject(pi.hProcess, limit) != WAIT_OBJECT_0;
+        if killed {
+            TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 10_000);
+        }
+        let ran = started.elapsed();
         let mut code = 0u32;
         assert_ne!(GetExitCodeProcess(pi.hProcess, &mut code), 0);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
         DeleteProcThreadAttributeList(attrs);
         drop(stdin);
-        // Closing the console ends its output: the reader sees the end of the pipe.
-        ClosePseudoConsole(hpc);
+        // Closing the console sends its last frame and ends its output, unless the reader
+        // stops draining it: in a thread, waited for a bounded time, as the end of the output.
+        let (closed_tx, closed) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            ClosePseudoConsole(hpc);
+            let _ = closed_tx.send(());
+        });
+        let close = std::time::Duration::from_secs(30);
+        let closed = closed.recv_timeout(close).is_ok();
+        let ended = closed && ended.recv_timeout(close).is_ok();
         CloseHandle(in_write);
-        let raw = reader.join().unwrap();
-        (code, without_console_sequences(&raw))
+        let raw = sent.lock().unwrap().clone();
+        let screen = console_screen(&raw, 200, 50);
+        let sent = format!("{:?}", String::from_utf8_lossy(&raw));
+        assert!(
+            !killed && ended,
+            "{program:?} {args:?}: {} after {ran:?} (limit {CHILD_LIMIT:?}); the console showed:\n{screen}\n-- and sent: {sent}",
+            if killed {
+                "still ran and was killed"
+            } else if !closed {
+                "exited, and closing its console did not return"
+            } else {
+                "exited, and its console's output did not end"
+            }
+        );
+        (code, screen, sent)
     }
 }
 
-/// What a console wrote, as the lines a reader sees: no escape sequences (CSI, OSC and the
-/// two-byte ones), no carriage returns, no blanks at a line's end and no empty lines at the end.
-#[cfg(windows)]
-fn without_console_sequences(raw: &[u8]) -> String {
+/// The screen a console's output draws, as the lines a reader sees: ConPTY sends the console's
+/// rendering, whose frames may repaint what an earlier frame drew, move the cursor instead of
+/// writing blanks or line breaks, and repaint everything once more when the console closes. So
+/// the output is played on a screen of `cols` × `rows` cells and the screen is read back: the
+/// text moves and erasures leave (CSI cursor, erase and erase-character sequences; OSC and
+/// modes ignored), without the blanks at a line's end and the empty lines at the end.
+fn console_screen(raw: &[u8], cols: usize, rows: usize) -> String {
     let text = String::from_utf8_lossy(raw);
-    let csi = regex_lite::Regex::new(
-        r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[@-Z\\-_]",
-    )
-    .unwrap();
-    let plain = csi.replace_all(&text, "").replace('\r', "");
-    let mut lines: Vec<&str> = plain.lines().map(str::trim_end).collect();
+    let mut grid = vec![vec![' '; cols]; rows];
+    // `col == cols` is the cursor past the last column: the next character wraps.
+    let (mut row, mut col) = (0usize, 0usize);
+    let mut saved = (0, 0);
+    let line_feed = |grid: &mut Vec<Vec<char>>, row: &mut usize| {
+        if *row + 1 == rows {
+            grid.remove(0);
+            grid.push(vec![' '; cols]);
+        } else {
+            *row += 1;
+        }
+    };
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\x1b' => match chars.next() {
+                Some('[') => {
+                    let mut params = String::new();
+                    let mut last = None;
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            last = Some(c);
+                            break;
+                        }
+                        params.push(c);
+                    }
+                    // Private modes (`?25l`) draw nothing.
+                    if params.starts_with(['?', '<', '=', '>']) {
+                        continue;
+                    }
+                    let nums: Vec<usize> =
+                        params.split(';').map(|p| p.parse().unwrap_or(0)).collect();
+                    let n = |i: usize| nums.get(i).copied().filter(|&v| v > 0).unwrap_or(1);
+                    let mode = nums.first().copied().unwrap_or(0);
+                    match last {
+                        Some('H' | 'f') => (row, col) = (n(0) - 1, n(1) - 1),
+                        Some('A') => row = row.saturating_sub(n(0)),
+                        Some('B' | 'e') => row += n(0),
+                        Some('C' | 'a') => col += n(0),
+                        Some('D') => col = col.saturating_sub(n(0)),
+                        Some('E') => (row, col) = (row + n(0), 0),
+                        Some('F') => (row, col) = (row.saturating_sub(n(0)), 0),
+                        Some('G' | '`') => col = n(0) - 1,
+                        Some('d') => row = n(0) - 1,
+                        Some('X') => {
+                            let end = (col + n(0)).min(cols);
+                            grid[row][col.min(end)..end].fill(' ');
+                        }
+                        Some('K') => {
+                            let range = match mode {
+                                0 => col.min(cols)..cols,
+                                1 => 0..(col + 1).min(cols),
+                                _ => 0..cols,
+                            };
+                            grid[row][range].fill(' ');
+                        }
+                        Some('J') => {
+                            let (lines, from) = match mode {
+                                0 => (row + 1..rows, Some(col.min(cols)..cols)),
+                                1 => (0..row, Some(0..(col + 1).min(cols))),
+                                _ => (0..rows, None),
+                            };
+                            for l in lines {
+                                grid[l].fill(' ');
+                            }
+                            match from {
+                                Some(r) => grid[row][r].fill(' '),
+                                None => grid[row].fill(' '),
+                            }
+                        }
+                        // Colors, scrolling regions, reports: nothing drawn.
+                        _ => {}
+                    }
+                    row = row.min(rows - 1);
+                    col = col.min(cols);
+                }
+                // OSC (the window title): up to BEL or ST.
+                Some(']') => {
+                    let mut esc = false;
+                    for c in chars.by_ref() {
+                        if c == '\x07' || (esc && c == '\\') {
+                            break;
+                        }
+                        esc = c == '\x1b';
+                    }
+                }
+                Some('7') => saved = (row, col),
+                Some('8') => (row, col) = saved,
+                // A character set: one more character.
+                Some('(' | ')' | '*' | '+') => {
+                    chars.next();
+                }
+                _ => {}
+            },
+            '\r' => col = 0,
+            '\n' => line_feed(&mut grid, &mut row),
+            '\x08' => col = col.saturating_sub(1),
+            '\t' => col = ((col / 8 + 1) * 8).min(cols - 1),
+            c if c.is_control() => {}
+            c => {
+                if col >= cols {
+                    col = 0;
+                    line_feed(&mut grid, &mut row);
+                }
+                grid[row][col] = c;
+                col += 1;
+            }
+        }
+    }
+    let mut lines: Vec<String> = grid
+        .iter()
+        .map(|l| l.iter().collect::<String>().trim_end().to_string())
+        .collect();
     while lines.last().is_some_and(|l| l.is_empty()) {
         lines.pop();
     }
     lines.join("\n")
+}
+
+/// `console_screen` on what ConPTY sends: line breaks, a repainted frame, cursor moves and
+/// erasures, a title, and the end of a line that is erased.
+#[test]
+fn a_console_screen_is_what_its_sequences_draw() {
+    let screen = |raw: &str| console_screen(raw.as_bytes(), 20, 5);
+    assert_eq!(screen("a\r\nb\r\n\r\n"), "a\nb");
+    // The first frame, then the frame of the close, which repaints from the top.
+    let frame = "\x1b[?25l\x1b[2J\x1b[m\x1b[Hfirst\x1b[K\r\nneedle 1\x1b[K\r\n\x1b]0;C:\\rg.exe\x07\x1b[?25h";
+    assert_eq!(screen(&format!("{frame}{frame}")), "first\nneedle 1");
+    // Blanks as a cursor move, a line reached by its position, an erased tail.
+    assert_eq!(screen("needle\x1b[1C1\x1b[3;2Hx"), "needle 1\n\n x");
+    assert_eq!(
+        screen("abcdef\x1b[4D\x1b[K\r\nxyz\x1b[3D\x1b[2X"),
+        "ab\n  z"
+    );
+    // Past the last column the line wraps; past the last row the screen scrolls.
+    assert_eq!(
+        screen(&"x".repeat(25)),
+        format!("{}\n{}", "x".repeat(20), "x".repeat(5))
+    );
+    assert_eq!(screen("1\n\r2\r\n3\r\n4\r\n5\r\n6"), "2\n3\n4\n5\n6");
+    // A whole line erased, and the screen cleared from the cursor.
+    assert_eq!(screen("one\r\ntwo\x1b[2K\r\nthree\x1b[2;1H\x1b[J"), "one");
 }
 
 /// On a Windows console, as on a Unix terminal (`stdin_alone_on_a_tty_equals_ripgrep`), s4
@@ -1586,7 +1753,13 @@ fn m5b_console_output_equals_ripgrep() {
             want.1.contains("needle"),
             "{args:?}: the console gave {want:?}"
         );
-        assert_eq!(got, want, "{args:?}");
+        assert_eq!(
+            (got.0, &got.1),
+            (want.0, &want.1),
+            "{args:?}\n-- rg sent: {}\n-- s4 sent: {}",
+            want.2,
+            got.2
+        );
     }
 }
 
@@ -1655,8 +1828,10 @@ fn m5b_console_stdin_alone_equals_ripgrep() {
         let got = on_a_console_reading(&fx, &s4, &s, Some(input()));
         r.check(
             format!(
-                "{args:?} (stdin {})",
-                if piped { "piped" } else { "a file" }
+                "{args:?} (stdin {}; rg sent {}, s4 sent {})",
+                if piped { "piped" } else { "a file" },
+                want.2,
+                got.2
             ),
             (want.0 as i32, want.1),
             (got.0 as i32, got.1),
