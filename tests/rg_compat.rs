@@ -1380,28 +1380,39 @@ fn on_a_tty(fx: &Fixture, cmd: &str) -> Option<String> {
 /// its exit code, the screen its output drew (`console_screen`), and the console's output as
 /// sent, quoted, for a failure message. A child still running after `CHILD_LIMIT` is ended and
 /// fails the test with what the console showed. The stdio handles are given as invalid, so the child
-/// takes the console's and not this test's redirected ones (what portable-pty does). Windows
-/// has no `script`; this is its terminal test (M5b plan, Task 3.3).
+/// takes the console's and not this test's redirected ones (what portable-pty does), which it
+/// does only when it inherits no handle. Windows has no `script`; this is its terminal test
+/// (M5b plan, Task 3.3).
 #[cfg(windows)]
 fn on_a_console(fx: &Fixture, program: &std::path::Path, args: &[&str]) -> (u32, String, String) {
     on_a_console_reading(fx, program, args, None)
 }
 
-/// `on_a_console`, with `stdin` (a file or a pipe's read end) as the child's stdin, the only
-/// handle it inherits, while its stdout and stderr stay the console's.
+/// Where a child on a console reads its stdin from: a fixture file, or a pipe a shell's `|`
+/// fills with that file.
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+enum ConsoleStdin {
+    File(&'static str),
+    Piped(&'static str),
+}
+
+/// `on_a_console`, with `stdin` as the child's stdin while its stdout and stderr stay the
+/// console's. `cmd.exe` gives it, as a shell does: `< file`, or `type file |`. A child that
+/// inherits a stdin handle takes the stdout and stderr handles it is given, and the invalid
+/// ones lose what it writes (CI c3e5720: rg printed nothing and exited 0).
 #[cfg(windows)]
 fn on_a_console_reading(
     fx: &Fixture,
     program: &std::path::Path,
     args: &[&str],
-    stdin: Option<std::os::windows::io::OwnedHandle>,
+    stdin: Option<ConsoleStdin>,
 ) -> (u32, String, String) {
     use std::io::Read;
     use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::Foundation::{
-        CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
-        WAIT_OBJECT_0,
+        CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
     };
     use windows_sys::Win32::System::Console::{
         COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON,
@@ -1410,9 +1421,8 @@ fn on_a_console_reading(
     use windows_sys::Win32::System::Threading::{
         CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
         EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-        PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
-        UpdateProcThreadAttribute, WaitForSingleObject,
+        PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
+        STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
     };
     let wide = |s: &std::ffi::OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
     // SAFETY: every call gets handles and buffers this function owns, alive for the call.
@@ -1452,41 +1462,16 @@ fn on_a_console_reading(
                 let _ = ended_tx.send(());
             });
         }
-        // The redirected stdin is inheritable, and the attribute list names it as the only
-        // handle the child inherits: none of another test's handles leaks into it.
-        let input: [HANDLE; 1] = [stdin
-            .as_ref()
-            .map_or(INVALID_HANDLE_VALUE, |h| h.as_raw_handle())];
-        if stdin.is_some() {
-            assert_ne!(
-                SetHandleInformation(input[0], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT),
-                0
-            );
-        }
-        let count = if stdin.is_some() { 2 } else { 1 };
+        // The child inherits no handle: none of another test's leaks into it.
         let mut list_size = 0usize;
-        InitializeProcThreadAttributeList(std::ptr::null_mut(), count, 0, &mut list_size);
+        InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut list_size);
         // usize-aligned, as the opaque list it holds.
         let mut list = vec![0usize; list_size.div_ceil(std::mem::size_of::<usize>())];
         let attrs = list.as_mut_ptr().cast();
         assert_ne!(
-            InitializeProcThreadAttributeList(attrs, count, 0, &mut list_size),
+            InitializeProcThreadAttributeList(attrs, 1, 0, &mut list_size),
             0
         );
-        if stdin.is_some() {
-            assert_ne!(
-                UpdateProcThreadAttribute(
-                    attrs,
-                    0,
-                    PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
-                    input.as_ptr().cast(),
-                    std::mem::size_of_val(&input),
-                    std::ptr::null_mut(),
-                    std::ptr::null(),
-                ),
-                0
-            );
-        }
         assert_ne!(
             UpdateProcThreadAttribute(
                 attrs,
@@ -1502,7 +1487,7 @@ fn on_a_console_reading(
         let mut si = STARTUPINFOEXW::default();
         si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
         si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-        si.StartupInfo.hStdInput = input[0];
+        si.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
         si.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
         si.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
         si.lpAttributeList = attrs;
@@ -1510,6 +1495,20 @@ fn on_a_console_reading(
         for a in args {
             line.push_str(&format!(" \"{a}\""));
         }
+        // `/s`: cmd takes what is between the first and the last quote as the command.
+        let shell = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
+        let line = match stdin {
+            None => line,
+            Some(ConsoleStdin::File(f)) => {
+                format!("\"{}\" /d /s /c \"{line} < {f}\"", shell.to_string_lossy())
+            }
+            Some(ConsoleStdin::Piped(f)) => {
+                format!(
+                    "\"{}\" /d /s /c \"type {f} | {line}\"",
+                    shell.to_string_lossy()
+                )
+            }
+        };
         let mut line = wide(std::ffi::OsStr::new(&line));
         let mut env: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString> =
             std::env::vars_os().collect();
@@ -1533,7 +1532,7 @@ fn on_a_console_reading(
             line.as_mut_ptr(),
             std::ptr::null(),
             std::ptr::null(),
-            i32::from(stdin.is_some()),
+            0,
             EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
             block.as_ptr().cast(),
             cwd.as_ptr(),
@@ -1561,7 +1560,6 @@ fn on_a_console_reading(
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
         DeleteProcThreadAttributeList(attrs);
-        drop(stdin);
         // Closing the console sends its last frame and ends its output, unless the reader
         // stops draining it: in a thread, waited for a bounded time, as the end of the output.
         let (closed_tx, closed) = std::sync::mpsc::channel();
@@ -1766,7 +1764,17 @@ fn m5b_console_output_equals_ripgrep() {
             "con-b.txt",
         ],
         &["--color", "never", "needle", "con-a.txt"],
-        &["--color", "never", "-c", "needle", "con-a.txt", "con-b.txt"],
+        // Two files: one order, as in the first case (CI c3e5720: rg printed b first).
+        &[
+            "--color",
+            "never",
+            "--sort",
+            "path",
+            "-c",
+            "needle",
+            "con-a.txt",
+            "con-b.txt",
+        ],
     ];
     for args in cases {
         let want = on_a_console(&fx, &common::rg_path(), args);
@@ -1793,41 +1801,12 @@ fn m5b_console_output_equals_ripgrep() {
 #[test]
 #[cfg(windows)]
 fn m5b_console_stdin_alone_equals_ripgrep() {
-    use std::os::windows::io::OwnedHandle;
     if !reference_rg() {
         return;
     }
     let fx = Fixture::new();
     let text = "first\nneedle 1\nthird\nneedle 2\n";
     std::fs::write(fx.file("tty.txt"), text).unwrap();
-    let file = || OwnedHandle::from(std::fs::File::open(fx.file("tty.txt")).unwrap());
-    // An anonymous pipe, as a shell's `|` gives: both ends synchronous, neither inheritable.
-    let pipe = || {
-        use std::io::Write;
-        use std::os::windows::io::FromRawHandle;
-        let (mut read, mut write) = (std::ptr::null_mut(), std::ptr::null_mut());
-        // SAFETY: CreatePipe writes two new handles, each owned once here.
-        let (read, write) = unsafe {
-            assert_ne!(
-                windows_sys::Win32::System::Pipes::CreatePipe(
-                    &mut read,
-                    &mut write,
-                    std::ptr::null(),
-                    0
-                ),
-                0
-            );
-            (
-                OwnedHandle::from_raw_handle(read),
-                std::fs::File::from_raw_handle(write),
-            )
-        };
-        std::thread::spawn(move || {
-            let mut write = write;
-            let _ = write.write_all(text.as_bytes());
-        });
-        read
-    };
     let s4 = assert_cmd::cargo::cargo_bin("s4");
     let mut r = Report(Vec::new());
     let cases: [(&[&str], bool); 4] = [
@@ -1841,15 +1820,19 @@ fn m5b_console_stdin_alone_equals_ripgrep() {
         (&["--color", "never", "-c", "needle", "-"], false),
     ];
     for (args, piped) in cases {
-        let input = || if piped { pipe() } else { file() };
-        let want = on_a_console_reading(&fx, &common::rg_path(), args, Some(input()));
+        let input = if piped {
+            ConsoleStdin::Piped("tty.txt")
+        } else {
+            ConsoleStdin::File("tty.txt")
+        };
+        let want = on_a_console_reading(&fx, &common::rg_path(), args, Some(input));
         assert!(
             want.1.contains("needle"),
             "{args:?}: the console gave {want:?}"
         );
         let mut s = vec!["--no-trail"];
         s.extend_from_slice(args);
-        let got = on_a_console_reading(&fx, &s4, &s, Some(input()));
+        let got = on_a_console_reading(&fx, &s4, &s, Some(input));
         r.check(
             format!(
                 "{args:?} (stdin {}; rg sent {}, s4 sent {})",
