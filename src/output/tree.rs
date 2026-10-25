@@ -188,6 +188,16 @@ pub(crate) fn write_binary_message(w: &mut dyn WriteColor, msg: &str) -> std::io
     w.write_all(format!("{msg}\n").as_bytes())
 }
 
+/// The group separator before ripgrep's binary message (`super::binary_break`), at its depth.
+pub(crate) fn write_binary_break(w: &mut dyn WriteColor, o: &RenderOptions) -> std::io::Result<()> {
+    if let Some(sep) = &o.look.sep_group {
+        write_indent(w, 0)?;
+        w.write_all(sep)?;
+        w.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
 /// What the tree remembers between rows: the Trail on screen, and the last rows under it.
 #[derive(Default)]
 pub(crate) struct TreeState {
@@ -304,6 +314,9 @@ pub fn render(
         }
     }
     if let Some(msg) = super::binary_message_of(d, o) {
+        if super::binary_break(d, src, o) {
+            write_binary_break(w, o)?;
+        }
         write_binary_message(w, &msg)?;
     }
     Ok(())

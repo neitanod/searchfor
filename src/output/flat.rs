@@ -272,7 +272,10 @@ impl<'a> Head<'a> {
 
 /// The separator between groups of context (`--context-separator`), none with
 /// `--no-context-separator`.
-fn write_group_separator(w: &mut dyn WriteColor, o: &RenderOptions) -> std::io::Result<()> {
+pub(crate) fn write_group_separator(
+    w: &mut dyn WriteColor,
+    o: &RenderOptions,
+) -> std::io::Result<()> {
     if let Some(sep) = &o.look.sep_group {
         w.write_all(sep)?;
         w.write_all(b"\n")?;
@@ -454,6 +457,9 @@ pub fn render(
         }
     }
     if let Some(msg) = super::binary_message_of(d, o) {
+        if super::binary_break(d, src, o) {
+            write_group_separator(w, o)?;
+        }
         write_binary_message(w, &d.file.path, &msg, o)?;
     }
     Ok(())

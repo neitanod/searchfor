@@ -2273,9 +2273,16 @@ fn in_headings_stats_deviate_as_documented() {
             })
             .collect()
     };
+    // rg's `bytes_searched` at `-m1` is where its search stopped: past the first Match line (9
+    // bytes) in a memory map, none with a reader, which stops before its first buffer is
+    // consumed. grep-searcher 0.1.14 never maps a file on macOS (`MmapChoice::open`), so there
+    // rg reads (CI c3e5720).
+    let stopped = if cfg!(target_os = "macos") { 0 } else { 9 };
     for (args, rg_counts) in [
-        (&["--json", "-m1", "needle"][..], (9, 1, 1)),
-        (&["-q", "--json", "-m1", "needle"], (9, 1, 1)),
+        (&["--json", "-m1", "needle"][..], (stopped, 1, 1)),
+        (&["-q", "--json", "-m1", "needle"], (stopped, 1, 1)),
+        (&["--no-mmap", "--json", "-m1", "needle"], (0, 1, 1)),
+        (&["--no-mmap", "-q", "--json", "-m1", "needle"], (0, 1, 1)),
         (&["--json", "^needle"], (size, 1, 1)),
     ] {
         let mut a = args.to_vec();
@@ -2519,7 +2526,23 @@ fn in_headings_detects_binary_data_where_ripgrep_does() {
     std::fs::write(fx.file("ihm/after.md"), after).unwrap();
     let stdin = In::File("ihm/late.md");
     let mut r = Report(Vec::new());
-    let cases: [(&[&str], In); 14] = [
+    let cases: [(&[&str], In); 20] = [
+        // CI c3e5720: a file named on the command line searched with a reader, as macOS's rg
+        // searches it (no memory map): after the context of the Match before the binary data,
+        // rg's search reaches the next Match past a gap, and prints the group separator before
+        // its binary message.
+        (&["--no-mmap", "-A1", "needle", "ihm/late.md"], In::Null),
+        (&["--no-mmap", "-B1", "needle", "ihm/late.md"], In::Null),
+        (&["--no-mmap", "-A1", "needle", "ihm/after.md"], In::Null),
+        (
+            &["--no-mmap", "needle", "ihm/late.md", "ihm/ok.md"],
+            In::Null,
+        ),
+        (
+            &["--no-mmap", "--json", "-A1", "needle", "ihm/late.md"],
+            In::Null,
+        ),
+        (&["-A1", "needle", "-"], stdin),
         // Code review r7, Fable #1: the same, with two files, a context and a heading only
         // after the NUL.
         (&["needle", "ihm/late.md", "ihm/ok.md"], In::Null),
@@ -2886,15 +2909,16 @@ fn headings_every_97_lines(nul: usize) -> Vec<u8> {
 }
 
 /// The line numbers of `rg -n` and of `--flat -n`, Matches (`N:`) and context lines (`N-`) on
-/// one input, and the binary messages. The `--` that rg prints before the binary message of
-/// stdin is the NIT of code review r8, Fable #3: left out.
+/// one input, the group separators (`--`), and the binary messages. The `--` that rg prints
+/// before the binary message of a reader search (code review r8, Fable #3; CI c3e5720 on
+/// macOS) is compared too.
 fn numbered_rows(o: &Output) -> Vec<String> {
     stdout(o)
         .lines()
-        .filter(|l| *l != "--")
         .map(
             |l| match l.find("WARNING").or_else(|| l.find("binary file")) {
                 Some(at) => l[at..].to_string(),
+                None if l == "--" => l.to_string(),
                 None => l.chars().take_while(char::is_ascii_digit).collect(),
             },
         )
@@ -2954,6 +2978,66 @@ fn binary_data_with_a_context_is_detected_where_ripgrep_does() {
                 (code(&want), rows(&want)),
                 (code(&got), rows(&got)),
             );
+        }
+    }
+    r.assert_empty();
+}
+
+/// CI c3e5720 on macOS: a file named on the command line and stdin, searched with a reader as
+/// rg searches them on macOS, print the group separator before the binary message when a gap
+/// parts the next line rg's search reaches from the last one printed, as rg; a Markdown file
+/// (the whole-file model) and a Plain one (printed as the searcher reports it), in both Trail
+/// layouts.
+#[test]
+fn binary_message_after_a_gap_has_the_group_separator_as_ripgrep() {
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    std::fs::create_dir(fx.file("gap")).unwrap();
+    for name in ["gap/late.md", "gap/late.txt"] {
+        std::fs::write(fx.file(name), late_nul_markdown()).unwrap();
+    }
+    let mut r = Report(Vec::new());
+    for context in [
+        &["-A1"][..],
+        &["-B1"],
+        &["-C2"],
+        &["-A1", "--no-context-separator"],
+    ] {
+        for (path, input) in [
+            ("gap/late.md", In::Null),
+            ("gap/late.txt", In::Null),
+            ("-", In::File("gap/late.md")),
+        ] {
+            let mut a = vec!["--no-mmap", "-n"];
+            a.extend_from_slice(context);
+            a.extend(["needle", path]);
+            let want = rg(&fx, &a, input);
+            for layout in ["--flat", "--tree"] {
+                let mut s = vec![layout];
+                s.extend_from_slice(&a);
+                let got = s4(&fx, &s, input);
+                // The tree's rows are indented under the path line, which goes.
+                let rows = |o: &Output, skip: usize| {
+                    stdout(o)
+                        .lines()
+                        .skip(skip)
+                        .map(|l| match l.trim_start() {
+                            "--" => "--".to_string(),
+                            l if l.contains("binary file") => l.to_string(),
+                            l => l.chars().take_while(char::is_ascii_digit).collect(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                let skip = usize::from(layout == "--tree");
+                r.check(
+                    format!("{s:?}"),
+                    (code(&want), rows(&want, 0)),
+                    (code(&got), rows(&got, skip)),
+                );
+            }
         }
     }
     r.assert_empty();

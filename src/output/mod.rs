@@ -1718,6 +1718,30 @@ pub(crate) fn binary_message_of(d: &Described, o: &RenderOptions) -> Option<Stri
     )
 }
 
+/// Whether ripgrep's group separator goes before a file's binary message (code review r8,
+/// Fable #3; CI c3e5720 on macOS, which searches with a reader): once its searcher has seen
+/// binary data it converts, rg 14.1.1's standard printer gives up at the next line the search
+/// reaches, but the searcher breaks the context before that line when a gap parts it from the
+/// last line printed (grep-searcher 0.1.14, `Core::sink_break_context`). That line is the first
+/// item past the binary cut.
+pub(crate) fn binary_break(d: &Described, src: &[u8], o: &RenderOptions) -> bool {
+    if !o.context || o.expand || d.offsets {
+        return false;
+    }
+    let (Some(_), Some(cut)) = (d.file.stats.binary_offset, d.file.stats.binary_cut) else {
+        return false;
+    };
+    let items = &d.file.items;
+    let (
+        Some(Item::Match(last) | Item::Context(last)),
+        Some(Item::Match(next) | Item::Context(next)),
+    ) = (items[..cut.min(items.len())].last(), items.get(cut))
+    else {
+        return false;
+    };
+    last_number(last, src, o) + 1 != next.line_number
+}
+
 /// The path as printed: its bytes on Unix, as ripgrep.
 pub(crate) fn path_bytes(p: &std::path::Path) -> Vec<u8> {
     #[cfg(unix)]

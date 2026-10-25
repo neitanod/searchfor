@@ -202,6 +202,10 @@ pub struct StreamSink<'a, W: WriteColor> {
     header: bool,
     /// Binary data was found: rows after it are not printed (design note 3).
     binary: bool,
+    /// Of the first line the search reached past the binary data: whether a gap parts it from
+    /// the last row printed, which puts the group separator before the binary message
+    /// (`super::binary_break`).
+    binary_gap: Option<bool>,
     /// No colour, no -M and no cursor: a short valid line can be written without the
     /// printers' machinery.
     fast: bool,
@@ -305,6 +309,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             prev: None,
             header: false,
             binary: false,
+            binary_gap: None,
             fast,
             path_prefix: if o.with_filename && o.layout == Layout::Flat {
                 let p = super::path_bytes(file.path);
@@ -414,6 +419,14 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         c.open_from_with(&mut first)
     }
 
+    /// A line the search reached past the binary data: the first tells whether a gap parts it
+    /// from the last row printed.
+    fn past_binary(&mut self, line_number: u64) {
+        if self.binary_gap.is_none() {
+            self.binary_gap = Some(self.prev.is_some_and(|p| p + 1 != line_number));
+        }
+    }
+
     /// Notes the line's place: true when it opens a new group after a gap, which ends the
     /// group before (its waiting context lines keep an empty Trail).
     fn step(&mut self, line_number: u64) -> std::io::Result<bool> {
@@ -514,6 +527,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             return j.matched(self.w, &line, bytes, &refs, &[]);
         }
         if self.binary {
+            self.past_binary(line.line_number);
             return Ok(());
         }
         self.match_rows(&line, bytes, trails, gap)
@@ -576,6 +590,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             return j.context(self.w, &line, bytes);
         }
         if self.binary {
+            self.past_binary(line.line_number);
             return Ok(());
         }
         let gap = self.step(line.line_number)?;
@@ -1053,6 +1068,12 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         }
         let msg = super::binary_message(self.stats.binary_offset, true, self.file.explicit, self.o);
         if let Some(msg) = msg {
+            if self.binary_gap == Some(true) && self.o.context && self.expand.is_none() {
+                match self.o.layout {
+                    Layout::Tree => tree::write_binary_break(self.w, self.o)?,
+                    _ => flat::write_group_separator(self.w, self.o)?,
+                }
+            }
             match self.o.layout {
                 Layout::Tree => tree::write_binary_message(self.w, &msg)?,
                 _ => flat::write_binary_message(self.w, self.file.path, &msg, self.o)?,
