@@ -2718,14 +2718,19 @@ fn m5b_dense_seven_families_have_bounded_match_retention() {
                 rd <= rp + (32 << 20),
                 "{format}/{layout}: dense {rd}, once {rp}"
             );
-            if timing_enabled() {
-                let factor = if layout == "--json" { 6.0 } else { 4.0 };
+            // The one-line layout's time is measured and reported, not bounded (M5b spec §6.3,
+            // Sebastián's choice C, Hilo 855 #9835): only --json's has a ceiling.
+            if timing_enabled() && layout == "--json" {
                 assert!(
-                    td.as_secs_f64() <= tp.as_secs_f64() + factor * t0.as_secs_f64() + 0.1,
+                    td.as_secs_f64() <= tp.as_secs_f64() + 6.0 * t0.as_secs_f64() + 0.1,
                     "{format}/{layout}: dense {td:?}, prep {tp:?}, base {t0:?}"
                 );
             }
-            eprintln!("m5b {format} {layout} dense={td:?}/{rd} once={tp:?}/{rp} raw={t0:?}/{r0}");
+            let over = (td.as_secs_f64() - tp.as_secs_f64()) / t0.as_secs_f64();
+            eprintln!(
+                "m5b {format} {layout} dense={td:?}/{rd} once={tp:?}/{rp} raw={t0:?}/{r0} \
+                 (dense - once) / raw = {over:.1}"
+            );
         }
     }
 }

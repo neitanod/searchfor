@@ -214,13 +214,17 @@ each against the same command with `--no-trail` (time `T₀`, peak RSS `R₀`), 
   and sparsely matched, the same bytes: RSS(dense) ≤ RSS(one Match) + 32 MiB, in every Format
   and with `--json`. This is the check that the cost no longer grows with the Matches. With N
   search threads, plus N × the 8 MiB a file's output may hold before it spills (§6.2).
-- **Time**: ≤ the preparation's time + 4 × `T₀` + 0.1 s in the one-line layout, + 6 × `T₀` +
-  0.1 s with `--json` (an estimate from Codex's reading of the code, 20/10; the plan's probe
-  measures it and may tighten it, never loosen it without saying so).
+- **Time**: ≤ the preparation's time + 6 × `T₀` + 0.1 s with `--json` (an estimate from Codex's
+  reading of the code, 20/10; the plan's probe measures it and may tighten it, never loosen it
+  without saying so). In the one-line layout the time is measured and reported, not bounded:
+  the estimate of 4 × `T₀` + 0.1 s was not met in any of the seven Formats (24/10), and
+  Sebastián chose to measure it without a ceiling over
+  another round of optimization or a ceiling relative to the output's bytes (Hilo 855, #9835,
+  option C). `tests/perf.rs` prints the ratio for each Format.
 - The M5a check (`m5_22`, every mode below 6 × from N to 4 N Matches) stays green.
 
 The spec's §3 item 5 and §11 #13 change from «measured and reported, not bounded» to this
-criterion.
+criterion, except the time of the one-line layout, which stays measured and reported.
 
 ## 7. Per-file cost
 
