@@ -2735,9 +2735,12 @@ fn wait_until_read(
 }
 
 /// How long a `PeekNamedPipe` that has not returned takes to say that the reader's read is
-/// pending on an empty pipe.
+/// pending on an empty pipe. A peek's thread that the system holds back that long passes for
+/// it too, and lets the second part in before the reader took the first: 2 s, past what a
+/// loaded runner holds a thread back (code review r3, Fable #2), at a cost of 2 s per call
+/// whose reader waits.
 #[cfg(windows)]
-const PEEK_BLOCKED: std::time::Duration = std::time::Duration::from_millis(500);
+const PEEK_BLOCKED: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// `wait_until_read` on Windows, where `probe` and the reader's stdin are copies of one
 /// synchronous file object, whose calls the system runs one at a time: while the reader's
