@@ -701,12 +701,12 @@ mod tests {
         let mut asked = Vec::new();
         assert_eq!(
             c.open_from_with(&mut |r| {
-                asked.push(r);
+                asked.push((r.start, r.end));
                 None
             }),
             4
         );
-        assert_eq!(asked, [11..16]);
+        assert_eq!(asked, vec![(11, 16)]);
         // Known until the offset passes it: asked again, nothing is searched.
         assert_eq!(c.open_from_with(&mut |_| unreachable!()), 4);
         // A Match in C's label: A may still be a Section.

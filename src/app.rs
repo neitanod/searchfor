@@ -1904,9 +1904,21 @@ impl<'a> Ctx<'a> {
         if !self.model_only && t.through.is_none() && output::rg::streams(&ro.look, self.args) {
             let structural = self.args.structural();
             match detector.detect_by_path(t.path()) {
-                // A Plain file has no names (`names_of`).
+                // A Plain file has no names (`names_of`), which searches it only for what a
+                // tally of none prints at binary data and for `-q --json`'s statistics.
                 Some(None) if self.args.in_headings => {
-                    return self.tally_none(st, t, &ro.look, false);
+                    if self.summary.is_some() || self.args.quiet {
+                        st.binary_quit = false;
+                        st.failed = None;
+                        if self.names_of(matcher, st, t, detector).is_err()
+                            || st.failed.as_ref().is_some_and(|f| f.in_search)
+                        {
+                            return;
+                        }
+                        let quit = st.binary_quit;
+                        self.tally_none(st, t, &ro.look, quit);
+                    }
+                    return;
                 }
                 Some(None) if !structural && self.plain_file(matcher, st, t, ro, detector) => {
                     return;
@@ -4772,6 +4784,10 @@ mod tests {
             ),
             ("dense.csv", b"Install,needle\nneedle,needle\n,\nneedle\n"),
             ("broken.jsonl", b"{\"a\": {\"b\": \"needle\" x}}\n{\"c\": \"needle\"}\n"),
+            // Code review r2, Codex #1: a tally of a Plain file with binary data past its
+            // text, and of one in a Format with it.
+            ("late-nul.txt", b"some text\nmore text\n\0tail needle\n"),
+            ("late-nul.md", b"# Install\nneedle\n\0tail\n"),
             // Code review r2, Codex #3: a U+FEFF that starts the body is content.
             (
                 "body-bom.csv",
