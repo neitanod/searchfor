@@ -873,7 +873,7 @@ fn client_of(_: &std::io::Stdout) -> Option<ClientHandle> {
 
 /// Whether the client closed its end of the server's stdout. A pipe or a socket whose reader
 /// closed is POLLERR or POLLHUP, asked or not; a file or a terminal never is.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn client_gone(client: &ClientHandle) -> bool {
     let mut fd = libc::pollfd {
         fd: *client,
@@ -883,6 +883,37 @@ fn client_gone(client: &ClientHandle) -> bool {
     // SAFETY: one valid pollfd, and a zero timeout.
     let ready = unsafe { libc::poll(&mut fd, 1, 0) };
     ready > 0 && fd.revents & (libc::POLLERR | libc::POLLHUP) != 0
+}
+
+/// Whether the client closed its end of the server's stdout. macOS's `poll` asks kqueue only
+/// for the events requested, so it never reports POLLHUP for a writer that asked none (CI
+/// 023820f); kqueue's EVFILT_WRITE sets EV_EOF once the reader of a pipe or a socket closed.
+/// A file or a terminal never has it, and a descriptor kqueue refuses is a client still there.
+#[cfg(target_os = "macos")]
+fn client_gone(client: &ClientHandle) -> bool {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    // SAFETY: kqueue takes no arguments and returns a new descriptor or -1.
+    let kq = unsafe { libc::kqueue() };
+    if kq < 0 {
+        return false;
+    }
+    // SAFETY: `kq` is a new descriptor nothing else owns; it is closed when this returns.
+    let kq = unsafe { OwnedFd::from_raw_fd(kq) };
+    // SAFETY: a zeroed kevent is valid; the fields set are plain integers.
+    let mut change: libc::kevent = unsafe { std::mem::zeroed() };
+    change.ident = *client as libc::uintptr_t;
+    change.filter = libc::EVFILT_WRITE;
+    change.flags = libc::EV_ADD;
+    // SAFETY: a zeroed kevent is valid output storage.
+    let mut out: libc::kevent = unsafe { std::mem::zeroed() };
+    let now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: one change read from `change`, at most one event written into `out`, and a
+    // zero timeout. A registration that fails comes back as an event with EV_ERROR.
+    let n = unsafe { libc::kevent(kq.as_raw_fd(), &change, 1, &mut out, 1, &now) };
+    n > 0 && out.flags & libc::EV_ERROR == 0 && out.flags & libc::EV_EOF != 0
 }
 
 /// Whether the client closed its end of the server's stdout: a write of zero bytes, which puts
@@ -1945,5 +1976,38 @@ mod tests {
         assert_eq!(m["path_base64"], "Yf8ubWQ=");
         assert_eq!(m["lossy"], true);
         assert_eq!(base64_decode("Yf8ubWQ="), b"a\xff.md");
+    }
+
+    /// CI 023820f: the client watch sees a pipe whose reader closed within a probe's
+    /// deadline, on macOS too, and a pipe whose reader is still there, or a file, never.
+    #[cfg(unix)]
+    #[test]
+    fn client_gone_sees_a_pipe_whose_reader_closed() {
+        use std::os::fd::AsRawFd;
+        use std::time::{Duration, Instant};
+        let (reader, writer) = std::io::pipe().unwrap();
+        let fd = writer.as_raw_fd();
+        assert!(
+            !client_gone(&fd),
+            "a pipe with its reader was taken as gone"
+        );
+        drop(reader);
+        let began = Instant::now();
+        while !client_gone(&fd) {
+            assert!(
+                began.elapsed() < Duration::from_secs(2),
+                "a pipe whose reader closed was not seen as gone in 2 s"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let took = began.elapsed();
+        assert!(
+            took < Duration::from_millis(500),
+            "seen as gone after {took:?}"
+        );
+        drop(writer);
+
+        let file = tempfile::tempfile().unwrap();
+        assert!(!client_gone(&file.as_raw_fd()), "a file was taken as gone");
     }
 }
