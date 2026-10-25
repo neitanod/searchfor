@@ -2914,6 +2914,59 @@ fn m5b_structural_modes_keep_no_model_of_a_dense_file() {
     }
 }
 
+/// Code review r2, Fable #2 (M5b spec §6.1): --expand keeps the Matches of the Sections that
+/// may still print, and lets go of the others. A Markdown `# Top` whose `##` Sections cover the
+/// rest of the file is open to the end and is never a Section, so the run held every Match: 97
+/// MB of peak RSS at 20 000 Sections, as 0.5.0's model, 20 MB with `--no-trail`. What --expand
+/// costs over the same search without it, whose Outline grows with the Sections, is the same
+/// at 5 000 and at 20 000 Sections.
+#[test]
+#[ignore = "--expand RSS over a growing Markdown file; selected explicitly in Linux CI"]
+#[cfg(target_os = "linux")]
+fn m5b_expand_lets_go_of_the_matches_of_printed_sections() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let mut over = Vec::new();
+    for n in [5_000usize, 20_000] {
+        let name = format!("nested{n}.md");
+        let mut text = String::from("# Top\n");
+        for i in 0..n {
+            text.push_str(&format!("## S{i}\nneedle a\nneedle b\nneedle c\n"));
+        }
+        std::fs::write(fx.file(&name), text).unwrap();
+        for layout in ["--flat", "--tree"] {
+            let run = |expand: &[&'static str]| {
+                let mut args = vec!["--no-docs", layout, "-j1"];
+                args.extend(expand);
+                args.extend(["needle", name.as_str()]);
+                measure_drained(&sfor_bin(), &fx, &args, 0)
+            };
+            let Some((te, re)) = run(&["--expand"]) else {
+                return;
+            };
+            let (tr, rr) = run(&[]).unwrap();
+            eprintln!(
+                "{n} Sections {layout}: --expand {te:?}/{re}, rows {tr:?}/{rr}; uptime {}",
+                uptime()
+            );
+            over.push((n, layout, re.saturating_sub(rr)));
+        }
+    }
+    for layout in ["--flat", "--tree"] {
+        let over = |n: usize| {
+            over.iter()
+                .find(|p| p.0 == n && p.1 == layout)
+                .map(|p| p.2)
+                .unwrap()
+        };
+        let (small, large) = (over(5_000), over(20_000));
+        assert!(
+            large <= small + (4 << 20),
+            "{layout}: --expand costs {large} bytes more at 20 000 Sections, {small} at 5 000"
+        );
+    }
+}
+
 /// The load averages the measurement ran under, for its report (`/proc/loadavg`).
 #[cfg(target_os = "linux")]
 fn uptime() -> String {

@@ -779,8 +779,11 @@ impl crate::processors::Cursor for YamlCursor<'_> {
             .follow
             .segs
             .iter()
+            // A hidden Segment, the document of a file of one, ends no Trail (code review r2,
+            // Fable #2).
             .filter(|(k, seg, _)| {
-                seg.range.start <= byte && (census[*k as usize] & !HIDDEN) as usize > byte
+                let c = census[*k as usize];
+                c & HIDDEN == 0 && seg.range.start <= byte && (c & !HIDDEN) as usize > byte
             })
             .map(|(_, seg, _)| seg.range.start)
             .fold(byte, usize::min);

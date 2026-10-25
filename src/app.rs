@@ -4846,7 +4846,8 @@ mod tests {
             let path = dir.path().join(name);
             std::fs::write(&path, text).unwrap();
             for &mode in modes {
-                for pattern in ["needle", "^"] {
+                // A Match in a heading, `S3` or `T7`, names the root's Section, or S7's.
+                for pattern in ["needle", "^", "S3$|needle b", "T7|needle a"] {
                     let mut args = mode.to_vec();
                     args.extend(["--color=never", "--no-docs", "--regexp", pattern]);
                     let a = compare_fixture_command(&path, &args, Pipeline::Model);

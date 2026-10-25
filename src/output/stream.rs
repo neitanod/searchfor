@@ -327,6 +327,35 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         Ok(trails)
     }
 
+    /// --expand: where the Matches that a Section may still hold start (`Cursor::open_from`),
+    /// told where the search finds the Matches ahead: a Match's Trail is asked at each of its
+    /// submatches, found in its line as `match_submatches_in` finds them. An inverted search
+    /// asks at every line that does not match, which the cursor is not told.
+    fn open_from(&mut self, s: &Searcher) -> Option<usize> {
+        let c = self.trails.as_mut()?;
+        let src = match self.file.src {
+            Some(src) if !self.invert => src,
+            _ => return c.open_from(),
+        };
+        let matcher = self.matcher;
+        let mut first = |r: std::ops::Range<usize>| -> Option<usize> {
+            let mut line = memchr::memrchr(b'\n', &src[..r.start]).map_or(0, |i| i + 1);
+            while line < r.end {
+                let end = memchr::memchr(b'\n', &src[line..]).map_or(src.len(), |i| line + i + 1);
+                let found = crate::search::submatches_in(s, matcher, src, line..end)
+                    .into_iter()
+                    .map(|m| line + m.start)
+                    .find(|b| r.contains(b));
+                if found.is_some() {
+                    return found;
+                }
+                line = end;
+            }
+            None
+        };
+        c.open_from_with(&mut first)
+    }
+
     /// Notes the line's place: true when it opens a new group after a gap, which ends the
     /// group before (its waiting context lines keep an empty Trail).
     fn step(&mut self, line_number: u64) -> std::io::Result<bool> {
@@ -1074,7 +1103,7 @@ impl<W: WriteColor> Sink for StreamSink<'_, W> {
             self.stats.matches += line.submatches.len() as u64;
             let trails = self.trails_of(&line)?;
             if self.expand.is_some() {
-                self.open = self.trails.as_mut().and_then(|c| c.open_from());
+                self.open = self.open_from(s);
             }
             self.filtered_match(line, trails, None)?;
         } else if self.file.count && self.json.is_none() {

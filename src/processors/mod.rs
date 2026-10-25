@@ -67,12 +67,27 @@ pub trait Cursor {
     /// stale Trail. Consecutive equal Trails are the same `Rc`.
     fn trail_at(&mut self, byte: usize) -> anyhow::Result<SharedTrail>;
 
-    /// Where the outermost Segment that holds the last offset asked starts, a hidden one or
-    /// one whose label holds the offset included; the offset itself when none holds it. No
-    /// later Trail has a Segment that starts before it, so a stream may let go of the Matches
-    /// before it (--expand; code review r1, Codex #1). None: the cursor cannot tell.
+    /// Where the outermost Segment that holds the last offset asked starts, of those the
+    /// Trail of that offset or of a later one may end with (one whose label holds the offset
+    /// included); the offset itself when none holds it. No later Trail ends with a Segment
+    /// that starts before it, so a stream may let go of the Matches before it that no Section
+    /// waiting to print holds (--expand; code review r1, Codex #1). A cursor may answer an
+    /// earlier start, which keeps more Matches (a hidden Segment's, or one that no later Trail
+    /// ends with: code review r2, Fable #2). None: the cursor cannot tell.
     fn open_from(&mut self) -> Option<usize> {
         None
+    }
+
+    /// `open_from`, told by `first` where the search finds a Match: of a range of bytes, the
+    /// first byte at which a Match's Trail is asked, if any. A cursor that knows which bytes'
+    /// Trails end with each Segment may leave out the open Segments no later Match's Trail
+    /// ends with (code review r2, Fable #2).
+    fn open_from_with(
+        &mut self,
+        first: &mut dyn FnMut(std::ops::Range<usize>) -> Option<usize>,
+    ) -> Option<usize> {
+        let _ = first;
+        self.open_from()
     }
 }
 

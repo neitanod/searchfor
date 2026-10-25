@@ -123,6 +123,13 @@ impl Cursor for OutlineCursor<'_> {
     fn open_from(&mut self) -> Option<usize> {
         Some(self.trails.open_from())
     }
+
+    fn open_from_with(
+        &mut self,
+        first: &mut dyn FnMut(std::ops::Range<usize>) -> Option<usize>,
+    ) -> Option<usize> {
+        Some(self.trails.open_from_with(first))
+    }
 }
 
 #[cfg(test)]
