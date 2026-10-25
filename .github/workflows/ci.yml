@@ -156,9 +156,13 @@ jobs:
         run: |
           # MSYS2's UCRT64 builds, named through their variables, never put on PATH: their DLLs
           # sit beside them, and the MSVC build must not see that toolchain. MSYS2 builds qpdf
-          # for UCRT64 and Clang only, no longer for MINGW64, so poppler comes from UCRT64 too;
-          # the image's package database is refreshed first (-y), as its packages age.
-          C:\msys64\usr\bin\pacman.exe -Sy --noconfirm --needed mingw-w64-ucrt-x86_64-qpdf mingw-w64-ucrt-x86_64-poppler
+          # for UCRT64 and Clang only, no longer for MINGW64, so poppler comes from UCRT64 too.
+          # MSYS2 supports no partial upgrade: the image's packages are brought up to date with
+          # the database (-Syu) before new ones that may need newer libraries. An upgrade of
+          # its core (pacman, the MSYS2 runtime) can end the first run, so a second one finishes
+          # the upgrade and installs, and its exit code is the step's.
+          C:\msys64\usr\bin\pacman.exe -Syu --noconfirm
+          C:\msys64\usr\bin\pacman.exe -Syu --noconfirm --needed mingw-w64-ucrt-x86_64-qpdf mingw-w64-ucrt-x86_64-poppler
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           "SEARCHFOR_QPDF=C:\msys64\ucrt64\bin\qpdf.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "SEARCHFOR_PDFTOTEXT=C:\msys64\ucrt64\bin\pdftotext.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8

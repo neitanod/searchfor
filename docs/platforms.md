@@ -171,8 +171,9 @@ memory ceilings and the refusal of bombs are checked):
 
 With `SEARCHFOR_REQUIRE_REFERENCE=1` a missing reference fails its test. The CI installs, on
 every system, Python with `sqlite3` (`SEARCHFOR_PYTHON`), qpdf (`SEARCHFOR_QPDF`) and
-pdftotext (`SEARCHFOR_PDFTOTEXT`); on Windows the last two come from MSYS2's MinGW packages
-and are named by those variables, never put on `PATH`. A local run without them prints a note
+pdftotext (`SEARCHFOR_PDFTOTEXT`); on Windows the last two come from MSYS2's UCRT64 packages,
+installed after the image's packages are brought up to date (`pacman -Syu`, as MSYS2 supports
+no partial upgrade), and are named by those variables, never put on `PATH`. A local run without them prints a note
 and skips the comparison.
 
 The two tests of `tests/guide.rs` (`m5b_external_processor_guide_examples_run_as_documented`
