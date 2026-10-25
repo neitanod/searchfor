@@ -1146,7 +1146,9 @@ fn m5b_expand_under_an_open_root_costs_linear_time() {
 #[test]
 fn m5b_expand_over_one_condensed_line_costs_linear_time() {
     let fx = Fixture::new();
-    let n = 500;
+    // 2000: a scan back over the line for each range shows as more than six times (code
+    // review r4, Codex #1).
+    let n = 2000;
     for k in [n, 4 * n] {
         let fns = (0..k)
             .map(|i| format!("fn f{i}() {{ let needle=1; }} "))

@@ -380,7 +380,15 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         let matcher = self.matcher;
         let looked = &mut self.looked;
         let mut first = |r: std::ops::Range<usize>| -> Option<usize> {
-            let mut line = memchr::memrchr(b'\n', &src[..r.start]).map_or(0, |i| i + 1);
+            // A line kept holds its start: no scan back over a long line for each range
+            // (code review r4, Codex #1).
+            let mut line = match looked
+                .iter()
+                .find(|l| l.start <= r.start && r.start < l.end)
+            {
+                Some(l) => l.start,
+                None => memchr::memrchr(b'\n', &src[..r.start]).map_or(0, |i| i + 1),
+            };
             while line < r.end {
                 let at = match looked.iter().position(|l| l.start == line) {
                     Some(at) => at,
