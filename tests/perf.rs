@@ -2867,9 +2867,10 @@ fn m5b_a_spooled_line_longer_than_the_threshold_is_copied_in_bounded_pieces() {
     );
 }
 
-/// Code review r1, Codex #1 (M5b spec §6.1): --within, --expand and --stats stream a dense
-/// file as the one-line layout does, keeping no model of its Matches: what a dense file costs
-/// over the same bytes with one Match is the same bounded amount at 2 MiB and at 8 MiB.
+/// Code review r1, Codex #1 (M5b spec §6.1): --within, --expand and --stats, and -q and the
+/// summaries with them (code review r2, Codex #1), stream a dense file as the one-line layout
+/// does, keeping no model of its Matches: what a dense file costs over the same bytes with one
+/// Match is the same bounded amount at 2 MiB and at 8 MiB.
 #[test]
 #[ignore = "dense RSS of the structural modes; selected explicitly in Linux CI"]
 #[cfg(target_os = "linux")]
@@ -2885,20 +2886,28 @@ fn m5b_structural_modes_keep_no_model_of_a_dense_file() {
         std::fs::write(fx.file(&name), &bytes).unwrap();
         drop(bytes);
         // --within keeps the first column; its one Match, in the header, has no Trail.
-        let modes: [(&[&str], i32); 4] = [
-            (&["--within", "ONCE_M5B"], 1),
-            (&["--expand"], 0),
-            (&["--stats"], 0),
-            (&["--expand", "--within", "row"], 1),
+        // Code review r2, Codex #1: -q and the summaries, which counted after the filters
+        // from a model (`-q --within ''` over 2 MiB: 188 MB).
+        let modes: [(&[&str], i32, i32); 10] = [
+            (&["--within", "ONCE_M5B"], 0, 1),
+            (&["--expand"], 0, 0),
+            (&["--stats"], 0, 0),
+            (&["--expand", "--within", "row"], 0, 1),
+            (&["-q", "--within", "row"], 0, 1),
+            (&["-q", "--stats", "--within", "row"], 0, 1),
+            (&["-c", "--within", "row"], 0, 1),
+            (&["--count-matches", "--within", "row"], 0, 1),
+            (&["-l", "--within", "row"], 0, 1),
+            (&["--files-without-match", "--within", "row"], 1, 0),
         ];
-        for (mode, once_code) in modes {
+        for (mode, dense_code, once_code) in modes {
             let run = |pattern: &'static str, code: i32| {
                 let mut args = vec!["--no-docs", "--flat", "-j1"];
                 args.extend_from_slice(mode);
                 args.extend([pattern, name.as_str()]);
                 measure_drained(&sfor_bin(), &fx, &args, code)
             };
-            let Some((td, rd)) = run("needle|^", 0) else {
+            let Some((td, rd)) = run("needle|^", dense_code) else {
                 return;
             };
             let (tp, rp) = run("ONCE_M5B", once_code).unwrap();

@@ -60,6 +60,18 @@ pub struct StreamFile<'a> {
     /// The Matches come from Segment names (--in-headings, `heading_match`), each with its
     /// Trail and Section, and not from the searcher.
     pub named: bool,
+    /// -q or a summary (`-c`, `--count-matches`, `-l`, `--files-without-match`) under the
+    /// structural flags: the Matches the filters keep are counted (`StreamSink::kept`), and
+    /// nothing is printed (code review r2, Codex #1).
+    pub tally: Option<Tally>,
+}
+
+/// How a tallied file is searched (`StreamFile::tally`).
+#[derive(Clone, Copy)]
+pub struct Tally {
+    /// The search stops at the first Match the filters keep: -q and -l, which need no more,
+    /// when no statistics are counted.
+    pub stop: bool,
 }
 
 /// A row of a Match line: its Trail and the submatches under it.
@@ -205,6 +217,11 @@ pub struct StreamSink<'a, W: WriteColor> {
     /// --expand, the Matches before it are let go of. None: the cursor cannot tell.
     open: Option<usize>,
     pub stats: FileStats,
+    /// With `StreamFile::tally`: the Match lines the filters kept, and their submatches, an
+    /// inverted Match line counted as one (`summary::count`).
+    pub kept: (u64, u64),
+    /// A tally that stops found its Match.
+    stopped: bool,
     /// A row was printed or is due: a Match the filters kept.
     pub has_match: bool,
     /// The search found a Match, kept or not.
@@ -295,6 +312,8 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             sections: super::SectionLines::local(file.src.unwrap_or_default()),
             open: None,
             stats: FileStats::default(),
+            kept: (0, 0),
+            stopped: false,
             has_match: false,
             found: false,
             file,
@@ -668,6 +687,12 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         sections: Option<Vec<Section>>,
     ) -> std::io::Result<()> {
         self.has_match = true;
+        if let Some(t) = self.file.tally {
+            self.kept.0 += 1;
+            self.kept.1 += line.submatches.len().max(1) as u64;
+            self.stopped = t.stop;
+            return Ok(());
+        }
         let src = self.file.src.unwrap_or_default();
         let sections = || {
             sections.unwrap_or_else(|| {
@@ -732,6 +757,9 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
 
     /// A context line the filters kept.
     fn structured_context(&mut self, line: Line) -> std::io::Result<()> {
+        if self.file.tally.is_some() {
+            return Ok(());
+        }
         let src = self.file.src.unwrap_or_default();
         if let Some(j) = self.json.as_mut() {
             return j.context(self.w, &line, line.bytes(src));
@@ -953,6 +981,9 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
     /// summary. Writes nothing for a file without a Match the filters kept; with --json, the
     /// stats of a search whose Matches they dropped still count (spec §6.4).
     pub fn close(mut self) -> std::io::Result<Option<RunStats>> {
+        if self.file.tally.is_some() {
+            return Ok(None);
+        }
         if !self.has_match {
             let counted = self.json.is_some() && self.found;
             return Ok(counted.then(|| super::json::file_stats(&self.stats, 0)));
@@ -1102,7 +1133,7 @@ impl<W: WriteColor> Sink for StreamSink<'_, W> {
             };
             self.stats.matches += line.submatches.len() as u64;
             let trails = self.trails_of(&line)?;
-            if self.expand.is_some() {
+            if self.expand.is_some() && self.file.tally.is_none() {
                 self.open = self.open_from(s);
             }
             self.filtered_match(line, trails, None)?;
@@ -1115,7 +1146,7 @@ impl<W: WriteColor> Sink for StreamSink<'_, W> {
             self.has_match = true;
             self.matched_line(line, m.bytes(), &subs)?;
         }
-        Ok(self.max_count.go_on())
+        Ok(self.max_count.go_on() && !self.stopped)
     }
 
     fn context(&mut self, s: &Searcher, c: &SinkContext<'_>) -> Result<bool, Self::Error> {
@@ -1137,7 +1168,7 @@ impl<W: WriteColor> Sink for StreamSink<'_, W> {
         } else {
             self.context_line(line, c.bytes(), &subs)?;
         }
-        Ok(self.max_count.go_on())
+        Ok(self.max_count.go_on() && !self.stopped)
     }
 
     fn binary_data(&mut self, _s: &Searcher, _offset: u64) -> Result<bool, Self::Error> {
@@ -1229,6 +1260,7 @@ mod tests {
             within: None,
             count: false,
             named: false,
+            tally: None,
         };
         let mut sink = StreamSink::new(&mut streamed, &m, a.invert_match, &ro, &jo, file);
         s.search_reader(&m, std::io::Cursor::new(src.bytes()), &mut sink)
