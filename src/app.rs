@@ -4659,6 +4659,11 @@ mod tests {
             ),
             ("dense.csv", b"Install,needle\nneedle,needle\n,\nneedle\n"),
             ("broken.jsonl", b"{\"a\": {\"b\": \"needle\" x}}\n{\"c\": \"needle\"}\n"),
+            // Code review r2, Codex #3: a U+FEFF that starts the body is content.
+            (
+                "body-bom.csv",
+                b"A,B\n\xEF\xBB\xBF\"needle,\nnext\",needle\nneedle,tail\n",
+            ),
         ];
         for (name, bytes) in cases {
             let p = synthetic.path().join(name);
