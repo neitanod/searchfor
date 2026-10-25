@@ -2362,7 +2362,9 @@ impl<'a> Ctx<'a> {
                 if let Some(stats) = stats {
                     *self.stats.lock().expect("stats") += &stats;
                 }
-                match self.summary {
+                // -q prints no summary: its exit code is a Match the filters kept, as in
+                // `trail_file_printed` (code review r3, Codex #1).
+                match self.summary.filter(|_| !self.args.quiet) {
                     Some(mode) => self.summary_line(mode, t, look, kept, &mut st.buf),
                     None if has_match => {
                         self.matched.store(true, Relaxed);
@@ -2383,8 +2385,8 @@ impl<'a> Ctx<'a> {
     /// at the first Match the filters keep for -q and -l when no statistics are counted, as
     /// `quiet_file` and rg's summary printer stop (code review r2, Codex #1).
     fn tally(&self) -> Option<Tally> {
-        let stops = matches!(self.summary, Some(summary::Mode::FilesWithMatches))
-            || (self.args.quiet && self.summary.is_none());
+        let stops =
+            self.args.quiet || matches!(self.summary, Some(summary::Mode::FilesWithMatches));
         (self.args.quiet || self.summary.is_some()).then_some(Tally {
             stop: stops && !self.args.stats && !self.args.json,
         })
@@ -2442,9 +2444,9 @@ impl<'a> Ctx<'a> {
     /// A file a tally searched and found no Match in: its summary line, if its mode prints one
     /// for none (`--files-without-match`, `-c --include-zero`). A search that quit at binary
     /// data (`quit`) prints none, and counts as a Match for --files-without-match, as in
-    /// `trail_file_printed`.
+    /// `trail_file_printed`. -q prints none and counts none (code review r3, Codex #1).
     fn tally_none(&self, st: &mut TrailState, t: &Target, look: &output::Look, quit: bool) {
-        if let Some(mode) = self.summary {
+        if let Some(mode) = self.summary.filter(|_| !self.args.quiet) {
             if quit && mode != summary::Mode::FilesWithMatches {
                 if mode == summary::Mode::FilesWithoutMatch {
                     self.matched.store(true, Relaxed);
@@ -4858,6 +4860,29 @@ mod tests {
             &["--count-matches", "--in-headings"],
             &["--files-without-match", "--in-headings"],
             &["-c", "--include-zero", "--within", "Install"],
+            // Code review r3, Codex #1: -q over each summary, with filters that keep some and
+            // filters that drop every Match: nothing printed, the exit code by a kept Match.
+            &["-q", "-c", "--within", ""],
+            &["-q", "-c", "--within", "MISSING_SCOPE"],
+            &["-q", "-c", "--include-zero", "--within", "MISSING_SCOPE"],
+            &["-q", "--count-matches", "--within", "Install"],
+            &["-q", "-l", "--within", "MISSING_SCOPE"],
+            &["-q", "-l", "--within", "row"],
+            &["-q", "--files-without-match", "--within", "MISSING_SCOPE"],
+            &["-q", "--files-without-match", "--within", "Install"],
+            &["-q", "--json", "-c", "--within", "MISSING_SCOPE"],
+            &["-q", "--stats", "--files-without-match", "--within", ""],
+            &["-q", "-c", "--in-headings"],
+            &[
+                "-q",
+                "-c",
+                "--include-zero",
+                "--in-headings",
+                "--within",
+                "MISSING_SCOPE",
+            ],
+            &["-q", "--files-without-match", "--in-headings"],
+            &["-q", "-l", "--in-headings", "--within", "Install"],
         ];
         // The modes that take no whole-file model where the file streams (code review r1,
         // Codex #1): every file with neither a BOM nor binary data whose rows stream.

@@ -1908,3 +1908,40 @@ fn m5b_max_bytes_warns_once_on_the_streaming_path() {
         assert_eq!(rows, 3, "{args:?}");
     }
 }
+
+/// Code review r3, Codex #1: -q decides over a summary on the streaming path, as in rg: nothing
+/// is printed, and the exit code says whether a Match the filters kept was found, also when
+/// the filters drop every Match.
+#[test]
+fn m5b_quiet_prints_no_summary_under_the_filters() {
+    let fx = Fixture::new();
+    let g = "md/guide.md";
+    let cases: [(&[&str], i32); 8] = [
+        (&["-q", "-c", "--within", ""], 0),
+        (&["-q", "-c", "--within", "MISSING"], 1),
+        (&["-q", "-c", "--include-zero", "--within", "MISSING"], 1),
+        (&["-q", "--count-matches", "--within", "Install"], 0),
+        (&["-q", "-l", "--within", "MISSING"], 1),
+        (&["-q", "--files-without-match", "--within", "MISSING"], 1),
+        (&["-q", "--files-without-match", "--within", ""], 0),
+        (
+            &[
+                "-q",
+                "-c",
+                "--include-zero",
+                "--in-headings",
+                "--within",
+                "MISSING",
+            ],
+            1,
+        ),
+    ];
+    for (mode, want) in cases {
+        let mut args = vec!["--no-docs"];
+        args.extend_from_slice(mode);
+        args.extend(["needle", g]);
+        let o = run(&mut fx.s4(&args));
+        assert_eq!((code(&o), stdout(&o)), (want, String::new()), "{args:?}");
+        assert_eq!(stderr(&o), "", "{args:?}");
+    }
+}
