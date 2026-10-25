@@ -4786,6 +4786,80 @@ mod tests {
         });
     }
 
+    /// Code review r2, Fable #1 and #2: --expand over Sections under a Segment open to the end
+    /// of the file (a Markdown `# Top`, HTML's `body`, XML's root, YAML's top-level key over
+    /// its hidden document), and under a root Section that waits for the end, prints what the
+    /// model's path prints, and takes no whole-file model.
+    #[test]
+    fn m5b_expand_under_an_open_root_matches_the_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = 40;
+        let each = |f: &dyn Fn(usize) -> String| (0..n).map(f).collect::<String>();
+        let files = [
+            (
+                "root.md",
+                format!(
+                    "# Top\n{}",
+                    each(&|i| format!("## S{i}\nneedle a\nneedle b\nneedle c\n"))
+                ),
+            ),
+            // The root holds a Match: its Section waits for the end, and so does every other.
+            (
+                "named.md",
+                format!(
+                    "# Top\nneedle top\n{}",
+                    each(&|i| format!("## S{i}\nneedle a\n### T{i}\nneedle b\n"))
+                ),
+            ),
+            (
+                "root.html",
+                format!(
+                    "<html><body>\n{}needle in body\n</body></html>\n",
+                    each(&|i| {
+                        format!("<div id=\"d{i}\">\n<p>needle a</p>\n<p>needle b</p>\n</div>\n")
+                    })
+                ),
+            ),
+            (
+                "root.xml",
+                format!(
+                    "<root>\n{}</root>\n",
+                    each(&|i| format!("<rec id=\"{i}\">\n<a>needle</a>\n<b>needle</b>\n</rec>\n"))
+                ),
+            ),
+            (
+                "root.yaml",
+                format!(
+                    "items:\n{}",
+                    each(&|i| format!("  - name: n{i}\n    a: needle\n    b: needle\n"))
+                ),
+            ),
+        ];
+        let modes: &[&[&str]] = &[
+            &["--flat", "--expand"],
+            &["--tree", "--expand"],
+            &["--flat", "--expand", "-C1"],
+            &["--tree", "--expand", "-m7"],
+            &["--flat", "--expand", "--within", "S3"],
+        ];
+        for (name, text) in &files {
+            let path = dir.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            for &mode in modes {
+                for pattern in ["needle", "^"] {
+                    let mut args = mode.to_vec();
+                    args.extend(["--color=never", "--no-docs", "--regexp", pattern]);
+                    let a = compare_fixture_command(&path, &args, Pipeline::Model);
+                    let b = compare_fixture_command(&path, &args, Pipeline::Stream);
+                    assert_eq!(b.described, 0, "{name} {args:?}");
+                    assert_eq!((a.code, &a.stderr), (b.code, &b.stderr), "{name} {args:?}");
+                    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+                    assert_eq!(text(&a.stdout), text(&b.stdout), "{name} {args:?}");
+                }
+            }
+        }
+    }
+
     /// `argv` (paths included) through the real engine, as `compare_fixture_command`, with
     /// `spool` as its spool directory and `probe` counting.
     fn run_engine(

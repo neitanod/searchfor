@@ -99,8 +99,45 @@ struct Expand {
     /// Matches added to `window` so far.
     next: usize,
     queue: VecDeque<Queued>,
+    /// The first line each entry of `queue` holds (a Section's start, a Match's line), as the
+    /// ascending minima of the entries from the front, each with its number among the entries
+    /// queued: the front is the least line the queue holds, found without a walk over it.
+    least: VecDeque<(u64, u64)>,
+    /// Entries queued, and entries printed, so far.
+    queued: u64,
+    printed: u64,
+    /// The line the Sections' bytes were last found from, and where it starts
+    /// (`LineSeek::position`).
+    seek: (u64, usize),
     /// The Sections printed or waiting that a later Match may still name.
     seen: HashSet<(u64, u64)>,
+}
+
+impl Expand {
+    /// Queues `q`, whose first line is `line`.
+    fn push(&mut self, q: Queued, line: u64) {
+        while self.least.back().is_some_and(|&(_, l)| l >= line) {
+            self.least.pop_back();
+        }
+        self.least.push_back((self.queued, line));
+        self.queued += 1;
+        self.queue.push_back(q);
+    }
+
+    /// The entry at the front of the queue, printed.
+    fn pop(&mut self) -> Option<Queued> {
+        let q = self.queue.pop_front()?;
+        if self.least.front().is_some_and(|&(k, _)| k == self.printed) {
+            self.least.pop_front();
+        }
+        self.printed += 1;
+        Some(q)
+    }
+
+    /// The least line the queue holds.
+    fn bound(&self) -> u64 {
+        self.least.front().map_or(u64::MAX, |&(_, l)| l)
+    }
 }
 
 /// A file prints its Sections when one of its Matches has one; without any, its rows, as
@@ -218,6 +255,10 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             base: 0,
             next: 0,
             queue: VecDeque::new(),
+            least: VecDeque::new(),
+            queued: 0,
+            printed: 0,
+            seek: (1, 0),
             seen: HashSet::new(),
         });
         Self {
@@ -707,11 +748,11 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             any = true;
             if e.seen.insert((start, end)) {
                 let trail = trails.get(k).map_or_else(Vec::new, |t| t.to_vec());
-                e.queue.push_back(Queued::Section(trail, start, end));
+                e.push(Queued::Section(trail, start, end), start);
             }
         }
         if !any {
-            e.queue.push_back(Queued::Rows(index));
+            e.push(Queued::Rows(index), n);
         }
         e.window.file.items.push(Item::Match(line));
         e.window
@@ -725,13 +766,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             return Ok(());
         };
         let e = self.expand.as_mut().expect("--expand");
-        let mut bound = u64::MAX;
-        for q in &e.queue {
-            bound = bound.min(match q {
-                Queued::Section(_, start, _) => *start,
-                Queued::Rows(i) => item_line(&e.window.file.items[i - e.base]).line_number,
-            });
-        }
+        let bound = e.bound();
         let gone = e
             .window
             .file
@@ -760,14 +795,13 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         };
         let src = self.file.src.unwrap_or_default();
         let o = self.o;
-        let mut kept: Option<Vec<super::SectionBlock>> = None;
-        while let Some(q) = e.queue.pop_front() {
-            if let Queued::Section(_, _, end) = &q
-                && upto.is_some_and(|n| *end >= n)
-            {
-                e.queue.push_front(q);
-                break;
+        loop {
+            match e.queue.front() {
+                None => break,
+                Some(Queued::Section(_, _, end)) if upto.is_some_and(|n| *end >= n) => break,
+                Some(_) => {}
             }
+            let q = e.pop().expect("a front");
             if let Some(l) = self.file.lead.take() {
                 self.w.write_all(l)?;
                 self.w.write_all(b"\n")?;
@@ -790,7 +824,21 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
                     }
                 }
                 Queued::Section(trail, start, end) => {
-                    let kept = kept.get_or_insert_with(|| super::section_rows(&e.window, src, o));
+                    // The blocks of the Matches of the Section's bytes, as `SectionLines::rows`
+                    // finds those bytes: a Match before them that ends in them included.
+                    let mut seek = LineSeek::from(src, e.seek);
+                    let first = seek.start(start.max(1));
+                    let last = seek.start(end + 1).max(first);
+                    e.seek = seek.position();
+                    let items = &e.window.file.items;
+                    let lo = items.partition_point(|i| {
+                        let l = item_line(i);
+                        l.absolute_offset as usize + l.len <= first
+                    });
+                    let hi = lo
+                        + items[lo..]
+                            .partition_point(|i| (item_line(i).absolute_offset as usize) < last);
+                    let kept = &super::section_rows_of(&e.window, lo..hi, src, o);
                     let section = (&trail[..], start, end);
                     match o.layout {
                         Layout::Flat => flat::write_section(

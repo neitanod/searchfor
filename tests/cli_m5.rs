@@ -1069,6 +1069,74 @@ fn m5_22_the_matches_of_a_line_or_a_file_cost_linear_time() {
     );
 }
 
+/// N Sections, each with a few Matches, under a Segment open to the end of the file: a
+/// Markdown `# Top`, HTML's `html` and `body`, XML's root element and YAML's top-level key
+/// over its hidden document.
+#[cfg(target_os = "linux")]
+fn sections_under_a_root(ext: &str, n: usize) -> String {
+    let each = |f: &dyn Fn(usize) -> String| (0..n).map(f).collect::<String>();
+    match ext {
+        "md" => format!(
+            "# Top\n{}",
+            each(&|i| format!("## S{i}\nneedle a\nneedle b\nneedle c\n"))
+        ),
+        "html" => format!(
+            "<html><body>\n{}</body></html>\n",
+            each(&|i| format!("<div id=\"d{i}\">\n<p>needle a</p>\n<p>needle b</p>\n</div>\n"))
+        ),
+        "xml" => format!(
+            "<root>\n{}</root>\n",
+            each(&|i| format!("<rec id=\"{i}\">\n<a>needle</a>\n<b>needle</b>\n</rec>\n"))
+        ),
+        "yaml" => format!(
+            "items:\n{}",
+            each(&|i| format!("  - name: n{i}\n    a: needle\n    b: needle\n"))
+        ),
+        _ => unreachable!(),
+    }
+}
+
+/// Code review r2, Fable #1 and Codex #2: --expand under a Segment that stays open costs each
+/// Section its own rows. Every Section printed made the rows of every Match held since the root
+/// opened, so 4 N Sections cost 16 times N (Markdown with 5 000 Sections: 26.6 s, 0.07 s in
+/// 0.5.0). As `m5_22`, 4 N must cost less than six times N (CPU time, best of three).
+#[cfg(target_os = "linux")]
+#[test]
+fn m5b_expand_under_an_open_root_costs_linear_time() {
+    let fx = Fixture::new();
+    let n = 200;
+    let formats = ["md", "html", "xml", "yaml"];
+    for ext in formats {
+        for k in [n, 4 * n] {
+            let name = format!("root{k}.{ext}");
+            std::fs::write(fx.file(&name), sections_under_a_root(ext, k)).unwrap();
+        }
+    }
+    let mut slow = Vec::new();
+    for ext in formats {
+        for layout in ["--flat", "--tree"] {
+            let time = |k: usize| -> std::time::Duration {
+                let args: Vec<String> = [layout, "--expand", "-j1", "needle"]
+                    .iter()
+                    .map(|a| a.to_string())
+                    .chain([format!("root{k}.{ext}")])
+                    .collect();
+                (0..3).map(|_| cpu_time(&fx, &args)).min().unwrap()
+            };
+            let (small, large) = (time(n), time(4 * n));
+            eprintln!("{ext} {layout}: {small:?} and {large:?}");
+            if large >= small * 6 {
+                slow.push(format!("{ext} {layout}: {small:?} and {large:?}"));
+            }
+        }
+    }
+    assert!(
+        slow.is_empty(),
+        "4 N Sections cost six times N or more:\n{}",
+        slow.join("\n")
+    );
+}
+
 /// The CPU time of `s4 args` and of its children, its stdout read to its end; it must exit
 /// with 0 and print something. `--mcp PATH` asks the MCP server for every Match of PATH, with
 /// its Section.
