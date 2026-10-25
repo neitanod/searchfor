@@ -154,12 +154,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # MSYS2's MinGW builds, named through their variables, never put on PATH: their DLLs
-          # sit beside them, and the MSVC build must not see that toolchain.
-          C:\msys64\usr\bin\pacman.exe -S --noconfirm --needed mingw-w64-x86_64-qpdf mingw-w64-x86_64-poppler
+          # MSYS2's UCRT64 builds, named through their variables, never put on PATH: their DLLs
+          # sit beside them, and the MSVC build must not see that toolchain. MSYS2 builds qpdf
+          # for UCRT64 and Clang only, no longer for MINGW64, so poppler comes from UCRT64 too;
+          # the image's package database is refreshed first (-y), as its packages age.
+          C:\msys64\usr\bin\pacman.exe -Sy --noconfirm --needed mingw-w64-ucrt-x86_64-qpdf mingw-w64-ucrt-x86_64-poppler
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          "SEARCHFOR_QPDF=C:\msys64\mingw64\bin\qpdf.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "SEARCHFOR_PDFTOTEXT=C:\msys64\mingw64\bin\pdftotext.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "SEARCHFOR_QPDF=C:\msys64\ucrt64\bin\qpdf.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "SEARCHFOR_PDFTOTEXT=C:\msys64\ucrt64\bin\pdftotext.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Reference Python
         run: |
           python -c 'import sqlite3, sys; print(sys.version, sqlite3.sqlite_version)'
