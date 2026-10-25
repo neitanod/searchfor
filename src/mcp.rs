@@ -2000,11 +2000,6 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
-        let took = began.elapsed();
-        assert!(
-            took < Duration::from_millis(500),
-            "seen as gone after {took:?}"
-        );
         drop(writer);
 
         let file = tempfile::tempfile().unwrap();

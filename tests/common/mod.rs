@@ -599,6 +599,9 @@ pub fn wait_until(
     }
 }
 
+/// How long a child's stdout and stderr may stay open past its exit (`Watched::output_within`).
+const PIPES_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// A child whose stdout and stderr are read into buffers as they come, so that what it printed
 /// is at hand when it has to be killed.
 pub struct Watched {
@@ -662,9 +665,11 @@ impl Watched {
         let Some(status) = wait_until(&mut self.child, deadline) else {
             self.fail(limit, "still ran and was killed", context);
         };
-        // The pipes end with the child, unless a process it started holds them.
+        // The pipes end with the child, unless a process it started holds them: they are given
+        // a fixed grace past its exit, whatever is left of its limit (code review r3, Fable #3).
+        let closed = std::time::Instant::now() + PIPES_GRACE;
         for _ in 0..2 {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let left = closed.saturating_duration_since(std::time::Instant::now());
             if self.ended.recv_timeout(left).is_err() {
                 self.fail(
                     limit,

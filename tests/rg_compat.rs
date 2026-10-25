@@ -14,7 +14,8 @@ fn run(c: &mut Command) -> Output {
 }
 
 /// A child still running at its limit is killed, and its test fails with the context and what
-/// it printed, soon after the limit: rg, line-buffered, prints the Match of the first read of
+/// it printed, soon after the limit (within the 10 s margin of the suite's other bounds, code
+/// review r3, Fable #1): rg, line-buffered, prints the Match of the first read of
 /// a pipe whose writer stays open, and waits for more.
 #[test]
 fn a_child_past_its_limit_is_killed_with_what_it_printed() {
@@ -46,7 +47,7 @@ fn a_child_past_its_limit_is_killed_with_what_it_printed() {
         assert!(message.contains(part), "{part:?} in {message}");
     }
     assert!(
-        took >= limit && took < limit + std::time::Duration::from_secs(5),
+        took >= limit && took < limit + std::time::Duration::from_secs(10),
         "{took:?}"
     );
 }
