@@ -524,10 +524,10 @@ fn the_binary_probe_of_in_headings_keeps_no_lines() {
     let fx = Fixture::new();
     let body = "body text\n".repeat(8 * 1024 * 1024 / 10);
     let size = body.len() as u64;
-    std::fs::write(fx.file("nul.in"), format!("# needle\n\n{body}\0\n")).unwrap();
+    std::fs::write(fx.file("binary.in"), format!("# needle\n\n{body}\0\n")).unwrap();
     std::fs::write(fx.file("text.in"), format!("# needle\n\n{body}\n")).unwrap();
     let args = ["--in-headings", "--format", "markdown", "-c", "needle", "-"];
-    let Some((_, nul)) = measure_with(&sfor_bin(), &fx, &args, Some("nul.in"), 0) else {
+    let Some((_, nul)) = measure_with(&sfor_bin(), &fx, &args, Some("binary.in"), 0) else {
         eprintln!("skipping: /usr/bin/time not found");
         return;
     };
