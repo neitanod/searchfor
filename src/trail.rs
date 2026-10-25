@@ -172,6 +172,160 @@ pub struct TrailCursor<'o> {
     /// The Segments containing the last offset, outermost first (each the parent of the next).
     stack: Vec<usize>,
     last: usize,
+    /// The bytes whose Trails end with each Segment (`Owned`), made the first time
+    /// `open_from` asks.
+    owned: Option<Owned>,
+    /// Of the Segments open at the last offset asked: (Segment, offset, first byte at or past
+    /// the offset whose Trail ends with it, if any), as `open_from_with` found it.
+    found: Vec<(usize, usize, Option<usize>)>,
+}
+
+/// The bytes whose Trail ends with each Segment (code review r2, Fable #2). A Trail ends with
+/// the innermost shown Segment that holds the byte outside its label (`TrailCursor::indices`):
+/// a Segment's bytes are its own but for its label and those of its shown children past their
+/// labels; a hidden child's bytes are its parent's. The labels of grandchildren count as their
+/// parents' bytes, which can only make a Segment own more bytes than it does: a stream lets go
+/// of fewer Matches, never of one it needs.
+struct Owned {
+    /// By Segment, the first of its children's bytes in `covered`; one more, the end.
+    first: Vec<usize>,
+    /// The bytes of each Segment's shown children, merged, in order.
+    covered: Vec<Range<usize>>,
+    /// By Segment, one past its last own byte, 0 when it owns none.
+    ends: Vec<usize>,
+}
+
+impl Owned {
+    fn new(outline: &Outline) -> Self {
+        let segs = &outline.segments;
+        // The nearest ancestor that is not hidden: the parents precede their children.
+        let mut shown: Vec<Option<usize>> = Vec::with_capacity(segs.len());
+        for s in segs {
+            let up = s
+                .parent
+                .and_then(|p| if segs[p].hidden { shown[p] } else { Some(p) });
+            shown.push(up);
+        }
+        let mut children: Vec<(usize, usize, usize)> = segs
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !c.hidden)
+            .filter_map(|(i, c)| {
+                let from = if c.label.is_empty() {
+                    c.range.start
+                } else {
+                    c.label.end.max(c.range.start)
+                };
+                shown[i].map(|p| (p, from, c.range.end))
+            })
+            .filter(|&(_, a, b)| a < b)
+            .collect();
+        drop(shown);
+        children.sort_unstable_by_key(|&(p, a, _)| (p, a));
+        let mut first = Vec::with_capacity(segs.len() + 1);
+        let mut covered: Vec<Range<usize>> = Vec::new();
+        let mut at = 0;
+        for p in 0..segs.len() {
+            first.push(covered.len());
+            let from = covered.len();
+            while at < children.len() && children[at].0 == p {
+                let (_, a, b) = children[at];
+                let mine = covered.len() > from;
+                match covered.last_mut() {
+                    Some(m) if mine && a <= m.end => m.end = m.end.max(b),
+                    _ => covered.push(a..b),
+                }
+                at += 1;
+            }
+        }
+        first.push(covered.len());
+        drop(children);
+        covered.shrink_to_fit();
+        let mut owned = Owned {
+            first,
+            covered,
+            ends: Vec::new(),
+        };
+        owned.ends = (0..segs.len())
+            .map(|p| owned.last_own(outline, p).map_or(0, |b| b + 1))
+            .collect();
+        owned
+    }
+
+    /// The bytes of Segment `p`'s children.
+    fn children(&self, p: usize) -> &[Range<usize>] {
+        &self.covered[self.first[p]..self.first[p + 1]]
+    }
+
+    /// The last byte Segment `p` owns.
+    fn last_own(&self, outline: &Outline, p: usize) -> Option<usize> {
+        let s = &outline.segments[p];
+        let covered = self.children(p);
+        let mut end = s.range.end;
+        let mut k = covered.len();
+        while end > s.range.start {
+            let b = end - 1;
+            if s.label.contains(&b) {
+                end = s.label.start;
+                continue;
+            }
+            while k > 0 && covered[k - 1].start > b {
+                k -= 1;
+            }
+            match k.checked_sub(1).map(|j| &covered[j]) {
+                Some(m) if m.end > b => end = m.start,
+                _ => return Some(b),
+            }
+        }
+        None
+    }
+
+    /// The ranges of bytes at or past `from` that Segment `p` owns, in order, until `f` gives a
+    /// byte: what it gave.
+    fn find(
+        &self,
+        outline: &Outline,
+        p: usize,
+        from: usize,
+        f: &mut dyn FnMut(Range<usize>) -> Option<usize>,
+    ) -> Option<usize> {
+        let s = &outline.segments[p];
+        let label = s.label.clone();
+        // A range without the label's bytes.
+        let mut each = |r: Range<usize>| -> Option<usize> {
+            for piece in [
+                r.start..r.end.min(label.start),
+                r.start.max(label.end)..r.end,
+            ] {
+                if !piece.is_empty()
+                    && let Some(b) = f(piece)
+                {
+                    return Some(b);
+                }
+            }
+            None
+        };
+        let covered = self.children(p);
+        let mut at = from.max(s.range.start);
+        let mut k = covered.partition_point(|c| c.end <= at);
+        while at < s.range.end {
+            match covered.get(k) {
+                Some(c) if c.start <= at => {
+                    at = c.end;
+                    k += 1;
+                }
+                Some(c) => {
+                    let to = c.start.min(s.range.end);
+                    if let Some(b) = each(at..to) {
+                        return Some(b);
+                    }
+                    at = to;
+                }
+                None => return each(at..s.range.end),
+            }
+        }
+        None
+    }
 }
 
 impl<'o> TrailCursor<'o> {
@@ -181,6 +335,8 @@ impl<'o> TrailCursor<'o> {
             next: 0,
             stack: Vec::new(),
             last: 0,
+            owned: None,
+            found: Vec::new(),
         }
     }
 
@@ -220,12 +376,65 @@ impl<'o> TrailCursor<'o> {
         );
     }
 
-    /// Where the outermost Segment open at the last offset starts (hidden ones and those it
-    /// labels included), or that offset when none is open (`Cursor::open_from`).
-    pub fn open_from(&self) -> usize {
+    /// Where the outermost Segment open at the last offset starts that the Trail of that
+    /// offset or of a later one may still end with, or that offset when none may
+    /// (`Cursor::open_from`): a hidden Segment never ends a Trail, and one whose bytes past the
+    /// offset all have a Trail that ends with a Segment inside it never will (code review r2,
+    /// Fable #2).
+    pub fn open_from(&mut self) -> usize {
+        let outline = self.outline;
+        let owned = self.owned.get_or_insert_with(|| Owned::new(outline));
+        let last = self.last;
         self.stack
-            .first()
-            .map_or(self.last, |&i| self.outline.segments[i].range.start)
+            .iter()
+            .find(|&&i| !outline.segments[i].hidden && owned.ends[i] > last)
+            .map_or(last, |&i| outline.segments[i].range.start)
+    }
+
+    /// `open_from`, of the Segments that own a byte at or past the last offset where a later
+    /// Trail is asked: `first` gives the first such byte of a range of bytes, if any (a Match
+    /// the search will find there). What it found for each open Segment is kept until the
+    /// offset passes it, so each byte is asked about once or twice.
+    pub fn open_from_with(
+        &mut self,
+        first: &mut dyn FnMut(Range<usize>) -> Option<usize>,
+    ) -> usize {
+        let outline = self.outline;
+        let owned = self.owned.get_or_insert_with(|| Owned::new(outline));
+        let last = self.last;
+        let stack = &self.stack;
+        self.found.retain(|f| stack.contains(&f.0));
+        // The Trail of the last offset ends with the innermost shown Segment that owns it.
+        let at_last = stack.iter().rev().copied().find(|&i| {
+            let s = &outline.segments[i];
+            !s.hidden && !s.label.contains(&last)
+        });
+        for &i in stack {
+            if outline.segments[i].hidden || owned.ends[i] <= last {
+                continue;
+            }
+            if Some(i) == at_last {
+                return outline.segments[i].range.start;
+            }
+            let known = self
+                .found
+                .iter()
+                .find(|f| f.0 == i && f.1 <= last && f.2.is_none_or(|b| last <= b))
+                .map(|f| f.2);
+            let next = match known {
+                Some(next) => next,
+                None => {
+                    let next = owned.find(outline, i, last, first);
+                    self.found.retain(|f| f.0 != i);
+                    self.found.push((i, last, next));
+                    next
+                }
+            };
+            if next.is_some() {
+                return outline.segments[i].range.start;
+            }
+        }
+        last
     }
 
     /// The Trail of `byte`.
@@ -445,5 +654,66 @@ mod tests {
             (1, 1, 2, 3)
         );
         assert_eq!(li.line_start(2), Some(3));
+    }
+
+    /// Code review r2, Fable #2: `open_from` starts at the outermost open Segment that a Trail
+    /// at or past the offset may still end with: past A's own bytes (its label, `alpha` and
+    /// B's label), every byte of A is B's.
+    #[test]
+    fn open_from_skips_the_segments_no_later_trail_ends_with() {
+        let o = outline();
+        let mut c = TrailCursor::new(&o);
+        let mut at = |byte: usize| {
+            c.trail(byte);
+            c.open_from()
+        };
+        assert_eq!(at(5), 0);
+        assert_eq!(at(11), 0, "B's label is A's");
+        assert_eq!(at(15), 10);
+        assert_eq!(at(19), 10);
+        assert_eq!(at(25), 20);
+        // A hidden B ends no Trail: its bytes end A's.
+        let mut segments = o.segments.clone();
+        segments[1].hidden = true;
+        let hidden = Outline { segments };
+        let mut c = TrailCursor::new(&hidden);
+        c.trail(16);
+        assert_eq!(c.open_from(), 0);
+        assert_eq!(names(&c.trail(16)), ["A"]);
+    }
+
+    /// Code review r2, Fable #2: a Segment that owns bytes ahead only in its children's labels
+    /// is left out when no Match is found there, and kept when one is.
+    #[test]
+    fn open_from_with_asks_where_the_matches_ahead_are() {
+        let doc = "# A\n## B\nx\n## C\ny\n"; // A 0..20, B 4..11, C 11..20
+        let o = Outline::build(
+            vec![
+                heading("A", 0..20, 0..4),
+                heading("B", 4..11, 4..9),
+                heading("C", 11..20, 11..16),
+            ],
+            doc.as_bytes(),
+        );
+        let mut c = TrailCursor::new(&o);
+        c.trail(9);
+        assert_eq!(c.open_from(), 0, "C's label is A's");
+        let mut asked = Vec::new();
+        assert_eq!(
+            c.open_from_with(&mut |r| {
+                asked.push((r.start, r.end));
+                None
+            }),
+            4
+        );
+        assert_eq!(asked, vec![(11, 16)]);
+        // Known until the offset passes it: asked again, nothing is searched.
+        assert_eq!(c.open_from_with(&mut |_| unreachable!()), 4);
+        // A Match in C's label: A may still be a Section.
+        let mut c = TrailCursor::new(&o);
+        c.trail(9);
+        assert_eq!(c.open_from_with(&mut |r| Some(r.start + 1)), 0);
+        c.trail(10);
+        assert_eq!(c.open_from_with(&mut |_| unreachable!()), 0);
     }
 }

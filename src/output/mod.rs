@@ -1360,70 +1360,97 @@ pub(crate) fn section_rows<'a>(
     src: &'a [u8],
     o: &RenderOptions,
 ) -> Vec<SectionBlock<'a>> {
-    let per_match = o.look.only_matching || o.look.per_match;
     let matches = printed_items(d).iter().filter_map(|item| match item {
         Item::Match(m) => Some(m),
         Item::Context(_) => None,
     });
-    let mut blocks = Vec::new();
-    for (i, m) in matches.enumerate() {
-        let start = (m.absolute_offset as usize).min(src.len());
-        let at = |p: usize| (start + p).min(src.len());
-        // The item's Matches by their starts, and the furthest end of each and of those before
-        // it: the first Match that reaches a row's bytes is the first whose furthest end is
-        // past the row's start.
-        // Each Match with whether it has a Section, by its index among the submatches.
-        let sectioned = |k: usize| {
-            d.sections
-                .get(i)
-                .and_then(|v| v.get(k))
-                .is_some_and(Option::is_some)
-        };
-        let mut found: Vec<(usize, usize, bool)> = m
-            .submatches
-            .iter()
-            .enumerate()
-            .map(|(k, s)| (s.start, s.end, sectioned(k)))
-            .collect();
-        found.sort_unstable();
-        let reach: Vec<usize> = found
-            .iter()
-            .scan(0, |far, &(_, e, _)| {
-                *far = e.max(*far);
-                Some(*far)
-            })
-            .collect();
-        let from = |s: usize, e: usize| -> (usize, bool) {
-            let k = reach.partition_point(|&far| far <= s);
-            found
-                .get(k)
-                .filter(|&&(ms, me, _)| ms < e || (ms == me && ms == s))
-                .map_or((at(s), false), |&(ms, _, owned)| (at(ms), owned))
-        };
-        let mut rows: Vec<(usize, usize, usize, bool, Row<'a>)> = Vec::new();
-        for (r, (s, e)) in shown_rows(d, i, m, src, o) {
-            match rows.last_mut() {
-                Some((_, _, _, _, last)) if !per_match && Rc::ptr_eq(&last.line, &r.line) => {
-                    last.subs.extend(r.subs);
-                    last.column = match (last.column, r.column) {
-                        (Some(a), Some(b)) => Some(a.min(b)),
-                        (a, b) => a.or(b),
-                    };
-                }
-                _ => {
-                    let (from, owned) = from(s, e);
-                    rows.push((at(s), at(e), from, owned, r));
-                }
+    matches
+        .enumerate()
+        .map(|(i, m)| section_block(d, i, m, src, o))
+        .collect()
+}
+
+/// `section_rows` of the items `items` of a model whose items are all Matches, a streamed
+/// file's window: each Section makes the blocks of its own Matches, so it costs its own rows
+/// and not those of every Match held (code review r2, Fable #1).
+pub(crate) fn section_rows_of<'a>(
+    d: &'a Described,
+    items: std::ops::Range<usize>,
+    src: &'a [u8],
+    o: &RenderOptions,
+) -> Vec<SectionBlock<'a>> {
+    items
+        .map(|i| match &d.file.items[i] {
+            Item::Match(m) => section_block(d, i, m, src, o),
+            Item::Context(_) => unreachable!("a window holds Matches"),
+        })
+        .collect()
+}
+
+/// The block of Match `i`, `m` (`section_rows`).
+fn section_block<'a>(
+    d: &'a Described,
+    i: usize,
+    m: &'a Line,
+    src: &'a [u8],
+    o: &RenderOptions,
+) -> SectionBlock<'a> {
+    let per_match = o.look.only_matching || o.look.per_match;
+    let start = (m.absolute_offset as usize).min(src.len());
+    let at = |p: usize| (start + p).min(src.len());
+    // The item's Matches by their starts, and the furthest end of each and of those before
+    // it: the first Match that reaches a row's bytes is the first whose furthest end is
+    // past the row's start.
+    // Each Match with whether it has a Section, by its index among the submatches.
+    let sectioned = |k: usize| {
+        d.sections
+            .get(i)
+            .and_then(|v| v.get(k))
+            .is_some_and(Option::is_some)
+    };
+    let mut found: Vec<(usize, usize, bool)> = m
+        .submatches
+        .iter()
+        .enumerate()
+        .map(|(k, s)| (s.start, s.end, sectioned(k)))
+        .collect();
+    found.sort_unstable();
+    let reach: Vec<usize> = found
+        .iter()
+        .scan(0, |far, &(_, e, _)| {
+            *far = e.max(*far);
+            Some(*far)
+        })
+        .collect();
+    let from = |s: usize, e: usize| -> (usize, bool) {
+        let k = reach.partition_point(|&far| far <= s);
+        found
+            .get(k)
+            .filter(|&&(ms, me, _)| ms < e || (ms == me && ms == s))
+            .map_or((at(s), false), |&(ms, _, owned)| (at(ms), owned))
+    };
+    let mut rows: Vec<(usize, usize, usize, bool, Row<'a>)> = Vec::new();
+    for (r, (s, e)) in shown_rows(d, i, m, src, o) {
+        match rows.last_mut() {
+            Some((_, _, _, _, last)) if !per_match && Rc::ptr_eq(&last.line, &r.line) => {
+                last.subs.extend(r.subs);
+                last.column = match (last.column, r.column) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+            _ => {
+                let (from, owned) = from(s, e);
+                rows.push((at(s), at(e), from, owned, r));
             }
         }
-        // The submatches of a line's Trails, back in the line's order once, as each Trail's are.
-        for (_, _, _, _, r) in &mut rows {
-            r.subs.sort_unstable();
-        }
-        let end = rows.iter().map(|&(_, e, _, _, _)| e).max().unwrap_or(start);
-        blocks.push(SectionBlock { start, end, rows });
     }
-    blocks
+    // The submatches of a line's Trails, back in the line's order once, as each Trail's are.
+    for (_, _, _, _, r) in &mut rows {
+        r.subs.sort_unstable();
+    }
+    let end = rows.iter().map(|&(_, e, _, _, _)| e).max().unwrap_or(start);
+    SectionBlock { start, end, rows }
 }
 
 /// A streamed file's Section lines (`SectionLines::local`): where the last walk stood (a line

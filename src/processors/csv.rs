@@ -613,8 +613,14 @@ impl<'a> CsvPrepared<'a> {
         if self.p.headers {
             let h = self.header.as_ref()?;
             let (first, last) = (&h.fields[0], h.fields.last()?);
-            // A record ends at a record boundary, where a new csv-core reader starts too.
-            recs.pos = last.end;
+            // A record ends at a record boundary, where a new csv-core reader starts too. It
+            // starts at the header's last terminator, which it reads as the end of a record:
+            // a reader that read nothing takes a U+FEFF that starts the body for the file's
+            // BOM (code review r2, Codex #3).
+            recs.pos = match last.end.checked_sub(1) {
+                Some(t) if matches!(src[t], b'\n' | b'\r') => t,
+                _ => last.end,
+            };
             lines.at = last.raw.end.saturating_sub(1).max(first.raw.start);
             lines.line = h.lines.1;
         }
@@ -1082,6 +1088,15 @@ mod tests {
             (b"x|y\n\"q\"|z\n", "delimiter = '|'\nquote = ''"),
             (b"", ""),
             (b"\n\n", ""),
+            // A U+FEFF that starts the body is content, kept in its field (code review r2,
+            // Codex #3): after LF, CRLF and CR, and after a file BOM read with the header.
+            (
+                b"A,B\n\xEF\xBB\xBF\"needle,\nnext\",needle\nneedle,tail\n",
+                "",
+            ),
+            (b"A,B\r\n\xEF\xBB\xBF\"n,\r\nm\",o\r\np,q\r\n", ""),
+            (b"A,B\r\xEF\xBB\xBF\"n,\rm\",o\rp,q\r", ""),
+            (b"\xEF\xBB\xBFA,B\n\xEF\xBB\xBF\"n,\nm\",o\n", ""),
         ] {
             cases.push((s.to_vec(), extra));
         }

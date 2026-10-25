@@ -60,6 +60,18 @@ pub struct StreamFile<'a> {
     /// The Matches come from Segment names (--in-headings, `heading_match`), each with its
     /// Trail and Section, and not from the searcher.
     pub named: bool,
+    /// -q or a summary (`-c`, `--count-matches`, `-l`, `--files-without-match`) under the
+    /// structural flags: the Matches the filters keep are counted (`StreamSink::kept`), and
+    /// nothing is printed (code review r2, Codex #1).
+    pub tally: Option<Tally>,
+}
+
+/// How a tallied file is searched (`StreamFile::tally`).
+#[derive(Clone, Copy)]
+pub struct Tally {
+    /// The search stops at the first Match the filters keep: -q and -l, which need no more,
+    /// when no statistics are counted.
+    pub stop: bool,
 }
 
 /// A row of a Match line: its Trail and the submatches under it.
@@ -99,8 +111,45 @@ struct Expand {
     /// Matches added to `window` so far.
     next: usize,
     queue: VecDeque<Queued>,
+    /// The first line each entry of `queue` holds (a Section's start, a Match's line), as the
+    /// ascending minima of the entries from the front, each with its number among the entries
+    /// queued: the front is the least line the queue holds, found without a walk over it.
+    least: VecDeque<(u64, u64)>,
+    /// Entries queued, and entries printed, so far.
+    queued: u64,
+    printed: u64,
+    /// The line the Sections' bytes were last found from, and where it starts
+    /// (`LineSeek::position`).
+    seek: (u64, usize),
     /// The Sections printed or waiting that a later Match may still name.
     seen: HashSet<(u64, u64)>,
+}
+
+impl Expand {
+    /// Queues `q`, whose first line is `line`.
+    fn push(&mut self, q: Queued, line: u64) {
+        while self.least.back().is_some_and(|&(_, l)| l >= line) {
+            self.least.pop_back();
+        }
+        self.least.push_back((self.queued, line));
+        self.queued += 1;
+        self.queue.push_back(q);
+    }
+
+    /// The entry at the front of the queue, printed.
+    fn pop(&mut self) -> Option<Queued> {
+        let q = self.queue.pop_front()?;
+        if self.least.front().is_some_and(|&(k, _)| k == self.printed) {
+            self.least.pop_front();
+        }
+        self.printed += 1;
+        Some(q)
+    }
+
+    /// The least line the queue holds.
+    fn bound(&self) -> u64 {
+        self.least.front().map_or(u64::MAX, |&(_, l)| l)
+    }
 }
 
 /// A file prints its Sections when one of its Matches has one; without any, its rows, as
@@ -168,6 +217,11 @@ pub struct StreamSink<'a, W: WriteColor> {
     /// --expand, the Matches before it are let go of. None: the cursor cannot tell.
     open: Option<usize>,
     pub stats: FileStats,
+    /// With `StreamFile::tally`: the Match lines the filters kept, and their submatches, an
+    /// inverted Match line counted as one (`summary::count`).
+    pub kept: (u64, u64),
+    /// A tally that stops found its Match.
+    stopped: bool,
     /// A row was printed or is due: a Match the filters kept.
     pub has_match: bool,
     /// The search found a Match, kept or not.
@@ -218,6 +272,10 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             base: 0,
             next: 0,
             queue: VecDeque::new(),
+            least: VecDeque::new(),
+            queued: 0,
+            printed: 0,
+            seek: (1, 0),
             seen: HashSet::new(),
         });
         Self {
@@ -254,6 +312,8 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             sections: super::SectionLines::local(file.src.unwrap_or_default()),
             open: None,
             stats: FileStats::default(),
+            kept: (0, 0),
+            stopped: false,
             has_match: false,
             found: false,
             file,
@@ -284,6 +344,35 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             trails.push(self.trail_at(base + s.start)?);
         }
         Ok(trails)
+    }
+
+    /// --expand: where the Matches that a Section may still hold start (`Cursor::open_from`),
+    /// told where the search finds the Matches ahead: a Match's Trail is asked at each of its
+    /// submatches, found in its line as `match_submatches_in` finds them. An inverted search
+    /// asks at every line that does not match, which the cursor is not told.
+    fn open_from(&mut self, s: &Searcher) -> Option<usize> {
+        let c = self.trails.as_mut()?;
+        let src = match self.file.src {
+            Some(src) if !self.invert => src,
+            _ => return c.open_from(),
+        };
+        let matcher = self.matcher;
+        let mut first = |r: std::ops::Range<usize>| -> Option<usize> {
+            let mut line = memchr::memrchr(b'\n', &src[..r.start]).map_or(0, |i| i + 1);
+            while line < r.end {
+                let end = memchr::memchr(b'\n', &src[line..]).map_or(src.len(), |i| line + i + 1);
+                let found = crate::search::submatches_in(s, matcher, src, line..end)
+                    .into_iter()
+                    .map(|m| line + m.start)
+                    .find(|b| r.contains(b));
+                if found.is_some() {
+                    return found;
+                }
+                line = end;
+            }
+            None
+        };
+        c.open_from_with(&mut first)
     }
 
     /// Notes the line's place: true when it opens a new group after a gap, which ends the
@@ -598,6 +687,12 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         sections: Option<Vec<Section>>,
     ) -> std::io::Result<()> {
         self.has_match = true;
+        if let Some(t) = self.file.tally {
+            self.kept.0 += 1;
+            self.kept.1 += line.submatches.len().max(1) as u64;
+            self.stopped = t.stop;
+            return Ok(());
+        }
         let src = self.file.src.unwrap_or_default();
         let sections = || {
             sections.unwrap_or_else(|| {
@@ -662,6 +757,9 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
 
     /// A context line the filters kept.
     fn structured_context(&mut self, line: Line) -> std::io::Result<()> {
+        if self.file.tally.is_some() {
+            return Ok(());
+        }
         let src = self.file.src.unwrap_or_default();
         if let Some(j) = self.json.as_mut() {
             return j.context(self.w, &line, line.bytes(src));
@@ -707,11 +805,11 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             any = true;
             if e.seen.insert((start, end)) {
                 let trail = trails.get(k).map_or_else(Vec::new, |t| t.to_vec());
-                e.queue.push_back(Queued::Section(trail, start, end));
+                e.push(Queued::Section(trail, start, end), start);
             }
         }
         if !any {
-            e.queue.push_back(Queued::Rows(index));
+            e.push(Queued::Rows(index), n);
         }
         e.window.file.items.push(Item::Match(line));
         e.window
@@ -725,13 +823,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             return Ok(());
         };
         let e = self.expand.as_mut().expect("--expand");
-        let mut bound = u64::MAX;
-        for q in &e.queue {
-            bound = bound.min(match q {
-                Queued::Section(_, start, _) => *start,
-                Queued::Rows(i) => item_line(&e.window.file.items[i - e.base]).line_number,
-            });
-        }
+        let bound = e.bound();
         let gone = e
             .window
             .file
@@ -760,14 +852,13 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
         };
         let src = self.file.src.unwrap_or_default();
         let o = self.o;
-        let mut kept: Option<Vec<super::SectionBlock>> = None;
-        while let Some(q) = e.queue.pop_front() {
-            if let Queued::Section(_, _, end) = &q
-                && upto.is_some_and(|n| *end >= n)
-            {
-                e.queue.push_front(q);
-                break;
+        loop {
+            match e.queue.front() {
+                None => break,
+                Some(Queued::Section(_, _, end)) if upto.is_some_and(|n| *end >= n) => break,
+                Some(_) => {}
             }
+            let q = e.pop().expect("a front");
             if let Some(l) = self.file.lead.take() {
                 self.w.write_all(l)?;
                 self.w.write_all(b"\n")?;
@@ -790,7 +881,21 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
                     }
                 }
                 Queued::Section(trail, start, end) => {
-                    let kept = kept.get_or_insert_with(|| super::section_rows(&e.window, src, o));
+                    // The blocks of the Matches of the Section's bytes, as `SectionLines::rows`
+                    // finds those bytes: a Match before them that ends in them included.
+                    let mut seek = LineSeek::from(src, e.seek);
+                    let first = seek.start(start.max(1));
+                    let last = seek.start(end + 1).max(first);
+                    e.seek = seek.position();
+                    let items = &e.window.file.items;
+                    let lo = items.partition_point(|i| {
+                        let l = item_line(i);
+                        l.absolute_offset as usize + l.len <= first
+                    });
+                    let hi = lo
+                        + items[lo..]
+                            .partition_point(|i| (item_line(i).absolute_offset as usize) < last);
+                    let kept = &super::section_rows_of(&e.window, lo..hi, src, o);
                     let section = (&trail[..], start, end);
                     match o.layout {
                         Layout::Flat => flat::write_section(
@@ -876,6 +981,9 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
     /// summary. Writes nothing for a file without a Match the filters kept; with --json, the
     /// stats of a search whose Matches they dropped still count (spec §6.4).
     pub fn close(mut self) -> std::io::Result<Option<RunStats>> {
+        if self.file.tally.is_some() {
+            return Ok(None);
+        }
         if !self.has_match {
             let counted = self.json.is_some() && self.found;
             return Ok(counted.then(|| super::json::file_stats(&self.stats, 0)));
@@ -1025,8 +1133,8 @@ impl<W: WriteColor> Sink for StreamSink<'_, W> {
             };
             self.stats.matches += line.submatches.len() as u64;
             let trails = self.trails_of(&line)?;
-            if self.expand.is_some() {
-                self.open = self.trails.as_mut().and_then(|c| c.open_from());
+            if self.expand.is_some() && self.file.tally.is_none() {
+                self.open = self.open_from(s);
             }
             self.filtered_match(line, trails, None)?;
         } else if self.file.count && self.json.is_none() {
@@ -1038,7 +1146,7 @@ impl<W: WriteColor> Sink for StreamSink<'_, W> {
             self.has_match = true;
             self.matched_line(line, m.bytes(), &subs)?;
         }
-        Ok(self.max_count.go_on())
+        Ok(self.max_count.go_on() && !self.stopped)
     }
 
     fn context(&mut self, s: &Searcher, c: &SinkContext<'_>) -> Result<bool, Self::Error> {
@@ -1060,7 +1168,7 @@ impl<W: WriteColor> Sink for StreamSink<'_, W> {
         } else {
             self.context_line(line, c.bytes(), &subs)?;
         }
-        Ok(self.max_count.go_on())
+        Ok(self.max_count.go_on() && !self.stopped)
     }
 
     fn binary_data(&mut self, _s: &Searcher, _offset: u64) -> Result<bool, Self::Error> {
@@ -1152,6 +1260,7 @@ mod tests {
             within: None,
             count: false,
             named: false,
+            tally: None,
         };
         let mut sink = StreamSink::new(&mut streamed, &m, a.invert_match, &ro, &jo, file);
         s.search_reader(&m, std::io::Cursor::new(src.bytes()), &mut sink)

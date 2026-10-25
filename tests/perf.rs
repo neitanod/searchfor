@@ -524,10 +524,10 @@ fn the_binary_probe_of_in_headings_keeps_no_lines() {
     let fx = Fixture::new();
     let body = "body text\n".repeat(8 * 1024 * 1024 / 10);
     let size = body.len() as u64;
-    std::fs::write(fx.file("nul.in"), format!("# needle\n\n{body}\0\n")).unwrap();
+    std::fs::write(fx.file("binary.in"), format!("# needle\n\n{body}\0\n")).unwrap();
     std::fs::write(fx.file("text.in"), format!("# needle\n\n{body}\n")).unwrap();
     let args = ["--in-headings", "--format", "markdown", "-c", "needle", "-"];
-    let Some((_, nul)) = measure_with(&sfor_bin(), &fx, &args, Some("nul.in"), 0) else {
+    let Some((_, nul)) = measure_with(&sfor_bin(), &fx, &args, Some("binary.in"), 0) else {
         eprintln!("skipping: /usr/bin/time not found");
         return;
     };
@@ -2867,9 +2867,10 @@ fn m5b_a_spooled_line_longer_than_the_threshold_is_copied_in_bounded_pieces() {
     );
 }
 
-/// Code review r1, Codex #1 (M5b spec §6.1): --within, --expand and --stats stream a dense
-/// file as the one-line layout does, keeping no model of its Matches: what a dense file costs
-/// over the same bytes with one Match is the same bounded amount at 2 MiB and at 8 MiB.
+/// Code review r1, Codex #1 (M5b spec §6.1): --within, --expand and --stats, and -q and the
+/// summaries with them (code review r2, Codex #1), stream a dense file as the one-line layout
+/// does, keeping no model of its Matches: what a dense file costs over the same bytes with one
+/// Match is the same bounded amount at 2 MiB and at 8 MiB.
 #[test]
 #[ignore = "dense RSS of the structural modes; selected explicitly in Linux CI"]
 #[cfg(target_os = "linux")]
@@ -2885,20 +2886,28 @@ fn m5b_structural_modes_keep_no_model_of_a_dense_file() {
         std::fs::write(fx.file(&name), &bytes).unwrap();
         drop(bytes);
         // --within keeps the first column; its one Match, in the header, has no Trail.
-        let modes: [(&[&str], i32); 4] = [
-            (&["--within", "ONCE_M5B"], 1),
-            (&["--expand"], 0),
-            (&["--stats"], 0),
-            (&["--expand", "--within", "row"], 1),
+        // Code review r2, Codex #1: -q and the summaries, which counted after the filters
+        // from a model (`-q --within ''` over 2 MiB: 188 MB).
+        let modes: [(&[&str], i32, i32); 10] = [
+            (&["--within", "ONCE_M5B"], 0, 1),
+            (&["--expand"], 0, 0),
+            (&["--stats"], 0, 0),
+            (&["--expand", "--within", "row"], 0, 1),
+            (&["-q", "--within", "row"], 0, 1),
+            (&["-q", "--stats", "--within", "row"], 0, 1),
+            (&["-c", "--within", "row"], 0, 1),
+            (&["--count-matches", "--within", "row"], 0, 1),
+            (&["-l", "--within", "row"], 0, 1),
+            (&["--files-without-match", "--within", "row"], 1, 0),
         ];
-        for (mode, once_code) in modes {
+        for (mode, dense_code, once_code) in modes {
             let run = |pattern: &'static str, code: i32| {
                 let mut args = vec!["--no-docs", "--flat", "-j1"];
                 args.extend_from_slice(mode);
                 args.extend([pattern, name.as_str()]);
                 measure_drained(&sfor_bin(), &fx, &args, code)
             };
-            let Some((td, rd)) = run("needle|^", 0) else {
+            let Some((td, rd)) = run("needle|^", dense_code) else {
                 return;
             };
             let (tp, rp) = run("ONCE_M5B", once_code).unwrap();
@@ -2911,6 +2920,59 @@ fn m5b_structural_modes_keep_no_model_of_a_dense_file() {
                 "{mib} MiB {mode:?}: dense peak RSS {rd} is more than {rp} + 16 MiB"
             );
         }
+    }
+}
+
+/// Code review r2, Fable #2 (M5b spec §6.1): --expand keeps the Matches of the Sections that
+/// may still print, and lets go of the others. A Markdown `# Top` whose `##` Sections cover the
+/// rest of the file is open to the end and is never a Section, so the run held every Match: 97
+/// MB of peak RSS at 20 000 Sections, as 0.5.0's model, 20 MB with `--no-trail`. What --expand
+/// costs over the same search without it, whose Outline grows with the Sections, is the same
+/// at 5 000 and at 20 000 Sections.
+#[test]
+#[ignore = "--expand RSS over a growing Markdown file; selected explicitly in Linux CI"]
+#[cfg(target_os = "linux")]
+fn m5b_expand_lets_go_of_the_matches_of_printed_sections() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let mut over = Vec::new();
+    for n in [5_000usize, 20_000] {
+        let name = format!("nested{n}.md");
+        let mut text = String::from("# Top\n");
+        for i in 0..n {
+            text.push_str(&format!("## S{i}\nneedle a\nneedle b\nneedle c\n"));
+        }
+        std::fs::write(fx.file(&name), text).unwrap();
+        for layout in ["--flat", "--tree"] {
+            let run = |expand: &[&'static str]| {
+                let mut args = vec!["--no-docs", layout, "-j1"];
+                args.extend(expand);
+                args.extend(["needle", name.as_str()]);
+                measure_drained(&sfor_bin(), &fx, &args, 0)
+            };
+            let Some((te, re)) = run(&["--expand"]) else {
+                return;
+            };
+            let (tr, rr) = run(&[]).unwrap();
+            eprintln!(
+                "{n} Sections {layout}: --expand {te:?}/{re}, rows {tr:?}/{rr}; uptime {}",
+                uptime()
+            );
+            over.push((n, layout, re.saturating_sub(rr)));
+        }
+    }
+    for layout in ["--flat", "--tree"] {
+        let over = |n: usize| {
+            over.iter()
+                .find(|p| p.0 == n && p.1 == layout)
+                .map(|p| p.2)
+                .unwrap()
+        };
+        let (small, large) = (over(5_000), over(20_000));
+        assert!(
+            large <= small + (4 << 20),
+            "{layout}: --expand costs {large} bytes more at 20 000 Sections, {small} at 5 000"
+        );
     }
 }
 

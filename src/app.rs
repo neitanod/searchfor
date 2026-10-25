@@ -14,7 +14,7 @@ use crate::output::{
     json::RunStats,
     replace::Replacer,
     spool::FileSpool,
-    stream::{StreamFile, StreamSink, WithinOptions},
+    stream::{StreamFile, StreamSink, Tally, WithinOptions},
     summary,
 };
 use crate::preprocess::{Preprocess, Through, Transformed};
@@ -1897,18 +1897,29 @@ impl<'a> Ctx<'a> {
     ) {
         // Rows are printed as the searcher reports them: Plain files, and files on disk whose
         // Processor gives a native cursor (code review r1, Fable #1; M5b spec §6.1), with the
-        // structural flags and --stats too (code review r1, Codex #1). The tests' oracle takes
-        // the model's path for every file.
-        if !self.model_only
-            && self.summary.is_none()
-            && !self.args.quiet
-            && t.through.is_none()
-            && output::rg::streams(&ro.look, self.args)
-        {
+        // structural flags and --stats too (code review r1, Codex #1), and -q and the summaries
+        // with them, which only count (code review r2, Codex #1; in this mode -q and a summary
+        // come with a structural flag). The tests' oracle takes the model's path for every
+        // file.
+        if !self.model_only && t.through.is_none() && output::rg::streams(&ro.look, self.args) {
             let structural = self.args.structural();
             match detector.detect_by_path(t.path()) {
-                // A Plain file has no names (`names_of`).
-                Some(None) if self.args.in_headings => return,
+                // A Plain file has no names (`names_of`), which searches it only for what a
+                // tally of none prints at binary data and for `-q --json`'s statistics.
+                Some(None) if self.args.in_headings => {
+                    if self.summary.is_some() || self.args.quiet {
+                        st.binary_quit = false;
+                        st.failed = None;
+                        if self.names_of(matcher, st, t, detector).is_err()
+                            || st.failed.as_ref().is_some_and(|f| f.in_search)
+                        {
+                            return;
+                        }
+                        let quit = st.binary_quit;
+                        self.tally_none(st, t, &ro.look, quit);
+                    }
+                    return;
+                }
                 Some(None) if !structural && self.plain_file(matcher, st, t, ro, detector) => {
                     return;
                 }
@@ -2091,6 +2102,18 @@ impl<'a> Ctx<'a> {
         t: &Target,
         path: &Path,
     ) -> Option<bool> {
+        self.probe_binary(matcher, st, t, path)
+            .map(|(found, _)| found)
+    }
+
+    /// `probe`, and whether a search without a Match quit at binary data (`quit_at_binary`).
+    fn probe_binary(
+        &self,
+        matcher: &PatternMatcher,
+        st: &mut TrailState,
+        t: &Target,
+        path: &Path,
+    ) -> Option<(bool, bool)> {
         let mut probe = CollectSink::new(matcher, self.args.invert_match, true);
         st.unnumbered
             .set_binary_detection(search::binary_detection(self.args, t.explicit));
@@ -2110,7 +2133,7 @@ impl<'a> Ctx<'a> {
                     probe.stats.elapsed = started.elapsed();
                     self.count_quiet_json(&probe.stats, false);
                 }
-                Some(found)
+                Some((found, !found && self.quit_at_binary(t, &probe.stats)))
             }
         }
     }
@@ -2135,8 +2158,15 @@ impl<'a> Ctx<'a> {
         detector: &Detector,
     ) -> bool {
         let Some(path) = t.fs() else { return false };
-        if !self.in_memory && self.probe(matcher, st, t, path) != Some(true) {
-            return true;
+        if !self.in_memory {
+            match self.probe_binary(matcher, st, t, path) {
+                Some((true, _)) => {}
+                Some((false, quit)) => {
+                    self.tally_none(st, t, &ro.look, quit);
+                    return true;
+                }
+                None => return true,
+            }
         }
         let src = match Source::open_as(path, t.explicit, self.decoding, self.mapping) {
             Ok(mut s) => {
@@ -2178,6 +2208,7 @@ impl<'a> Ctx<'a> {
                 }
                 Ok((None, stats)) => {
                     self.count_quiet_json(&stats, false);
+                    self.tally_none(st, t, &ro.look, self.quit_at_binary(t, &stats));
                     return true;
                 }
                 Ok((Some(o), _)) => o,
@@ -2279,6 +2310,7 @@ impl<'a> Ctx<'a> {
             within: self.within_options(),
             count: false,
             named: true,
+            tally: self.tally(),
         };
         let mut w = Spill {
             buf: &mut st.buf,
@@ -2289,10 +2321,10 @@ impl<'a> Ctx<'a> {
         let fed = HeadingLines::new(self.args, self.max_count_after(), src.bytes())
             .feed(matcher, &names, &mut sink);
         let result = fed.and_then(|()| {
-            let (found, stats) = (sink.found, sink.stats.clone());
-            Ok((sink.has_match, found, stats, sink.close()?))
+            let (found, stats, kept) = (sink.found, sink.stats.clone(), sink.kept);
+            Ok((sink.has_match, found, stats, sink.close()?, kept))
         });
-        self.streamed(t, st, result);
+        self.streamed(t, st, &ro.look, result);
         true
     }
 
@@ -2313,7 +2345,8 @@ impl<'a> Ctx<'a> {
         &self,
         t: &Target,
         st: &mut TrailState,
-        result: std::io::Result<(bool, bool, FileStats, Option<RunStats>)>,
+        look: &output::Look,
+        result: std::io::Result<StreamEnd>,
     ) {
         match result {
             // A closed pipe while `Spill` printed: the run ends quietly, as in `print`.
@@ -2325,17 +2358,103 @@ impl<'a> Ctx<'a> {
                 self.msgs.error(format_args!("{}: {e}", t.path().display()));
                 st.buf.clear();
             }
-            Ok((has_match, found, file_stats, stats)) => {
+            Ok((has_match, found, file_stats, stats, kept)) => {
                 if let Some(stats) = stats {
                     *self.stats.lock().expect("stats") += &stats;
                 }
-                if has_match {
-                    self.matched.store(true, Relaxed);
+                match self.summary {
+                    Some(mode) => self.summary_line(mode, t, look, kept, &mut st.buf),
+                    None if has_match => {
+                        self.matched.store(true, Relaxed);
+                        // -q needs no more files; with --json the run goes on, for the summary.
+                        if self.args.quiet && !self.args.json {
+                            self.quit.store(true, Relaxed);
+                        }
+                    }
+                    None => {}
                 }
                 self.count_quiet_json(&file_stats, found);
             }
         }
         self.print_file(&mut st.buf);
+    }
+
+    /// -q and the summaries under the structural flags (`StreamFile::tally`): the search stops
+    /// at the first Match the filters keep for -q and -l when no statistics are counted, as
+    /// `quiet_file` and rg's summary printer stop (code review r2, Codex #1).
+    fn tally(&self) -> Option<Tally> {
+        let stops = matches!(self.summary, Some(summary::Mode::FilesWithMatches))
+            || (self.args.quiet && self.summary.is_none());
+        (self.args.quiet || self.summary.is_some()).then_some(Tally {
+            stop: stops && !self.args.stats && !self.args.json,
+        })
+    }
+
+    /// A summary's line for a tallied file, `kept` its kept Match lines and submatches, as
+    /// `summary::render` writes it for a model with those Matches; its Match for the exit code.
+    fn summary_line(
+        &self,
+        mode: summary::Mode,
+        t: &Target,
+        look: &output::Look,
+        kept: (u64, u64),
+        buf: &mut FileOut,
+    ) {
+        let n = match mode {
+            summary::Mode::CountMatches => kept.1,
+            _ => kept.0,
+        };
+        let path = t.path();
+        let write_path = |w: &mut dyn WriteColor| -> std::io::Result<()> {
+            let link = output::link_start(w, look, path, None, None)?;
+            output::style::write_in(w, &look.palette, "path", &output::shown_path(path, look))?;
+            output::link_end(w, link)
+        };
+        let zero = self.args.include_zero;
+        let written = (|| -> std::io::Result<bool> {
+            match mode {
+                summary::Mode::Count | summary::Mode::CountMatches if n > 0 || zero => {
+                    if self.with_filename {
+                        write_path(buf)?;
+                        buf.write_all(&[look.path_terminator.unwrap_or(b':')])?;
+                    }
+                    buf.write_all(format!("{n}\n").as_bytes())?;
+                }
+                summary::Mode::FilesWithMatches if n > 0 => {
+                    write_path(buf)?;
+                    buf.write_all(&[look.path_terminator.unwrap_or(b'\n')])?;
+                }
+                summary::Mode::FilesWithoutMatch if n == 0 => {
+                    write_path(buf)?;
+                    buf.write_all(&[look.path_terminator.unwrap_or(b'\n')])?;
+                }
+                _ => return Ok(false),
+            }
+            Ok(true)
+        })();
+        match written {
+            Ok(true) => self.matched.store(true, Relaxed),
+            Ok(false) => {}
+            Err(e) => self.msgs.error(e),
+        }
+    }
+
+    /// A file a tally searched and found no Match in: its summary line, if its mode prints one
+    /// for none (`--files-without-match`, `-c --include-zero`). A search that quit at binary
+    /// data (`quit`) prints none, and counts as a Match for --files-without-match, as in
+    /// `trail_file_printed`.
+    fn tally_none(&self, st: &mut TrailState, t: &Target, look: &output::Look, quit: bool) {
+        if let Some(mode) = self.summary {
+            if quit && mode != summary::Mode::FilesWithMatches {
+                if mode == summary::Mode::FilesWithoutMatch {
+                    self.matched.store(true, Relaxed);
+                }
+                return;
+            }
+            st.buf.clear();
+            self.summary_line(mode, t, look, (0, 0), &mut st.buf);
+            self.print_file(&mut st.buf);
+        }
     }
 
     /// Searches one file with a `StreamSink` writing into the thread's buffer, and prints it.
@@ -2373,6 +2492,7 @@ impl<'a> Ctx<'a> {
             within: self.within_options(),
             count: self.args.stats && !self.args.json,
             named: false,
+            tally: self.tally(),
         };
         searcher.set_binary_detection(search::binary_detection(self.args, explicit));
         let mut w = Spill {
@@ -2399,10 +2519,10 @@ impl<'a> Ctx<'a> {
             }
         };
         let result = r.and_then(|()| {
-            let (found, stats) = (sink.found, sink.stats.clone());
-            Ok((sink.has_match, found, stats, sink.close()?))
+            let (found, stats, kept) = (sink.found, sink.stats.clone(), sink.kept);
+            Ok((sink.has_match, found, stats, sink.close()?, kept))
         });
-        self.streamed(t, st, result);
+        self.streamed(t, st, &ro.look, result);
     }
 
     /// The search first, and the Source only for a file with Matches (spec §3.1). Explicit
@@ -3447,6 +3567,11 @@ impl<'a> Ctx<'a> {
 }
 
 /// A line with hits in names: its number, and each hit's bytes, Trail and Section.
+/// What a streamed file ends with (`Ctx::streamed`): whether the filters kept a Match, whether
+/// the search found one, its statistics, its JSON statistics, and the Match lines and
+/// submatches a tally kept (`StreamSink::kept`).
+type StreamEnd = (bool, bool, FileStats, Option<RunStats>, (u64, u64));
+
 type HeadingHits = (
     u64,
     Vec<(usize, usize)>,
@@ -4659,6 +4784,15 @@ mod tests {
             ),
             ("dense.csv", b"Install,needle\nneedle,needle\n,\nneedle\n"),
             ("broken.jsonl", b"{\"a\": {\"b\": \"needle\" x}}\n{\"c\": \"needle\"}\n"),
+            // Code review r2, Codex #1: a tally of a Plain file with binary data past its
+            // text, and of one in a Format with it.
+            ("late-nul.txt", b"some text\nmore text\n\0tail needle\n"),
+            ("late-nul.md", b"# Install\nneedle\n\0tail\n"),
+            // Code review r2, Codex #3: a U+FEFF that starts the body is content.
+            (
+                "body-bom.csv",
+                b"A,B\n\xEF\xBB\xBF\"needle,\nnext\",needle\nneedle,tail\n",
+            ),
         ];
         for (name, bytes) in cases {
             let p = synthetic.path().join(name);
@@ -4707,6 +4841,23 @@ mod tests {
             &["--json", "--in-headings", "--expand"],
             &["--flat", "--in-headings", "--within", "Install", "-A2"],
             &["--flat", "--in-headings", "--stats"],
+            // Code review r2, Codex #1: -q and the summaries under the structural flags.
+            &["-q", "--within", "Install"],
+            &["-q", "--within", ""],
+            &["-q", "--json", "--within", "Install"],
+            &["-q", "--stats", "--within", "row"],
+            &["-c", "--within", "Install"],
+            &["-c", "--within", "row", "-m1"],
+            &["-c", "--stats", "--within", ""],
+            &["--count-matches", "--within", ""],
+            &["--count-matches", "-v", "--within", "Install"],
+            &["-l", "--within", "row"],
+            &["--files-without-match", "--within", "Install"],
+            &["-q", "--in-headings"],
+            &["-c", "--in-headings", "--within", "Install"],
+            &["--count-matches", "--in-headings"],
+            &["--files-without-match", "--in-headings"],
+            &["-c", "--include-zero", "--within", "Install"],
         ];
         // The modes that take no whole-file model where the file streams (code review r1,
         // Codex #1): every file with neither a BOM nor binary data whose rows stream.
@@ -4779,6 +4930,81 @@ mod tests {
                 });
             }
         });
+    }
+
+    /// Code review r2, Fable #1 and #2: --expand over Sections under a Segment open to the end
+    /// of the file (a Markdown `# Top`, HTML's `body`, XML's root, YAML's top-level key over
+    /// its hidden document), and under a root Section that waits for the end, prints what the
+    /// model's path prints, and takes no whole-file model.
+    #[test]
+    fn m5b_expand_under_an_open_root_matches_the_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = 40;
+        let each = |f: &dyn Fn(usize) -> String| (0..n).map(f).collect::<String>();
+        let files = [
+            (
+                "root.md",
+                format!(
+                    "# Top\n{}",
+                    each(&|i| format!("## S{i}\nneedle a\nneedle b\nneedle c\n"))
+                ),
+            ),
+            // The root holds a Match: its Section waits for the end, and so does every other.
+            (
+                "named.md",
+                format!(
+                    "# Top\nneedle top\n{}",
+                    each(&|i| format!("## S{i}\nneedle a\n### T{i}\nneedle b\n"))
+                ),
+            ),
+            (
+                "root.html",
+                format!(
+                    "<html><body>\n{}needle in body\n</body></html>\n",
+                    each(&|i| {
+                        format!("<div id=\"d{i}\">\n<p>needle a</p>\n<p>needle b</p>\n</div>\n")
+                    })
+                ),
+            ),
+            (
+                "root.xml",
+                format!(
+                    "<root>\n{}</root>\n",
+                    each(&|i| format!("<rec id=\"{i}\">\n<a>needle</a>\n<b>needle</b>\n</rec>\n"))
+                ),
+            ),
+            (
+                "root.yaml",
+                format!(
+                    "items:\n{}",
+                    each(&|i| format!("  - name: n{i}\n    a: needle\n    b: needle\n"))
+                ),
+            ),
+        ];
+        let modes: &[&[&str]] = &[
+            &["--flat", "--expand"],
+            &["--tree", "--expand"],
+            &["--flat", "--expand", "-C1"],
+            &["--tree", "--expand", "-m7"],
+            &["--flat", "--expand", "--within", "S3"],
+        ];
+        for (name, text) in &files {
+            let path = dir.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            for &mode in modes {
+                // A Match in a heading, `S3` or `T7`, names the root's Section, or S7's.
+                for pattern in ["needle", "^", "S3$|needle b", "T7|needle a"] {
+                    let mut args = mode.to_vec();
+                    args.extend(["--color=never", "--no-docs", "--regexp", pattern]);
+                    let a = compare_fixture_command(&path, &args, Pipeline::Model);
+                    let b = compare_fixture_command(&path, &args, Pipeline::Stream);
+                    assert_eq!(b.described, 0, "{name} {args:?}");
+                    assert_eq!((a.code, &a.stderr), (b.code, &b.stderr), "{name} {args:?}");
+                    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+                    assert_eq!(text(&a.stdout), text(&b.stdout), "{name} {args:?}");
+                }
+            }
+        }
     }
 
     /// `argv` (paths included) through the real engine, as `compare_fixture_command`, with
