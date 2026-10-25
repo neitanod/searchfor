@@ -1781,8 +1781,9 @@ fn m5b_console_output_equals_ripgrep() {
         let mut s = vec!["--no-trail"];
         s.extend_from_slice(args);
         let got = on_a_console(&fx, &s4, &s);
+        // rg drew something: `-c` prints counts, so no case's screen need hold the pattern.
         assert!(
-            want.1.contains("needle"),
+            !want.1.trim().is_empty(),
             "{args:?}: the console gave {want:?}"
         );
         assert_eq!(
@@ -1826,8 +1827,9 @@ fn m5b_console_stdin_alone_equals_ripgrep() {
             ConsoleStdin::File("tty.txt")
         };
         let want = on_a_console_reading(&fx, &common::rg_path(), args, Some(input));
+        // rg drew something: `-c` prints counts, so no case's screen need hold the pattern.
         assert!(
-            want.1.contains("needle"),
+            !want.1.trim().is_empty(),
             "{args:?}: the console gave {want:?}"
         );
         let mut s = vec!["--no-trail"];
