@@ -5005,6 +5005,26 @@ mod tests {
                     each(&|i| format!("  - name: n{i}\n    a: needle\n    b: needle\n"))
                 ),
             ),
+            // Code review r3, Codex #2: many Segments on one line, and Segments that start on
+            // one line and end on another.
+            (
+                "one.rs",
+                format!(
+                    "mod top {{\nfn first() {{\nlet needle=1;\n}}\n{}\n}}\n",
+                    each(&|i| format!("fn f{i}() {{ let needle=1; }} "))
+                ),
+            ),
+            (
+                "lines.rs",
+                format!(
+                    "mod top {{\n{}\n}}\n",
+                    each(&|i| {
+                        let cut = if i % 7 == 0 { "\n" } else { "" };
+                        let end = if i % 5 == 0 { "\n" } else { " " };
+                        format!("fn f{i}() {{ let needle=1;{cut} let b = needle; }}{end}")
+                    })
+                ),
+            ),
         ];
         let modes: &[&[&str]] = &[
             &["--flat", "--expand"],

@@ -74,6 +74,17 @@ pub struct Tally {
     pub stop: bool,
 }
 
+/// A line `open_from` searched: where it starts and ends, and where its submatches start.
+struct LookedLine {
+    start: usize,
+    end: usize,
+    starts: Vec<usize>,
+}
+
+/// How many searched lines `open_from` keeps: the line of a Segment's start and the line it
+/// reaches.
+const LOOKED_LINES: usize = 4;
+
 /// A row of a Match line: its Trail and the submatches under it.
 type RowGroup = (Rc<[Segment]>, Vec<(usize, usize)>);
 
@@ -216,6 +227,9 @@ pub struct StreamSink<'a, W: WriteColor> {
     /// Where the outermost Segment holding the last Match starts (`Cursor::open_from`): with
     /// --expand, the Matches before it are let go of. None: the cursor cannot tell.
     open: Option<usize>,
+    /// `open_from`'s look ahead: the last lines it searched, each with the first byte of its
+    /// submatches, so a line holding many Segments is searched once (code review r3, Codex #2).
+    looked: Vec<LookedLine>,
     pub stats: FileStats,
     /// With `StreamFile::tally`: the Match lines the filters kept, and their submatches, an
     /// inverted Match line counted as one (`summary::count`).
@@ -311,6 +325,7 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             expand,
             sections: super::SectionLines::local(file.src.unwrap_or_default()),
             open: None,
+            looked: Vec::new(),
             stats: FileStats::default(),
             kept: (0, 0),
             stopped: false,
@@ -349,7 +364,8 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
     /// --expand: where the Matches that a Section may still hold start (`Cursor::open_from`),
     /// told where the search finds the Matches ahead: a Match's Trail is asked at each of its
     /// submatches, found in its line as `match_submatches_in` finds them. An inverted search
-    /// asks at every line that does not match, which the cursor is not told.
+    /// asks at every line that does not match, which the cursor is not told. The lines
+    /// searched last are kept, with their submatches (`looked`).
     fn open_from(&mut self, s: &Searcher) -> Option<usize> {
         let c = self.trails.as_mut()?;
         let src = match self.file.src {
@@ -357,18 +373,41 @@ impl<'a, W: WriteColor> StreamSink<'a, W> {
             _ => return c.open_from(),
         };
         let matcher = self.matcher;
+        let looked = &mut self.looked;
         let mut first = |r: std::ops::Range<usize>| -> Option<usize> {
             let mut line = memchr::memrchr(b'\n', &src[..r.start]).map_or(0, |i| i + 1);
             while line < r.end {
-                let end = memchr::memchr(b'\n', &src[line..]).map_or(src.len(), |i| line + i + 1);
-                let found = crate::search::submatches_in(s, matcher, src, line..end)
-                    .into_iter()
-                    .map(|m| line + m.start)
-                    .find(|b| r.contains(b));
+                let at = match looked.iter().position(|l| l.start == line) {
+                    Some(at) => at,
+                    None => {
+                        let end =
+                            memchr::memchr(b'\n', &src[line..]).map_or(src.len(), |i| line + i + 1);
+                        let starts = crate::search::submatches_in(s, matcher, src, line..end)
+                            .into_iter()
+                            .map(|m| line + m.start)
+                            .collect();
+                        if looked.len() == LOOKED_LINES {
+                            looked.remove(0);
+                        }
+                        looked.push(LookedLine {
+                            start: line,
+                            end,
+                            starts,
+                        });
+                        looked.len() - 1
+                    }
+                };
+                let l = &looked[at];
+                // The submatches start in order: the first at or past the range's start.
+                let found = l
+                    .starts
+                    .get(l.starts.partition_point(|&b| b < r.start))
+                    .copied()
+                    .filter(|b| r.contains(b));
                 if found.is_some() {
                     return found;
                 }
-                line = end;
+                line = l.end;
             }
             None
         };

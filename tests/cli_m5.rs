@@ -1137,6 +1137,39 @@ fn m5b_expand_under_an_open_root_costs_linear_time() {
     );
 }
 
+/// Code review r3, Codex #2: --expand over Segments condensed on one line costs each Segment
+/// its own look at the line. Looking ahead for the Matches a Segment still owns searched the
+/// whole line again for every Segment, so 4 N functions on one line cost 16 times N (4 000:
+/// 15.4 s, 0.49 s in the model). As `m5b_expand_under_an_open_root_costs_linear_time`, 4 N
+/// must cost less than six times N (CPU time, best of three).
+#[cfg(target_os = "linux")]
+#[test]
+fn m5b_expand_over_one_condensed_line_costs_linear_time() {
+    let fx = Fixture::new();
+    let n = 500;
+    for k in [n, 4 * n] {
+        let fns = (0..k)
+            .map(|i| format!("fn f{i}() {{ let needle=1; }} "))
+            .collect::<String>();
+        let text = format!("mod top {{\nfn first() {{\nlet needle=1;\n}}\n{fns}\n}}\n");
+        std::fs::write(fx.file(&format!("line{k}.rs")), text).unwrap();
+    }
+    let time = |k: usize| -> std::time::Duration {
+        let args: Vec<String> = ["--format", "rust", "--flat", "--expand", "-j1", "needle"]
+            .iter()
+            .map(|a| a.to_string())
+            .chain([format!("line{k}.rs")])
+            .collect();
+        (0..3).map(|_| cpu_time(&fx, &args)).min().unwrap()
+    };
+    let (small, large) = (time(n), time(4 * n));
+    eprintln!("one line: {small:?} and {large:?}");
+    assert!(
+        large < small * 6,
+        "4 N Segments on one line cost six times N or more: {small:?} and {large:?}"
+    );
+}
+
 /// The CPU time of `s4 args` and of its children, its stdout read to its end; it must exit
 /// with 0 and print something. `--mcp PATH` asks the MCP server for every Match of PATH, with
 /// its Section.
