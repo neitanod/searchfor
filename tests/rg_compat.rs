@@ -3,9 +3,53 @@
 //! what s4 adds. Skipped with a note when rg 14.1.1 is not installed.
 mod common;
 
-use common::{Fixture, code, reference_rg, run, stdout};
+use common::{CHILD_LIMIT, Fixture, Watched, code, reference_rg, stdout};
 use serde_json::Value;
 use std::process::{Command, Output, Stdio};
+
+/// Every child of these tests runs within `CHILD_LIMIT`: one that hangs is killed, and its test
+/// fails with what it printed instead of holding the CI step until its timeout.
+fn run(c: &mut Command) -> Output {
+    common::output_within(c, CHILD_LIMIT)
+}
+
+/// A child still running at its limit is killed, and its test fails with the context and what
+/// it printed, soon after the limit: rg, line-buffered, prints the Match of the first read of
+/// a pipe whose writer stays open, and waits for more.
+#[test]
+fn a_child_past_its_limit_is_killed_with_what_it_printed() {
+    use std::io::Write;
+    if !reference_rg() {
+        return;
+    }
+    let fx = Fixture::new();
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    writer.write_all(b"needle\n").unwrap();
+    let mut c = fx.rg(["--line-buffered", "needle", "-"]);
+    c.stdin(reader);
+    let child = Watched::spawn(&mut c);
+    drop(c);
+    let limit = std::time::Duration::from_secs(2);
+    let started = std::time::Instant::now();
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        child.output_within(limit, &|| "7 bytes written to its stdin".to_string())
+    }))
+    .expect_err("rg waits for the rest of its stdin");
+    let took = started.elapsed();
+    drop(writer);
+    let message = failure.downcast_ref::<String>().unwrap();
+    for part in [
+        "still ran and was killed",
+        "7 bytes written",
+        "-- stdout:\nneedle\n",
+    ] {
+        assert!(message.contains(part), "{part:?} in {message}");
+    }
+    assert!(
+        took >= limit && took < limit + std::time::Duration::from_secs(5),
+        "{took:?}"
+    );
+}
 
 /// Where a case's stdin comes from: /dev/null, or a fixture file.
 #[derive(Clone, Copy)]

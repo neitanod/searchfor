@@ -573,3 +573,129 @@ pub fn run_limited(
     drop(child);
     (status, reader.join().unwrap())
 }
+
+/// How long a test lets one child run before `output_within` kills it and fails: far past what
+/// any case takes on a loaded CI runner, and far short of the CI step's 40 minutes, so a hung
+/// child ends its test with what it printed.
+pub const CHILD_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Waits for `child` until `deadline`; past it, kills and reaps it and returns None.
+pub fn wait_until(
+    child: &mut std::process::Child,
+    deadline: std::time::Instant,
+) -> Option<std::process::ExitStatus> {
+    let mut pause = std::time::Duration::from_millis(1);
+    loop {
+        if let Some(st) = child.try_wait().unwrap() {
+            return Some(st);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(std::time::Duration::from_millis(20));
+    }
+}
+
+/// A child whose stdout and stderr are read into buffers as they come, so that what it printed
+/// is at hand when it has to be killed.
+pub struct Watched {
+    child: std::process::Child,
+    command: String,
+    started: std::time::Instant,
+    out: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    err: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    /// One message from each reader, at the end of its pipe.
+    ended: std::sync::mpsc::Receiver<()>,
+}
+
+impl Watched {
+    /// Starts `c` with stdout and stderr piped; stdin stays what `c` sets.
+    pub fn spawn(c: &mut Command) -> Self {
+        let command = format!("{c:?}");
+        let mut child = c
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|e| panic!("{command}: {e}"));
+        let started = std::time::Instant::now();
+        let (tx, ended) = std::sync::mpsc::channel();
+        let drain = |mut pipe: Box<dyn std::io::Read + Send>| {
+            let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let (to, tx) = (buf.clone(), tx.clone());
+            std::thread::spawn(move || {
+                let mut chunk = vec![0; 64 * 1024];
+                while let Ok(n @ 1..) = pipe.read(&mut chunk) {
+                    to.lock().unwrap().extend_from_slice(&chunk[..n]);
+                }
+                let _ = tx.send(());
+            });
+            buf
+        };
+        let out = drain(Box::new(child.stdout.take().unwrap()));
+        let err = drain(Box::new(child.stderr.take().unwrap()));
+        Self {
+            child,
+            command,
+            started,
+            out,
+            err,
+            ended,
+        }
+    }
+
+    /// `Child::wait_with_output` within `limit` of the start. Past it, kills and reaps the
+    /// child and panics with the command, how long it ran, `context()` and what it printed.
+    pub fn output_within(
+        mut self,
+        limit: std::time::Duration,
+        context: &dyn Fn() -> String,
+    ) -> Output {
+        let deadline = self.started + limit;
+        let Some(status) = wait_until(&mut self.child, deadline) else {
+            self.fail(limit, "still ran and was killed", context);
+        };
+        // The pipes end with the child, unless a process it started holds them.
+        for _ in 0..2 {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if self.ended.recv_timeout(left).is_err() {
+                self.fail(
+                    limit,
+                    "exited, but its stdout or stderr stayed open",
+                    context,
+                );
+            }
+        }
+        let take = |b: &std::sync::Mutex<Vec<u8>>| std::mem::take(&mut *b.lock().unwrap());
+        Output {
+            status,
+            stdout: take(&self.out),
+            stderr: take(&self.err),
+        }
+    }
+
+    fn fail(&self, limit: std::time::Duration, what: &str, context: &dyn Fn() -> String) -> ! {
+        let ran = self.started.elapsed();
+        // What was still in the pipes when it died.
+        for _ in 0..2 {
+            let _ = self.ended.recv_timeout(std::time::Duration::from_secs(1));
+        }
+        let text = |b: &std::sync::Mutex<Vec<u8>>| {
+            String::from_utf8_lossy(&b.lock().unwrap()).into_owned()
+        };
+        panic!(
+            "{} {what} at its limit of {limit:?}, {ran:?} after it started; {}\n-- stdout:\n{}\n-- stderr:\n{}",
+            self.command,
+            context(),
+            text(&self.out),
+            text(&self.err)
+        );
+    }
+}
+
+/// `Command::output` within `limit`: `Watched::output_within` without a context.
+pub fn output_within(c: &mut Command, limit: std::time::Duration) -> Output {
+    Watched::spawn(c).output_within(limit, &|| "no more to say".to_string())
+}
