@@ -344,3 +344,50 @@ real publication still stops for his go-ahead at the moment it happens.
 | Q57.fuzz-ci | When the fuzz runs in CI | Short on every push and long every night (recommended). Comment: «Las noches que no hay commits no corren, no?» — the nightly run skips a night with no new commit on `main` since its last successful run |
 | Q57.cuando | When v1.0 is published | When M5b closes, with his go-ahead on each channel (recommended) |
 | Q57.olvido | What am I forgetting to ask? | Not answered |
+
+---
+
+# Questionnaire 49 (Hilo 825, 16/10/2026): the Formats of M6
+
+Sebastián asked for more Formats (8377, «Proponeme más formatos interesantes de soportar»); the
+questionnaire `searchfor-formatos-extra` offered 35. His answers (8385), group by group, with
+the options he ticked («recommended» marks the questionnaire's recommendation):
+
+- **A · Text documents**: AsciiDoc, reStructuredText, Org-mode, LaTeX, Jupyter notebooks (all
+  recommended).
+- **B · Configuration and infrastructure**: INI, `.env`, `.properties` and systemd units;
+  nginx and Apache configuration; Dockerfile; Makefile and justfile; Terraform and HCL;
+  `~/.ssh/config` (all recommended).
+- **C · Next to the code**: SQL; diffs and patches; Vue and Svelte single-file components;
+  Blade; GraphQL and Protobuf (all recommended); HAR browser captures.
+- **D · Office documents**: PDF, Word (`.docx`, `.odt`), spreadsheets (`.xlsx`, `.ods`),
+  PowerPoint (`.pptx`, `.odp`), EPUB with the chapter (all recommended).
+- **E · Data and binaries**: SQLite databases; image metadata (EXIF, PNG, XMP); audio and video
+  tags (ID3, MP4); WebAssembly modules (all recommended); Java `.class`; `.deb` and `.rpm`;
+  7z and rar.
+- **F · Everyday**: subtitles (`.srt`, `.vtt`); mail (`.eml`, `.mbox`); calendars and contacts
+  (`.ics`, `.vcf`); BibTeX; JSON Lines logs; chat exports (WhatsApp, Telegram) (all
+  recommended).
+- **G · Milestone**: a new milestone, M6, after M5 — «except the ones you called the juiciest:
+  those go in the existing milestones» (PDF, SQLite, subtitles).
+- **Other Formats**: left blank, with this comment: «the search part must be as fast as
+  ripgrep; what we add should be in the presentation only. I am not interested in digging into
+  compressed packages ripgrep does not already handle. When our presentation finds no
+  structure for a Match, at least show it the generic way ripgrep would.»
+
+**8390** (answer to 8386/8387): «decorate the output of every Format you propose as long as rg
+already finds things in them; leave out the ones rg does not open to inspect inside.» The
+agent's reading, not contradicted (8391): archive Formats out (zip, tar, 7z, rar, `.deb`,
+`.rpm`, jar); the binary Formats rg reads with `-a`/`--binary` in (ELF/PE/Mach-O, SQLite, image
+and audio metadata, WebAssembly, Java `.class`), where s4 only names the offset; `-z` stays
+rg's.
+
+**What happened since**: PDF, Office, EPUB and SQLite came back as documents searched by
+default (8742/8750, «documents are searched by default» above); subtitles, JSON Lines,
+ELF/PE/Mach-O and SQLite shipped in M3–M5. What is left for M6 is groups A, B, C, F (mail,
+calendars and contacts, BibTeX, chat exports) and E (image metadata, audio and video tags,
+WebAssembly, Java `.class`).
+
+**Go-ahead for M6** (Hilo 855, 12653–12664, 04/11/2026): M6 is developed now, on a branch of
+its own from M5b's last commit, while the v1.0 publication waits for its secrets; the v1.0 tag
+goes on M5b's commit and M6 ships in a 1.1 (12659, «Dale, avanzá con lo que proponés», 12664).
