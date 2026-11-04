@@ -111,7 +111,8 @@ inherits; the sections of each Format only add to them.
 ### 4.1 Signals
 
 The Detector keeps the signals of spec §4.1 and their order, and gains two, both decided by the
-path alone. The order becomes:
+path alone. The second one, the path glob, is consulted at two places of the order, according
+to whether the glob writes the file's extension or leaves it open. The order becomes:
 
 1. `--format` (unchanged).
 2. Exact file name (unchanged): `Dockerfile`, `.env`, `nginx.conf`.
@@ -120,15 +121,40 @@ path alone. The order becomes:
    extension alone: `cart.blade.php` is Blade, `cart.php` stays PHP. The Detector asks the last
    two extensions only of a name whose last extension ends a compound one (`php` here), so every
    other name costs what it costs today.
-4. Extension (unchanged).
-5. **Path glob (new).** A Definition's new field `paths` lists globs (`globset`'s syntax, already
-   a dependency): one without a `/` is matched against the file name (`Dockerfile.*`,
-   `.env.*`), one with a `/` against the whole path (`**/.ssh/config`,
-   `**/nginx/sites-enabled/*`). Separators are `/` on every system: `globset` 0.4.15 turns `\`
-   into `/` before matching on Windows (`pathutil::normalize_path`, read on 04/11). The glob
-   signal applies to names with or without an extension, after the extension signal, so
-   `prod.Dockerfile` is a Dockerfile by its extension and `Makefile.toml` stays TOML.
-6. Magic bytes, then 7. shebang (unchanged: read only for a name without an extension).
+4. **Path glob that writes the extension (new).** A glob of `paths` (below) whose last
+   component ends in a literal extension: `**/ChatExport_*/result.json`,
+   `**/ChatExport_*/messages*.html`, `**/nginx/**/*.conf`, `**/systemd/**/*.{path,target}`.
+   When it matches, it wins over the Definition that claims that extension:
+   `ChatExport_2024/result.json` is `telegram` and `ChatExport_2024/messages.html` is
+   `telegram-html`, while a `result.json` or `messages.html` anywhere else stays JSON or HTML.
+5. Extension (unchanged).
+6. **Path glob that leaves the extension open (new):** every other glob of `paths`, whose last
+   component has no dot (`**/.ssh/config`, `**/nginx/sites-enabled/*`) or has a wildcard after
+   its last dot (`Dockerfile.*`, `.env.*`, `Makefile.*`). It applies after the extension, so
+   `prod.Dockerfile` is a Dockerfile by its extension, `Makefile.toml` stays TOML and
+   `.env.json` stays JSON.
+7. Magic bytes, then 8. shebang (unchanged: read only for a name without an extension).
+
+**The `paths` field.** A Definition's new field `paths` lists globs (`globset`'s syntax, already
+a dependency): one without a `/` is matched against the file name (`Dockerfile.*`, `.env.*`),
+one with a `/` against the whole path (`**/.ssh/config`, `**/nginx/sites-enabled/*`).
+Separators are `/` on every system: `globset` 0.4.15 turns `\` into `/` before matching on
+Windows (`pathutil::normalize_path`, read on 04/11). The Detector sorts each glob into signal 4
+or signal 6 once, when it loads the Definitions: a glob belongs to signal 4 when the text after
+the last `.` of its last component is a literal extension, or a `{…}` list of literal
+extensions, with no `*`, `?` or `[` in it. Among the globs of one signal that match, the first
+Definition in Registry order wins, as for names and extensions.
+
+Why the glob is split in two. A glob that writes the extension (`result.json`) says everything
+the extension says and adds a name or a folder, so it is the more specific signal, the way
+`blade.php` is over `php` in signal 3; letting the extension win would make the Telegram rows of
+§4.2 unreachable, since `json` and `html` are claimed. A glob that leaves the extension open
+(`Makefile.*`) says less than the extension does, so the extension keeps the file. Moving every
+glob ahead of the extension was the rejected alternative: it turns `Makefile.toml` into a
+Makefile and makes every file with an extension pay a glob lookup before the search. With the
+built-in Definitions, signal 4 changes the outcome only for the two Telegram rows: the other
+globs that write an extension end in `.conf`, `.txt` or systemd's unit extensions, which no
+Definition claims.
 
 Why globs and compound extensions: several M6 Formats live in files no name or extension tells
 apart — `/etc/nginx/sites-enabled/default`, `~/.ssh/config`, `.env.production`,
@@ -140,7 +166,13 @@ content-sniffing heuristic»). A user's own Definition may use `paths` too, and 
 nothing that shows. The checks that run before the search for every file (`detect_by_path`,
 `may_be_document`) keep their cost: a glob is consulted there only for a file whose literal
 parts can match it, through an index the plan chooses (by name, extension, or parent directory
-name); a file no glob can match costs the same lookups as today. Criterion 51 measures it.
+name); a file no glob can match costs the same lookups as today. Signal 4 runs before the
+extension, so it is the one that reaches files with a claimed extension: its globs are found
+through the lowercase extension the Detector already looks up, so a file whose extension no
+signal-4 glob writes pays nothing more; a file whose extension one writes (with the built-ins,
+every `.json` and `.html`) pays a comparison of its file name against the glob's literal part
+(`result.json`, the prefix `messages`), and only a name that passes it runs the glob. Criterion
+51 measures it, with `.json` and `.html` files in its corpus.
 
 ### 4.2 Detection table
 
@@ -197,7 +229,9 @@ Notes on the table, each a decision with its reason:
 - **mbox's `From ` magic** applies, as every magic, only to names without an extension
   (Thunderbird's `Inbox`, `Sent`).
 - **The chat exports are told by the names their apps give them** (§10.4, §10.5), with no look
-  at the content: Open question 1.
+  at the content: Open question 1. Telegram's globs write the extension (`result.json`,
+  `messages*.html`), so they are signal 4 of §4.1 and win over `json` and `html` inside a
+  `ChatExport_*` or `DataExport_*` folder only.
 
 ## 5. Processors
 
@@ -840,7 +874,8 @@ For every M6 Format:
   changed, cut, repeated): nothing panics, a file ends within 2 s, every Segment lies inside
   the file and every name inside its Section's lines or generated.
 - **Detection**: a unit test per row of §4.2, and the cases of §4.1 (compound extension over
-  PHP, glob after extension, `cafebabe` read as a class and as a fat Mach-O).
+  PHP, a glob that writes the extension before the extension, a glob that leaves it open after
+  the extension, `cafebabe` read as a class and as a fat Mach-O).
 
 ## 14. Docs
 
@@ -889,8 +924,11 @@ New, numbered after M5b's #42:
 43. **Detection (M6).** Every row of §4.2 detects its Format; `cart.blade.php` is Blade and
     `cart.php` PHP; `Dockerfile.dev`, `.env.production`, `~/.ssh/config` and
     `/etc/nginx/sites-enabled/default` are detected by `paths` on the four systems (with `\` on
-    Windows); `Makefile.toml` is TOML; a `.conf` outside the paths of §4.2 is Plain; a
-    `cafebabe` file reads as a Java class or a fat Mach-O, whichever it is.
+    Windows); `Makefile.toml` is TOML; `ChatExport_2024/result.json` is `telegram` and
+    `ChatExport_2024/messages.html` `telegram-html`, while a `result.json` or `messages.html`
+    outside a `ChatExport_*` folder is JSON or HTML (§4.1, signal 4); a `.conf` outside the
+    paths of §4.2 is Plain; a `cafebabe` file reads as a Java class or a fat Mach-O, whichever
+    it is.
 44. **Every M6 Format** has a fixture, a snapshot of its tree, one-line and JSON output, and a
     test of each example Trail of §6–§10; `s4 --no-docs --no-trail` and `--json --no-trail` equal
     rg 14.1.1 over every M6 fixture (`tests/rg_compat_m6.rs`).
@@ -917,9 +955,10 @@ New, numbered after M5b's #42:
     measured and reported) in `tests/perf.rs` over 50 MiB files where every line matches, one per
     new Processor family: AsciiDoc, INI, nginx, Makefile, SQL (an `INSERT` dump), a diff, an
     mbox, a WhatsApp export, and HAR through the JSON view.
-51. **Detection cost (M6).** Over 100 000 files whose names no M6 signal claims, s4 with the M6
-    Definitions ≤ 1.02 × M5b's s4 (`--no-docs`, a pattern no file matches, median of three
-    alternated series).
+51. **Detection cost (M6).** Over 100 000 files whose names no M6 signal claims, among them
+    `.json` and `.html` files (some named `result.json` and `messages.html`) outside Telegram's
+    folders, which signal 4 of §4.1 consults, s4 with the M6 Definitions ≤ 1.02 × M5b's s4
+    (`--no-docs`, a pattern no file matches, median of three alternated series).
 52. **Large files (M6).** A generated 1 GiB SQL dump, mbox and WhatsApp export, each with one
     Match in its first unit, get their Trails within rg's time plus 0.5 s and rg's peak RSS plus
     64 MiB.
