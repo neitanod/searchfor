@@ -1,0 +1,10 @@
+# formats/org.toml — Org-mode headings, source blocks and table columns (M6 spec §6.3):
+# `Budget › Costs › Price`.
+name       = "org"
+extensions = ["org"]
+processor  = "headings"
+
+[params]
+syntax = "org"
+# Characters of a heading's, a block's or a column's name before it is cut with `…`.
+name_chars = 40

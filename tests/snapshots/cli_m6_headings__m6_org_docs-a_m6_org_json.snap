@@ -1,0 +1,10 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"docs-a/m6.org"}}}
+{"type":"match","data":{"path":{"text":"docs-a/m6.org"},"lines":{"text":"| Hosting | needle 9 |\n"},"line_number":5,"absolute_offset":70,"submatches":[{"match":{"text":"needle"},"start":12,"end":18}],"format":"org","trail":[{"kind":"document","name":"Budget","line":1,"end_line":11},{"kind":"heading","name":"TODO Costs :work:","line":2,"end_line":11,"level":1,"signature":"* TODO Costs :work:"},{"kind":"column","name":"Price","line":3,"end_line":5}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"docs-a/m6.org"},"lines":{"text":"* needle text\n"},"line_number":7,"absolute_offset":110,"submatches":[{"match":{"text":"needle"},"start":2,"end":8}],"format":"org","trail":[{"kind":"document","name":"Budget","line":1,"end_line":11},{"kind":"heading","name":"TODO Costs :work:","line":2,"end_line":11,"level":1,"signature":"* TODO Costs :work:"},{"kind":"code","name":"bash","line":6,"end_line":8,"signature":"#+BEGIN_SRC bash"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"docs-a/m6.org"},"lines":{"text":"needle example\n"},"line_number":10,"absolute_offset":150,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"org","trail":[{"kind":"document","name":"Budget","line":1,"end_line":11},{"kind":"heading","name":"TODO Costs :work:","line":2,"end_line":11,"level":1,"signature":"* TODO Costs :work:"},{"kind":"code","name":"example","line":9,"end_line":11,"signature":"#+BEGIN_EXAMPLE"}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"docs-a/m6.org"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":179,"bytes_printed":1509,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1509,"bytes_searched":179,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

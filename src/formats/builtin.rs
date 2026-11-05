@@ -67,4 +67,5 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("protobuf.toml", include_str!("../../formats/protobuf.toml")),
     ("asciidoc.toml", include_str!("../../formats/asciidoc.toml")),
     ("rst.toml", include_str!("../../formats/rst.toml")),
+    ("org.toml", include_str!("../../formats/org.toml")),
 ];

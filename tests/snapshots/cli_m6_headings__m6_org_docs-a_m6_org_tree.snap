@@ -1,0 +1,13 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+docs-a/m6.org
+  Budget
+    * TODO Costs :work:
+      column «Price»
+        5:| Hosting | needle 9 |
+      #+BEGIN_SRC bash
+        7:* needle text
+      #+BEGIN_EXAMPLE
+        10:needle example

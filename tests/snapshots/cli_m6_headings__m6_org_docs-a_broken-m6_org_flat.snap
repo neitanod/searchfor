@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+3: A › src │ needle
+4: A › src │ * needle

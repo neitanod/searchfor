@@ -1,0 +1,7 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+5: Budget › TODO Costs :work: › Price │ | Hosting | needle 9 |
+7: Budget › TODO Costs :work: › bash │ * needle text
+10: Budget › TODO Costs :work: › example │ needle example

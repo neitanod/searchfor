@@ -198,11 +198,67 @@ fn m6_adoc_rst() {
     );
 }
 
+#[test]
+fn m6_org() {
+    let fx = Fixture::new();
+    let src = b"#+TITLE: Budget\n* TODO Costs :work:\n| Item | Price |\n|------+-------|\n| Hosting | needle 9 |\n#+BEGIN_SRC bash\n* needle text\n#+END_SRC\n#+BEGIN_EXAMPLE\nneedle example\n#+END_EXAMPLE\n";
+    seed(&fx, "docs-a/m6.org", src);
+    check(
+        &fx,
+        "org",
+        "docs-a/m6.org",
+        &[
+            "Budget › TODO Costs :work: › Price",
+            "Budget › TODO Costs :work: › bash",
+            "Budget › TODO Costs :work: › example",
+        ],
+    );
+    flags(&fx, "org", "docs-a/m6.org", "Costs", "TODO", "");
+    let rows = matches(&output(
+        &fx,
+        "org",
+        "docs-a/m6.org",
+        "needle",
+        &["--json", "--expand"],
+    ));
+    assert_eq!(rows[0]["section"]["start_line"], 3);
+    assert_eq!(rows[0]["section"]["end_line"], 5);
+    put(
+        &fx,
+        "deep.org",
+        format!("{} Deep\nneedle\n", "*".repeat(300)).as_bytes(),
+    );
+    let deep = matches(&output(&fx, "org", "deep.org", "needle", &["--json"]));
+    assert_eq!(deep[0]["trail"][0]["level"], 300);
+    put(&fx, "bad.org", b"* A\n#+begin_src\n* needle\nneedle\n");
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "org",
+            "bad.org",
+            "needle",
+            &["--json"]
+        ))),
+        ["A › src", "A › src"]
+    );
+    put(&fx, "no-header.org", b"* A\n| plain | needle |\n");
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "org",
+            "no-header.org",
+            "needle",
+            &["--json"]
+        ))),
+        ["A"]
+    );
+}
+
 /// Each Format's committed broken fixture, with its three snapshots (plan, «Committed broken
 /// fixtures, with three snapshots each»).
 #[test]
 fn m6_broken_fixtures() {
-    let owned: &[&str] = &["asciidoc", "rst"];
+    let owned: &[&str] = &["asciidoc", "rst", "org"];
     #[allow(clippy::type_complexity)]
     let cases: &[(&str, &str, &[u8], &[&str])] = &[
         (
@@ -216,6 +272,12 @@ fn m6_broken_fixtures() {
             "docs-a/broken-m6.rst",
             b"A\n=\n\n.. code:: bash\n\n   needle\n",
             &["A › bash"],
+        ),
+        (
+            "org",
+            "docs-a/broken-m6.org",
+            b"* A\n#+BEGIN_SRC\nneedle\n* needle\n",
+            &["A › src", "A › src"],
         ),
     ];
     let fx = Fixture::new();

@@ -4,6 +4,7 @@
 //! from it once per file, and its cursor streams the Trails (M5b spec §6.1). A file has no
 //! syntax errors here: a block left open runs to the end of the file.
 pub mod asciidoc;
+pub mod org;
 pub mod rst;
 
 use super::{Capability, Cursor, Prepared, Processor};
@@ -25,13 +26,17 @@ pub(crate) const MAX_DEPTH: usize = 256;
 enum Syntax {
     Asciidoc,
     Rst,
+    Org,
 }
 
 fn syntax(params: &toml::Table) -> anyhow::Result<Syntax> {
     match params.get("syntax").and_then(|v| v.as_str()) {
         Some("asciidoc") => Ok(Syntax::Asciidoc),
         Some("rst") => Ok(Syntax::Rst),
-        _ => anyhow::bail!("headings needs `syntax` = \"asciidoc\" or \"rst\" in [params]"),
+        Some("org") => Ok(Syntax::Org),
+        _ => {
+            anyhow::bail!("headings needs `syntax` = \"asciidoc\", \"rst\" or \"org\" in [params]")
+        }
     }
 }
 
@@ -50,6 +55,8 @@ pub(crate) enum Named {
     Source(Vec<Range<usize>>),
     /// A word the scanner adds, `literal`: it has no Source piece, so no search finds it.
     Word(&'static str),
+    /// A word and a number the scanner adds, `column 3`: no search finds it either.
+    Ordinal(&'static str, usize),
 }
 
 /// One Segment of the index: Source ranges only.
@@ -67,6 +74,10 @@ pub(crate) struct Item {
     pub signature: Option<Range<usize>>,
     /// A heading's semantic depth.
     pub level: Option<usize>,
+    /// Whether `--in-headings` searches its name: a column's is its header's, as Markdown's.
+    pub search: bool,
+    /// The Section's lines when they are not the range's: a column's are its table's.
+    pub lines: Option<(u64, u64)>,
 }
 
 impl Item {
@@ -80,6 +91,8 @@ impl Item {
             anchor,
             signature: None,
             level: None,
+            search: true,
+            lines: None,
         }
     }
 }
@@ -201,6 +214,7 @@ fn scan(src: &[u8], syntax: Syntax) -> Vec<Item> {
     match syntax {
         Syntax::Asciidoc => asciidoc::scan(src),
         Syntax::Rst => rst::scan(src),
+        Syntax::Org => org::scan(src),
     }
 }
 
@@ -233,11 +247,16 @@ fn outline(src: &[u8], index: Vec<Item>, name_chars: usize) -> Outline {
                     (t, Some(p))
                 }
                 Named::Word(word) => ((*word).to_string(), None),
+                Named::Ordinal(word, n) => (format!("{word} {n}"), None),
             };
             let mut s = OutlineSegment::new(item.kind, text, item.range, item.label);
-            if let Some(pieces) = pieces {
+            if let Some(pieces) = pieces.filter(|_| item.search) {
                 s.name = Some(pieces);
                 s.name_anchor = item.anchor;
+            }
+            if let Some((first, last)) = item.lines {
+                s.segment.line = first;
+                s.segment.end_line = last;
             }
             s.segment.level = item.level;
             s.segment.signature = item.signature.map(|r| signature(src, r));

@@ -1,0 +1,11 @@
+#+TITLE: Budget
+* TODO Costs :work:
+| Item | Price |
+|------+-------|
+| Hosting | needle 9 |
+#+BEGIN_SRC bash
+* needle text
+#+END_SRC
+#+BEGIN_EXAMPLE
+needle example
+#+END_EXAMPLE
