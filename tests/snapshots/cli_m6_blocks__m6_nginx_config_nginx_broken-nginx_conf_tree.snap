@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+config/nginx/broken-nginx.conf
+  http
+    k
+      1:http { k needle; }
+  3:k needle;

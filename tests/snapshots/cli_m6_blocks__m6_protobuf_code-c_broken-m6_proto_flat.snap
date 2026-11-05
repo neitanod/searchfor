@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+1: A › x │ message A { string x=1; // needle
+4: needle

@@ -1,0 +1,10 @@
+type User {
+ email: String! # needle
+}
+query GetUser {
+ user(id: 1) {
+  posts {
+   title(needle: true)
+  }
+ }
+}

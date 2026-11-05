@@ -1,0 +1,10 @@
+# formats/hcl.toml — Terraform and HCL blocks, attributes and lists (M6 spec §7.8):
+# `resource aws_instance web › tags › Name`, `… › ingress[1] › name`.
+name       = "hcl"
+extensions = ["tf", "tfvars", "hcl", "nomad"]
+processor  = "blocks"
+
+[params]
+syntax = "hcl"
+# Characters of a block's name (its type and labels) before it is cut with `…`.
+name_chars = 40

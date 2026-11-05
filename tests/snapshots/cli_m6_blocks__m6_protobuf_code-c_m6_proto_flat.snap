@@ -1,0 +1,7 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+2: User › email │  string email = 1 [json_name = "needle"];
+4: User › choice › nick │   string nick = 2; // needle
+8: Users › Get │  rpc Get (User) returns (User) { option note = "needle"; }

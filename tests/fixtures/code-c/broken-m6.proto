@@ -1,0 +1,4 @@
+message A { string x=1; // needle
+}
+}
+needle

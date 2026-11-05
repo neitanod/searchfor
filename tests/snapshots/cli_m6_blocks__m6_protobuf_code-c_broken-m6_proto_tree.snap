@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+code-c/broken-m6.proto
+  message A
+    field x
+      1:message A { string x=1; // needle
+  4:needle

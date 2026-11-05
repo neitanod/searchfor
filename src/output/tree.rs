@@ -26,6 +26,8 @@ pub fn label(s: &Segment) -> String {
         // M6: iCalendar and vCard components show their name alone (a BibTeX entry shows its
         // signature, above).
         "component" | "entry" => name.into_owned(),
+        // M6: a block (nginx, Apache, HCL) is named by its directive or section already.
+        "block" => name.into_owned(),
         kind => format!("{kind} {name}"),
     }
 }
@@ -353,6 +355,34 @@ mod tests {
         let mut sig = seg("method", "m", 1, 1);
         sig.signature = Some("fn m(\u{1b})".into());
         assert_eq!(label(&sig), "fn m(\\u{1b})");
+    }
+
+    #[test]
+    fn labels_of_the_m6_block_kinds() {
+        assert_eq!(label(&seg("block", "location /api", 1, 1)), "location /api");
+        // GraphQL's and Protobuf's kinds print before the name (M6 spec §8.6).
+        for kind in [
+            "type",
+            "interface",
+            "input",
+            "enum",
+            "union",
+            "scalar",
+            "schema",
+            "directive",
+            "extend",
+            "query",
+            "mutation",
+            "subscription",
+            "fragment",
+            "field",
+            "message",
+            "service",
+            "rpc",
+            "oneof",
+        ] {
+            assert_eq!(label(&seg(kind, "N", 1, 1)), format!("{kind} N"), "{kind}");
+        }
     }
 
     #[test]

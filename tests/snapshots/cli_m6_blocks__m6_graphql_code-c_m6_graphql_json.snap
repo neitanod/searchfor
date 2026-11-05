@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"code-c/m6.graphql"}}}
+{"type":"match","data":{"path":{"text":"code-c/m6.graphql"},"lines":{"text":" email: String! # needle\n"},"line_number":2,"absolute_offset":12,"submatches":[{"match":{"text":"needle"},"start":18,"end":24}],"format":"graphql","trail":[{"kind":"type","name":"User","line":1,"end_line":3},{"kind":"field","name":"email","line":2,"end_line":2}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code-c/m6.graphql"},"lines":{"text":"   title(needle: true)\n"},"line_number":7,"absolute_offset":80,"submatches":[{"match":{"text":"needle"},"start":9,"end":15}],"format":"graphql","trail":[{"kind":"query","name":"GetUser","line":4,"end_line":10},{"kind":"field","name":"user","line":5,"end_line":9},{"kind":"field","name":"posts","line":6,"end_line":8},{"kind":"field","name":"title","line":7,"end_line":7}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"code-c/m6.graphql"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":112,"bytes_printed":889,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":889,"bytes_searched":112,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

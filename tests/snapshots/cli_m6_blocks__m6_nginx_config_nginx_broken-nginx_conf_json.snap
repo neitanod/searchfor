@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"config/nginx/broken-nginx.conf"}}}
+{"type":"match","data":{"path":{"text":"config/nginx/broken-nginx.conf"},"lines":{"text":"http { k needle; }\n"},"line_number":1,"absolute_offset":0,"submatches":[{"match":{"text":"needle"},"start":9,"end":15}],"format":"nginx","trail":[{"kind":"block","name":"http","line":1,"end_line":1},{"kind":"key","name":"k","line":1,"end_line":1}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/nginx/broken-nginx.conf"},"lines":{"text":"k needle;\n"},"line_number":3,"absolute_offset":21,"submatches":[{"match":{"text":"needle"},"start":2,"end":8}],"format":"nginx","trail":[],"fragment":null}}
+{"type":"end","data":{"path":{"text":"config/nginx/broken-nginx.conf"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":31,"bytes_printed":680,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":680,"bytes_searched":31,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+config/apache2/apache2.conf
+  VirtualHost *:443 example.com
+    Directory /var/www
+      Require
+        3:  Require ip 10.0.0.0/8 # needle

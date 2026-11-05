@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"config/apache2/broken-apache.conf"}}}
+{"type":"match","data":{"path":{"text":"config/apache2/broken-apache.conf"},"lines":{"text":"K needle\n"},"line_number":2,"absolute_offset":15,"submatches":[{"match":{"text":"needle"},"start":2,"end":8}],"format":"apache","trail":[{"kind":"block","name":"Directory /x","line":1,"end_line":4},{"kind":"key","name":"K","line":2,"end_line":2}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/apache2/broken-apache.conf"},"lines":{"text":"K needle\n"},"line_number":4,"absolute_offset":35,"submatches":[{"match":{"text":"needle"},"start":2,"end":8}],"format":"apache","trail":[{"kind":"block","name":"Directory /x","line":1,"end_line":4},{"kind":"key","name":"K","line":4,"end_line":4}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"config/apache2/broken-apache.conf"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":44,"bytes_printed":796,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":796,"bytes_searched":44,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"config/apache2/apache2.conf"}}}
+{"type":"match","data":{"path":{"text":"config/apache2/apache2.conf"},"lines":{"text":"  Require ip 10.0.0.0/8 # needle\n"},"line_number":3,"absolute_offset":42,"submatches":[{"match":{"text":"needle"},"start":26,"end":32}],"format":"apache","trail":[{"kind":"block","name":"VirtualHost *:443 example.com","line":1,"end_line":6},{"kind":"block","name":"Directory /var/www","line":2,"end_line":4},{"kind":"key","name":"Require","line":3,"end_line":3}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"config/apache2/apache2.conf"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":128,"bytes_printed":541,"matched_lines":1,"matches":1}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":541,"bytes_searched":128,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":1,"matches":1,"searches":1,"searches_with_match":1}},"type":"summary"}
