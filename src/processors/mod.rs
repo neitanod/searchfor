@@ -4,6 +4,7 @@ pub mod buildfile;
 pub mod chat;
 pub mod csv;
 pub mod cursor;
+pub mod diff;
 pub mod external;
 pub mod frontmatter;
 pub mod headings;
@@ -12,6 +13,7 @@ pub mod mail;
 pub mod markdown;
 pub mod markup;
 pub mod object;
+pub mod sql;
 pub mod subtitles;
 pub mod treesitter;
 
@@ -168,6 +170,8 @@ pub fn by_name(name: &str) -> Option<&'static dyn Processor> {
         "headings" => Some(&headings::Headings),
         "mail" => Some(&mail::Mail),
         "chat" => Some(&chat::Chat),
+        "sql" => Some(&sql::Sql),
+        "diff" => Some(&diff::Diff),
         _ => None,
     }
 }

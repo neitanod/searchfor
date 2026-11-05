@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_sql_diff.rs
+expression: text
+---
+1: SELECT │ SELECT 'needle';
+3: needle

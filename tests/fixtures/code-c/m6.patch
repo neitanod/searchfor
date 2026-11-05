@@ -1,0 +1,10 @@
+commit 3f2a9c1234567890
+Author: A
+
+    Fix the needle crash
+
+diff --git a/src/app.rs b/src/app.rs
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -1,1 +120,1 @@ fn describe(
++    let needle = 1;

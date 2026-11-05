@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_sql_diff.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"code-c/m6-schema.sql"}}}
+{"type":"match","data":{"path":{"text":"code-c/m6-schema.sql"},"lines":{"text":" email text NOT NULL, -- needle\n"},"line_number":3,"absolute_offset":34,"submatches":[{"match":{"text":"needle"},"start":25,"end":31}],"format":"sql","trail":[{"kind":"statement","name":"CREATE TABLE users","line":1,"end_line":5},{"kind":"column","name":"email","line":3,"end_line":3}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code-c/m6-schema.sql"},"lines":{"text":"CREATE OR REPLACE VIEW active_users AS SELECT 'needle' AS label;\n"},"line_number":6,"absolute_offset":100,"submatches":[{"match":{"text":"needle"},"start":47,"end":53}],"format":"sql","trail":[{"kind":"statement","name":"CREATE OR REPLACE VIEW active_users","line":6,"end_line":6}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"code-c/m6-schema.sql"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":165,"bytes_printed":831,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":831,"bytes_searched":165,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

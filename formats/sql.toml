@@ -1,0 +1,9 @@
+# formats/sql.toml — SQL statements, table columns and dump rows (M6 spec §8.1):
+# `CREATE TABLE users › email`, `INSERT INTO users › row 1234 › email`.
+name       = "sql"
+extensions = ["sql", "ddl", "dml"]
+processor  = "sql"
+
+[params]
+# Characters of a statement's or a column's name before it is cut with `…`.
+name_chars = 40

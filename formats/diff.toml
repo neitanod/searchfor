@@ -1,0 +1,9 @@
+# formats/diff.toml — the commits, files and hunks of diffs and patches (M6 spec §8.2):
+# `3f2a9c1 Fix the needle crash › src/app.rs › +120 fn describe(`.
+name       = "diff"
+extensions = ["diff", "patch", "rej"]
+processor  = "diff"
+
+[params]
+# Characters of a commit's, a file's or a hunk's name before it is cut with `…`.
+name_chars = 40
