@@ -50,6 +50,8 @@ struct Member {
     /// Its place among the members the walk made, in file order: a Segment's identity for the
     /// cursor (`JsonCursor`).
     id: u64,
+    /// Where its value starts (M6 plan, Task 6.1: the JSON views read it).
+    value: usize,
     /// Its place among the members whose value is an object or an array, in file order: the
     /// key of its end, which the cursor learns ahead (`JsonCursor::ahead`).
     container: Option<u64>,
@@ -377,6 +379,99 @@ pub fn walk(src: &[u8], c: &mut Collector) -> usize {
     end
 }
 
+/// One step of the path from a value to a member it holds (`visit`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Step {
+    /// A key's contents, without quotes, and whether they have escapes.
+    Key(Range<usize>, bool),
+    /// An element's index.
+    Index(usize),
+}
+
+impl Step {
+    /// Whether this is the key `name`, decoded.
+    pub fn is(&self, src: &[u8], name: &str) -> bool {
+        key_is(src, self, name)
+    }
+}
+
+fn key_is(src: &[u8], step: &Step, name: &str) -> bool {
+    match step {
+        Step::Key(r, false) => &src[r.clone()] == name.as_bytes(),
+        Step::Key(r, true) => decode(src, r.clone(), true).0 == name,
+        Step::Index(_) => false,
+    }
+}
+
+/// A member `visit` meets: the steps from the visited value to it, its own last, and its
+/// value, whole for a scalar (a string with its quotes), only its first byte's place for an
+/// object or an array.
+pub(super) struct Met<'p> {
+    pub path: &'p [Step],
+    pub value: Range<usize>,
+}
+
+/// The first byte after the whitespace and comments at `from`.
+pub(super) fn value_start(src: &[u8], from: usize) -> usize {
+    let mut sc = Scan { s: src, i: from };
+    sc.ws();
+    sc.i.min(src.len())
+}
+
+/// Walks the value that starts at `start` (M6 plan, Task 6.1: the JSON views' lookahead),
+/// telling `f` each member it holds, in file order, until `f` answers false. Where the value
+/// ends, past its last byte or at the syntax error that stops the walk; None when `f` stopped
+/// it. Members past MAX_DEPTH are not told.
+pub(super) fn visit(src: &[u8], start: usize, f: &mut dyn FnMut(&Met) -> bool) -> Option<usize> {
+    let mut w = Walker::at(src, start);
+    let mut path: Vec<Step> = Vec::new();
+    loop {
+        let (before, len) = (w.members, w.stack.len());
+        if let Some(e) = w.step(&mut |_, _, _| {}) {
+            return Some(e);
+        }
+        if w.members > before {
+            // A member is made in the frame that was on top.
+            path.clear();
+            for fr in &w.stack[..len] {
+                match fr.member.as_ref().map(|m| &m.name) {
+                    Some(MemberName::Key(r, e)) => path.push(Step::Key(r.clone(), *e)),
+                    Some(MemberName::Element(n)) => path.push(Step::Index(*n)),
+                    None => {}
+                }
+            }
+            let m = w.stack[len - 1].member.as_ref().expect("made above");
+            let value = if w.stack.len() > len {
+                m.value..m.value
+            } else {
+                m.value..w.last_end
+            };
+            if path.len() == len && !f(&Met { path: &path, value }) {
+                return None;
+            }
+        }
+        if w.stack.is_empty() {
+            return Some(w.last_end);
+        }
+    }
+}
+
+/// Every member of `src`, in file order: its place among the members the walk makes (the
+/// cursor's identity of it) and where it starts.
+pub(super) fn members(src: &[u8], f: &mut dyn FnMut(u64, usize)) {
+    let mut w = Walker::new(src);
+    loop {
+        let (before, len) = (w.members, w.stack.len());
+        if w.step(&mut |_, _, _| {}).is_some() {
+            return;
+        }
+        if w.members > before {
+            let m = w.stack[len - 1].member.as_ref().expect("made above");
+            f(m.id, m.start);
+        }
+    }
+}
+
 /// The walk, one token at a time (plan Task 9.4): `walk` runs it to its end, and the cursor
 /// (`JsonCursor`) only as far as each Match.
 struct Walker<'s> {
@@ -391,18 +486,36 @@ struct Walker<'s> {
     containers: u64,
     /// Where the walk stopped, once it did (`walk`).
     done: Option<usize>,
+    /// Top-level values begun, and where the first one ended, once it did (the JSON views
+    /// project the first one only).
+    roots: u64,
+    first_end: Option<usize>,
 }
 
 impl<'s> Walker<'s> {
     fn new(src: &'s [u8]) -> Self {
+        Self::at(src, 0)
+    }
+
+    /// A walk that starts at byte `start`, where a value starts.
+    fn at(src: &'s [u8], start: usize) -> Self {
         Walker {
-            sc: Scan { s: src, i: 0 },
+            sc: Scan { s: src, i: start },
             stack: Vec::new(),
             open: 0,
-            last_end: 0,
+            last_end: start,
             members: 0,
             containers: 0,
             done: None,
+            roots: 0,
+            first_end: None,
+        }
+    }
+
+    /// A top-level value ended at `sc.i`.
+    fn root_ended(&mut self) {
+        if self.stack.is_empty() && self.roots == 1 && self.first_end.is_none() {
+            self.first_end = Some(self.sc.i);
         }
     }
 
@@ -434,9 +547,11 @@ impl<'s> Walker<'s> {
             if sc.i >= src.len() {
                 return Some(src.len());
             }
+            self.roots += 1;
             if let Err(at) = begin(sc, stack, String::new(), &mut self.last_end) {
                 return Some(at.min(src.len()));
             }
+            self.root_ended();
             return None;
         };
         let (object, want) = (stack[k].object, stack[k].want);
@@ -448,6 +563,7 @@ impl<'s> Walker<'s> {
                 sc.i += 1;
                 self.last_end = sc.i;
                 stack.pop();
+                self.root_ended();
             }
             (Want::CommaOrEnd, b',') => {
                 sc.i += 1;
@@ -470,6 +586,7 @@ impl<'s> Walker<'s> {
                     self.open -= 1;
                 }
                 self.last_end = sc.i;
+                self.root_ended();
             }
             (Want::CommaOrEnd, b']') if !object => {
                 sc.i += 1;
@@ -479,6 +596,7 @@ impl<'s> Walker<'s> {
                     self.open -= 1;
                 }
                 self.last_end = sc.i;
+                self.root_ended();
             }
             (Want::KeyOrEnd, b'"') => {
                 let (r, escaped) = match sc.string() {
@@ -514,6 +632,7 @@ impl<'s> Walker<'s> {
                         name,
                         hidden: array,
                         id: self.members,
+                        value: sc.i,
                         container,
                         line: 0,
                         end: None,
@@ -570,7 +689,7 @@ impl Prepared for JsonPrepared<'_> {
 /// member of `main` that is first in file order, so a JSON Lines file keeps one value's, and
 /// only one object or array that holds the whole file keeps an end per object or array in it
 /// (8 bytes each). Each Segment's name and lines are made once.
-struct JsonCursor<'s> {
+pub(super) struct JsonCursor<'s> {
     src: &'s [u8],
     main: Walker<'s>,
     ahead: Walker<'s>,
@@ -586,10 +705,33 @@ struct JsonCursor<'s> {
     ids: Vec<u64>,
     /// Where the outermost member holding the last offset starts (`Cursor::open_from`).
     open: usize,
+    /// The members `holding` found last, reused.
+    held: Vec<Open>,
+}
+
+/// A member that holds an offset, as `JsonCursor::holding` finds it (M6 plan, Task 6.1): what
+/// the JSON views project.
+#[derive(Debug, Clone)]
+pub(super) struct Open {
+    /// Its frame in the walk's stack: the depth of its container.
+    pub frame: usize,
+    pub id: u64,
+    pub start: usize,
+    pub end: usize,
+    /// Where its value starts.
+    pub value: usize,
+    /// The key's contents, without quotes, and whether they have escapes; None for an element.
+    pub key: Option<(Range<usize>, bool)>,
+    /// An element's index in its array.
+    pub index: usize,
+    /// Its value is an array: keypath hides it (spec §5.2).
+    pub array: bool,
+    /// The bytes that name it: the key with its quotes, empty for an element.
+    pub label: Range<usize>,
 }
 
 impl<'s> JsonCursor<'s> {
-    fn new(src: &'s [u8]) -> Self {
+    pub(super) fn new(src: &'s [u8]) -> Self {
         JsonCursor {
             src,
             main: Walker::new(src),
@@ -601,7 +743,94 @@ impl<'s> JsonCursor<'s> {
             last: None,
             ids: Vec::new(),
             open: 0,
+            held: Vec::new(),
         }
+    }
+
+    /// The members that hold `at` (start ≤ at < end), outermost first, hidden ones included:
+    /// the walk goes as far as `at`, from the start when `at` is before the last offset.
+    pub(super) fn holding(&mut self, at: usize, out: &mut Vec<Open>) {
+        if at < self.last_at {
+            let held = std::mem::take(&mut self.held);
+            *self = JsonCursor::new(self.src);
+            self.held = held;
+        }
+        self.last_at = at;
+        self.reach(at);
+        out.clear();
+        self.open = at;
+        for k in 0..self.main.stack.len() {
+            let Some(m) = self.main.stack[k].member.as_ref() else {
+                continue;
+            };
+            let (start, array, id, value) = (m.start, m.hidden, m.id, m.value);
+            let (key, index, label) = match &m.name {
+                MemberName::Key(inner, escaped) => (
+                    Some((inner.clone(), *escaped)),
+                    0,
+                    inner.start - 1..inner.end + 1,
+                ),
+                MemberName::Element(n) => (None, *n, start..start),
+            };
+            let end = match m.end {
+                Some((e, _)) => e,
+                None => self.end_of(k),
+            };
+            if start <= at && at < end {
+                self.open = self.open.min(start);
+                out.push(Open {
+                    frame: k,
+                    id,
+                    start,
+                    end,
+                    value,
+                    key,
+                    index,
+                    array,
+                    label,
+                });
+            }
+        }
+        self.release();
+    }
+
+    /// keypath's Segment of `o`, a member `holding` just found: its name (`holder[n]` for an
+    /// element) and its lines, each made once.
+    pub(super) fn plain(&mut self, o: &Open) -> Segment {
+        let (k, start, end) = (o.frame, o.start, o.end);
+        let src = self.src;
+        let line = match self.main.stack[k].member.as_ref().expect("a member").line {
+            0 => self.line_of(start),
+            l => l,
+        };
+        let f = &mut self.main.stack[k];
+        let m = f.member.as_mut().expect("a member");
+        m.line = line;
+        let (_, end_line) = *m.end.get_or_insert_with(|| {
+            let last = end.saturating_sub(1).max(start).min(src.len());
+            let lines = memchr::memchr_iter(b'\n', &src[start.min(last)..last]).count();
+            (end, line + lines as u64)
+        });
+        if m.text.is_none() {
+            m.text = Some(m.name(src, &f.holder));
+        }
+        let kind = match m.name {
+            MemberName::Key(..) => "key",
+            MemberName::Element(_) => "element",
+        };
+        Segment {
+            kind: kind.into(),
+            name: m.text.clone().expect("named above"),
+            line,
+            end_line,
+            level: None,
+            signature: None,
+        }
+    }
+
+    /// How many top-level values the walk has begun, as far as the last offset.
+    pub(super) fn roots(&self) -> u64 {
+        self.main.roots
     }
 
     /// `main` up to `at`: every token that starts at or before it, and a key that starts at or
@@ -669,21 +898,26 @@ impl<'s> JsonCursor<'s> {
                 // Closed by `close_open` when it stopped: never unknown past it.
                 return e;
             }
-            let (ends, base) = (&mut self.ends, self.base);
-            let mut record = |m: Member, _: &str, end: usize| {
-                if let Some(c) = m.container
-                    && c >= base
-                {
-                    let i = (c - base) as usize;
-                    if ends.len() <= i {
-                        ends.resize(i + 1, usize::MAX);
-                    }
-                    ends[i] = end;
+            self.ahead_step();
+        }
+    }
+
+    /// One token of `ahead`, recording the ends of the container members it closes.
+    fn ahead_step(&mut self) {
+        let (ends, base) = (&mut self.ends, self.base);
+        let mut record = |m: Member, _: &str, end: usize| {
+            if let Some(c) = m.container
+                && c >= base
+            {
+                let i = (c - base) as usize;
+                if ends.len() <= i {
+                    ends.resize(i + 1, usize::MAX);
                 }
-            };
-            if let Some(e) = self.ahead.step(&mut record) {
-                self.ahead.close_open(e, &mut record);
+                ends[i] = end;
             }
+        };
+        if let Some(e) = self.ahead.step(&mut record) {
+            self.ahead.close_open(e, &mut record);
         }
     }
 
@@ -716,77 +950,28 @@ impl<'s> JsonCursor<'s> {
 
 impl Cursor for JsonCursor<'_> {
     fn trail_at(&mut self, at: usize) -> anyhow::Result<SharedTrail> {
-        if at < self.last_at {
-            *self = JsonCursor::new(self.src);
-        }
-        self.last_at = at;
-        self.reach(at);
-        // The members holding `at` (start ≤ at < end), outermost first, and of them those of
-        // the Trail: not hidden, and `at` not in their label (the key's own text).
+        let mut open = std::mem::take(&mut self.held);
+        self.holding(at, &mut open);
+        // Of the members holding `at`, those of the Trail: not hidden, and `at` not in their
+        // label (the key's own text).
         self.ids.clear();
-        self.open = at;
-        let mut chain = Vec::new();
-        for k in 0..self.main.stack.len() {
-            let Some(m) = self.main.stack[k].member.as_ref() else {
-                continue;
-            };
-            let (start, hidden, id) = (m.start, m.hidden, m.id);
-            let label = match &m.name {
-                MemberName::Key(inner, _) => inner.start - 1..inner.end + 1,
-                MemberName::Element(_) => start..start,
-            };
-            let end = match m.end {
-                Some((e, _)) => e,
-                None => self.end_of(k),
-            };
-            if start <= at && at < end {
-                self.open = self.open.min(start);
-                if !hidden && !label.contains(&at) {
-                    self.ids.push(id);
-                    chain.push((k, end));
-                }
-            }
-        }
-        self.release();
+        self.ids.extend(
+            open.iter()
+                .filter(|o| !o.array && !o.label.contains(&at))
+                .map(|o| o.id),
+        );
         if let Some((ids, t)) = &self.last
             && *ids == self.ids
         {
+            self.held = open;
             return Ok(t.clone());
         }
-        let mut trail = Vec::with_capacity(chain.len());
-        for (k, end) in chain {
-            let src = self.src;
-            let start = self.main.stack[k].member.as_ref().expect("a member").start;
-            let line = match self.main.stack[k].member.as_ref().expect("a member").line {
-                0 => self.line_of(start),
-                l => l,
-            };
-            let f = &mut self.main.stack[k];
-            let m = f.member.as_mut().expect("a member");
-            m.line = line;
-            let (end, end_line) = *m.end.get_or_insert_with(|| {
-                let last = end.saturating_sub(1).max(start).min(src.len());
-                let lines = memchr::memchr_iter(b'\n', &src[start.min(last)..last]).count();
-                (end, line + lines as u64)
-            });
-            let _ = end;
-            if m.text.is_none() {
-                m.text = Some(m.name(src, &f.holder));
-            }
-            let name = m.text.clone().expect("named above");
-            let kind = match m.name {
-                MemberName::Key(..) => "key",
-                MemberName::Element(_) => "element",
-            };
-            trail.push(Segment {
-                kind: kind.into(),
-                name,
-                line,
-                end_line,
-                level: None,
-                signature: None,
-            });
-        }
+        let trail: Vec<Segment> = open
+            .iter()
+            .filter(|o| !o.array && !o.label.contains(&at))
+            .map(|o| self.plain(o))
+            .collect();
+        self.held = open;
         let t: SharedTrail = trail.into();
         self.last = Some((self.ids.clone(), t.clone()));
         Ok(t)

@@ -1,0 +1,14 @@
+---
+source: tests/cli_m6_views.rs
+expression: text
+---
+docs-a/m6.ipynb
+  # Analysis
+    ## Load data
+      cell 2 (code)
+        4:  {"cell_type":"code","source":["df = load('needle.csv')\n"],
+        output 1 (execute_result)
+          text/plain
+            5:   "outputs":[{"output_type":"execute_result","data":{"text/plain":["needle"]}}]},
+      cell 3 (raw)
+        6:  {"cell_type":"raw","source":["needle raw"]}

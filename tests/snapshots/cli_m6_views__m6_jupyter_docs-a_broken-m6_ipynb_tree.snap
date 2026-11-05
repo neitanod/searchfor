@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_views.rs
+expression: text
+---
+docs-a/broken-m6.ipynb
+  cell 1 (code)
+    1:{"cells":[{"cell_type":"code","source":["needle"]}]}
+  3:needle
