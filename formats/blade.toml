@@ -1,0 +1,13 @@
+# formats/blade.toml — Laravel Blade templates (M6 spec §8.5): element paths and paired
+# directives: `@section('content') › div.cart › @foreach($items as $item) › li`.
+name       = "blade"
+extensions = ["blade.php"]
+processor  = "markup"
+
+[params]
+syntax = "html"
+# A paired directive opens a block named by itself and its argument, up to its `@end…`;
+# `{{-- … --}}` is a comment and `@verbatim` holds text.
+templates = "blade"
+# Characters of an element's or a block's name before it is cut with `…`.
+name_chars = 40

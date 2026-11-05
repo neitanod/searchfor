@@ -208,6 +208,135 @@ fn m6_vue() {
     );
 }
 
+#[test]
+fn m6_templates() {
+    let fx = Fixture::new();
+    let svelte = b"<ul>\n{#each items as item}\n<li>{item.needle}</li>\n{:else}\n<li>needle empty</li>\n{/each}\n</ul>\n";
+    seed(&fx, "code-c/m6.svelte", svelte);
+    check(
+        &fx,
+        "svelte",
+        "code-c/m6.svelte",
+        &[
+            "ul › #each items as item › li[1]",
+            "ul › #each items as item › li[2]",
+        ],
+    );
+    flags(&fx, "svelte", "code-c/m6.svelte", "items", "items", "");
+    let blade = b"@section('content')\n<div class=\"cart\">\n@foreach($items as $item)\n<li>{{ $item->needle }}</li>\n@endforeach\n</div>\n@endsection\n";
+    seed(&fx, "code-c/m6.blade.php", blade);
+    check(
+        &fx,
+        "blade",
+        "code-c/m6.blade.php",
+        &["@section('content') › div.cart › @foreach($items as $item) › li"],
+    );
+    flags(&fx, "blade", "code-c/m6.blade.php", "items", "items", "");
+    put(
+        &fx,
+        "blade-inline",
+        b"@section('x','needle')\n{{-- @if(fake) needle --}}\n@verbatim\n@if(fake) needle\n@endverbatim\nneedle\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "blade",
+            "blade-inline",
+            "needle",
+            &["--json"]
+        ))),
+        ["", "", "@verbatim", ""]
+    );
+    put(
+        &fx,
+        "svelte-close",
+        b"{#if ready}\n<div>needle\n{/if}\nneedle\n{/missing}\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "svelte",
+            "svelte-close",
+            "needle",
+            &["--json"]
+        ))),
+        ["#if ready › div", ""]
+    );
+}
+
+/// M6 plan, «Definition-kind and template keyword completeness»: every Svelte block and
+/// Blade paired directive opens a block its closer closes.
+#[test]
+fn m6_template_keyword_pairs() {
+    let fx = Fixture::new();
+    for name in ["if", "each", "await", "key", "snippet"] {
+        let src = format!("{{#{name} x}}\n<p>needle</p>\n{{/{name}}}\nneedle\n");
+        put(&fx, "all.svelte", src.as_bytes());
+        assert_eq!(
+            paths(&matches(&output(
+                &fx,
+                "svelte",
+                "all.svelte",
+                "needle",
+                &["--json"]
+            ))),
+            [format!("#{name} x › p"), String::new()]
+        );
+    }
+    for name in [
+        "section",
+        "if",
+        "foreach",
+        "forelse",
+        "for",
+        "while",
+        "switch",
+        "push",
+        "component",
+        "slot",
+        "php",
+        "once",
+        "auth",
+        "guest",
+        "isset",
+        "empty",
+        "unless",
+        "verbatim",
+    ] {
+        let argument = if ["php", "once", "auth", "guest", "verbatim"].contains(&name) {
+            ""
+        } else {
+            "('x')"
+        };
+        let src = format!("@{name}{argument}\nneedle\n@end{name}\nneedle\n");
+        put(&fx, "all.blade.php", src.as_bytes());
+        assert_eq!(
+            paths(&matches(&output(
+                &fx,
+                "blade",
+                "all.blade.php",
+                "needle",
+                &["--json"]
+            ))),
+            [format!("@{name}{argument}"), String::new()]
+        );
+    }
+    for closer in ["show", "stop", "overwrite"] {
+        let src = format!("@section('x')\nneedle\n@{closer}\nneedle\n");
+        put(&fx, "section.blade.php", src.as_bytes());
+        assert_eq!(
+            paths(&matches(&output(
+                &fx,
+                "blade",
+                "section.blade.php",
+                "needle",
+                &["--json"]
+            ))),
+            ["@section('x')", ""]
+        );
+    }
+}
+
 /// M6 plan, «Meaningful generated-name exclusion and encoding tests», markup's row: Vue's
 /// `[2]` is a word s4 adds, so `--in-headings` never finds it.
 #[test]
@@ -289,13 +418,27 @@ fn m6_encoding_and_lone_cr() {
 /// M6 plan, «Committed broken fixtures, with three snapshots each», markup's rows.
 #[test]
 fn m6_broken_fixtures() {
-    let owned: &[&str] = &["vue"];
-    let cases: &[(&str, &str, &[u8], &[&str])] = &[(
-        "vue",
-        "code-c/broken-m6.vue",
-        b"<script lang='coffee'>\nneedle\n",
-        &["script"],
-    )];
+    let owned: &[&str] = &["vue", "svelte", "blade"];
+    let cases: &[(&str, &str, &[u8], &[&str])] = &[
+        (
+            "vue",
+            "code-c/broken-m6.vue",
+            b"<script lang='coffee'>\nneedle\n",
+            &["script"],
+        ),
+        (
+            "svelte",
+            "code-c/broken-m6.svelte",
+            b"{#if x}\n<div>needle\n",
+            &["#if x › div"],
+        ),
+        (
+            "blade",
+            "code-c/broken-m6.blade.php",
+            b"@if($x)\n<div>needle\n",
+            &["@if($x) › div"],
+        ),
+    ];
     let fx = Fixture::new();
     let mut count = 0;
     for &(format, file, src, want) in cases {

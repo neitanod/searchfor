@@ -1,10 +1,13 @@
 //! markup: HTML and XML element paths (spec §5.4, M3 plan design note 3). One walk over the
 //! tags feeds keypath's Collector the elements that hold an anchor, so a big file with three
 //! Matches keeps three short stacks. With `scripts`, the content of a `<script>` gets the
-//! Trails of its Grammar under the `script` element (M6 spec §8.3, `components`).
+//! Trails of its Grammar under the `script` element (M6 spec §8.3, `components`); with
+//! `templates`, Svelte's and Blade's blocks open and close on the same stack as the elements
+//! (M6 spec §8.4, §8.5, `templates`).
 pub mod components;
 pub mod html;
 pub mod scan;
+pub mod templates;
 
 use super::{Capability, Cursor, Prepared, Processor};
 use crate::model::{Input, Name, Segment, SharedTrail, Trail};
@@ -18,6 +21,7 @@ use crate::text::Pieces;
 use components::Scripts;
 use std::cell::RefCell;
 use std::rc::Rc;
+use templates::TemplateSyntax;
 
 pub struct Markup;
 
@@ -39,6 +43,8 @@ struct Params {
     name_chars: usize,
     /// HTML: each `<script>`'s content is read by its Grammar (M6 spec §8.3).
     scripts: bool,
+    /// HTML: the template blocks read between the tags (M6 spec §8.4, §8.5).
+    templates: Option<TemplateSyntax>,
 }
 
 /// Whether a markup Definition's `[params]` read its scripts: then a run gives it a
@@ -59,13 +65,21 @@ fn params(t: &toml::Table) -> anyhow::Result<Params> {
         .filter(|&n| n > 0)
         .map_or(DEFAULT_NAME_CHARS, |n| n as usize);
     let scripts = scripts_on(t);
-    if scripts && syntax != Syntax::Html {
-        anyhow::bail!("markup reads `scripts` only with `syntax` = \"html\"");
+    let templates =
+        match t.get("templates").and_then(|v| v.as_str()) {
+            None => None,
+            Some(s) => Some(TemplateSyntax::parse(s).ok_or_else(|| {
+                anyhow::anyhow!("markup's `templates` is \"svelte\" or \"blade\"")
+            })?),
+        };
+    if (scripts || templates.is_some()) && syntax != Syntax::Html {
+        anyhow::bail!("markup reads `scripts` and `templates` only with `syntax` = \"html\"");
     }
     Ok(Params {
         syntax,
         name_chars,
         scripts,
+        templates,
     })
 }
 
@@ -108,6 +122,8 @@ struct Frame {
     /// A `<script>` a walk with `scripts` reads: where its content ends (it starts at the end
     /// of `tag`).
     script_end: Option<usize>,
+    /// A template block: its keyword (`name` is then its name and `tag` its opener).
+    block: Option<u8>,
 }
 
 /// The children of an open element, counted for their `[n]`.
@@ -140,9 +156,13 @@ impl Frame {
             seq: NO_SEQ,
             children: None,
             script_end: None,
+            block: None,
         }
     }
 }
+
+/// `Frame::id` of a template block: no tag's.
+const BLOCK_ID: u32 = u32::MAX;
 
 /// `Frame::seq` of an element that is no Segment.
 const NO_SEQ: u32 = u32::MAX;
@@ -156,6 +176,8 @@ struct Walk<'s, 'c, 'a> {
     scripts: Option<&'s Scripts>,
     /// The line breaks before byte `.0`, the last script content counted (`lines_before`).
     lines: (usize, u64),
+    /// The open template blocks of each keyword: a closer with none open is ignored at once.
+    blocks: [u32; templates::KEYWORDS],
     mode: Mode<'c, 'a>,
     stack: Vec<Frame>,
     /// The `seq` of the next element that may be a Segment.
@@ -317,6 +339,8 @@ struct Open {
     ordinal: u32,
     /// `Frame::script_end`.
     script_end: Option<usize>,
+    /// A template block (`Frame::block`).
+    block: bool,
 }
 
 /// A cursor's state between two steps of its walk: the scanner's, the open elements, and the
@@ -324,6 +348,7 @@ struct Open {
 struct Mark {
     pos: usize,
     prolog: bool,
+    quiet: Option<u8>,
     open: Vec<Open>,
     next_seq: u32,
     next_ordinal: usize,
@@ -405,6 +430,13 @@ fn element_name(
     }
     let (text, pieces) = n.finish();
     (text, pieces, has_id)
+}
+
+/// The name of a template block, its opener as written cut at `name_chars` (M6 spec §8.4).
+fn block_name(src: &[u8], p: Params, name: &Range<usize>) -> (String, Pieces) {
+    let mut n = crate::text::CutName::new(p.name_chars);
+    n.push_lossy(src, name.clone());
+    n.finish()
 }
 
 impl<'a> Walk<'_, '_, 'a> {
@@ -515,7 +547,9 @@ impl<'a> Walk<'_, '_, 'a> {
     /// Closes the innermost open element at `end` (exclusive).
     fn close(&mut self, end: usize) {
         let mut f = self.stack.pop().expect("the root is never closed here");
-        if self.p.syntax == Syntax::Html {
+        if let Some(kw) = f.block {
+            self.blocks[kw as usize] -= 1;
+        } else if self.p.syntax == Syntax::Html {
             self.open[f.id as usize] -= 1;
         }
         let keep = match &mut self.mode {
@@ -532,6 +566,15 @@ impl<'a> Walk<'_, '_, 'a> {
         self.recycle(&mut f);
         if keep && let Some(content_end) = f.script_end {
             self.script(&f, f.tag.end..content_end);
+        }
+        if keep && f.block.is_some() {
+            // A block is named by its opener: no `[n]`, and its own label.
+            let (text, pieces) = block_name(self.src, self.p, &f.name);
+            let mut s = OutlineSegment::new("block", text, f.tag.start..end, f.tag.clone());
+            s.name = Some(pieces);
+            s.name_anchor = f.name.start;
+            self.collector().closed(s, end);
+            return;
         }
         if keep {
             let (text, pieces, has_id) = self.name_of(&f);
@@ -706,6 +749,7 @@ impl<'a> Walk<'_, '_, 'a> {
             seq,
             children: None,
             script_end: None,
+            block: None,
         });
         if raw {
             sc.skip_raw_text(&self.src[name]);
@@ -713,6 +757,54 @@ impl<'a> Walk<'_, '_, 'a> {
                 self.stack.last_mut().unwrap().script_end = Some(sc.pos());
             }
         }
+    }
+
+    /// A template block opens: a Frame on the stack of elements, with no place among its
+    /// siblings and no implied end of HTML's reaching past it.
+    fn block(&mut self, kw: u8, name: Range<usize>, tag: Range<usize>) {
+        let seg = self.stack.len() <= MAX_DEPTH;
+        let seq = if seg {
+            self.next_seq += 1;
+            self.next_seq - 1
+        } else {
+            NO_SEQ
+        };
+        if let Mode::Census(census) = &mut self.mode
+            && seq != NO_SEQ
+        {
+            census.ends.push(0);
+        }
+        self.blocks[kw as usize] += 1;
+        self.stack.push(Frame {
+            name,
+            tag,
+            info: html::info(b""),
+            reach: html::NO_REACH,
+            id: BLOCK_ID,
+            seg,
+            slot: 0,
+            ordinal: 0,
+            seq,
+            children: None,
+            script_end: None,
+            block: Some(kw),
+        });
+    }
+
+    /// A closer: it closes the innermost open block of its keyword and every element inside
+    /// it, as an end tag does; with none open it is text.
+    fn unblock(&mut self, kw: u8, tag: Range<usize>) {
+        if self.blocks[kw as usize] == 0 {
+            return;
+        }
+        let k = (1..self.stack.len())
+            .rev()
+            .find(|&k| self.stack[k].block == Some(kw))
+            .expect("a block of this keyword is open");
+        while self.stack.len() > k + 1 {
+            self.close_implied(tag.start);
+        }
+        self.close(tag.end);
     }
 
     /// An end tag: XML closes the current element or stops (Err with the error's byte); HTML
@@ -747,7 +839,8 @@ impl<'a> Walk<'_, '_, 'a> {
     /// Walks the file; returns where the structure ends: its length, or the byte where XML
     /// stops being well formed (spec §5.4).
     fn run(&mut self) -> usize {
-        let mut sc = Scanner::new(self.src, self.p.syntax == Syntax::Xml);
+        let mut sc =
+            Scanner::new(self.src, self.p.syntax == Syntax::Xml).templated(self.p.templates, None);
         let end = loop {
             if let Some(end) = self.apply(sc.step(), &mut sc) {
                 break end;
@@ -759,6 +852,7 @@ impl<'a> Walk<'_, '_, 'a> {
                 c.marks.push(Mark {
                     pos: sc.pos(),
                     prolog: sc.prolog(),
+                    quiet: sc.quiet(),
                     open: self
                         .stack
                         .iter()
@@ -770,6 +864,7 @@ impl<'a> Walk<'_, '_, 'a> {
                             hidden: f.info.hidden,
                             ordinal: f.ordinal,
                             script_end: f.script_end,
+                            block: f.block.is_some(),
                         })
                         .collect(),
                     next_seq: self.next_seq,
@@ -794,6 +889,8 @@ impl<'a> Walk<'_, '_, 'a> {
                     return Some(at);
                 }
             }
+            Step::Tag(Tag::Block { kw, name, tag }) => self.block(kw, name, tag),
+            Step::Tag(Tag::Unblock { kw, tag }) => self.unblock(kw, tag),
             Step::Eof => return Some(self.src.len()),
             Step::Error(at) => return Some(at),
         }
@@ -817,6 +914,7 @@ impl<'s, 'c, 'a> Walk<'s, 'c, 'a> {
             p,
             scripts,
             lines: (0, 0),
+            blocks: [0; templates::KEYWORDS],
             mode,
             stack: vec![Frame::root()],
             next_seq: 0,
@@ -902,8 +1000,9 @@ struct MarkupCursor<'s> {
     open: Vec<Open>,
     next_seq: u32,
     next_ordinal: usize,
-    /// The start tag read and not applied yet: it is past the last offset asked.
-    pending: Option<(Range<usize>, Range<usize>, bool)>,
+    /// The start tag or block opener read and not applied yet: it is past the last offset
+    /// asked.
+    pending: Option<Tag>,
     done: bool,
     at: usize,
     /// The line of byte `.0`, the last Segment start counted.
@@ -921,7 +1020,7 @@ impl<'s> MarkupCursor<'s> {
             p,
             census: &prepared.census,
             prepared,
-            sc: Scanner::new(src, p.syntax == Syntax::Xml),
+            sc: Scanner::new(src, p.syntax == Syntax::Xml).templated(p.templates, None),
             open: Vec::new(),
             next_seq: 0,
             next_ordinal: 0,
@@ -942,13 +1041,14 @@ impl<'s> MarkupCursor<'s> {
         let xml = self.p.syntax == Syntax::Xml;
         match k.checked_sub(1).map(|i| &marks[i]) {
             Some(m) => {
-                self.sc = Scanner::resume(self.src, xml, m.pos, m.prolog);
+                self.sc = Scanner::resume(self.src, xml, m.pos, m.prolog)
+                    .templated(self.p.templates, m.quiet);
                 self.open.clone_from(&m.open);
                 self.next_seq = m.next_seq;
                 self.next_ordinal = m.next_ordinal;
             }
             None => {
-                self.sc = Scanner::new(self.src, xml);
+                self.sc = Scanner::new(self.src, xml).templated(self.p.templates, None);
                 self.open.clear();
                 self.next_seq = 0;
                 self.next_ordinal = 0;
@@ -962,47 +1062,78 @@ impl<'s> MarkupCursor<'s> {
     /// end tag holds `byte` is still open.
     fn reach(&mut self, byte: usize) {
         while !self.done {
-            let (name, tag, self_closing) = match self.pending.take() {
+            let t = match self.pending.take() {
                 Some(t) => t,
                 None => match self.sc.step() {
-                    Step::Tag(Tag::Start {
-                        name,
-                        tag,
-                        self_closing,
-                    }) => (name, tag, self_closing),
-                    // The census closed the elements: their ends say where.
-                    Step::Tag(Tag::End { .. }) => continue,
+                    // The census closed the elements and blocks: their ends say where.
+                    Step::Tag(Tag::End { .. } | Tag::Unblock { .. }) => continue,
+                    Step::Tag(t) => t,
                     Step::Eof | Step::Error(_) => {
                         self.done = true;
                         return;
                     }
                 },
             };
+            let start = match &t {
+                Tag::Start { tag, .. } | Tag::Block { tag, .. } => tag.start,
+                Tag::End { .. } | Tag::Unblock { .. } => unreachable!("not kept"),
+            };
             // Past where the structure ends, the census applied no tag.
-            if tag.start >= self.census.end {
+            if start >= self.census.end {
                 self.done = true;
                 return;
             }
-            if tag.start > byte {
-                self.pending = Some((name, tag, self_closing));
+            if start > byte {
+                self.pending = Some(t);
                 return;
             }
-            self.start(name, tag, self_closing);
+            match t {
+                Tag::Start {
+                    name,
+                    tag,
+                    self_closing,
+                } => self.start(name, tag, self_closing),
+                Tag::Block { name, tag, .. } => self.block(name, tag),
+                Tag::End { .. } | Tag::Unblock { .. } => {}
+            }
         }
     }
 
     /// A start tag: the elements that ended before it are left, and it opens an element as
     /// `Walk::start` does, numbered as the census numbered it.
-    fn start(&mut self, name: Range<usize>, tag: Range<usize>, self_closing: bool) {
-        let html = self.p.syntax == Syntax::Html;
-        let info = html::info(if html { &self.src[name.clone()] } else { b"" });
+    /// Leaves the elements that ended at or before `at`.
+    fn leave(&mut self, at: usize) {
         while self
             .open
             .last()
-            .is_some_and(|o| self.census.end_of(o.seq) <= tag.start)
+            .is_some_and(|o| self.census.end_of(o.seq) <= at)
         {
             self.open.pop();
         }
+    }
+
+    /// A template block opens, numbered as the census numbered it (`Walk::block`).
+    fn block(&mut self, name: Range<usize>, tag: Range<usize>) {
+        self.leave(tag.start);
+        if self.open.len() < MAX_DEPTH {
+            let seq = self.next_seq;
+            self.next_seq += 1;
+            self.open.push(Open {
+                seq,
+                name,
+                tag,
+                hidden: false,
+                ordinal: 1,
+                script_end: None,
+                block: true,
+            });
+        }
+    }
+
+    fn start(&mut self, name: Range<usize>, tag: Range<usize>, self_closing: bool) {
+        let html = self.p.syntax == Syntax::Html;
+        let info = html::info(if html { &self.src[name.clone()] } else { b"" });
+        self.leave(tag.start);
         if self_closing || info.void {
             return;
         }
@@ -1025,6 +1156,7 @@ impl<'s> MarkupCursor<'s> {
                 hidden: info.hidden,
                 ordinal,
                 script_end: None,
+                block: false,
             });
         }
         if info.raw_text {
@@ -1072,16 +1204,21 @@ impl<'s> MarkupCursor<'s> {
     fn segment(&mut self, k: usize) -> Segment {
         let o = &self.open[k];
         let (start, seq, ordinal) = (o.tag.start, o.seq, o.ordinal);
-        let (mut name, _, has_id) = element_name(self.src, self.p, &o.name, &o.tag);
-        let (end, flags) = self.census.ends.get(seq);
-        if !has_id && flags & REPEATS != 0 {
-            name.push_str(&format!("[{ordinal}]"));
-        }
+        let (kind, name) = if o.block {
+            ("block", block_name(self.src, self.p, &o.name).0)
+        } else {
+            let (mut name, _, has_id) = element_name(self.src, self.p, &o.name, &o.tag);
+            if !has_id && self.census.ends.get(seq).1 & REPEATS != 0 {
+                name.push_str(&format!("[{ordinal}]"));
+            }
+            ("tag", name)
+        };
+        let end = self.census.end_of(seq);
         let line = self.line_of(start);
         let last = end.saturating_sub(1).max(start).min(self.src.len());
         let end_line = line + memchr::memchr_iter(b'\n', &self.src[start..last]).count() as u64;
         Segment {
-            kind: "tag".into(),
+            kind: kind.into(),
             name,
             line,
             end_line,
@@ -1784,6 +1921,23 @@ mod tests {
                 "script[3]",
                 "script"
             ]
+        );
+    }
+
+    /// M6 Task 7.2: template blocks on the stack of elements, from the cursor as from
+    /// `trails`, at every byte and from marks taken inside quiet Blade blocks.
+    #[test]
+    fn the_markup_cursor_gives_template_trails_at_every_byte() {
+        let svelte: toml::Table =
+            toml::from_str("syntax = 'html'\nscripts = true\ntemplates = 'svelte'").unwrap();
+        every_byte_with(
+            b"<ul>\n{#each items as item}\n<li>{item}\n{:else}\n<li>none</ul>{/each}\n{#if a}<p>x{#key k}<b>y{/if}z{/key}{/missing}<script>{#if q}function f(){}</script>",
+            &svelte,
+        );
+        let blade: toml::Table = toml::from_str("syntax = 'html'\ntemplates = 'blade'").unwrap();
+        every_byte_with(
+            b"@section('a')\n<div>@foreach($i as $x)<li>a\n@endforeach</div>@verbatim\n@if(x)<p>q</p>@endif\n@endverbatim@php $a = '<b>'; @endphp{{-- @if(y) --}}@section('x','y')@show tail@endsection",
+            &blade,
         );
     }
 

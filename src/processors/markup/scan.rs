@@ -1,5 +1,8 @@
 //! The tags of HTML and XML markup, in file order (spec §5.4): just what Trails need. Text,
-//! comments, CDATA sections, processing instructions and doctypes are skipped.
+//! comments, CDATA sections, processing instructions and doctypes are skipped. With `templates`,
+//! the openers and closers of Svelte's and Blade's blocks in the text between tags too (M6 spec
+//! §8.4, §8.5).
+use super::templates::{self, TemplateSyntax};
 use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +18,15 @@ pub enum Tag {
         name: Range<usize>,
         tag: Range<usize>,
     },
+    /// A template block's opener: `kw` its keyword's index in its syntax, `name` how it is
+    /// named and `tag` the whole opener (`templates::Event::Open`).
+    Block {
+        kw: u8,
+        name: Range<usize>,
+        tag: Range<usize>,
+    },
+    /// A closer of the template blocks of keyword `kw`.
+    Unblock { kw: u8, tag: Range<usize> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +44,11 @@ pub struct Scanner<'a> {
     xml: bool,
     /// XML: still in the prolog, before the doctype and the root, where a doctype may come.
     prolog: bool,
+    /// HTML: the template blocks it reads (`templated`).
+    templates: Option<TemplateSyntax>,
+    /// The keyword of the open quiet block (Blade's `@verbatim`, `@php`), whose closer alone
+    /// is read until it comes.
+    quiet: Option<u8>,
 }
 
 fn is_space(b: u8) -> bool {
@@ -110,6 +127,8 @@ impl<'a> Scanner<'a> {
             pos: 0,
             xml,
             prolog: true,
+            templates: None,
+            quiet: None,
         }
     }
 
@@ -121,6 +140,37 @@ impl<'a> Scanner<'a> {
             pos,
             xml,
             prolog,
+            templates: None,
+            quiet: None,
+        }
+    }
+
+    /// This scanner, reading the blocks of `templates` too, in the quiet block `quiet` (where
+    /// one that stepped as far was: `quiet()`).
+    pub fn templated(mut self, templates: Option<TemplateSyntax>, quiet: Option<u8>) -> Self {
+        self.templates = templates;
+        self.quiet = quiet;
+        self
+    }
+
+    /// The keyword of the quiet block it is in (`templated`).
+    pub fn quiet(&self) -> Option<u8> {
+        self.quiet
+    }
+
+    /// Where the next `<` or template trigger is in `hay`.
+    fn next_special(&self, hay: &[u8]) -> Option<usize> {
+        let Some(t) = self.templates else {
+            return memchr::memchr(b'<', hay);
+        };
+        let tags_quiet = self
+            .quiet
+            .and_then(|q| templates::quiet(t, q))
+            .unwrap_or(false);
+        match templates::triggers(t, self.quiet.is_some()) {
+            (a, _) if tags_quiet => memchr::memchr(a, hay),
+            (a, Some(b)) => memchr::memchr3(b'<', a, b, hay),
+            (a, None) => memchr::memchr2(b'<', a, hay),
         }
     }
 
@@ -410,11 +460,34 @@ impl<'a> Scanner<'a> {
     pub fn step(&mut self) -> Step {
         let s = self.src;
         loop {
-            let Some(k) = memchr::memchr(b'<', &s[self.pos.min(s.len())..]) else {
+            let Some(k) = self.next_special(&s[self.pos.min(s.len())..]) else {
                 self.pos = s.len();
                 return Step::Eof;
             };
             let lt = self.pos + k;
+            if s[lt] != b'<'
+                && let Some(t) = self.templates
+            {
+                match templates::scan(t, s, lt, self.quiet) {
+                    templates::Event::Text => self.pos = lt + 1,
+                    templates::Event::Skip(e) => self.pos = e,
+                    templates::Event::Open { kw, name, tag } => {
+                        if templates::quiet(t, kw).is_some() {
+                            self.quiet = Some(kw);
+                        }
+                        self.pos = tag.end;
+                        return Step::Tag(Tag::Block { kw, name, tag });
+                    }
+                    templates::Event::Close { kw, tag } => {
+                        if self.quiet == Some(kw) {
+                            self.quiet = None;
+                        }
+                        self.pos = tag.end;
+                        return Step::Tag(Tag::Unblock { kw, tag });
+                    }
+                }
+                continue;
+            }
             let rest = &s[lt..];
             // In HTML a construct the file ends inside is dropped, as the HTML parser drops an
             // unfinished tag; in XML it is an error.
@@ -618,6 +691,8 @@ mod tests {
                     if self_closing { "/" } else { "" }
                 )),
                 Step::Tag(Tag::End { name, .. }) => out.push(format!("</{}", &src[name])),
+                Step::Tag(Tag::Block { name, .. }) => out.push(format!("{{{}", &src[name])),
+                Step::Tag(Tag::Unblock { tag, .. }) => out.push(format!("}}{}", &src[tag])),
                 Step::Eof => return out,
                 Step::Error(at) => {
                     out.push(format!("error at {at}"));
@@ -871,6 +946,61 @@ mod tests {
         assert_eq!(sc.pos(), src.find("</SCRIPT").unwrap());
         assert!(matches!(sc.step(), Step::Tag(Tag::End { .. })));
         assert!(matches!(sc.step(), Step::Tag(Tag::Start { .. })));
+    }
+
+    fn templated(src: &str, t: TemplateSyntax) -> Vec<String> {
+        let mut sc = Scanner::new(src.as_bytes(), false).templated(Some(t), None);
+        let mut out = Vec::new();
+        loop {
+            match sc.step() {
+                Step::Tag(Tag::Start { name, .. }) => out.push(format!("<{}", &src[name])),
+                Step::Tag(Tag::End { name, .. }) => out.push(format!("</{}", &src[name])),
+                Step::Tag(Tag::Block { name, .. }) => out.push(format!("{{{}", &src[name])),
+                Step::Tag(Tag::Unblock { tag, .. }) => out.push(format!("}}{}", &src[tag])),
+                Step::Eof | Step::Error(_) => return out,
+            }
+        }
+    }
+
+    /// M6 Task 7.2: template blocks between the tags, never inside a raw text element's or a
+    /// comment's text, and nothing but the closer inside a quiet Blade block.
+    #[test]
+    fn template_blocks_come_between_the_tags() {
+        assert_eq!(
+            templated(
+                "<ul>{#each a as b}<li>{b}</li>{/each}</ul><!-- {#if x} --><p a='{#if y}'>",
+                TemplateSyntax::Svelte
+            ),
+            [
+                "<ul",
+                "{#each a as b",
+                "<li",
+                "</li",
+                "}{/each}",
+                "</ul",
+                "<p"
+            ]
+        );
+        let mut sc = Scanner::new(b"<script>{#if x}</script>{#if y}", false)
+            .templated(Some(TemplateSyntax::Svelte), None);
+        assert!(matches!(sc.step(), Step::Tag(Tag::Start { .. })));
+        sc.skip_raw_text(b"script");
+        assert!(matches!(sc.step(), Step::Tag(Tag::End { .. })));
+        assert!(matches!(sc.step(), Step::Tag(Tag::Block { .. })));
+        assert_eq!(
+            templated(
+                "@php $a = '<b>'; @if(x) @endphp<i>@verbatim<b>@if(y)@endverbatim{{-- <s> --}}",
+                TemplateSyntax::Blade
+            ),
+            [
+                "{@php",
+                "}@endphp",
+                "<i",
+                "{@verbatim",
+                "<b",
+                "}@endverbatim"
+            ]
+        );
     }
 
     #[test]

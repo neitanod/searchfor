@@ -1,0 +1,11 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+code-c/m6.svelte
+  ul
+    #each items as item
+      li[1]
+        3:<li>{item.needle}</li>
+      li[2]
+        5:<li>needle empty</li>

@@ -1,0 +1,5 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+4: @section('content') › div.cart › @foreach($items as $item) › li │ <li>{{ $item->needle }}</li>
