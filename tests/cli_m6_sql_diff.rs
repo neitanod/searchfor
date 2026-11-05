@@ -246,6 +246,54 @@ fn m6_sql_rows() {
     );
 }
 
+#[test]
+fn m6_diff() {
+    use std::io::Write;
+    let fx = Fixture::new();
+    let src = b"commit 3f2a9c1234567890\nAuthor: A\n\n    Fix the needle crash\n\ndiff --git a/src/app.rs b/src/app.rs\n--- a/src/app.rs\n+++ b/src/app.rs\n@@ -1,1 +120,1 @@ fn describe(\n+    let needle = 1;\n";
+    seed(&fx, "code-c/m6.patch", src);
+    check(
+        &fx,
+        "diff",
+        "code-c/m6.patch",
+        &[
+            "",
+            "3f2a9c1 Fix the needle crash › src/app.rs › +120 fn describe(",
+        ],
+    );
+    flags(&fx, "diff", "code-c/m6.patch", "describe", "describe", "");
+    let mut child = fx
+        .s4(["--no-docs", "--json", "--format", "diff", "needle"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(src).unwrap();
+    assert_eq!(
+        paths(&matches(&child.wait_with_output().unwrap())),
+        [
+            "",
+            "3f2a9c1 Fix the needle crash › src/app.rs › +120 fn describe("
+        ]
+    );
+    put(
+        &fx,
+        "combined.patch",
+        b"--- a/gone\n+++ /dev/null\n@@@ -3,1 -3,1 +0,0 @@@ context\n--needle\n--- a/next\n+++ b/next\n@@ -1,99 +2,99 @@\n+needle\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "diff",
+            "combined.patch",
+            "needle",
+            &["--json"]
+        ))),
+        ["gone › -3 context", "next › +2"]
+    );
+}
+
 /// M6 plan, «Meaningful generated-name exclusion and encoding tests»: `row N` and
 /// `column K` are words s4 adds, which `--in-headings` never finds.
 #[test]
@@ -278,13 +326,21 @@ fn m6_real_generated_names() {
 /// M6 plan, «Committed broken fixtures, with three snapshots each», sql_diff's rows.
 #[test]
 fn m6_broken_fixtures() {
-    let owned: &[&str] = &["sql"];
-    let cases: &[(&str, &str, &[u8], &[&str])] = &[(
-        "sql",
-        "code-c/broken-m6.sql",
-        b"SELECT 'needle';\nSELECT 'open\nneedle\n",
-        &["SELECT", ""],
-    )];
+    let owned: &[&str] = &["sql", "diff"];
+    let cases: &[(&str, &str, &[u8], &[&str])] = &[
+        (
+            "sql",
+            "code-c/broken-m6.sql",
+            b"SELECT 'needle';\nSELECT 'open\nneedle\n",
+            &["SELECT", ""],
+        ),
+        (
+            "diff",
+            "code-c/broken-m6.patch",
+            b"--- a/x\n+++ b/x\n@@ -1,99 +2,99 @@\n+needle\n--- a/y\n+++ b/y\n@@ -1 +3 @@\n+needle\n",
+            &["x › +2", "y › +3"],
+        ),
+    ];
     let fx = Fixture::new();
     let mut count = 0;
     for &(format, file, src, want) in cases {

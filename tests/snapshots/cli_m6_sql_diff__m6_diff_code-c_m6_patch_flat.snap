@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_sql_diff.rs
+expression: text
+---
+4:     Fix the needle crash
+10: 3f2a9c1 Fix the needle crash › src/app.rs › +120 fn describe( │ +    let needle = 1;

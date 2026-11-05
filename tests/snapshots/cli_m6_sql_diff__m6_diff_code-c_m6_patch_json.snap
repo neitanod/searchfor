@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_sql_diff.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"code-c/m6.patch"}}}
+{"type":"match","data":{"path":{"text":"code-c/m6.patch"},"lines":{"text":"    Fix the needle crash\n"},"line_number":4,"absolute_offset":35,"submatches":[{"match":{"text":"needle"},"start":12,"end":18}],"format":"diff","trail":[],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code-c/m6.patch"},"lines":{"text":"+    let needle = 1;\n"},"line_number":10,"absolute_offset":163,"submatches":[{"match":{"text":"needle"},"start":9,"end":15}],"format":"diff","trail":[{"kind":"commit","name":"3f2a9c1 Fix the needle crash","line":1,"end_line":10,"signature":"commit 3f2a9c1234567890"},{"kind":"file","name":"src/app.rs","line":6,"end_line":10},{"kind":"hunk","name":"+120 fn describe(","line":9,"end_line":10,"signature":"@@ -1,1 +120,1 @@ fn describe("}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"code-c/m6.patch"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":184,"bytes_printed":841,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":841,"bytes_searched":184,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

@@ -3,6 +3,7 @@ pub mod blocks;
 pub mod buildfile;
 pub mod csv;
 pub mod cursor;
+pub mod diff;
 pub mod external;
 pub mod frontmatter;
 pub mod keypath;
@@ -164,6 +165,7 @@ pub fn by_name(name: &str) -> Option<&'static dyn Processor> {
         "buildfile" => Some(&buildfile::Buildfile),
         "blocks" => Some(&blocks::Blocks),
         "sql" => Some(&sql::Sql),
+        "diff" => Some(&diff::Diff),
         _ => None,
     }
 }

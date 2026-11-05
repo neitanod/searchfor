@@ -66,4 +66,5 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("graphql.toml", include_str!("../../formats/graphql.toml")),
     ("protobuf.toml", include_str!("../../formats/protobuf.toml")),
     ("sql.toml", include_str!("../../formats/sql.toml")),
+    ("diff.toml", include_str!("../../formats/diff.toml")),
 ];

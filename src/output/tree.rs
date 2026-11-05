@@ -30,6 +30,9 @@ pub fn label(s: &Segment) -> String {
         "block" => name.into_owned(),
         // M6: a SQL statement is named by its leading keywords and object already.
         "statement" => name.into_owned(),
+        // M6: a diff's file shows its path (a rename its signature; commits and hunks show
+        // theirs, their first lines).
+        "file" | "commit" | "hunk" => name.into_owned(),
         kind => format!("{kind} {name}"),
     }
 }
@@ -395,6 +398,14 @@ mod tests {
         );
         assert_eq!(label(&seg("row", "row 2", 1, 1)), "row 2");
         assert_eq!(label(&seg("column", "email", 1, 1)), "column «email»");
+    }
+
+    #[test]
+    fn labels_of_the_m6_diff_kinds() {
+        assert_eq!(label(&seg("file", "src/app.rs", 1, 1)), "src/app.rs");
+        let mut hunk = seg("hunk", "+120 fn describe(", 1, 1);
+        hunk.signature = Some("@@ -1,1 +120,1 @@ fn describe(".into());
+        assert_eq!(label(&hunk), "@@ -1,1 +120,1 @@ fn describe(");
     }
 
     #[test]
