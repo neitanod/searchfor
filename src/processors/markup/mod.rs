@@ -3,10 +3,12 @@
 //! Matches keeps three short stacks. With `scripts`, the content of a `<script>` gets the
 //! Trails of its Grammar under the `script` element (M6 spec §8.3, `components`); with
 //! `templates`, Svelte's and Blade's blocks open and close on the same stack as the elements
-//! (M6 spec §8.4, §8.5, `templates`).
+//! (M6 spec §8.4, §8.5, `templates`); with `view = "telegram"`, Telegram's exported messages
+//! are the Segments (M6 spec §10.5, `telegram`).
 pub mod components;
 pub mod html;
 pub mod scan;
+pub mod telegram;
 pub mod templates;
 
 use super::{Capability, Cursor, Prepared, Processor};
@@ -45,6 +47,9 @@ struct Params {
     scripts: bool,
     /// HTML: the template blocks read between the tags (M6 spec §8.4, §8.5).
     templates: Option<TemplateSyntax>,
+    /// HTML: `view = "telegram"`, Telegram's messages when the file has their classes (M6
+    /// spec §10.5).
+    telegram: bool,
 }
 
 /// Whether a markup Definition's `[params]` read its scripts: then a run gives it a
@@ -72,14 +77,22 @@ fn params(t: &toml::Table) -> anyhow::Result<Params> {
                 anyhow::anyhow!("markup's `templates` is \"svelte\" or \"blade\"")
             })?),
         };
-    if (scripts || templates.is_some()) && syntax != Syntax::Html {
-        anyhow::bail!("markup reads `scripts` and `templates` only with `syntax` = \"html\"");
+    let telegram = match t.get("view").and_then(|v| v.as_str()) {
+        None => false,
+        Some("telegram") => true,
+        Some(_) => anyhow::bail!("markup's `view` is \"telegram\""),
+    };
+    if (scripts || templates.is_some() || telegram) && syntax != Syntax::Html {
+        anyhow::bail!(
+            "markup reads `scripts`, `templates` and `view` only with `syntax` = \"html\""
+        );
     }
     Ok(Params {
         syntax,
         name_chars,
         scripts,
         templates,
+        telegram,
     })
 }
 
@@ -124,6 +137,8 @@ struct Frame {
     script_end: Option<usize>,
     /// A template block: its keyword (`name` is then its name and `tag` its opener).
     block: Option<u8>,
+    /// Telegram's view: a message, the one Segment of its elements.
+    message: bool,
 }
 
 /// The children of an open element, counted for their `[n]`.
@@ -157,6 +172,7 @@ impl Frame {
             children: None,
             script_end: None,
             block: None,
+            message: false,
         }
     }
 }
@@ -178,6 +194,11 @@ struct Walk<'s, 'c, 'a> {
     lines: (usize, u64),
     /// The open template blocks of each keyword: a closer with none open is ignored at once.
     blocks: [u32; templates::KEYWORDS],
+    /// Telegram's view, the file having its classes: the open message's name so far and
+    /// whether it is `joined`, and the last sender named.
+    telegram: bool,
+    message: Option<(telegram::MsgName, bool)>,
+    last_sender: Option<Range<usize>>,
     mode: Mode<'c, 'a>,
     stack: Vec<Frame>,
     /// The `seq` of the next element that may be a Segment.
@@ -248,6 +269,10 @@ struct Census {
     marks: Vec<Mark>,
     mark_every: usize,
     next_mark: usize,
+    /// Telegram's view, the file having its classes; then the name of each message, by its
+    /// `seq`, in order.
+    telegram: bool,
+    messages: Vec<(u32, telegram::MsgName)>,
 }
 
 /// `Census::ends`: the end in the low bits, the flags in the two high ones.
@@ -321,11 +346,19 @@ impl Census {
             marks: Vec::new(),
             mark_every,
             next_mark: mark_every,
+            telegram: false,
+            messages: Vec::new(),
         }
     }
 
     fn end_of(&self, seq: u32) -> usize {
         self.ends.get(seq).0
+    }
+
+    /// The name of the message `seq`, None when it is no message.
+    fn message(&self, seq: u32) -> Option<&telegram::MsgName> {
+        let k = self.messages.binary_search_by_key(&seq, |m| m.0).ok()?;
+        Some(&self.messages[k].1)
     }
 }
 
@@ -341,6 +374,12 @@ struct Open {
     script_end: Option<usize>,
     /// A template block (`Frame::block`).
     block: bool,
+}
+
+impl Open {
+    fn message(&self, census: &Census) -> bool {
+        census.telegram && !self.block && census.message(self.seq).is_some()
+    }
 }
 
 /// A cursor's state between two steps of its walk: the scanner's, the open elements, and the
@@ -552,11 +591,25 @@ impl<'a> Walk<'_, '_, 'a> {
         } else if self.p.syntax == Syntax::Html {
             self.open[f.id as usize] -= 1;
         }
+        let message = f.message.then(|| {
+            let (mut m, joined) = self.message.take().expect("an open message");
+            if m.sender.is_some() {
+                self.last_sender.clone_from(&m.sender);
+            } else if joined {
+                m.inherited.clone_from(&self.last_sender);
+            }
+            m
+        });
+        // Telegram's view keeps its messages alone: every other element is hidden.
+        let shown = !self.telegram || f.message;
         let keep = match &mut self.mode {
-            Mode::Collect(c) => f.seg && c.keeps(f.tag.start, end),
+            Mode::Collect(c) => f.seg && shown && c.keeps(f.tag.start, end),
             Mode::Census(census) => {
                 if f.seq != NO_SEQ {
                     census.ends.set_end(f.seq, end);
+                    if let Some(m) = message {
+                        census.messages.push((f.seq, m));
+                    }
                 }
                 self.recycle(&mut f);
                 return;
@@ -566,6 +619,14 @@ impl<'a> Walk<'_, '_, 'a> {
         self.recycle(&mut f);
         if keep && let Some(content_end) = f.script_end {
             self.script(&f, f.tag.end..content_end);
+        }
+        if keep && let Some(m) = message {
+            let (text, pieces) = telegram::project(self.src, self.p.name_chars, &m);
+            let mut s = OutlineSegment::new("message", text, f.tag.start..end, f.tag.clone());
+            s.name = Some(pieces);
+            s.name_anchor = f.tag.start;
+            self.collector().closed(s, end);
+            return;
         }
         if keep && f.block.is_some() {
             // A block is named by its opener: no `[n]`, and its own label.
@@ -693,6 +754,20 @@ impl<'a> Walk<'_, '_, 'a> {
         // An empty element (`<x/>`, a void element) holds nothing but its tag: no Segment, but
         // it counts among its siblings.
         let empty = self_closing || info.void;
+        // Telegram's view: an element inside a message gives its name what it holds; one
+        // outside every message with the class `message` is one.
+        let mut message = false;
+        if self.telegram {
+            match &mut self.message {
+                Some((m, _)) => telegram::ingredient(self.src, &tag, name.end, m),
+                None if !empty && telegram::has_class(self.src, &tag, name.end, b"message") => {
+                    message = true;
+                    let joined = telegram::has_class(self.src, &tag, name.end, b"joined");
+                    self.message = Some((telegram::MsgName::default(), joined));
+                }
+                None => {}
+            }
+        }
         let seq = if seg && !empty {
             self.next_seq += 1;
             self.next_seq - 1
@@ -750,6 +825,7 @@ impl<'a> Walk<'_, '_, 'a> {
             children: None,
             script_end: None,
             block: None,
+            message,
         });
         if raw {
             sc.skip_raw_text(&self.src[name]);
@@ -788,6 +864,7 @@ impl<'a> Walk<'_, '_, 'a> {
             children: None,
             script_end: None,
             block: Some(kw),
+            message: false,
         });
     }
 
@@ -861,7 +938,7 @@ impl<'a> Walk<'_, '_, 'a> {
                             seq: f.seq,
                             name: f.name.clone(),
                             tag: f.tag.clone(),
-                            hidden: f.info.hidden,
+                            hidden: f.info.hidden || (self.telegram && !f.message),
                             ordinal: f.ordinal,
                             script_end: f.script_end,
                             block: f.block.is_some(),
@@ -909,12 +986,22 @@ impl<'a> Walk<'_, '_, 'a> {
 
 impl<'s, 'c, 'a> Walk<'s, 'c, 'a> {
     fn new(src: &'s [u8], p: Params, scripts: Option<&'s Scripts>, mode: Mode<'c, 'a>) -> Self {
+        // Telegram's view applies to a file with its classes alone, told before the walk: the
+        // wrappers before the first message are hidden too.
+        let telegram = p.telegram && telegram::detect(src);
+        let mut mode = mode;
+        if let Mode::Census(c) = &mut mode {
+            c.telegram = telegram;
+        }
         Walk {
             src,
             p,
             scripts,
             lines: (0, 0),
             blocks: [0; templates::KEYWORDS],
+            telegram,
+            message: None,
+            last_sender: None,
             mode,
             stack: vec![Frame::root()],
             next_seq: 0,
@@ -1142,6 +1229,9 @@ impl<'s> MarkupCursor<'s> {
         let pushed = self.open.len() < MAX_DEPTH;
         if pushed {
             let seq = self.next_seq;
+            // Telegram's view hides every element but its messages.
+            let hidden =
+                info.hidden || (self.census.telegram && self.census.message(seq).is_none());
             self.next_seq += 1;
             let ordinal = if self.census.ends.get(seq).1 & LATER != 0 {
                 self.next_ordinal += 1;
@@ -1153,7 +1243,7 @@ impl<'s> MarkupCursor<'s> {
                 seq,
                 name: name.clone(),
                 tag,
-                hidden: info.hidden,
+                hidden,
                 ordinal,
                 script_end: None,
                 block: false,
@@ -1206,6 +1296,12 @@ impl<'s> MarkupCursor<'s> {
         let (start, seq, ordinal) = (o.tag.start, o.seq, o.ordinal);
         let (kind, name) = if o.block {
             ("block", block_name(self.src, self.p, &o.name).0)
+        } else if o.message(self.census) {
+            let m = self.census.message(seq).expect("a message");
+            (
+                "message",
+                telegram::project(self.src, self.p.name_chars, m).0,
+            )
         } else {
             let (mut name, _, has_id) = element_name(self.src, self.p, &o.name, &o.tag);
             if !has_id && self.census.ends.get(seq).1 & REPEATS != 0 {
@@ -1939,6 +2035,37 @@ mod tests {
             b"@section('a')\n<div>@foreach($i as $x)<li>a\n@endforeach</div>@verbatim\n@if(x)<p>q</p>@endif\n@endverbatim@php $a = '<b>'; @endphp{{-- @if(y) --}}@section('x','y')@show tail@endsection",
             &blade,
         );
+    }
+
+    /// M6 Task 7.3: Telegram's messages, their names from elements after their start tags
+    /// and a joined message's sender, from the cursor as from `trails`; a page without the
+    /// export's classes keeps HTML's Trails.
+    #[test]
+    fn the_markup_cursor_gives_telegram_trails_at_every_byte() {
+        let params: toml::Table = toml::from_str("syntax = 'html'\nview = 'telegram'").unwrap();
+        let src = b"<html><body><div class=page_wrap><p>head</p><div class=history>\n<div class=\"message service\">x</div><div class='message default'><div class='date' title='1.1 &amp; 2'>t</div><div class=from_name> Ana </div><div class=text>a<b>b</b></div></div>\n<div class='message default joined'><div class=text>c</div></div><div class='message'><div class=from_name>Bo</div>d</div>";
+        every_byte_with(src, &params);
+        every_byte_with(b"<main><p>a</p><p>b</p></main>", &params);
+        let input = Input {
+            bytes: src,
+            path: Path::new("messages.html"),
+            format: "telegram-html",
+            disk: None,
+        };
+        let at = memchr::memmem::find(src, b">c<").unwrap() + 1;
+        let t = Markup.trails(&input, &params, &[at]).unwrap();
+        let got: Vec<(&str, &str)> = t[0]
+            .iter()
+            .map(|s| (s.kind.as_str(), s.name.as_str()))
+            .collect();
+        assert_eq!(got, [("message", "Ana")]);
+        let names: Vec<String> = Markup
+            .names(&input, &params)
+            .unwrap()
+            .into_iter()
+            .map(|n| n.text)
+            .collect();
+        assert_eq!(names, ["", "1.1 & 2 Ana", "Ana", "Bo"]);
     }
 
     /// M6 Task 7.1: the markup cursor's `open_from` is the start of the outermost shown

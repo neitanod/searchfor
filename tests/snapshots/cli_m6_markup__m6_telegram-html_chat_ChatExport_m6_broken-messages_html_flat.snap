@@ -1,0 +1,5 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+1: 2024 Ana │ <div class='message'><div class='date' title='2024'>x</div><div class='from_name'>Ana</div><div class='text'>needle

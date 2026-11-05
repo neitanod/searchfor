@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"chat/ChatExport_m6/messages.html"}}}
+{"type":"match","data":{"path":{"text":"chat/ChatExport_m6/messages.html"},"lines":{"text":"<div class='text'>needle</div>\n"},"line_number":5,"absolute_offset":210,"submatches":[{"match":{"text":"needle"},"start":18,"end":24}],"format":"telegram-html","trail":[{"kind":"message","name":"31.01.2024 10:04:12 Ana","line":2,"end_line":6}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"chat/ChatExport_m6/messages.html"},"lines":{"text":"<div class='text'>needle</div>\n"},"line_number":9,"absolute_offset":364,"submatches":[{"match":{"text":"needle"},"start":18,"end":24}],"format":"telegram-html","trail":[{"kind":"message","name":"31.01.2024 10:05:00 Ana","line":7,"end_line":10}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"chat/ChatExport_m6/messages.html"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":429,"bytes_printed":788,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":788,"bytes_searched":429,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

@@ -337,6 +337,53 @@ fn m6_template_keyword_pairs() {
     }
 }
 
+#[test]
+fn m6_telegram_html() {
+    let fx = Fixture::new();
+    let src = b"<html><body><div class='page_wrap'><div class='history'>\n<div class='message default' id='message1'>\n<div class='pull_right date details' title='31.01.2024 10:04:12'>time</div>\n<div class='from_name'>Ana</div>\n<div class='text'>needle</div>\n</div>\n<div class='message default joined' id='message2'>\n<div class='date details' title='31.01.2024 10:05:00'>time</div>\n<div class='text'>needle</div>\n</div>\n</div></div></body></html>\n";
+    seed(&fx, "chat/ChatExport_m6/messages.html", src);
+    check(
+        &fx,
+        "telegram-html",
+        "chat/ChatExport_m6/messages.html",
+        &["31.01.2024 10:04:12 Ana", "31.01.2024 10:05:00 Ana"],
+    );
+    flags(
+        &fx,
+        "telegram-html",
+        "chat/ChatExport_m6/messages.html",
+        "Ana",
+        "Ana",
+        "",
+    );
+    put(&fx, "generic.html", b"<main><p>needle</p></main>\n");
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "telegram-html",
+            "generic.html",
+            "needle",
+            &["--json"]
+        ))),
+        ["main › p"]
+    );
+    put(
+        &fx,
+        "bad-telegram.html",
+        b"<div class='message default'><div class='date' title='2024'>x</div><div class='from_name'>Ana</div><div class='text'>needle\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "telegram-html",
+            "bad-telegram.html",
+            "needle",
+            &["--json"]
+        ))),
+        ["2024 Ana"]
+    );
+}
+
 /// M6 plan, «Meaningful generated-name exclusion and encoding tests», markup's row: Vue's
 /// `[2]` is a word s4 adds, so `--in-headings` never finds it.
 #[test]
@@ -418,7 +465,7 @@ fn m6_encoding_and_lone_cr() {
 /// M6 plan, «Committed broken fixtures, with three snapshots each», markup's rows.
 #[test]
 fn m6_broken_fixtures() {
-    let owned: &[&str] = &["vue", "svelte", "blade"];
+    let owned: &[&str] = &["vue", "svelte", "blade", "telegram-html"];
     let cases: &[(&str, &str, &[u8], &[&str])] = &[
         (
             "vue",
@@ -437,6 +484,12 @@ fn m6_broken_fixtures() {
             "code-c/broken-m6.blade.php",
             b"@if($x)\n<div>needle\n",
             &["@if($x) › div"],
+        ),
+        (
+            "telegram-html",
+            "chat/ChatExport_m6/broken-messages.html",
+            b"<div class='message'><div class='date' title='2024'>x</div><div class='from_name'>Ana</div><div class='text'>needle\n",
+            &["2024 Ana"],
         ),
     ];
     let fx = Fixture::new();
