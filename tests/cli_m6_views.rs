@@ -193,18 +193,85 @@ fn m6_jupyter() {
     assert_eq!(paths(&rows), ["cell 1", ""]);
 }
 
+#[test]
+fn m6_har() {
+    let fx = Fixture::new();
+    let src = br#"{"log":{
+ "entries":[{
+  "response":{"content":{"text":"needle"},"status":200},
+  "request":{"method":"GET","url":"https://api.example.com/v1/users",
+   "headers":[{"name":"Authorization","value":"needle"}],
+   "cookies":[{"name":"session","value":"needle"}],
+   "queryString":[{"name":"q","value":"needle"}],
+   "postData":{"params":[{"name":"body","value":"needle"}]}}
+ }],"pages":[{"title":"Login","id":"needle"}]}}
+"#;
+    seed(&fx, "code-c/m6.har", src);
+    check(
+        &fx,
+        "har",
+        "code-c/m6.har",
+        &[
+            "GET api.example.com/v1/users › response › content › text",
+            "GET api.example.com/v1/users › request › header Authorization › value",
+            "GET api.example.com/v1/users › request › cookie session › value",
+            "GET api.example.com/v1/users › request › queryString q › value",
+            "GET api.example.com/v1/users › request › postData › param body › value",
+            "Login › id",
+        ],
+    );
+    flags(
+        &fx,
+        "har",
+        "code-c/m6.har",
+        "response",
+        "Authorization",
+        "^header ",
+    );
+    put(
+        &fx,
+        "bad-har",
+        b"{\"log\":{\"entries\":[{\"request\":{\"method\":\"GET\",\"url\":\"http://x\"},\"x\":\"needle\"}]}}\nnope\nneedle\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "har",
+            "bad-har",
+            "needle",
+            &["--json"]
+        ))),
+        ["GET x › x", ""]
+    );
+    let rows = matches(&output(&fx, "har", "code-c/m6.har", "needle", &["--json"]));
+    assert!(
+        rows[0]["trail"][0]["signature"]
+            .as_str()
+            .unwrap()
+            .contains("https://api.example.com/v1/users")
+    );
+}
+
 /// Each Format's committed broken fixture, with its three snapshots (plan, «Committed broken
 /// fixtures, with three snapshots each»).
 #[test]
 fn m6_broken_fixtures() {
-    let owned: &[&str] = &["jupyter"];
+    let owned: &[&str] = &["jupyter", "har"];
     #[allow(clippy::type_complexity)]
-    let cases: &[(&str, &str, &[u8], &[&str])] = &[(
-        "jupyter",
-        "docs-a/broken-m6.ipynb",
-        b"{\"cells\":[{\"cell_type\":\"code\",\"source\":[\"needle\"]}]}\nnope\nneedle\n",
-        &["cell 1", ""],
-    )];
+    let cases: &[(&str, &str, &[u8], &[&str])] = &[
+        (
+            "jupyter",
+            "docs-a/broken-m6.ipynb",
+            b"{\"cells\":[{\"cell_type\":\"code\",\"source\":[\"needle\"]}]}\nnope\nneedle\n",
+            &["cell 1", ""],
+        ),
+        (
+            "har",
+            "code-c/broken-m6.har",
+            b"{\"log\":{\"entries\":[{\"request\":{\"method\":\"GET\",\"url\":\"http://x\"},\"x\":\"needle\"}]}}\nnope\nneedle\n",
+            &["GET x › x", ""],
+        ),
+    ];
     let fx = Fixture::new();
     let mut count = 0;
     for &(format, file, src, want) in cases {
@@ -223,12 +290,19 @@ fn m6_broken_fixtures() {
 #[test]
 fn m6_real_generated_names() {
     let fx = Fixture::new();
-    let owned: &[&str] = &["jupyter"];
-    let cases: &[(&str, &[u8], &str)] = &[(
-        "jupyter",
-        b"{\"cells\":[{\"cell_type\":\"code\",\"source\":[\"needle\"]}]}",
-        "^cell [0-9]+$",
-    )];
+    let owned: &[&str] = &["jupyter", "har"];
+    let cases: &[(&str, &[u8], &str)] = &[
+        (
+            "jupyter",
+            b"{\"cells\":[{\"cell_type\":\"code\",\"source\":[\"needle\"]}]}",
+            "^cell [0-9]+$",
+        ),
+        (
+            "har",
+            b"{\"log\":{\"entries\":[{\"request\":{\"method\":\"GET\",\"url\":\"http://x\",\"headers\":[{\"name\":\"Auth\",\"value\":\"needle\"}]}}]}}",
+            "^header ",
+        ),
+    ];
     for &(format, src, generated) in cases {
         if !owned.contains(&format) {
             continue;
@@ -245,4 +319,64 @@ fn m6_real_generated_names() {
             1
         );
     }
+}
+
+/// UTF-16 and a BOM read as UTF-8, and a lone CR breaks no line (plan, «Meaningful
+/// generated-name exclusion and encoding tests»): HAR is this topic's representative. A raw CR
+/// is no character of a JSON string, so the lone CR is whitespace before the value.
+#[test]
+fn m6_encoding_and_lone_cr() {
+    let fx = Fixture::new();
+    let (format, src) = (
+        "har",
+        "{\"log\":{\"entries\":[{\"request\":{\"method\":\"GET\",\"url\":\"http://x\"},\"x\":\"needle\"}]}}\n",
+    );
+    put(&fx, "encoding.fixture", src.as_bytes());
+    let lf = paths(&matches(&output(
+        &fx,
+        format,
+        "encoding.fixture",
+        "needle",
+        &["--json"],
+    )));
+    assert_eq!(lf, ["GET x › x"]);
+    let utf16: Vec<u8> = [
+        vec![0xff, 0xfe],
+        src.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+    ]
+    .concat();
+    put(&fx, "utf16.fixture", &utf16);
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            format,
+            "utf16.fixture",
+            "needle",
+            &["--json"]
+        ))),
+        lf
+    );
+    put(
+        &fx,
+        "bom.fixture",
+        &[b"\xef\xbb\xbf".as_slice(), src.as_bytes()].concat(),
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            format,
+            "bom.fixture",
+            "needle",
+            &["--json"]
+        ))),
+        lf
+    );
+    put(
+        &fx,
+        "cr.fixture",
+        src.replace(":\"needle", ":\r\"needle").as_bytes(),
+    );
+    let rows = matches(&output(&fx, format, "cr.fixture", "needle", &["--json"]));
+    assert_eq!(paths(&rows), lf);
+    assert_eq!(rows[0]["line_number"], 1);
 }

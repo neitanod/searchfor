@@ -38,6 +38,7 @@ pub(super) fn node(
     let (kind, n, key) = match node {
         Node::Cell(i) => ("cell", i + 1, "cell_type"),
         Node::Output(i) => ("output", i + 1, "output_type"),
+        _ => return None,
     };
     let name = format!("{kind} {n}");
     let ty = find(src, value, &[&[key]])[0]

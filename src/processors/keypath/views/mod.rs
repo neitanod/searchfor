@@ -6,6 +6,7 @@
 //! that holds them (`find`), the first time a Trail holds it, so a name may come from bytes past
 //! the Match and the preparation keeps no table of every unit. A file without the shape at its
 //! first value keeps keypath's JSON Trails.
+pub(crate) mod har;
 pub(crate) mod jupyter;
 
 use super::json::{self, JsonCursor, Met, Open, Step};
@@ -18,6 +19,7 @@ use std::ops::Range;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum View {
     Jupyter,
+    Har,
 }
 
 impl View {
@@ -27,7 +29,8 @@ impl View {
             None => Ok(None),
             Some(v) => match v.as_str() {
                 Some("jupyter") => Ok(Some(View::Jupyter)),
-                _ => anyhow::bail!("keypath's `view` is \"jupyter\""),
+                Some("har") => Ok(Some(View::Har)),
+                _ => anyhow::bail!("keypath's `view` is \"jupyter\" or \"har\""),
             },
         }
     }
@@ -47,6 +50,18 @@ pub(super) enum Ctx {
     Outputs,
     Output,
     Data,
+    // HAR (M6 spec §8.8).
+    Har,
+    Log,
+    Entries,
+    Pages,
+    /// An element of `entries`.
+    Entry,
+    /// A `request` or a `response`.
+    Exchange,
+    PostData,
+    /// Elements named by their `name`, after this word.
+    Named(&'static str),
 }
 
 /// What a view makes of one member.
@@ -69,6 +84,12 @@ pub(super) enum Node {
     Cell(usize),
     /// `output N`, 1-based within its cell.
     Output(usize),
+    /// A HAR entry: `GET host/path`.
+    Entry,
+    /// A HAR page, by its `title`.
+    Page,
+    /// An element named by its `name`: `header Authorization`.
+    Named(&'static str),
 }
 
 /// A member, as a view's `project` sees it.
@@ -116,6 +137,7 @@ fn shape(view: View, src: &[u8], root: usize) -> Option<(Ctx, usize)> {
         let p = probe(src, &m.path[0], m.value.start);
         found = match view {
             View::Jupyter => (p.is("cells") && p.array()).then_some((Ctx::Notebook, m.value.start)),
+            View::Har => (p.is("log") && p.object()).then_some((Ctx::Har, m.value.start)),
         };
         found.is_none()
     });
@@ -140,6 +162,7 @@ fn project(view: View, ctx: Ctx, p: &Probe) -> (Role, Ctx) {
         (Ctx::Plain, _) => (Role::Plain, Ctx::Plain),
         (Ctx::Lines, _) => (Role::Hidden, Ctx::Plain),
         (_, View::Jupyter) => jupyter::project(ctx, p),
+        (_, View::Har) => har::project(ctx, p),
     }
 }
 
@@ -190,6 +213,10 @@ pub(super) struct NameBuf {
 }
 
 impl NameBuf {
+    pub fn word(&mut self, s: &str) {
+        self.text.push_str(s);
+    }
+
     /// The text of `(text, pieces)` from its byte `skip` on.
     pub fn source(&mut self, (text, pieces): &(String, Pieces), skip: usize) {
         let base = self.text.len();
@@ -254,6 +281,7 @@ pub(crate) fn prepare<'a>(
     let name_chars = super::lines::name_chars(params);
     let headings = match view {
         View::Jupyter => jupyter::headings(src, at, name_chars),
+        View::Har => Outline::default(),
     };
     Ok(Box::new(ViewPrepared {
         src,
@@ -311,10 +339,9 @@ impl<'a> ViewPrepared<'a> {
     /// (its lines). None when the values its name needs are absent: the member keeps keypath's
     /// Segment then.
     fn node(&self, node: Node, value: usize, base: Segment) -> Option<Built> {
-        match node {
-            Node::Cell(_) | Node::Output(_) => {
-                jupyter::node(self.src, node, value, base, self.name_chars)
-            }
+        match self.view {
+            View::Jupyter => jupyter::node(self.src, node, value, base, self.name_chars),
+            View::Har => har::node(self.src, node, value, base, self.name_chars),
         }
     }
 }

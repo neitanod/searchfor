@@ -1,0 +1,11 @@
+# formats/har.toml — HAR captures (M6 spec §8.8): each entry named by its request,
+# `GET api.example.com/v1/users › response › content › text`.
+name       = "har"
+extensions = ["har"]
+processor  = "keypath"
+
+[params]
+syntax = "json"
+view   = "har"
+# Characters of an entry's or an element's name before it is cut with `…`.
+name_chars = 60

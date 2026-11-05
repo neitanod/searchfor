@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_views.rs
+expression: text
+---
+code-c/broken-m6.har
+  GET http://x
+    x
+      1:{"log":{"entries":[{"request":{"method":"GET","url":"http://x"},"x":"needle"}]}}
+  3:needle
