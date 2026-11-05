@@ -161,6 +161,22 @@ impl NameBuf {
         self.chars += self.text[at..].chars().count();
     }
 
+    /// Text that maps to nothing in the Source.
+    pub fn push_generated(&mut self, s: &str) {
+        for c in s.chars() {
+            if self.full() {
+                return;
+            }
+            self.text.push(c);
+            self.chars += 1;
+        }
+    }
+
+    /// Bytes of text so far.
+    pub fn len(&self) -> usize {
+        self.text.len()
+    }
+
     /// Text decoded from the Source bytes `r`: one piece.
     pub fn push_decoded(&mut self, s: &str, r: Range<usize>) {
         if self.full() || s.is_empty() {

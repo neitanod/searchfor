@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_mail_chat.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"mail/m6-mime.eml"}}}
+{"type":"match","data":{"path":{"text":"mail/m6-mime.eml"},"lines":{"text":"needle plain\n"},"line_number":10,"absolute_offset":167,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"eml","trail":[{"kind":"part","name":"part 1 multipart/alternative","line":5,"end_line":11},{"kind":"part","name":"part 1.1 text/plain","line":8,"end_line":10}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"mail/m6-mime.eml"},"lines":{"text":"needle attachment\n"},"line_number":16,"absolute_offset":283,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"eml","trail":[{"kind":"part","name":"attachment café.txt","line":13,"end_line":16}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"mail/m6-mime.eml"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":309,"bytes_printed":753,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":753,"bytes_searched":309,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

@@ -279,3 +279,112 @@ fn m6_encoding_and_lone_cr() {
     assert_eq!(paths(&rows), lf);
     assert_eq!(rows[0]["line_number"], 3);
 }
+
+#[test]
+fn m6_mime() {
+    let fx = Fixture::new();
+    let src = b"Subject: =?UTF-8?Q?Budget_=C3=A9?=\nContent-Type: multipart/mixed; boundary=OUT\n\n--OUT\nContent-Type: multipart/alternative; boundary=IN\n\n--IN\nContent-Type: text/plain\n\nneedle plain\n--IN--\n--OUT\nContent-Type: text/plain\nContent-Disposition: attachment; filename*=UTF-8''caf%C3%A9.txt\n\nneedle attachment\n--OUT--\n";
+    seed(&fx, "mail/m6-mime.eml", src);
+    check(
+        &fx,
+        "eml",
+        "mail/m6-mime.eml",
+        &[
+            "part 1 multipart/alternative › part 1.1 text/plain",
+            "attachment café.txt",
+        ],
+    );
+    flags(
+        &fx,
+        "eml",
+        "mail/m6-mime.eml",
+        "café.txt",
+        "café",
+        "^part [0-9.]+ ",
+    );
+    put(
+        &fx,
+        "encoded.mbox",
+        b"From a x\nSubject: =?UTF-8?B?QnVkZ2V0?=\n\nneedle\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "mbox",
+            "encoded.mbox",
+            "needle",
+            &["--json"]
+        ))),
+        ["Budget › body"]
+    );
+    let decoded = output(
+        &fx,
+        "mbox",
+        "encoded.mbox",
+        "Budget",
+        &["--json", "--in-headings"],
+    );
+    assert_eq!(matches(&decoded).len(), 1);
+    put(
+        &fx,
+        "bad-mime.eml",
+        b"Content-Type: multipart/mixed; boundary=X\n\n--X\nContent-Type: text/plain\n\nneedle\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "eml",
+            "bad-mime.eml",
+            "needle",
+            &["--json"]
+        ))),
+        ["part 1 text/plain"]
+    );
+    put(
+        &fx,
+        "encoded-body.eml",
+        b"Content-Transfer-Encoding: base64\n\nbmVlZGxl\n",
+    );
+    let absent = output(&fx, "eml", "encoded-body.eml", "needle", &["--json"]);
+    assert_eq!(code(&absent), 1);
+}
+
+/// A generated name (`part 1`) has no Source piece, so `--in-headings` never finds it (plan,
+/// «Meaningful generated-name exclusion and encoding tests»).
+#[test]
+fn m6_real_generated_names() {
+    let fx = Fixture::new();
+    let owned: &[&str] = &["eml"];
+    let cases: &[(&str, &[u8], &str)] = &[(
+        "eml",
+        b"Content-Type: multipart/mixed; boundary=X\n\n--X\nContent-Type: text/plain\n\nneedle\n--X--\n",
+        "^part [0-9]+ ",
+    )];
+    for &(format, src, generated) in cases {
+        if !owned.contains(&format) {
+            continue;
+        }
+        put(&fx, "generated.fixture", src);
+        assert_eq!(
+            code(&output(
+                &fx,
+                format,
+                "generated.fixture",
+                generated,
+                &["--json", "--in-headings"]
+            )),
+            1
+        );
+        // The media type comes from the Source: it is found.
+        assert_eq!(
+            code(&output(
+                &fx,
+                format,
+                "generated.fixture",
+                "text/plain",
+                &["--json", "--in-headings"]
+            )),
+            0
+        );
+    }
+}

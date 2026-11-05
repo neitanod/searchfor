@@ -3,6 +3,7 @@
 //! its decoded `Subject`; a body is a `part`. The messages of an mbox are its top-level units:
 //! the cursor finds their boundaries as the Matches reach them and builds the headers and parts
 //! of a message only when a Match falls in it (plan D8, spec §11).
+mod mime;
 mod names;
 
 use super::{Capability, Cursor, Prepared, Processor};
@@ -153,14 +154,70 @@ fn message_segment(src: &[u8], unit: &Unit, block: &HeaderBlock, max: usize) -> 
     s
 }
 
-/// The Segments of a body: a non-multipart one is the part `body`.
+/// A MIME part's Segment: `attachment NAME` when it has a file name, else `part N TYPE` in
+/// IMAP's numbering and its media type as written. The words s4 adds are text of the name only;
+/// its label is the file name's or the media type's bytes, so a Match there is outside the part
+/// and inside the header that holds them (rule 5).
+fn part_segment(src: &[u8], part: &mime::Part, max: usize) -> OutlineSegment {
+    let at = part.range.start;
+    let (name, pieces, label) = match mime::file_name(src, &part.block, "attachment ", max) {
+        Some(f) => (f.text, f.pieces, f.span),
+        None => {
+            let mut n = NameBuf::new(max);
+            n.push_generated("part ");
+            n.push_generated(&part.number);
+            n.push_generated(" ");
+            let typed = part
+                .block
+                .get(src, "Content-Type")
+                .map(|h| mime::Typed::of(src, h))
+                .filter(|t| !t.kind.is_empty());
+            let label = match &typed {
+                Some(t) => {
+                    t.u.push_verbatim(src, t.kind.clone(), &mut n);
+                    t.u.source(t.kind.clone())
+                }
+                None => {
+                    // RFC 2045 §5.2: no Content-Type is text/plain.
+                    n.push_generated("text/plain");
+                    at..at
+                }
+            };
+            let (name, pieces) = n.finish();
+            (name, pieces, label)
+        }
+    };
+    let mut s = OutlineSegment::new("part", name, part.range.clone(), label.clone());
+    s.name = Some(pieces);
+    s.name_anchor = label.start;
+    s
+}
+
+/// The Segments of a body: a multipart one's parts, nested, each with its headers inside it
+/// (the multipart itself has no Segment of its own: its first part is `part 1`); a
+/// non-multipart one is the part `body`.
 fn body_segments(
     src: &[u8],
-    _block: &HeaderBlock,
+    block: &HeaderBlock,
     body: Range<usize>,
-    _p: Params,
+    p: Params,
 ) -> Vec<OutlineSegment> {
-    let _ = src;
+    if let Some(boundary) = mime::boundary(src, block) {
+        let mut out = Vec::new();
+        for part in mime::scan_parts(src, body, boundary) {
+            if part.range.is_empty() {
+                continue;
+            }
+            out.push(part_segment(src, &part, p.name_chars));
+            out.extend(
+                part.block
+                    .headers
+                    .iter()
+                    .map(|h| header_segment(src, h, p.name_chars)),
+            );
+        }
+        return out;
+    }
     if body.is_empty() {
         return Vec::new();
     }
