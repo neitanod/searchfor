@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"docs-a/broken-m6.adoc"}}}
+{"type":"match","data":{"path":{"text":"docs-a/broken-m6.adoc"},"lines":{"text":"needle\n"},"line_number":4,"absolute_offset":14,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"asciidoc","trail":[{"kind":"document","name":"T","line":1,"end_line":5},{"kind":"heading","name":"A","line":2,"end_line":5,"level":1,"signature":"== A"},{"kind":"code","name":"literal","line":3,"end_line":5,"signature":"...."}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"docs-a/broken-m6.adoc"},"lines":{"text":"== needle\n"},"line_number":5,"absolute_offset":21,"submatches":[{"match":{"text":"needle"},"start":3,"end":9}],"format":"asciidoc","trail":[{"kind":"document","name":"T","line":1,"end_line":5},{"kind":"heading","name":"A","line":2,"end_line":5,"level":1,"signature":"== A"},{"kind":"code","name":"literal","line":3,"end_line":5,"signature":"...."}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"docs-a/broken-m6.adoc"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":31,"bytes_printed":961,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":961,"bytes_searched":31,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

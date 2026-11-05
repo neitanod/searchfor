@@ -1,0 +1,10 @@
+# formats/asciidoc.toml — AsciiDoc titles, headings and delimited blocks (M6 spec §6.1):
+# `Deploy guide › Install › Linux › bash`.
+name       = "asciidoc"
+extensions = ["adoc", "asciidoc"]
+processor  = "headings"
+
+[params]
+syntax = "asciidoc"
+# Characters of a heading's or a block's name before it is cut with `…`.
+name_chars = 40

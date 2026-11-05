@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"docs-a/broken-m6.rst"}}}
+{"type":"match","data":{"path":{"text":"docs-a/broken-m6.rst"},"lines":{"text":"   needle\n"},"line_number":6,"absolute_offset":21,"submatches":[{"match":{"text":"needle"},"start":3,"end":9}],"format":"rst","trail":[{"kind":"heading","name":"A","line":1,"end_line":6,"level":1,"signature":"A"},{"kind":"code","name":"bash","line":4,"end_line":6,"signature":".. code:: bash"}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"docs-a/broken-m6.rst"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":31,"bytes_printed":459,"matched_lines":1,"matches":1}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":459,"bytes_searched":31,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":1,"matches":1,"searches":1,"searches_with_match":1}},"type":"summary"}

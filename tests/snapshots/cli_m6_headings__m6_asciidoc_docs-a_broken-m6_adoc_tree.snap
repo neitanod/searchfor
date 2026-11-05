@@ -1,0 +1,10 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+docs-a/broken-m6.adoc
+  T
+    == A
+      ....
+        4:needle
+        5:== needle

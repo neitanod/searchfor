@@ -1,0 +1,11 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+docs-a/m6.rst
+  Install
+    Linux
+      .. code-block:: bash
+        10:   apt install needle-pkg
+      directive note
+        14:   needle note

@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"docs-a/m6.rst"}}}
+{"type":"match","data":{"path":{"text":"docs-a/m6.rst"},"lines":{"text":"   apt install needle-pkg\n"},"line_number":10,"absolute_offset":65,"submatches":[{"match":{"text":"needle"},"start":15,"end":21}],"format":"rst","trail":[{"kind":"heading","name":"Install","line":1,"end_line":14,"level":1,"signature":"Install"},{"kind":"heading","name":"Linux","line":4,"end_line":14,"level":2,"signature":"Linux"},{"kind":"code","name":"bash","line":7,"end_line":10,"signature":".. code-block:: bash"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"docs-a/m6.rst"},"lines":{"text":"   needle note\n"},"line_number":14,"absolute_offset":103,"submatches":[{"match":{"text":"needle"},"start":3,"end":9}],"format":"rst","trail":[{"kind":"heading","name":"Install","line":1,"end_line":14,"level":1,"signature":"Install"},{"kind":"heading","name":"Linux","line":4,"end_line":14,"level":2,"signature":"Linux"},{"kind":"directive","name":"note","line":12,"end_line":14}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"docs-a/m6.rst"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":118,"bytes_printed":1043,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1043,"bytes_searched":118,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

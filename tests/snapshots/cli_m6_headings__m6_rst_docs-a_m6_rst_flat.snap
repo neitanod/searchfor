@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+10: Install › Linux › bash │    apt install needle-pkg
+14: Install › Linux › note │    needle note

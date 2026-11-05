@@ -1,0 +1,6 @@
+A
+=
+
+.. code:: bash
+
+   needle

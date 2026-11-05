@@ -1,0 +1,5 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+6: A › bash │    needle

@@ -5,6 +5,7 @@ pub mod csv;
 pub mod cursor;
 pub mod external;
 pub mod frontmatter;
+pub mod headings;
 pub mod keypath;
 pub mod markdown;
 pub mod markup;
@@ -162,6 +163,7 @@ pub fn by_name(name: &str) -> Option<&'static dyn Processor> {
         "object" => Some(&object::Object),
         "buildfile" => Some(&buildfile::Buildfile),
         "blocks" => Some(&blocks::Blocks),
+        "headings" => Some(&headings::Headings),
         _ => None,
     }
 }

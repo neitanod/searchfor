@@ -1,0 +1,10 @@
+# formats/rst.toml — reStructuredText headings, code blocks and directives (M6 spec §6.2):
+# `Install › Linux › bash`.
+name       = "rst"
+extensions = ["rst", "rest"]
+processor  = "headings"
+
+[params]
+syntax = "rst"
+# Characters of a heading's or a block's name before it is cut with `…`.
+name_chars = 40

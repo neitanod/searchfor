@@ -1,0 +1,14 @@
+Install
+=======
+
+Linux
+-----
+
+.. code-block:: bash
+   :linenos:
+
+   apt install needle-pkg
+
+.. note::
+
+   needle note

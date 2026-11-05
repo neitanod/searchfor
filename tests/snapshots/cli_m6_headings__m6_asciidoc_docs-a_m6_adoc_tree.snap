@@ -1,0 +1,11 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+docs-a/m6.adoc
+  Deploy guide
+    == Install
+      === Linux
+        [source,bash]
+          6:apt install needle-pkg
+          7:== needle literal heading

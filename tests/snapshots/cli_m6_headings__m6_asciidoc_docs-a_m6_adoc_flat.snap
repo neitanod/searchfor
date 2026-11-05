@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+6: Deploy guide › Install › Linux › bash │ apt install needle-pkg
+7: Deploy guide › Install › Linux › bash │ == needle literal heading
