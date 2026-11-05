@@ -88,7 +88,7 @@ proposed code and expected RED/GREEN; authoring it does not execute those tests.
 | 8381 | Colored presentation and safe control-character display | Shared snapshots, C11 fuzz; existing rendering |
 | 8385 | Matching stays rg's; decoration only; structureless Match has empty Trail | Every chunk; C11.1–C11.3 |
 | 8390 | Decorate only bytes rg finds; archives excluded; decode names only | C9, C10, C12.2 |
-| 8612 | Release binary at most 23,000,000 bytes | Every size check, C12.3, stop at 22.8 MB |
+| 8612 | Release binary at most 23,000,000 bytes | Every size check, C12.4, stop at 22.8 MB |
 | 8742 / 8750 | Extract documents by default, terminal and pipe alike | C1 doc fast path preservation; C11.3 corpus |
 | Q49.A | AsciiDoc, rST, Org, LaTeX, Jupyter | C5, C6.1 |
 | Q49.B | Configurations, SSH, build files, nginx, Apache, HCL | C2–C4 |
@@ -100,14 +100,15 @@ proposed code and expected RED/GREEN; authoring it does not execute those tests.
 | Q49.Other | Blank; performance and graceful fallback comments apply | C11; no extra Formats inferred |
 | Q57.plataformas | Existing five release targets, four native test systems | Orchestrator CI; no packaging changes |
 | Q57.fuzz-ci / #9835 | Budgeted fuzz; flat dense time reported, JSON bounded | C10.5, C11.1–C11.2; orchestrator CI |
-| 12653–12664, especially 12659 and 12664 | Develop M6 now on its own branch; 1.0 tag from M5b, M6 is 1.1 | This branch, C12.3; publication excluded |
+| 12653–12664, especially 12659 and 12664 | Develop M6 now on its own branch; 1.0 tag from M5b, M6 is 1.1 | This branch, C12.3 (CI versions from Cargo.toml), C12.4; publication excluded |
 | Hilo 855 #12687 | Two unanswered options | A for both; change notes below |
+| Hilo 855 #12694 | Question 1 answered A: detection by name and path | D21; C1.3, C9.3 |
 
 ## Design decisions
 
 | Id | Decision | Why |
 |---|---|---|
-| D1 | Preserve all twelve chunks and four tandas | The orchestrator fixed the graph; spec §15's older three-tanda prose is superseded by the task instruction |
+| D1 | Preserve all twelve chunks and four tandas | The orchestrator fixed the graph; spec §15 now states the four tandas (plan r1, Fable #10) |
 | D2 | Each CLI file copies the short test prelude below | C2–C4 can start in parallel without depending on C1's test utilities or editing tests/common |
 | D3 | C2–C4 keep forced-format tests; orchestrator runs added automatic-detection variants after C1 merges | Avoids a mid-tanda dependency; both forced and automatic paths remain covered |
 | D4 | Index compound extensions by terminal extension; path-glob candidates by mandatory literal token | A name outside a glob's necessary literal parts skips the matcher; criterion 51 verifies the cost |
@@ -122,12 +123,14 @@ proposed code and expected RED/GREEN; authoring it does not execute those tests.
 | D13 | Try object candidates in Registry order, validating a layout before selecting it | `cafebabe` needs structural validation; magic alone cannot choose Java vs fat Mach-O |
 | D14 | Literal/generated name pieces remain separate through truncation/decoding | `--in-headings` must search source names, never `cell`, `row`, `stage` or synthetic indexes |
 | D15 | Per-chunk broken input follows each Format's permissive rules | INI/HTML/headings have recovery or no syntax errors; blanket empty-tail expectations would contradict their specific rules |
-| D16 | C10 owns binary fuzz/perf in its CLI test; C11 owns text fuzz/perf | Both can work in parallel without importing not-yet-merged binary fixture writers |
+| D16 | C10 owns binary fuzz/perf in its CLI test; C11 owns text fuzz/perf in `tests/fuzz_m6.rs` | Both can work in parallel without importing not-yet-merged binary fixture writers; spec §13 names both files |
 | D17 | Move the central stream/model differential edits to C12.2 | C10 also needs src/app.rs for object routing; two tanda-3 chunks must not edit it concurrently |
 | D18 | C12.2 owns the central rg_compat_m6 suite | It can consume completed text and binary fixture writers without a same-tanda dependency |
 | D19 | Existing object --in-headings policy stays as v1 §5.7 | §9 says binary rules are unchanged; legacy object names() stays empty. New binary ownership still excludes its own method-name label |
-| D20 | Check the root lockfile metadata issue at C12.3 | Cargo.lock records searchfor 1.0.0; changing only Cargo.toml can require a root-package version refresh under --locked. Do not update dependencies or package channels to hide this |
-| D21 | Localized WhatsApp names require provenance evidence before claiming detection coverage | Network is unavailable here and the repo contains no WhatsApp source strings; guessed translations cannot satisfy §10.4's source requirement |
+| D20 | Check the root lockfile metadata issue at C12.4 | Cargo.lock records searchfor 1.0.0; changing only Cargo.toml can require a root-package version refresh under --locked. Do not update dependencies or package channels to hide this |
+| D21 | WhatsApp exports are detected by `_chat.txt` and one glob, `*WhatsApp*.txt`; no localized name lists | The app's name is in the export's file name in every language; exact lists need sources this repo lacks (plan r1, Codex #4). A `.txt` the glob claims that is no export fails the chat scanner's first-line check and shows as rg shows it (8385), so a false positive costs nothing visible. Still detection by name and path (answer 1 = A, Hilo 855 #12694) |
+| D22 | CI's version checks read the version from Cargo.toml, once | Bumping to 1.1.0 would otherwise fail nine checks written for 1.0.0 (plan r1, Codex #1); C12.3 does it before C12.4 bumps |
+| D23 | `Segment.level` becomes `Option<usize>` in tanda 1 (C1.4) | Org needs levels above 255; widening it in C5 would break C6's Jupyter headings at the tanda-2 merge and `tree.rs`'s cast under clippy (plan r1, Fable #4) |
 
 ## Chunk graph and file ownership
 
@@ -135,7 +138,9 @@ proposed code and expected RED/GREEN; authoring it does not execute those tests.
 `src/app.rs` moves to **C12.2**, because C10 modifies `Ctx::object` there in the
 same tanda. C12.2 also owns `tests/rg_compat_m6.rs`, which needs C10's finished
 fixture writers. C11 still owns its per-Processor cursor/model checks in
-`tests/fuzz_m6.rs`. C1 owns `src/formats/**` in tanda 1; C10 may add only the
+`tests/fuzz_m6.rs`. C1 owns `src/formats/**` in tanda 1, and the type of
+`Segment.level` with its conversions (Task 1.4, D23; `tree.rs`'s heading arm is
+not one of the shared kind arms); C10 may add only the
 object-candidate iterator in `detector.rs` in tanda 3. C2 owns keypath core in
 tanda 1 and hands it to C6 in tanda 2. These are sequential handoffs. C7 owns
 `src/processors/mod.rs`'s per-run component Definition plumbing in tanda 2;
@@ -163,8 +168,16 @@ runs each test binary with `SEARCHFOR_M6_AUTO=1`: the same primary fixtures run
 again without `--format`. This variable controls tests only, never s4.
 C5–C9 use automatic variants at handoff too, Telegram included (note 1 below).
 Each chunk owns `tests/cli_m6_<topic>.rs` and its own snapshots. All fixture
-basenames are unique across groups/chunks. C12 owns the INI-origin expectations
-in `tests/cli_m2.rs`, `tests/cli_m5.rs`, `tests/helpers.rs` and `tests/guide.rs`.
+basenames are unique across groups/chunks. **C2's first commit** rewrites the one
+count in `tests/cli_m2.rs::m2_07_list_and_export_the_new_formats` that
+`--export-formats` checks (`1 + FORMATS.len() + 6 + 12`) as
+`searchfor::formats::builtin::BUILTIN.len()`, so each chunk that registers a TOML
+leaves the suite green; C2 owns that line in tanda 1 and nobody edits it after.
+No test in `tests/` asserts a `user (` origin (grep on `efabcde`: only
+`tests/cli.rs:177` asserts `overridden (`), and the three tests that write a user
+`ini.toml` (`helpers.rs:31`, `cli_m2.rs:279`, `cli_m5.rs:1704`) keep working, so
+no chunk owns INI-origin expectations. C12 owns `tests/guide.rs` and the version
+test in `tests/cli_m5.rs`.
 
 ### Spec discrepancies and open-question change notes
 
@@ -175,22 +188,34 @@ in `tests/cli_m2.rs`, `tests/cli_m5.rs`, `tests/helpers.rs` and `tests/guide.rs`
    `*.conf`) is signal 4, tried before the extension and winning over it; every
    other glob (`Makefile.*`, `.env.*`, `**/.ssh/config`) is signal 6, after it.
    #43 now states both Telegram paths and that a `result.json` elsewhere stays
-   JSON; #51's corpus adds `.json`/`.html` names. C1.2 sorts the globs, C1.3
+   JSON; #51's corpus adds `.json`/`.html` names, and `.txt` ones for WhatsApp's
+   glob (note 4). C1.2 sorts the globs, C1.3
    asserts the precedence, C6.3/C7.3 run automatic detection like every other
    Format, C11.3 measures the cost. #43 is no longer blocked.
-2. **Question 1, use A:** exact app names/paths only. B would change C1.3
-   (post-Match sniffing), C9.3 (renamed export tests), C11.3 (cost cases),
-   C12.1 docs; its implementation can stay a post-Match optional recognizer.
+2. **Question 1, answered A** (Sebastián, Hilo 855 #12694): app names and paths
+   only. The tasks B would have changed (C1.3, C9.3, C11.3, C12.1) stay as A.
 3. **Question 2, use A:** scripts only Vue/Svelte. B changes C7.1's HTML
    preservation assertions and `formats/html.toml`, C12.1 compatibility/docs;
    script range translation and all other chunks are unchanged.
-4. **Localized WhatsApp provenance:** C9.3 has explicit offline evidence work.
-   Its English/iOS acceptance is executable now. Five localized name lists stay
-   an evidence requirement; no invented citation or inferred translation passes.
+4. **WhatsApp by one glob (D21):** the spec's localized name lists, which needed
+   sources this repository lacks (plan r1, Codex #4), became `*WhatsApp*.txt`
+   plus `_chat.txt`. The glob writes `.txt`, so it is signal 4 under `txt` and
+   every `.txt` pays the comparison against its literal part `WhatsApp`, which
+   C11.3's corpus measures (spec §4.1 cost, #51). The spec's §10.4 now states the
+   chat scanner's first-line check that makes a false positive invisible; the
+   plan had none, and C9.3 adds it.
 5. **Version metadata:** user scope says version in Cargo.toml only. C12.3
-   exposes Cargo's lock consistency check and the exact one-entry resolution
-   needed if --locked refuses; it is a metadata question for the orchestrator,
-   not authorization to move pins or bump helper/package versions.
+   makes CI's checks read it from there (D22), so the version stays written in
+   one place; C12.4 exposes Cargo's lock consistency check and the exact
+   one-entry resolution needed if --locked refuses; it is a metadata question
+   for the orchestrator, not authorization to move pins or bump helper/package
+   versions.
+6. **Spec amended by plan review r1:** §4.1's cost paragraph, §4.2's WhatsApp
+   row, §10.4 (one glob and the first-line check), #43 and #51 (note 4); §13
+   names `tests/fuzz_m6.rs` and `tests/cli_m6_object.rs` for the fuzz (D16);
+   §15 states the four tandas (D1); §14 no longer asks to change `user` origin
+   expectations, since no test asserts one (chunk graph); Open question 1 is
+   marked answered.
 
 ### Common command convention
 
@@ -311,9 +336,15 @@ fn flags(fx: &Fixture, format: &str, file: &str, within: &str,
     }
     let found = output(fx, format, file, source_name, &["--json", "--in-headings"]);
     assert!(!matches(&found).is_empty(), "name: {source_name}");
-    let absent = output(fx, format, file, generated_pattern, &["--json", "--in-headings"]);
-    assert_eq!(code(&absent), 1, "generated name matched: {}", stdout(&absent));
-    assert!(absent.stderr.is_empty());
+    // "" where the fixture's names hold no added word. Otherwise the pattern
+    // must match the name's text (no `^…$` around a name that also holds file
+    // text, as `VEVENT Team sync`), so it fails only because the added word has
+    // no source piece, never because the anchors miss.
+    if !generated_pattern.is_empty() {
+        let absent = output(fx, format, file, generated_pattern, &["--json", "--in-headings"]);
+        assert_eq!(code(&absent), 1, "generated name matched: {}", stdout(&absent));
+        assert!(absent.stderr.is_empty());
+    }
 }
 ```
 
@@ -325,7 +356,8 @@ only on a fixture with a real deepest Section; binary expansion stays rows.
 ## Chunk 1: Detector
 
 Owns `src/formats/{definition,detector,mod}.rs` and
-`tests/cli_m6_detector.rs`. Registration lines are shared as declared above.
+`tests/cli_m6_detector.rs`, and in Task 1.4 the type of `Segment.level` with its
+conversions (D23). Registration lines are shared as declared above.
 C1 tests synthetic user Definitions with `processor='markdown'`, so C2–C10
 registration does not have to exist yet.
 
@@ -415,10 +447,13 @@ Public detector signatures stay unchanged. Private candidate index:
 ```rust
 // src/formats/detector.rs, proposed private types.
 struct PathRule { definition: usize, matcher: globset::GlobMatcher, basename: bool }
+// A necessary literal of a signal-4 file name; a name without it skips the matcher.
+enum NameFilter { Prefix(Vec<u8>), Infix(memchr::memmem::Finder<'static>) }
 struct PathIndex {
     // Spec §4.1 signal 4: globs that write the extension, keyed by that lowercase
-    // extension and filtered by the literal file-name part (`result.json`, `messages`).
-    before_extension: std::collections::HashMap<String, Vec<(Vec<u8>, usize)>>,
+    // extension and filtered by a literal run of the file name: the whole name
+    // `result.json`, the prefix `messages`, the infix `WhatsApp`.
+    before_extension: std::collections::HashMap<String, Vec<(NameFilter, usize)>>,
     // Signal 6: the other globs, by mandatory literal token, after the extension.
     by_token: std::collections::HashMap<Vec<u8>, Vec<usize>>,
     fallback: Vec<usize>,
@@ -455,10 +490,19 @@ fn m6_paths() {
         assert!(selected(&d, path).is_none(), "{path}");
     }
     assert!(d.detect_by_path(Path::new("other.conf")).unwrap().is_none());
-    let (_dir, r) = registry(&[("doc-path", "paths=['Book.*']\n[params]\nx=1")]);
     // A user glob with no mandatory literal still follows full globset semantics.
     let (_any, any) = registry(&[("any", "paths=['**/*']")]);
     assert_eq!(selected(&Detector::new(&any, &[]).unwrap(), "a/b.unknown").as_deref(), Some("any"));
+    // A user document Definition's `paths` reach the pre-search document gate,
+    // which answers only with --docs (`may_be_document` is false without it).
+    let docs = tempfile::tempdir().unwrap();
+    std::fs::write(docs.path().join("doc-path.toml"),
+        "name='doc-path'\nprocessor='docs'\npaths=['Book.*']\n[params]\nextractor='docx'\n").unwrap();
+    let (r, warnings) = Registry::load(Some(docs.path()), &|_| true);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let d = Detector::new(&r, &[]).unwrap().with_docs(true);
+    assert!(d.may_be_document(Path::new("Book.raw")));
+    assert!(!d.may_be_document(Path::new("Other.raw")));
     assert!(!Detector::new(&r, &[]).unwrap().may_be_document(Path::new("Book.raw")));
 }
 #[test]
@@ -485,15 +529,18 @@ fn m6_path_separators_are_native() {
 - [ ] **Step 3:** compile globs once and sort each into spec §4.1's signal 4
   or 6: signal 4 when the text after the last `.` of the last component is a
   literal extension or a `{…}` list of literals with no `*`, `?` or `[`. File a
-  signal-4 rule under each lowercase extension it writes, with the literal
-  file-name prefix before its first wildcard (`result.json`, `messages`) as the
-  filter. In `detect` and `detect_by_path`, after the compound extension and
-  before `by_extension`, look up the already-normalized extension there; an
-  empty entry costs nothing more, a nonempty one compares the prefix and runs
+  signal-4 rule under each lowercase extension it writes, with the longest
+  literal run of its last component before the extension as the `NameFilter`:
+  a prefix when the component starts with it (`messages` of `messages*.html`,
+  all of `result.json`), else an infix found with `memchr::memmem`
+  (`WhatsApp` of `*WhatsApp*.txt`). In `detect` and `detect_by_path`, after the
+  compound extension and before `by_extension`, look up the already-normalized
+  extension there (with the built-ins `json`, `html` and `txt` have entries); an
+  empty entry costs nothing more, a nonempty one compares the filter and runs
   the GlobMatcher only on a pass. Select a necessary literal component or
   basename prefix/suffix for every built-in rule: `.ssh`, `ssh`, `nginx`,
   `apache2`, `httpd`, `systemd`, `git`, `ChatExport_`, `DataExport_`, `.env.`,
-  `Dockerfile.`, `Containerfile.`, `Makefile.`, and WhatsApp name prefixes.
+  `Dockerfile.`, `Containerfile.`, `Makefile.`, and the infix `WhatsApp`.
   Token absence must imply the rule cannot match; alternative literals in braces
   need a shared mandatory component or multiple conservative buckets. Candidate
   buckets filter, then the original GlobMatcher decides. Deduplicate rule IDs and
@@ -546,7 +593,7 @@ fn m6_detection_table() {
         ("eml", "extensions=['eml']"), ("mbox", "names=['mbox']\nextensions=['mbox','mbx']\nmagic=[{hex='46726f6d20'}]"),
         ("icalendar", "extensions=['ics','ical','ifb']"),
         ("vcard", "extensions=['vcf','vcard']"), ("bibtex", "extensions=['bib']"),
-        ("whatsapp", "names=['_chat.txt']\npaths=['WhatsApp Chat with *.txt','WhatsApp Chat - *.txt']"),
+        ("whatsapp", "names=['_chat.txt']\npaths=['*WhatsApp*.txt']"),
         ("telegram", "paths=['**/ChatExport_*/result.json','**/DataExport_*/result.json']"),
         ("telegram-html", "paths=['**/ChatExport_*/messages*.html']"),
     ];
@@ -570,6 +617,7 @@ fn m6_telegram_precedence() {
         ("telegram", "paths=['**/ChatExport_*/result.json','**/DataExport_*/result.json']"),
         ("telegram-html", "paths=['**/ChatExport_*/messages*.html']"),
         ("conf-json", "paths=['**/conf/*.json']"),
+        ("whatsapp", "names=['_chat.txt']\npaths=['*WhatsApp*.txt']"),
         ("make", "names=['Makefile']\npaths=['Makefile.*']"),
         ("env", "names=['.env']\npaths=['.env.*']"),
     ]);
@@ -584,10 +632,16 @@ fn m6_telegram_precedence() {
         // Outside the folders the claimed extension keeps the file.
         ("x/result.json", "json"), ("x/messages.html", "html"),
         ("x/ChatExport_2024/other.json", "json"), ("x/ChatExport_2024/index.html", "html"),
+        // WhatsApp's one glob: the app's name in the export's name, any language.
+        ("x/WhatsApp Chat with Ana.txt", "whatsapp"), ("x/WhatsApp Chat - Ana.txt", "whatsapp"),
+        ("x/Chat de WhatsApp con Ana.txt", "whatsapp"), ("x/_chat.txt", "whatsapp"),
         // Signal 6: a glob that leaves the extension open comes after it.
         ("Makefile.toml", "toml"), (".env.json", "json"), ("Makefile.debug", "make"),
     ] {
         assert_eq!(selected(&d, path).as_deref(), Some(want), "{path}");
+    }
+    for path in ["x/notes.txt", "x/WhatsApp/notes.txt", "x/WhatsApp Chat with Ana.log"] {
+        assert!(selected(&d, path).is_none(), "{path}");
     }
     // An override still wins over signal 4.
     let d = Detector::new(&r, &["*.json=json".into()]).unwrap();
@@ -601,7 +655,8 @@ fn m6_telegram_precedence() {
   check and may already pass. Record that honestly; add no artificial failure.
 - [ ] **Step 3:** verify table spelling against M6 §4.2. C2–C10 use these literal
   signals in their real TOMLs; C12.2 verifies the real built-ins, not these test
-  substitutes. Add all localized names only after C9.3 supplies verified strings.
+  substitutes. WhatsApp has no localized name lists (D21): `*WhatsApp*.txt` and
+  `_chat.txt` are its whole signal.
   `m6_telegram_precedence` is RED until Step 3 of Task 1.2 sorts the globs; if
   Task 1.2 landed first it may already pass, and that is recorded as such.
 - [ ] **Step 4:** rerun GREEN locally and in all four native jobs. These `/`
@@ -610,6 +665,48 @@ fn m6_telegram_precedence() {
   `(r"C:\x\ChatExport_2024\result.json", "telegram")` with a telegram rule.
 - [ ] **Step 5:** commit with
   `git commit -m "test: cover M6 detection signals and Telegram's glob precedence"`.
+
+### Task 1.4: widen `Segment.level` before tanda 2
+
+**Files:** modify `src/model.rs::Segment.level`, `src/output/tree.rs::label`
+(heading arm, plus a test in its `tests` module), `src/processors/markdown.rs`
+(heading assignment), `src/docs/mod.rs::{Builder::chapter,Builder::heading}`,
+`src/docs/isolated.rs` (the extracted-Segment writer and reader) and
+`src/output/mod.rs::fixture::h`. No tanda-1 chunk sets a level; C5 (Org) and C6
+(Jupyter headings) write `level: Some(n)` with `n: usize` on this type.
+
+```rust
+// src/model.rs::Segment; serde representation remains a JSON integer.
+pub level: Option<usize>,
+```
+
+- [ ] **Step 1 — RED:** append to `src/output/tree.rs`'s `tests` module.
+
+```rust
+#[test]
+fn heading_label_keeps_a_level_above_255() {
+    let mut s = crate::output::fixture::seg("heading", "Deep", 1, 1);
+    s.level = Some(300);
+    assert_eq!(label(&s), format!("{} Deep", "#".repeat(300)));
+}
+```
+
+- [ ] **Step 2:** run
+  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --lib heading_label_keeps_a_level_above_255 -- --nocapture`.
+  Expected RED: `300` does not fit `u8` (the deny-by-default `overflowing_literals`).
+- [ ] **Step 3:** change the field's type. `tree.rs`: drop the cast,
+  `"#".repeat(s.level.unwrap_or(1).max(1))` (`as usize` on a `usize` fails
+  `clippy::unnecessary_cast` under `-D warnings`). `markdown.rs`:
+  `Some(level as usize)`, values 1..6 unchanged. `docs/mod.rs` and
+  `output::fixture::h`: `Some(usize::from(level))`, their public `u8` arguments
+  unchanged. `isolated.rs`: write `g.level.map_or(-1, |l| l as i64)` and read
+  `usize::try_from(level).ok()`. Grep `\.level` for any other Segment use.
+- [ ] **Step 4:** rerun the command: PASS; run every Markdown, document and
+  output unit and snapshot test, which must not change, then the inherited fmt
+  and both clippy commands.
+- [ ] **Step 5:** commit with
+  `git commit -m "refactor: let a heading level exceed 255"`.
+
 ## Chunk 2: keypath syntaxes
 
 Owns new `src/processors/keypath/{lines,ini,properties,env,ssh,ical,bibtex}.rs`,
@@ -618,6 +715,16 @@ keypath `mod.rs` dispatch in tanda 1, its eight Definitions and
 Use each Definition's exact signals from Task 1.3; parameters below are complete
 M6 additions. Register each TOML in `builtin::BUILTIN`. C6 inherits dispatch
 ownership in tanda 2. Every scanner uses byte offsets of the searched Source.
+
+**First commit of C2, before any TOML:** in `tests/cli_m2.rs::m2_07_list_and_export_the_new_formats`,
+replace the expected count `1 + FORMATS.len() + 6 + 12` with
+`searchfor::formats::builtin::BUILTIN.len()` and its comment with «every
+built-in Definition». Run
+`CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m2 m2_07 -- --nocapture`:
+it passes before the change and must keep passing after each TOML this and
+every later chunk registers. Commit it alone with
+`git add -- tests/cli_m2.rs` and
+`git commit -m "test: count the exported Formats from the built-in list"`.
 
 For each primary fixture listed in these tests, create its `broken-` sibling
 using the explicit malformed/recovery source in that task; test it through
@@ -657,11 +764,11 @@ fn m6_ini() {
     seed(&fx, "config/m6.ini", ini);
     check(&fx, "ini", "config/m6.ini", &["server › host", "server › host",
         "remote \"origin\" › url", "a.b › k"]);
-    flags(&fx, "ini", "config/m6.ini", "server", "host", "^row [0-9]+$");
+    flags(&fx, "ini", "config/m6.ini", "server", "host", "");
     let service = b"[Unit]\nDescription=demo\n[Service]\nExecStart=/usr/bin/needle \\\n --serve\n";
     seed(&fx, "config/m6.service", service);
     check(&fx, "systemd", "config/m6.service", &["Service › ExecStart"]);
-    flags(&fx, "systemd", "config/m6.service", "Service", "ExecStart", "^stage [0-9]+$");
+    flags(&fx, "systemd", "config/m6.service", "Service", "ExecStart", "");
     let bad = b"[s]\nk=needle\n[broken\nneedle tail\n[s]\nk=needle again\n";
     put(&fx, "broken.ini", bad);
     assert_eq!(paths(&matches(&output(&fx,"ini","broken.ini","needle",&["--json"]))),
@@ -721,11 +828,11 @@ fn m6_properties_env() {
     seed(&fx, "config/m6.properties", prop);
     check(&fx, "properties", "config/m6.properties",
         &["spring.datasource.url", "café:key"]);
-    flags(&fx,"properties","config/m6.properties","spring.datasource.url","café","^row [0-9]+$");
+    flags(&fx,"properties","config/m6.properties","spring.datasource.url","café","");
     let env = b"# config\nexport DATABASE_URL=postgres://needle@db/app\nTEXT=\"first\nneedle # literal\nlast\" # end\n";
     seed(&fx, "config/.env.m6", env);
     check(&fx,"env","config/.env.m6",&["DATABASE_URL","TEXT"]);
-    flags(&fx,"env","config/.env.m6","TEXT","DATABASE_URL","^stage [0-9]+$");
+    flags(&fx,"env","config/.env.m6","TEXT","DATABASE_URL","");
     put(&fx,"bad.properties",b"k=needle\nbad\\uQQQQ=needle\nlast=needle\n");
     let bad = output(&fx,"properties","bad.properties","needle",&["--json"]);
     assert!(bad.stderr.is_empty());
@@ -781,7 +888,7 @@ fn m6_ssh() {
     check(&fx,"ssh-config","config/ssh/ssh_config",&[
         "Host github.com gitlab.com › IdentityFile",
         "Match user ana › ProxyCommand", "Match user ana › Include"]);
-    flags(&fx,"ssh-config","config/ssh/ssh_config","IdentityFile","github","^row [0-9]+$");
+    flags(&fx,"ssh-config","config/ssh/ssh_config","IdentityFile","github","");
     put(&fx,"broken-ssh",b"hOsT example\nidentityfile needle\nUnrecognized needle\nMatch\nUser needle\n");
     assert_eq!(paths(&matches(&output(&fx,"ssh-config","broken-ssh","needle",&["--json"]))),
         ["hOsT example › identityfile","hOsT example › Unrecognized","Match › User"]);
@@ -829,15 +936,15 @@ fn m6_ical_bibtex() {
     seed(&fx,"config/m6.ics",ics);
     check(&fx,"icalendar","config/m6.ics",&[
         "VEVENT Team sync › DESCRIPTION","VEVENT Team sync › DESCRIPTION"]);
-    flags(&fx,"icalendar","config/m6.ics","Team sync","Team sync","^VEVENT$");
+    flags(&fx,"icalendar","config/m6.ics","Team sync","Team sync","");
     let vcf="BEGIN:VCARD\nEMAIL;TYPE=work:ana@needle.example\nFN:Ana Pérez\nEND:VCARD\n";
     seed(&fx,"config/m6.vcf",vcf.as_bytes());
     check(&fx,"vcard","config/m6.vcf",&["VCARD Ana Pérez › EMAIL"]);
-    flags(&fx,"vcard","config/m6.vcf","EMAIL","Ana","^VCARD$");
+    flags(&fx,"vcard","config/m6.vcf","EMAIL","Ana","");
     let bib=b"@article{knuth1984,\n title = {Literate needle {programming}},\n note = \"needle\" # suffix,\n}\n@comment{needle ignored}\n";
     seed(&fx,"docs-a/m6.bib",bib);
     check(&fx,"bibtex","docs-a/m6.bib",&["knuth1984 › title","knuth1984 › note",""]);
-    flags(&fx,"bibtex","docs-a/m6.bib","knuth1984","knuth1984","^row [0-9]+$");
+    flags(&fx,"bibtex","docs-a/m6.bib","knuth1984","knuth1984","");
     put(&fx,"bad.ics",b"BEGIN:VCALENDAR\nBEGIN:VEVENT\nDESCRIPTION:needle\nEND:UNKNOWN\nSUMMARY:One\nEND:VCALENDAR\nneedle\n");
     assert_eq!(paths(&matches(&output(&fx,"icalendar","bad.ics","needle",&["--json"]))),
         ["VEVENT One › DESCRIPTION",""]);
@@ -847,18 +954,37 @@ fn m6_ical_bibtex() {
     put(&fx,"kinds.ics",b"BEGIN:VCALENDAR\nBEGIN:VEVENT\nX:needle\nEND:VEVENT\nBEGIN:VEVENT\nX:needle\nEND:VEVENT\nEND:VCALENDAR\n");
     assert_eq!(paths(&matches(&output(&fx,"icalendar","kinds.ics","needle",&["--json"]))),
         ["VEVENT[1] › X","VEVENT[2] › X"]);
+    put(&fx,"kinds.vcf",b"BEGIN:VCARD\nEMAIL:needle\nEND:VCARD\nBEGIN:VCARD\nEMAIL:needle\nEND:VCARD\n");
+    assert_eq!(paths(&matches(&output(&fx,"vcard","kinds.vcf","needle",&["--json"]))),
+        ["VCARD[1] › EMAIL","VCARD[2] › EMAIL"]);
+    // `X` of BEGIN:X is the file's text (§3 rule 4, §10.2), with or without SUMMARY/FN.
+    for (format,file,name,lines) in [("icalendar","config/m6.ics","VEVENT",vec![2u64]),
+        ("icalendar","kinds.ics","VEVENT",vec![2,5]),("vcard","config/m6.vcf","VCARD",vec![1]),
+        ("vcard","kinds.vcf","VCARD",vec![1,4])] {
+        let rows=matches(&output(&fx,format,file,name,&["--json","--in-headings"]));
+        let got:Vec<u64>=rows.iter().map(|r|r["line_number"].as_u64().unwrap()).collect();
+        assert_eq!(got,lines,"{file}: {name}");
+    }
+    // The ordinal is added: it matches the name's text and has no source piece.
+    for (format,file) in [("icalendar","kinds.ics"),("vcard","kinds.vcf")] {
+        let out=output(&fx,format,file,"\\[1\\]",&["--json","--in-headings"]);
+        assert_eq!(code(&out),1,"{file}: {}",stdout(&out));
+    }
 }
 ```
 
 - [ ] **Step 2:** run
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m6_keypath m6_ical_bibtex -- --nocapture`.
-  Expected RED: missing syntaxes, late SUMMARY/FN or BibTeX nesting fails.
+  Expected RED: missing syntaxes, late SUMMARY/FN or BibTeX nesting fails, or
+  `--in-headings VEVENT` finds nothing.
 - [ ] **Step 3:** unfold content lines with byte-piece maps; strip parameters from property
   labels only. During preparation collect SUMMARY/FN/TZID anywhere in a component
   and sibling ordinals, hide one enclosing VCALENDAR, then emit labels before
   answering the first Match. BEGIN/END close the innermost matching component and
-  its descendants; a stray END is text. Generated component prefixes/ordinals
-  carry no searchable pieces. BibTeX scans braced/parenthesized entries, nested
+  its descendants; a stray END is text. A component's name carries a source
+  piece over the `X` of its `BEGIN:X` line and one over its SUMMARY/FN/TZID value
+  (unfolded, one piece per physical line); the joining space and the `[N]`
+  ordinal are added and carry none (spec §3 rule 4, §10.2). BibTeX scans braced/parenthesized entries, nested
   braced values, quoted values, bare values and `#` concatenations. `@string`
   and `@preamble` are entry names as specified; `@comment` is entirely outside
   structure. Recover an unclosed entry at the next line-start @, without losing
@@ -910,12 +1036,12 @@ fn m6_servers() {
     seed(&fx,"config/nginx/nginx.conf",nginx);
     check(&fx,"nginx","config/nginx/nginx.conf",&[
         "http › server example.com › location /api › proxy_pass"]);
-    flags(&fx,"nginx","config/nginx/nginx.conf","example.com","example.com","^row [0-9]+$");
+    flags(&fx,"nginx","config/nginx/nginx.conf","example.com","example.com","");
     let apache=b"<VirtualHost *:443>\n <Directory /var/www>\n  Require ip 10.0.0.0/8 # needle\n </Directory>\n ServerName example.com\n</VirtualHost>\n";
     seed(&fx,"config/apache2/apache2.conf",apache);
     check(&fx,"apache","config/apache2/apache2.conf",&[
         "VirtualHost *:443 example.com › Directory /var/www › Require"]);
-    flags(&fx,"apache","config/apache2/apache2.conf","example.com","example.com","^row [0-9]+$");
+    flags(&fx,"apache","config/apache2/apache2.conf","example.com","example.com","");
     put(&fx,"bad-nginx",b"http { k needle; }\n}\nk needle;\n");
     assert_eq!(paths(&matches(&output(&fx,"nginx","bad-nginx","needle",&["--json"]))),
         ["http › k",""]);
@@ -973,7 +1099,7 @@ fn m6_hcl() {
         "resource aws_instance web › tags › Name",
         "resource aws_instance web › ingress[1] › name",
         "resource aws_instance web › script"]);
-    flags(&fx,"hcl","config/m6.tf","tags","Name","^ingress\\[1\\]$");
+    flags(&fx,"hcl","config/m6.tf","tags","Name","\\[1\\]");
     put(&fx,"hcl-lex",br#"x "y" {
  value = "${join("}", ["needle", "%{if true}x%{endif}"])}"
  /* { */ other = "needle" // }
@@ -1031,11 +1157,11 @@ fn m6_schema_blocks() {
     let gql=b"type User {\n email: String! # needle\n}\nquery GetUser {\n user(id: 1) {\n  posts {\n   title(needle: true)\n  }\n }\n}\n";
     seed(&fx,"code-c/m6.graphql",gql);
     check(&fx,"graphql","code-c/m6.graphql",&["User › email","GetUser › user › posts › title"]);
-    flags(&fx,"graphql","code-c/m6.graphql","User","email","^row [0-9]+$");
+    flags(&fx,"graphql","code-c/m6.graphql","User","email","");
     let proto=b"message User {\n string email = 1 [json_name = \"needle\"];\n oneof choice {\n  string nick = 2; // needle\n }\n}\nservice Users {\n rpc Get (User) returns (User) { option note = \"needle\"; }\n}\n";
     seed(&fx,"code-c/m6.proto",proto);
     check(&fx,"protobuf","code-c/m6.proto",&["User › email","User › choice › nick","Users › Get"]);
-    flags(&fx,"protobuf","code-c/m6.proto","User","email","^row [0-9]+$");
+    flags(&fx,"protobuf","code-c/m6.proto","User","email","");
     for (format,src,want) in [
         ("graphql", "query A { x(arg: \"needle }\") }\n}\nneedle\n", vec!["A › x", ""]),
         ("protobuf", "message A { string x = 1; // needle\n}\n}\nneedle\n", vec!["A › x", ""]),
@@ -1153,7 +1279,7 @@ fn m6_make() {
     check(&fx,"make","config/m6.mk",&[
         "ifeq ($(OS),Windows_NT) › release test", "ifeq ($(OS),Windows_NT) › release test",
         "ifeq ($(OS),Windows_NT) › NAME","BODY","%.o"]);
-    flags(&fx,"make","config/m6.mk","release test","release","^row [0-9]+$");
+    flags(&fx,"make","config/m6.mk","release test","release","");
     put(&fx,"make-lex",b"OBJ := $(OBJ:.o=.c)\nKEY += needle \\\n more\nfoo:: deps\n\techo needle\nendif\nendef\nneedle\n");
     assert_eq!(paths(&matches(&output(&fx,"make","make-lex","needle",&["--json"]))),
         ["KEY","foo",""]);
@@ -1203,7 +1329,7 @@ fn m6_just() {
     let src=b"# needle documentation\n[linux]\n@deploy host='prod': build\n    rsync -a build/ host:/srv/needle/\n\nURL := 'needle'\nalias ship := deploy # needle\n";
     seed(&fx,"config/m6.just",src);
     check(&fx,"just","config/m6.just",&["","deploy","URL","ship"]);
-    flags(&fx,"just","config/m6.just","deploy","deploy","^row [0-9]+$");
+    flags(&fx,"just","config/m6.just","deploy","deploy","");
     put(&fx,"bad.just",b"run:\n    echo needle\nstray line needle\nother:\n    needle\n");
     assert_eq!(paths(&matches(&output(&fx,"just","bad.just","needle",&["--json"]))),
         ["run","","other"]);
@@ -1237,11 +1363,9 @@ Owns `src/processors/headings/{mod,asciidoc,rst,org,latex}.rs`, four TOMLs,
 `tests/cli_m6_headings.rs`, fixtures and snapshots. Copy the CLI prelude.
 Register `Headings` by name. Its valid syntaxes return native compact cursors;
 small model outlines may use `OutlinePrepared`, with no model fallback.
-C5 also owns `src/model.rs::Segment.level`, the numeric conversions in
-`src/docs/mod.rs::{Builder::chapter,Builder::heading}` and
-`src/output/mod.rs::tests::h`, and the one Markdown cast in
-`src/processors/markdown.rs` if widening is needed for Org's unrestricted level.
-This touches neither another tanda-2 chunk's scanner nor its test file.
+`Segment.level` is already `Option<usize>` (C1.4, D23); C5 sets it, never
+changes its type. This touches neither another tanda-2 chunk's scanner nor its
+test file.
 
 ### Task 5.1: AsciiDoc and reStructuredText headings and blocks
 
@@ -1267,11 +1391,11 @@ fn m6_adoc_rst() {
     seed(&fx,"docs-a/m6.adoc",adoc);
     check(&fx,"asciidoc","docs-a/m6.adoc",&[
         "Deploy guide › Install › Linux › bash","Deploy guide › Install › Linux › bash"]);
-    flags(&fx,"asciidoc","docs-a/m6.adoc","Linux","Install","^row [0-9]+$");
+    flags(&fx,"asciidoc","docs-a/m6.adoc","Linux","Install","");
     let rst=b"Install\n=======\n\nLinux\n-----\n\n.. code-block:: bash\n   :linenos:\n\n   apt install needle-pkg\n\n.. note::\n\n   needle note\n";
     seed(&fx,"docs-a/m6.rst",rst);
     check(&fx,"rst","docs-a/m6.rst",&["Install › Linux › bash","Install › Linux › note"]);
-    flags(&fx,"rst","docs-a/m6.rst","Linux","Linux","^row [0-9]+$");
+    flags(&fx,"rst","docs-a/m6.rst","Linux","Linux","");
     put(&fx,"bad.adoc",b"= Guide\n== A\n....\n== needle\nneedle\n");
     assert_eq!(paths(&matches(&output(&fx,"asciidoc","bad.adoc","needle",&["--json"]))),
         ["Guide › A › literal","Guide › A › literal"]);
@@ -1309,20 +1433,10 @@ fn m6_adoc_rst() {
 ### Task 5.2: Org headings, source blocks and header columns
 
 **Files:** create `headings/org.rs::scan`, `formats/org.toml`; append `m6_org`;
-create `tests/fixtures/docs-a/m6.org`, broken sibling;
-modify `src/model.rs::Segment.level`, `markdown.rs` heading assignment,
-`src/docs/mod.rs::{Builder::chapter,Builder::heading}` and
-`src/output/mod.rs::tests::h` numeric conversions.
+create `tests/fixtures/docs-a/m6.org`, broken sibling.
 
 `syntax='org'`, `name_chars=40`. Kinds `document`, `heading`, `code`, `column`.
-To preserve Org levels above 255, widen the in-memory numeric type without a new
-JSON field:
-
-```rust
-// src/model.rs::Segment; serde representation remains a JSON integer.
-pub level: Option<usize>,
-// markdown.rs: Some(level as usize), retaining existing values 1..6.
-```
+Org levels above 255 use the `Option<usize>` of Task 1.4, with no new JSON field.
 The 256 limit concerns simultaneously visible Segments, not star count.
 
 - [ ] **Step 1 — RED:** add these complete tests and their literal primary fixture bytes.
@@ -1336,7 +1450,7 @@ fn m6_org() {
     check(&fx,"org","docs-a/m6.org",&[
         "Budget › TODO Costs :work: › Price", "Budget › TODO Costs :work: › bash",
         "Budget › TODO Costs :work: › example"]);
-    flags(&fx,"org","docs-a/m6.org","Costs","TODO","^row [0-9]+$");
+    flags(&fx,"org","docs-a/m6.org","Costs","TODO","");
     let rows=matches(&output(&fx,"org","docs-a/m6.org","needle",&["--json","--expand"]));
     assert_eq!(rows[0]["section"]["start_line"],3);
     assert_eq!(rows[0]["section"]["end_line"],5);
@@ -1353,17 +1467,14 @@ fn m6_org() {
 
 - [ ] **Step 2:** run
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m6_headings m6_org -- --nocapture`.
-  Expected RED: Org unsupported, column missing or level 300 cannot be represented.
+  Expected RED: Org unsupported, column missing or level 300 not kept.
 - [ ] **Step 3:** read star count followed by space, preserving TODO/priority/tag text in
   names. TITLE supplies a document root. Source/example blocks compare markers
   without case; absent source language is src. Other BEGIN blocks suppress all
   heading/table parsing without a Segment. A first table row followed by a rule
   supplies header cells, and later data-cell byte ranges select column Segments
   with the table's entire Section. Literal separators/index punctuation have no
-  searchable name pieces. Preserve Markdown behavior and rerun its unit and
-  snapshot tests after the numeric-type change. Convert u8 values in
-  Builder::chapter/heading and output::tests::h with usize::from(level); their
-  public u8 arguments and existing behavior stay unchanged. Use iterative nesting counters
+  searchable name pieces. Use iterative nesting counters
   past 256; a high single heading level remains faithfully numeric.
 - [ ] **Step 4:** rerun the exact command with `INSTA_UPDATE=always` for new
   snapshots; inspect the tree, flat and JSON snapshots against the assertions.
@@ -1405,7 +1516,7 @@ fn m6_latex() {
     check(&fx,"latex","docs-a/m6.tex",&[
         "A Study of Needles › Methods › Sampling › figure",
         "A Study of Needles › Methods › Sampling › bash"]);
-    flags(&fx,"latex","docs-a/m6.tex","Sampling","Sampling","^row [0-9]+$");
+    flags(&fx,"latex","docs-a/m6.tex","Sampling","Sampling","");
     put(&fx,"tex-edge",br#"\section*{One {balanced}
  title}
 \begin{figure}
@@ -1418,7 +1529,7 @@ needle
 \end{never}
 "#);
     assert_eq!(paths(&matches(&output(&fx,"latex","tex-edge","needle",&["--json"]))),
-        ["One {balanced}\n title › figure › Inner", "One {balanced}\n title", "One {balanced}\n title"]);
+        ["One {balanced} title › figure › Inner", "One {balanced} title", "One {balanced} title"]);
     put(&fx,"bad.tex",br#"\section{A}
 \begin{verbatim}
 \section{needle}
@@ -1434,7 +1545,9 @@ needle
   Expected RED: LaTeX unsupported or heading survives the environment that bounds it.
 - [ ] **Step 3:** lex escaped percent vs comment, balanced multi-line braced titles and
   optional short titles. Preserve title text as written rather than expanding
-  macros. Ignore commands inside verbatim/Verbatim/comment/listing code bodies;
+  macros; a title over several lines joins them with one space, one source piece
+  per line, as Markdown's setext headings and `Name` do (`model.rs::Name::text`).
+  Ignore commands inside verbatim/Verbatim/comment/listing code bodies;
   lstlisting language options and minted's language argument name code Sections.
   Ordinary environments nest with explicit ranges. Hidden environments retain
   containment while disappearing from Trails/names. Close each heading no later
@@ -1473,7 +1586,7 @@ pub(crate) fn prepare<'a>(input: crate::model::Input<'a>, params: &'a ::toml::Ta
 ```
 Definition `[params] syntax='json'; view='jupyter'; name_chars=40`.
 Kinds added by this view: `heading`, `cell`, `output`; retained keys keep `key`.
-Headings carry level and source signature; cell/output labels use signatures
+Headings carry level (`Some(n)` with `n: usize`, Task 1.4) and source signature; cell/output labels use signatures
 `cell N (code|markdown|raw)` and `output N (OUTPUT_TYPE)`.
 
 - [ ] **Step 1 — RED:** add these complete tests and their literal primary fixture bytes.
@@ -1482,7 +1595,8 @@ Headings carry level and source signature; cell/output labels use signatures
 #[test]
 fn m6_jupyter() {
     let fx=Fixture::new();
-    let src=br#"{
+    // `###` delimiters: the sources hold `"#` and `"##`, which end shorter ones.
+    let src=br###"{
  "cells": [
   {"cell_type":"markdown","source":["# Analysis\n","## Load data\n"]},
   {"cell_type":"code","source":["df = load('needle.csv')\n"],
@@ -1491,7 +1605,7 @@ fn m6_jupyter() {
  ],
  "nbformat":4
 }
-"#;
+"###;
     seed(&fx,"docs-a/m6.ipynb",src);
     check(&fx,"jupyter","docs-a/m6.ipynb",&[
         "Analysis › Load data › cell 2",
@@ -1562,7 +1676,7 @@ fn m6_har() {
         "GET api.example.com/v1/users › request › queryString q › value",
         "GET api.example.com/v1/users › request › postData › param body › value",
         "Login › id"]);
-    flags(&fx,"har","code-c/m6.har","response","Authorization","^header$");
+    flags(&fx,"har","code-c/m6.har","response","Authorization","^header ");
     put(&fx,"bad-har",b"{\"log\":{\"entries\":[{\"request\":{\"method\":\"GET\",\"url\":\"http://x\"},\"x\":\"needle\"}]}}\nnope\nneedle\n");
     assert_eq!(paths(&matches(&output(&fx,"har","bad-har","needle",&["--json"]))),
         ["GET x › x",""]);
@@ -1624,7 +1738,7 @@ fn m6_telegram_json() {
         "Ana › 2024-01-31T10:04:12 Ana › text",
         "Ana › 2024-01-31T10:05:00 Ana › text",
         "Ana › 2024-01-31T10:05:00 Ana › text_entities › text"]);
-    flags(&fx,"telegram","chat/ChatExport_m6/result.json","Ana","Ana","^row [0-9]+$");
+    flags(&fx,"telegram","chat/ChatExport_m6/result.json","Ana","Ana","");
     put(&fx,"account",br#"{"chats":{"list":[{"name":"Work","messages":[{"text":"needle","from":"Ana","date":"2024"}]}]}}"#);
     assert_eq!(paths(&matches(&output(&fx,"telegram","account","needle",&["--json"]))),
         ["Work › 2024 Ana › text"]);
@@ -1713,7 +1827,7 @@ fn m6_vue() {
     seed(&fx,"code-c/m6.vue",src);
     check(&fx,"vue","code-c/m6.vue",&[
         "template › ul.items › li[2]","script › addItem","style"]);
-    flags(&fx,"vue","code-c/m6.vue","addItem","addItem","^row [0-9]+$");
+    flags(&fx,"vue","code-c/m6.vue","addItem","addItem","\\[2\\]");
     let expanded=matches(&output(&fx,"vue","code-c/m6.vue","needle",&["--json","--within","addItem","--expand"]));
     assert_eq!(expanded[0]["section"]["start_line"],5);
     assert_eq!(expanded[0]["section"]["end_line"],7);
@@ -1723,9 +1837,12 @@ fn m6_vue() {
     put(&fx,"unknown.vue",b"<script lang='coffee'>\nneedle\n</script>\n<script>function f(){\nneedle\n}</script>\n");
     assert_eq!(paths(&matches(&output(&fx,"vue","unknown.vue","needle",&["--json"]))),
         ["script[1]","script[2] › f"]);
-    // Active TypeScript Definition's max_bytes applies to this script range alone.
+    // A user copy of the TypeScript Definition, to which the test adds `max_bytes`
+    // (the built-in has none), applies to this script range alone. toml 1.1.8's
+    // `IndexMut` panics on a missing key, so the key is inserted.
     let mut definition: toml::Table=toml::from_str(include_str!("../formats/typescript.toml")).unwrap();
-    definition["params"]["max_bytes"]=toml::Value::Integer(1);
+    definition.get_mut("params").unwrap().as_table_mut().unwrap()
+        .insert("max_bytes".into(),toml::Value::Integer(1));
     std::fs::write(fx.formats.path().join("typescript.toml"),toml::to_string(&definition).unwrap()).unwrap();
     let capped=output(&fx,"vue","code-c/m6.vue","needle",&["--json"]);
     assert_eq!(paths(&matches(&capped)),["template › ul.items › li[2]","script","style"]);
@@ -1780,12 +1897,12 @@ fn m6_templates() {
     seed(&fx,"code-c/m6.svelte",svelte);
     check(&fx,"svelte","code-c/m6.svelte",&[
         "ul › #each items as item › li[1]","ul › #each items as item › li[2]"]);
-    flags(&fx,"svelte","code-c/m6.svelte","items","items","^row [0-9]+$");
+    flags(&fx,"svelte","code-c/m6.svelte","items","items","");
     let blade=b"@section('content')\n<div class=\"cart\">\n@foreach($items as $item)\n<li>{{ $item->needle }}</li>\n@endforeach\n</div>\n@endsection\n";
     seed(&fx,"code-c/m6.blade.php",blade);
     check(&fx,"blade","code-c/m6.blade.php",&[
         "@section('content') › div.cart › @foreach($items as $item) › li"]);
-    flags(&fx,"blade","code-c/m6.blade.php","items","items","^row [0-9]+$");
+    flags(&fx,"blade","code-c/m6.blade.php","items","items","");
     put(&fx,"blade-inline",b"@section('x','needle')\n{{-- @if(fake) needle --}}\n@verbatim\n@if(fake) needle\n@endverbatim\nneedle\n");
     assert_eq!(paths(&matches(&output(&fx,"blade","blade-inline","needle",&["--json"]))),
         ["","","@verbatim",""]);
@@ -1835,7 +1952,7 @@ fn m6_telegram_html() {
     seed(&fx,"chat/ChatExport_m6/messages.html",src);
     check(&fx,"telegram-html","chat/ChatExport_m6/messages.html",&[
         "31.01.2024 10:04:12 Ana","31.01.2024 10:05:00 Ana"]);
-    flags(&fx,"telegram-html","chat/ChatExport_m6/messages.html","Ana","Ana","^row [0-9]+$");
+    flags(&fx,"telegram-html","chat/ChatExport_m6/messages.html","Ana","Ana","");
     put(&fx,"generic.html",b"<main><p>needle</p></main>\n");
     assert_eq!(paths(&matches(&output(&fx,"telegram-html","generic.html","needle",&["--json"]))),
         ["main › p"]);
@@ -1899,7 +2016,7 @@ fn m6_sql_statements() {
     seed(&fx,"code-c/m6-schema.sql",src);
     check(&fx,"sql","code-c/m6-schema.sql",&[
         "CREATE TABLE users › email","CREATE OR REPLACE VIEW active_users"]);
-    flags(&fx,"sql","code-c/m6-schema.sql","email","email","^row [0-9]+$");
+    flags(&fx,"sql","code-c/m6-schema.sql","email","email","");
     put(&fx,"sql-quotes",br#"SELECT '; needle', "semi;name", `back;tick`, [brack;et];
 GO
 DELIMITER $$
@@ -2014,7 +2131,7 @@ fn m6_diff() {
     seed(&fx,"code-c/m6.patch",src);
     check(&fx,"diff","code-c/m6.patch",&[
         "", "3f2a9c1 Fix the needle crash › src/app.rs › +120 fn describe("]);
-    flags(&fx,"diff","code-c/m6.patch","describe","describe","^row [0-9]+$");
+    flags(&fx,"diff","code-c/m6.patch","describe","describe","");
     let mut child=fx.s4(["--no-docs","--json","--format","diff","needle"])
         .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped()).spawn().unwrap();
@@ -2076,11 +2193,11 @@ fn m6_mail() {
     let eml=b"From: ana@example.com\nDate: Wed, 31 Jan 2024 10:00:00 +0000\nSubject: Your needle invoice\nX-Long: first\n needle folded\n\nneedle body\n";
     seed(&fx,"mail/m6.eml",eml);
     check(&fx,"eml","mail/m6.eml",&["Subject","X-Long","body"]);
-    flags(&fx,"eml","mail/m6.eml","body","Subject","^part [0-9]+$");
+    flags(&fx,"eml","mail/m6.eml","body","Subject","^body$");
     let mbox=b"From ana@example.com Wed Jan 31 10:00:00 2024\nSubject: Budget\nFrom: Ana\nDate: Today\n\nneedle one\n>From escaped needle\n\nFrom bob@example.com Wed Jan 31 11:00:00 2024\nSubject: Next\n\nneedle two\n";
     seed(&fx,"mail/m6.mbox",mbox);
     check(&fx,"mbox","mail/m6.mbox",&["Budget › body","Budget › body","Next › body"]);
-    flags(&fx,"mbox","mail/m6.mbox","Budget","Budget","^part [0-9]+$");
+    flags(&fx,"mbox","mail/m6.mbox","Budget","Budget","^body$");
     put(&fx,"bad.eml",b"Subject: One\nX-A: needle\nnot a header needle\nneedle tail\n");
     assert_eq!(paths(&matches(&output(&fx,"eml","bad.eml","needle",&["--json"]))),
         ["X-A","body","body"]);
@@ -2132,7 +2249,7 @@ fn m6_mime() {
     seed(&fx,"mail/m6-mime.eml",src);
     check(&fx,"eml","mail/m6-mime.eml",&[
         "part 1 multipart/alternative › part 1.1 text/plain","attachment café.txt"]);
-    flags(&fx,"eml","mail/m6-mime.eml","café.txt","café","^part [0-9]+$");
+    flags(&fx,"eml","mail/m6-mime.eml","café.txt","café","^part [0-9.]+ ");
     put(&fx,"encoded.mbox",b"From a x\nSubject: =?UTF-8?B?QnVkZ2V0?=\n\nneedle\n");
     assert_eq!(paths(&matches(&output(&fx,"mbox","encoded.mbox","needle",&["--json"]))),["Budget › body"]);
     let decoded=output(&fx,"mbox","encoded.mbox","Budget",&["--json","--in-headings"]);
@@ -2170,8 +2287,8 @@ fn m6_mime() {
 
 **Files:** create `src/processors/chat.rs::{Chat,ChatPrepared,ChatCursor}`,
 `formats/whatsapp.toml`; append `m6_whatsapp`;
-create `tests/fixtures/chat/_chat.txt`, its broken sibling;
-extend the WhatsApp `paths` only when provenance is available.
+create `tests/fixtures/chat/_chat.txt`, its broken sibling.
+`formats/whatsapp.toml` signals: `names=['_chat.txt']`, `paths=['*WhatsApp*.txt']` (D21).
 
 `pub struct Chat;` implements native Processor. Definition `processor='chat'`,
 `name_chars=40`; no locale/date-order parameter. Kinds `day`, `message`.
@@ -2184,11 +2301,11 @@ alone for system messages. Neither date order nor calendar timezone is inferred.
 #[test]
 fn m6_whatsapp() {
     let fx=Fixture::new();
-    let src="preamble needle\n31/12/23, 21:41 - Ana: where's the needle?\ncontinued needle\n31/12/23, 21:42 - system needle\n[01/01/24, 09:00:01] Bob: needle\n";
+    let src="31/12/23, 21:41 - Ana: where's the needle?\ncontinued needle\n31/12/23, 21:42 - system needle\n[01/01/24, 09:00:01] Bob: needle\n";
     seed(&fx,"chat/_chat.txt",src.as_bytes());
-    check(&fx,"whatsapp","chat/_chat.txt",&["","31/12/23 › 21:41 Ana",
+    check(&fx,"whatsapp","chat/_chat.txt",&["31/12/23 › 21:41 Ana",
         "31/12/23 › 21:41 Ana","31/12/23 › 21:42","01/01/24 › 09:00:01 Bob"]);
-    flags(&fx,"whatsapp","chat/_chat.txt","Ana","Ana","^row [0-9]+$");
+    flags(&fx,"whatsapp","chat/_chat.txt","Ana","Ana","");
     for line in ["12/31/23, 9:41 PM - Ana: needle\n",
         "\u{200e}[31/12/23, 21:41:05] Ana: needle\n",
         "12/31/23, 9:41\u{202f}PM - Ana: needle\n"] {
@@ -2203,12 +2320,26 @@ fn m6_whatsapp() {
     put(&fx,"renamed.txt",src.as_bytes());
     let auto=run(&mut fx.s4(["--no-docs","--json","needle","renamed.txt"]));
     assert!(matches(&auto).iter().all(|r|r["format"].is_null()));
+    // The glob finds an export by the app's name in any language.
+    put(&fx,"Chat de WhatsApp con Ana.txt",src.as_bytes());
+    let auto=matches(&run(&mut fx.s4(["--no-docs","--json","needle","Chat de WhatsApp con Ana.txt"])));
+    assert!(auto.iter().all(|r|r["format"]=="whatsapp"));
+    assert_eq!(paths(&auto)[0],"31/12/23 › 21:41 Ana");
+    // A `.txt` the glob claims that is no export: its first line opens no
+    // message, so every Match keeps an empty Trail, even after a date line.
+    let notes=b"WhatsApp backup notes: needle\n31/12/23, 21:41 - Ana: needle\n";
+    put(&fx,"WhatsApp notes.txt",notes);
+    let rows=matches(&run(&mut fx.s4(["--no-docs","--json","needle","WhatsApp notes.txt"])));
+    assert_eq!(paths(&rows),["",""]);
+    put(&fx,"bom-chat",[b"\xef\xbb\xbf".as_slice(),"\u{200e}".as_bytes(),src.as_bytes()].concat().as_slice());
+    assert_eq!(paths(&matches(&output(&fx,"whatsapp","bom-chat","needle",&["--json"])))[0],"31/12/23 › 21:41 Ana");
 }
 ```
 
 - [ ] **Step 2:** run
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m6_mail_chat m6_whatsapp -- --nocapture`.
-  Expected RED: chat unknown or opener/continuation/date groups wrong.
+  Expected RED: chat unknown, opener/continuation/date groups wrong, or the
+  non-export `WhatsApp notes.txt` decorated.
 - [ ] **Step 3:** recognize only the listed Android/iOS timestamp shapes at physical line
   starts, including optional directional mark and narrow no-break space before
   AM/PM. Keep original date/time spelling in name pieces; do not reorder dd/mm.
@@ -2218,14 +2349,13 @@ fn m6_whatsapp() {
   exclude their own Segments, while the body on the same line remains inside.
   Preparation reads through only the requested day: first-unit tests use a
   short first day and a distinct following date, so its boundary is discoverable.
-  English name globs and `_chat.txt` are fixed in the spec. For ES/PT/FR/IT/DE,
-  inspect an available official WhatsApp export or its application resource
-  strings offline. Record application build/resource key and exact string in
-  this task's implementation report; add literal filename/glob cases to C1's
-  table and the committed Definition. This repository supplies no such source,
-  so report missing evidence to the orchestrator instead of inventing the five
-  strings or claiming those cases pass. A renamed export uses explicit --format;
-  no sniffing is added under option A.
+  First-line check (spec §10.4 Failure): after a BOM and a U+200E, the first
+  line must be a message opener; otherwise the Processor prepares no Segment
+  and every Match has an empty Trail, so a `.txt` the glob claims that is no
+  export shows as rg shows it (8385). The check decides structure only: the
+  Format stays the one detection chose by name, as option A requires. Detection
+  is `_chat.txt` plus `*WhatsApp*.txt`, with no localized name lists (D21). A
+  renamed export uses explicit --format; no sniffing is added under option A.
 - [ ] **Step 4:** rerun the exact command with `INSTA_UPDATE=always` for new
   snapshots; inspect the tree, flat and JSON snapshots against the assertions.
   Rerun with `INSTA_UPDATE=no`: selected tests PASS, stderr empty.
@@ -2626,7 +2756,8 @@ fn binaries() -> Vec<(&'static str,Vec<u8>)> {
 }
 #[test]
 fn m6_binary_modes() {
-    assert!(common::reference_rg());
+    // As rg_compat.rs: without rg 14.1.1 return, or panic under SEARCHFOR_REQUIRE_REFERENCE=1.
+    if !common::reference_rg() {return;}
     let fx=Fixture::new();
     std::fs::create_dir(fx.file("m6-binaries")).unwrap();
     for (layout,b) in binaries() {
@@ -2815,37 +2946,46 @@ fn m6_mutations() {
     let cases=targets();let n=common::fuzz_n().unwrap_or(64);
     let budget=common::fuzz_budget(cases.len()*n);
     let flight=common::FuzzInFlight::new("m6_mutations");
+    // First the Format × operation product, before any deadline is checked, so
+    // every Format meets all four operations; after it the RNG picks them.
+    let product=cases.len()*4;
+    let mut seen=vec![[false;4];cases.len()];
     let mut completed=0;
-    while budget.permits(completed) {
-        for (name,_,src) in &cases {
-            if !budget.permits(completed){break;}
-            rng^=rng<<13;rng^=rng>>7;rng^=rng<<17;
-            let mut b=src.clone();
-            let at=(rng as usize)%(b.len()+1);
-            match completed%4 {
-                0=>b.truncate(at),
-                1=>if at<b.len(){b[at]^=0xff},
-                2=>{let part=b[..at].to_vec();b.extend(part);},
-                _=>{b.splice(at..at,b"\0\xff}\n".iter().copied());},
-            }
-            std::fs::write(fx.file("mutated"),&b).unwrap();
-            flight.at(||format!("seed={seed} case={completed} rng={rng} format={name}"));
-            let argv=[std::ffi::OsStr::new(name.as_str())];
-            let saved=common::save_fuzz_case(&common::FuzzCase{test:"m6_mutations",seed,n,
-                case:completed,argv:&argv,files:&[("case.bin",&b)],stderr:b"",what:"in flight"});
-            let mut cmd=std::process::Command::new(std::env::current_exe().unwrap());
-            cmd.args(["--exact","m6_mutation_child","--nocapture"])
-                .env("SEARCHFOR_M6_FUZZ_CASE",fx.file("mutated"))
-                .env("SEARCHFOR_M6_FUZZ_FORMAT",name);
-            let (status,err)=common::run_limited(&mut cmd,std::time::Duration::from_secs(2));
-            assert!(status.is_some_and(|s|s.success()),"seed={seed} case={completed} {name}: {}",String::from_utf8_lossy(&err));
-            let (status,err)=common::run_limited(&mut fx.s4(["--no-docs","--json","--format",name,"needle","mutated"]),std::time::Duration::from_secs(2));
-            assert!(status.and_then(|s|s.code()).is_some_and(|c|c==0||c==1),"{name}: {err:?}");
-            if let Some(saved)=saved{std::fs::remove_dir_all(saved).unwrap();}
-            completed+=1;
+    while completed<product || budget.permits(completed) {
+        let target=completed%cases.len();
+        let (name,_,src)=&cases[target];
+        rng^=rng<<13;rng^=rng>>7;rng^=rng<<17;
+        let op=if completed<product {completed/cases.len()} else {((rng>>32) as usize)%4};
+        seen[target][op]=true;
+        let mut b=src.clone();
+        let at=(rng as usize)%(b.len()+1);
+        match op {
+            0=>b.truncate(at),
+            1=>if at<b.len(){b[at]^=0xff},
+            2=>{let part=b[..at].to_vec();b.extend(part);},
+            _=>{b.splice(at..at,b"\0\xff}\n".iter().copied());},
         }
+        std::fs::write(fx.file("mutated"),&b).unwrap();
+        flight.at(||format!("seed={seed} case={completed} rng={rng} format={name}"));
+        let argv=[std::ffi::OsStr::new(name.as_str())];
+        let saved=common::save_fuzz_case(&common::FuzzCase{test:"m6_mutations",seed,n,
+            case:completed,argv:&argv,files:&[("case.bin",&b)],stderr:b"",what:"in flight"});
+        let mut cmd=std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact","m6_mutation_child","--nocapture"])
+            .env("SEARCHFOR_M6_FUZZ_CASE",fx.file("mutated"))
+            .env("SEARCHFOR_M6_FUZZ_FORMAT",name);
+        let (status,err)=common::run_limited(&mut cmd,std::time::Duration::from_secs(2));
+        assert!(status.is_some_and(|s|s.success()),"seed={seed} case={completed} {name}: {}",String::from_utf8_lossy(&err));
+        let (status,err)=common::run_limited(&mut fx.s4(["--no-docs","--json","--format",name,"needle","mutated"]),std::time::Duration::from_secs(2));
+        assert!(status.and_then(|s|s.code()).is_some_and(|c|c==0||c==1),"{name}: {err:?}");
+        if let Some(saved)=saved{std::fs::remove_dir_all(saved).unwrap();}
+        completed+=1;
     }
-    assert!(completed>0);flight.finish();
+    assert!(completed>=product);
+    for ((name,_,_),ops) in cases.iter().zip(&seen) {
+        assert!(ops.iter().all(|&o|o),"{name}: an operation never ran: {ops:?}");
+    }
+    flight.finish();
 }
 ```
 
@@ -2862,8 +3002,10 @@ fn m6_mutations() {
   supplemental matrix; mutation fuzz alone does not guarantee those boundaries.
   Drop unused imports under clippy. When adding an actual replay mode, preserve
   the saved exact bytes and use the child env above, so replay requires no RNG
-  alignment. All 32 text Formats must run at least once even with a short time
-  budget; schedule a first full round before checking a shared deadline.
+  alignment. The first 128 cases are the product of the 32 text Formats and the
+  four operations, run before the shared deadline is checked; the RNG picks the
+  operation only after it, and the test asserts that every Format met all four
+  (plan r1, Codex #5: `completed % 4` gave each Format one operation forever).
 - [ ] **Step 4:** run both commands GREEN, then
   `SEARCHFOR_FUZZ_SECONDS=120 CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --release --test fuzz_m6 m6_mutations -- --nocapture`.
   Native CI runs counted small corpus on all four systems and budgeted fuzz per
@@ -2873,7 +3015,7 @@ fn m6_mutations() {
 
 ### Task 11.2: nine dense families, 50 MB scans and first-unit gigabyte files
 
-**Files:** extend `tests/perf.rs::{m6_dense_bytes,m6_dense,m6_sparse,m6_first_unit}`,
+**Files:** extend `tests/perf.rs::{m6_perf_dir,m6_dense_bytes,m6_dense,m6_sparse,m6_first_unit}`,
 reusing checked `alone`, `measure_drained`, `sfor_bin`, `rg_bin`, `timing_enabled`.
 Tests stay Linux-gated where `/usr/bin/time -v` provides peak RSS. Functional
 small versions of the generators run on all systems through the CLI tests.
@@ -2881,6 +3023,17 @@ small versions of the generators run on all systems through the CLI tests.
 - [ ] **Step 1 — RED:** append the complete generator and tests below.
 
 ```rust
+/// A disk directory for the 50 MiB and 1 GiB files, never `/tmp`: on a tmpfs
+/// `/tmp` they sit in RAM beside the RSS being measured, and a small one fails
+/// with ENOSPC. `SEARCHFOR_PERF_DIR`, else `CARGO_TARGET_DIR`, else `target/`.
+#[cfg(target_os="linux")]
+fn m6_perf_dir() -> tempfile::TempDir {
+    let base=std::env::var_os("SEARCHFOR_PERF_DIR").or_else(||std::env::var_os("CARGO_TARGET_DIR"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(||std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target"));
+    std::fs::create_dir_all(&base).unwrap();
+    tempfile::tempdir_in(base).unwrap()
+}
 #[cfg(target_os="linux")]
 fn m6_dense_bytes(format: &str,size: usize) -> Vec<u8> {
     let (head,unit,tail)=match format {
@@ -2907,17 +3060,18 @@ fn m6_dense_bytes(format: &str,size: usize) -> Vec<u8> {
 #[cfg(target_os="linux")]
 fn m6_dense() {
     let _alone=alone();let fx=Fixture::new();
+    let big=m6_perf_dir();let file=big.path().join("dense.m6");let file=file.to_str().unwrap();
     for format in ["asciidoc","ini","nginx","make","sql","diff","mbox","whatsapp","har"] {
-        let src=m6_dense_bytes(format,50<<20);std::fs::write(fx.file("dense.m6"),src).unwrap();
-        let sample=common::run(&mut fx.s4(["--no-docs","--json","--format",format,"-m3","needle","dense.m6"]));
+        let src=m6_dense_bytes(format,50<<20);std::fs::write(file,src).unwrap();
+        let sample=common::run(&mut fx.s4(["--no-docs","--json","--format",format,"-m3","needle",file]));
         assert_eq!(common::code(&sample),0);
         assert!(common::stdout(&sample).lines().filter_map(|s|serde_json::from_str::<serde_json::Value>(s).ok())
             .any(|v|v["type"]=="match"&&!v["data"]["trail"].as_array().unwrap().is_empty()));
         for layout in ["--flat","--json"] {
             let base=["--no-docs",layout,"--format",format,"-j1"];
-            let dense=[base.as_slice(),&["needle|^","dense.m6"]].concat();
-            let once=[base.as_slice(),&["ONCE_M6","dense.m6"]].concat();
-            let raw=[base.as_slice(),&["--no-trail","needle|^","dense.m6"]].concat();
+            let dense=[base.as_slice(),&["needle|^",file]].concat();
+            let once=[base.as_slice(),&["ONCE_M6",file]].concat();
+            let raw=[base.as_slice(),&["--no-trail","needle|^",file]].concat();
             let (td,rd)=measure_drained(&sfor_bin(),&fx,&dense,0).unwrap();
             let (tp,rp)=measure_drained(&sfor_bin(),&fx,&once,0).unwrap();
             let (t0,r0)=measure_drained(&sfor_bin(),&fx,&raw,0).unwrap();
@@ -2934,6 +3088,7 @@ fn m6_dense() {
 #[cfg(target_os="linux")]
 fn m6_sparse() {
     let _alone=alone();let fx=Fixture::new();let rg=rg_bin().unwrap();
+    let big=m6_perf_dir();let file=big.path().join("sparse.m6");let file=file.to_str().unwrap();
     for format in ["asciidoc","ini","nginx","make","sql","diff","mbox","whatsapp","har"] {
         let mut src=m6_dense_bytes(format,50_000_000);
         // Exactly three original needle occurrences become unique patterns;
@@ -2942,9 +3097,9 @@ fn m6_sparse() {
         for &at in [positions[0],positions[positions.len()/2],*positions.last().unwrap()].iter() {
             src[at..at+6].copy_from_slice(b"M6HIT!");
         }
-        std::fs::write(fx.file("sparse.m6"),src).unwrap();
-        let (ts,_)=measure_drained(&sfor_bin(),&fx,&["--no-docs","--flat","--format",format,"M6HIT!","sparse.m6"],0).unwrap();
-        let (tr,_)=measure_drained(&rg,&fx,&["M6HIT!","sparse.m6"],0).unwrap();
+        std::fs::write(file,src).unwrap();
+        let (ts,_)=measure_drained(&sfor_bin(),&fx,&["--no-docs","--flat","--format",format,"M6HIT!",file],0).unwrap();
+        let (tr,_)=measure_drained(&rg,&fx,&["M6HIT!",file],0).unwrap();
         if timing_enabled(){assert!(ts<=tr+std::time::Duration::from_secs(1),"{format}: {ts:?}/{tr:?}");}
     }
 }
@@ -2954,20 +3109,21 @@ fn m6_sparse() {
 fn m6_first_unit() {
     use std::io::Write;
     let _alone=alone();let fx=Fixture::new();let rg=rg_bin().unwrap();
+    let big=m6_perf_dir();let file=big.path().join("large.m6");let file=file.to_str().unwrap();
     for (format,first,rest) in [
         ("sql","INSERT INTO t(a) VALUES ('needle');\n","INSERT INTO t(a) VALUES ('plain');\n"),
         ("mbox","From a x\nSubject: First\n\nneedle\n\n","From b x\nSubject: Later\n\nplain\n\n"),
         ("whatsapp","01/01/24, 10:00 - Ana: needle\n","02/01/24, 10:00 - Bob: plain\n"),
     ] {
-        let mut f=std::fs::File::create(fx.file("large.m6")).unwrap();f.write_all(first.as_bytes()).unwrap();
+        let mut f=std::fs::File::create(file).unwrap();f.write_all(first.as_bytes()).unwrap();
         let unit=rest.repeat(32768);let mut left=(1usize<<30)-first.len();
         while left>0 {let n=left.min(unit.len());f.write_all(&unit.as_bytes()[..n]).unwrap();left-=n;}
         drop(f);
-        let (ts,rs)=measure_drained(&sfor_bin(),&fx,&["--no-docs","--flat","--format",format,"needle","large.m6"],0).unwrap();
-        let (tr,rr)=measure_drained(&rg,&fx,&["needle","large.m6"],0).unwrap();
+        let (ts,rs)=measure_drained(&sfor_bin(),&fx,&["--no-docs","--flat","--format",format,"needle",file],0).unwrap();
+        let (tr,rr)=measure_drained(&rg,&fx,&["needle",file],0).unwrap();
         assert!(rs<=rr+(64<<20),"{format}: RSS {rs}/{rr}");
         if timing_enabled(){assert!(ts<=tr+std::time::Duration::from_millis(500),"{format}: {ts:?}/{tr:?}");}
-        std::fs::remove_file(fx.file("large.m6")).unwrap();
+        std::fs::remove_file(file).unwrap();
     }
 }
 ```
@@ -3033,12 +3189,13 @@ for i in range(20000):
     path = root / 'mixed' / str(i) / source.relative_to(fixtures)
     path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(raw); meta['files'] += 1
 for i in range(100000):
-    # Spec #51: unclaimed names, plus .json/.html ones that signal 4 consults.
+    # Spec #51: unclaimed names, plus the .json/.html/.txt ones that signal 4
+    # consults (Telegram's globs and WhatsApp's `*WhatsApp*.txt`).
     d = root / 'unclaimed' / str(i // 1000)
     if i % 100 == 0:
-        p = d / f'r{i}' / ('result.json' if i % 200 == 0 else 'messages.html')
+        p = d / f'r{i}' / ('result.json', 'messages.html', 'notes.txt', 'chat.txt')[(i // 100) % 4]
     else:
-        p = d / f'file-{i}.{("unclaimed", "json", "html", "conf")[i % 4]}'
+        p = d / f'file-{i}.{("unclaimed", "json", "html", "conf", "txt")[i % 5]}'
     p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(b'ordinary content\n' * 40)
 (root / 'metadata.json').write_text(json.dumps(meta))
 ```
@@ -3048,19 +3205,35 @@ Complete benchmark driver `scripts/bench-m6.sh`:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ ${1:-} == --self-test ]]; then
-  python3 -I - <<'PY'
-def gate(a,b,ratio): return a <= b*ratio
-for ceiling in (1.02,1.03,1.05,1.1):
-    assert gate(ceiling,1,ceiling)
-    assert not gate(ceiling+0.0001,1,ceiling)
-print('M6 cost gates: PASS')
-PY
-  exit 0
-fi
-[[ $# == 1 && -n ${SEARCHFOR_BIN:-} && -n ${SEARCHFOR_BASE_BIN:-} && -n ${SEARCHFOR_BENCH_REPORT:-} ]]
+# One Python program: --self-test and the measurements decide with the same
+# `decide` and `verdict` (plan r1, Codex #6).
+[[ $# == 1 && ${1} == --self-test ]] ||
+  [[ $# == 1 && -n ${SEARCHFOR_BIN:-} && -n ${SEARCHFOR_BASE_BIN:-} && -n ${SEARCHFOR_BENCH_REPORT:-} ]]
 python3 -I - "$1" <<'PY'
 import json, os, pathlib, statistics, subprocess, sys, tempfile, time
+def decide(medians,limit,additive=0):
+    # medians: one (s4, reference) pair of medians per series. An additive gate
+    # bounds the median excess in seconds; any other gate the median ratio.
+    ratio=statistics.median(a/b for a,b in medians)
+    excess=statistics.median(a-b for a,b in medians)
+    return ratio,excess,(excess<=additive if additive else ratio<=limit)
+def verdict(gates): return 0 if gates and all(g['ok'] for g in gates) else 1
+if sys.argv[1]=='--self-test':
+    for limit in (1.02,1.03,1.05,1.1):
+        assert decide([(limit,1)]*3,limit)[2]
+        assert not decide([(limit+0.0001,1)]*3,limit)[2]
+        # The median of three series decides, not the worst or the best one.
+        assert decide([(limit+0.5,1),(limit,1),(1,1)],limit)[2]
+        assert not decide([(limit+0.5,1),(limit+0.001,1),(1,1)],limit)[2]
+    # Additive gates, with values exact in binary: the ratio does not count.
+    for additive in (0.25,0.0625):
+        assert decide([(1+additive,1)]*3,0,additive)[2]
+        assert not decide([(1+additive+0.001,1)]*3,0,additive)[2]
+        assert decide([(0.25+additive,0.25)]*3,0,additive)[2]
+    assert verdict([{'ok':True},{'ok':True}])==0
+    assert verdict([{'ok':True},{'ok':False}])==1 and verdict([])==1
+    print('M6 cost gates: PASS')
+    raise SystemExit(0)
 root=pathlib.Path(sys.argv[1]).resolve()
 s4=os.environ['SEARCHFOR_BIN']; base=os.environ['SEARCHFOR_BASE_BIN']; rg=os.environ.get('SEARCHFOR_RG','/usr/bin/rg')
 assert subprocess.check_output([rg,'--version']).startswith(b'ripgrep 14.1.1')
@@ -3085,9 +3258,7 @@ def paired(label,a,b,pattern,path,limit,additive=0):
             for side in ((0,1) if pair%2==0 else (1,0)):
                 tool,args=(a,b)[side];samples[side].append(sample(tool,args,pattern,path))
         ta,tb=map(statistics.median,samples);medians.append((ta,tb))
-    ratio=statistics.median(a/b for a,b in medians)
-    excess=statistics.median(a-b for a,b in medians)
-    ok=excess<=additive if additive else ratio<=limit
+    ratio,excess,ok=decide(medians,limit,additive)
     report['gates'].append({'name':label,'medians':medians,'ratio':ratio,'excess':excess,'limit':additive or limit,'ok':ok})
     print(label,ratio,excess,'PASS' if ok else 'FAIL',flush=True)
 with tempfile.TemporaryDirectory() as iso:
@@ -3109,13 +3280,15 @@ with tempfile.TemporaryDirectory() as iso:
     for flags in (raw,flat):
         paired('m4-vs-m5b-'+','.join(flags),(s4,flags),(base,flags),'ABSENT_M6',m4,1.03)
 pathlib.Path(os.environ['SEARCHFOR_BENCH_REPORT']).write_text(json.dumps(report,indent=2))
-raise SystemExit(0 if all(g['ok'] for g in report['gates']) else 1)
+raise SystemExit(verdict(report['gates']))
 PY
 ```
 
 - [ ] **Step 2:** run
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test perf m6_benchmark_gate_selftest -- --nocapture`.
-  Expected RED: driver absent; after addition PASS. Its threshold boundary tests
+  Expected RED: driver absent; after addition PASS. Its boundary tests (ratio,
+  additive, median of three series, exit verdict) exercise the same `decide` and
+  `verdict` the measurements call, so a regression in a real gate fails it; they
   verify the evaluator, not performance. Timing needs real binaries next.
 - [ ] **Step 3:** copy the known M5b binary built from 59bb971 before M6
   changes into `/tmp/searchfor-m6-baseline/s4`, recording its SHA-256, build
@@ -3138,16 +3311,16 @@ PY
 
 ## Chunk 12: Docs and 1.1.0
 
-Starts after C10 and C11 integrate. Owns docs, skill, INI-origin expectation
-updates, `tests/guide.rs`, `tests/rg_compat_m6.rs`, the central app differential
-extension, CLI help/man wording and the root version. No release machinery.
+Starts after C10 and C11 integrate. Owns docs, skill, `tests/guide.rs`,
+`tests/rg_compat_m6.rs`, the central app differential extension, CLI help/man
+wording, the version checks of `.github/workflows/ci.yml` (C12.3, before the
+orchestrator's CI inventory commit) and the root version. No release machinery.
 
 ### Task 12.1: format reference, bilingual docs and the .po guide
 
 **Files:** modify `README.md`, `README.es.md`, `CONTEXT.md`,
 `skills/searchfor/SKILL.md`, `docs/external-processors{,.es}.md`,
-`src/cli/mod.rs::Args` definition help, `tests/guide.rs`,
-`tests/{cli_m2,cli_m5,helpers}.rs` user-INI origin assertions;
+`src/cli/mod.rs::Args` definition help, `tests/guide.rs`;
 create `docs/formats.md`, `docs/formats.es.md`,
 `docs/examples/{sample.po,po-helper.py,po-pre.py,po.toml}`;
 remove superseded `docs/examples/{sample.ini,ini-helper.py,ini-pre.py,ini.toml}`
@@ -3179,22 +3352,37 @@ Complete `po-helper.py` example (protocol v1, zero third-party libraries):
 #!/usr/bin/env python3
 import json, pathlib, sys
 
+def value(start, line, number):
+    # The quoted value of a one-line `keyword "..."`: its decoded text, and the
+    # Source bytes between the quotes, which an escape makes longer than the text.
+    body = line.rstrip(b'\r\n')
+    first, last = body.index(b'"'), len(body) - 1
+    return (json.loads(body[first:].decode('utf-8', 'replace')),
+            start + first + 1, start + last, number)
+
 def read(path):
     raw = pathlib.Path(path).read_bytes()
-    lines = raw.splitlines(keepends=True); offset = 0; context = ''; msgid = ''; records = []
-    for number, line in enumerate(lines, 1):
-        text = line.decode('utf-8', 'replace').rstrip('\r\n')
-        if text.startswith('msgctxt '): context = json.loads(text[8:])
-        elif text.startswith('msgid '): msgid = json.loads(text[6:])
-        elif text.startswith('msgstr '):
-            records.append((offset, offset + len(line), number, context, msgid, text))
+    offset = 0; context = None; msgid = None; records = []
+    for number, line in enumerate(raw.splitlines(keepends=True), 1):
+        if line.startswith(b'msgctxt "'): context = value(offset, line, number)
+        elif line.startswith(b'msgid "'): msgid = value(offset, line, number)
+        elif line.startswith(b'msgstr ') and msgid:
+            records.append((offset, offset + len(line), number, context, msgid))
+            context = msgid = None
         offset += len(line)
     return records
 
+def segments(record):
+    # Two Segments, so the Trail separator stays out of any name: the context
+    # (when there is one) and the entry, each named by its source value.
+    start, end, number, context, msgid = record
+    named = [('context', context)] if context else []
+    named.append(('entry', msgid))
+    return [(kind, v, {'kind':kind, 'name':v[0], 'line':v[3], 'end_line':number})
+            for kind, v in named]
+
 def trail(record):
-    start, end, line, context, msgid, text = record
-    return [{'kind':'entry', 'name':context+' › '+msgid if context else msgid,
-             'line':line, 'end_line':line}]
+    return [segment for _, _, segment in segments(record)]
 
 for line in sys.stdin:
     request = json.loads(line); ident = request.get('id'); op = request.get('op', 'trails')
@@ -3203,10 +3391,13 @@ for line in sys.stdin:
         elif op == 'names':
             result = []
             for record in read(request['path']):
-                start, end, number, context, msgid, text = record
-                # This minimal guide searches only msgstr as a semantic label.
-                result.append({'text':'msgstr', 'pieces':[[0,6,start,start+6]],
-                               'anchor':start, 'trail':trail(record)})
+                found = segments(record)
+                for depth, (kind, (text, src_start, src_end, number), _) in enumerate(found):
+                    # One piece over the value between the quotes, in bytes.
+                    result.append({'text':text,
+                                   'pieces':[[0, len(text.encode('utf-8')), src_start, src_end]],
+                                   'anchor':src_start,
+                                   'trail':[s for _, _, s in found[:depth + 1]]})
             response = {'id':ident, 'names':result}
         elif op == 'trails':
             records = read(request['path']); result = []
@@ -3259,6 +3450,13 @@ fn m6_po_guide_runs() {
     let described=run(&mut fx.s4(["--flat","needle","sample.po"]));
     assert_eq!(code(&described),0,"{}",stderr(&described));
     assert_eq!(stdout(&described),"3: menu › Open │ msgstr \"needle\"\n");
+    // `names` maps each name to its value between the quotes: --in-headings finds
+    // the entry's name, with its parent's Trail, and never the keyword.
+    let named=run(&mut fx.s4(["--flat","--in-headings","Open","sample.po"]));
+    assert_eq!(code(&named),0,"{}",stderr(&named));
+    assert_eq!(stdout(&named),"2: menu │ msgid \"Open\"\n");
+    let keyword=run(&mut fx.s4(["--flat","--in-headings","msgstr","sample.po"]));
+    assert_eq!(code(&keyword),1,"{}",stdout(&keyword));
     let pre=Command::new(&py).arg(root.join("po-pre.py")).arg(fx.file("sample.po")).output().unwrap();
     assert!(pre.status.success());assert_eq!(pre.stdout,b"needle\n");
     let launcher=fx.file(&format!("po-pre-launcher{}",std::env::consts::EXE_SUFFIX));
@@ -3277,9 +3475,9 @@ fn m6_po_guide_runs() {
 - [ ] **Step 3:** use the checked protocol `Request::Trails` Match field `byte` from
   `external.rs` (not a relative line offset).
   Move every old guide test/transcript to the PO sample, retaining names/error
-  request-id tests. Existing INI override tests keep their custom helper behavior;
-  update origin-only expectations from user to overridden, never rename these
-  tests' user Definition to evade replacement behavior. Add one Formats table
+  request-id tests. Existing INI override tests keep their custom helper behavior and
+  need no edit, since none asserts the `user` origin (chunk graph); never rename
+  these tests' user Definition to evade replacement behavior. Add one Formats table
   listing all v1+M6 Formats with one example Trail each to both READMEs and move
   detail into the two new references. Document all limits, error recovery,
   name-only chat overrides, stdin diff use, syntax/view parameters and binary
@@ -3314,7 +3512,8 @@ fn files(root: &Path,out: &mut Vec<std::path::PathBuf>) {
 }
 #[test]
 fn m6_rg_over_every_fixture() {
-    assert!(common::reference_rg());let fx=Fixture::new();let mut paths=Vec::new();
+    if !common::reference_rg() {return;}
+    let fx=Fixture::new();let mut paths=Vec::new();
     for group in ["docs-a","config","code-c","mail","chat"] {files(&fx.file(group),&mut paths);}
     use searchfor::processors::object::fixture::m6 as b;
     for (name,bytes) in [("jpeg",b::jpeg(b"needle")),("png",b::png(b"needle")),
@@ -3410,8 +3609,8 @@ fn m6_stream_matches_model() {
   Expected RED: missing registration, output differences or a hidden model path.
 - [ ] **Step 3:** compare the actual forty Definitions' signals/params with
   Task 1.3's table, including all aliases, magic offsets and empty binary extension
-  lists, and Telegram's two globs sorted into signal 4 (a real-Definition copy
-  of C1.3's precedence cases). Extend central cases to broken fixtures via
+  lists, and Telegram's two globs and WhatsApp's `*WhatsApp*.txt` sorted into
+  signal 4 (a real-Definition copy of C1.3's precedence cases). Extend central cases to broken fixtures via
   the supplemental manifest, retaining forced Format so renamed bad inputs work.
   Existing recursive M5b differential already sees new fixtures but uses
   unrelated within filters; this explicit matrix proves native use per family.
@@ -3426,7 +3625,88 @@ fn m6_stream_matches_model() {
 - [ ] **Step 5:** commit with
   `git commit -m "test: integrate M6 rg compatibility and streaming acceptance"`.
 
-### Task 12.3: version 1.1.0 and final local verification
+### Task 12.3: CI's version checks read Cargo.toml
+
+**Files:** modify `.github/workflows/ci.yml` (the `package` job only); append
+`m6_ci_versions_come_from_cargo_toml` to `tests/cli_m5.rs`. Nothing is
+published: the `package` job keeps building and checking without uploading, and
+its only `cargo publish` stays `--dry-run` (D22, header «M6 publishes nothing»).
+
+The `package` job writes `1.0.0` in nine checks (verified on `59bb971`): line
+385 (`dist plan`), 488 (the two planned tags), 532 (archive smoke), 726, 745,
+755, 762 and 774 (installers: shell, npm tarball, npm shim, Homebrew URL,
+Homebrew) and 797 (the crate's file name). Bumping to 1.1.0 in C12.4 fails all
+of them. After this task the version is written in `Cargo.toml` only.
+
+- [ ] **Step 1 — RED:** append this complete test.
+
+```rust
+#[test]
+fn m6_ci_versions_come_from_cargo_toml() {
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ci=std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+    let version=env!("CARGO_PKG_VERSION");
+    let written:Vec<String>=ci.lines().enumerate().filter(|(_,l)|l.contains(version))
+        .map(|(i,l)|format!("{}: {}",i+1,l.trim())).collect();
+    assert!(written.is_empty(),"ci.yml writes the version instead of reading it: {written:#?}");
+    // One place reads it, and every check uses what it read.
+    assert_eq!(ci.matches("tomllib.load(open('Cargo.toml', 'rb'))['package']['version']").count(),1);
+    for read in ["assert os.environ['VERSION'] in text",
+        "rc, stable = plan(f'v{version}-rc.1'), plan(f'v{version}')",
+        "assert v == f\"s4 {os.environ['VERSION']}\", v",
+        "tgz = copy / f\"searchfor-{os.environ['VERSION']}.tgz\"",
+        "releases/download/v{os.environ['VERSION']}/",
+        "ls -l \"target/package/searchfor-$VERSION.crate\""] {
+        assert!(ci.contains(read),"missing: {read}");
+    }
+    assert_eq!(ci.matches("== want").count(),3,"the three installer version checks");
+    // The no-publish rule: the one command that runs `cargo publish` is a dry run.
+    let publish:Vec<&str>=ci.lines().map(|l|l.trim().trim_start_matches("$PRIO "))
+        .filter(|l|l.starts_with("cargo publish")).collect();
+    assert_eq!(publish.len(),1,"{publish:?}");
+    assert!(publish[0].contains("--dry-run"),"{}",publish[0]);
+}
+```
+
+- [ ] **Step 2:** run
+  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m5 m6_ci_versions_come_from_cargo_toml -- --nocapture`.
+  Expected RED: the nine `1.0.0` lines, listed with their numbers.
+- [ ] **Step 3:** in the `package` job, right after `actions/setup-python`
+  (3.12, whose `tomllib` reads TOML), add the one step that reads the version:
+
+```yaml
+      # The one place the checks below take the version from: Cargo.toml's.
+      - name: Version from Cargo.toml
+        run: |
+          python3 - >> "$GITHUB_ENV" <<'PY'
+          import tomllib
+          print('VERSION=' + tomllib.load(open('Cargo.toml', 'rb'))['package']['version'])
+          PY
+```
+
+  Then replace each written version: in `dist plan`, import `os` and
+  `assert os.environ['VERSION'] in text`; in `Release workflow`, set
+  `version = os.environ['VERSION']` before
+  `rc, stable = plan(f'v{version}-rc.1'), plan(f'v{version}')`; in
+  `Archive smoke`, `assert v == f"s4 {os.environ['VERSION']}", v`; in `Local
+  installers`, `want = f"s4 {os.environ['VERSION']}"` after `def version`,
+  the three `version(...) == want` checks,
+  `tgz = copy / f"searchfor-{os.environ['VERSION']}.tgz"` and
+  `release = f"https://github.com/neitanod/searchfor/releases/download/v{os.environ['VERSION']}/"`;
+  in `Crate (Linux)`, `ls -l "target/package/searchfor-$VERSION.crate"`. The
+  three comments that name 1.0.0 (lines 357, 425, 665) say «the Cargo.toml
+  version» instead. Change nothing else in the workflow: the tag pattern, the
+  patches, the permissions, the guards and the dry run stay as they are.
+- [ ] **Step 4:** rerun the command: PASS. Locally check the reading step's
+  script with
+  `python3 -c "import tomllib; print('VERSION=' + tomllib.load(open('Cargo.toml', 'rb'))['package']['version'])"`
+  (prints `VERSION=1.0.0` before C12.4) and the edited heredocs with
+  `python3 -m py_compile` on each extracted script. The `package` job runs only
+  in native CI, which is its evidence; record it as pending until then.
+- [ ] **Step 5:** commit with `git add -- .github/workflows/ci.yml tests/cli_m5.rs` and
+  `git commit -m "ci: read the version the package checks expect from Cargo.toml"`.
+
+### Task 12.4: version 1.1.0 and final local verification
 
 **Files:** modify only version in `Cargo.toml`; update
 `tests/cli_m5.rs::m5_26_the_version_is_1_0` to the M6 assertion below, renaming it
@@ -3769,6 +4049,8 @@ release, `cargo publish` or package (header, «M6 publishes nothing»).
   `macos-x86_64`, `windows` for `/usr/bin/time -v` peak RSS, owner C11. The
   inventory step only checks rows that exist, so a missing row passes silently;
   verify each row against `cargo test -- --list` on Linux before pushing.
+  C12.3 already made the `package` job's version checks read Cargo.toml; this
+  commit leaves them alone.
 - [ ] Push only the task branch when the orchestrator authorizes it:
   `git push origin t-798-searchfor-m6`. No tag, no `workflow_dispatch` of
   `release.yml`.
@@ -3809,8 +4091,9 @@ release, `cargo publish` or package (header, «M6 publishes nothing»).
     spelling its own directory. C1's tests use path strings and are unaffected.
   - **Windows, file names:** fixture or `put` names with `:`, `*`, `?`, `"`,
     `<`, `>`, `|` or a reserved stem (`con`, `aux`, `nul`, `prn`, `com1`) fail to
-    be created. The planned names (`WhatsApp Chat with Ana.txt`, `_chat.txt`,
-    `.env.m6`) are valid; check any added during fixes.
+    be created. The planned names (`WhatsApp Chat with Ana.txt`,
+    `Chat de WhatsApp con Ana.txt`, `WhatsApp notes.txt`, `_chat.txt`, `.env.m6`)
+    are valid; check any added during fixes.
   - **Both, the 2 s case deadline:** fuzz children and hostile-depth cases
     (C10.5, C11.1) run in release mode in CI; macos-15-intel and windows-2022
     start processes more slowly. A timeout is first reproduced locally under
@@ -3825,26 +4108,26 @@ release, `cargo publish` or package (header, «M6 publishes nothing»).
   #56 is met; record the commit, the four job URLs and the Linux size in the
   acceptance table's evidence and in v1 spec §11's criterion-22 record.
 - [ ] Report GREEN or the remaining blockers to Sebastián, with the open
-  questions' state (notes 2 and 3). The branch push is not approval to tag 1.1.0.
+  question's state (note 3; question 1 is answered, note 2). The branch push is not approval to tag 1.1.0.
 
 ## Acceptance criteria 43–56 and spec coverage
 
 | Criterion | Required evidence | Tasks |
 |---|---|---|
-| 43 Detection | Every §4.2 row by name, extension, path and magic; compound over PHP; signal 4 Telegram paths and the JSON/HTML elsewhere; `Makefile.toml` TOML; `.conf` Plain; native `\` paths; `cafebabe` both ways; real Definitions | 1.1, 1.2, 1.3, 10.4, 12.2; Windows/macOS in orchestrator CI |
+| 43 Detection | Every §4.2 row by name, extension, path and magic; compound over PHP; signal 4 Telegram paths and the JSON/HTML elsewhere; WhatsApp's `*WhatsApp*.txt` in two languages and a plain `.txt` unclaimed; `Makefile.toml` TOML; `.conf` Plain; native `\` paths; `cafebabe` both ways; real Definitions | 1.1, 1.2, 1.3, 9.3, 10.4, 12.2; Windows/macOS in orchestrator CI |
 | 44 Every Format | Primary fixture, tree/flat/JSON snapshots, each example Trail of §6–§10, automatic variant; `--no-trail` and `--json --no-trail` equal rg over every fixture | 2.1–2.4, 3.1–3.3, 4.1–4.3, 5.1–5.3, 6.1–6.3, 7.1–7.3, 8.1–8.3, 9.1–9.3, 10.1–10.4; 12.2 `rg_compat_m6` |
 | 45 Rules of §3 | Committed broken fixture per Format with three snapshots; `flags` source-name and generated-name searches; own-name parent Trail; encoding, BOM, UTF-16 and lone CR | Supplemental matrices in C2–C9; 10.5; 11.1 `m6_depth_and_names` |
 | 46 Binaries | Walked JPEG/MP3/class without `--binary` equal rg; named files carry §9's Trails; `-v`, `-c`, `--no-trail` equal rg | 10.1–10.5; 12.2 |
 | 47 Components | `script › addItem`, Svelte `#each`, Blade `@foreach`; every existing HTML snapshot unchanged | 7.1, 7.2 |
-| 48 Fuzz | Every new text Processor and binary layout, no panic, 2 s per case, Segments inside the file | 11.1, 10.5; `fuzz_m6` CI steps added by the orchestrator |
-| 49 Per-file cost | `scripts/bench-m6.sh` gates: mixed no-match ≤ 1.1 × rg, sparse additive bound, M4 corpus 1.05 gates, M6 against M5b ≤ 1.03 × | 11.3 (local Linux timings) |
+| 48 Fuzz | Every new text Processor and binary layout, no panic, 2 s per case, Segments inside the file; every text Format meets all four mutation operations | 11.1, 10.5; `fuzz_m6` CI steps added by the orchestrator |
+| 49 Per-file cost | `scripts/bench-m6.sh` gates: mixed no-match ≤ 1.1 × rg, sparse additive bound, M4 corpus 1.05 gates, M6 against M5b ≤ 1.03 ×; the self-test checks the same evaluator | 11.3 (local Linux timings) |
 | 50 Dense | Nine 50 MiB families, memory bound, JSON time bound, flat time reported | 11.2 `m6_dense` |
-| 51 Detection cost | 100 000 unclaimed names including `.json`, `.html`, `result.json`, `messages.html` outside Telegram folders, ≤ 1.02 × M5b | 1.2 (index), 11.3 `unclaimed-detection` |
+| 51 Detection cost | 100 000 unclaimed names including `.json`, `.html`, `.txt`, `result.json`, `messages.html`, `notes.txt` outside Telegram folders, ≤ 1.02 × M5b | 1.2 (index), 11.3 `unclaimed-detection` |
 | 52 Large files | 1 GiB SQL, mbox, WhatsApp with a first-unit Match: rg time + 0.5 s, rg RSS + 64 MiB | 11.2 `m6_first_unit` |
 | 53 50 MB files | Each new text family, three Matches, rg time + 1 s | 11.2 `m6_sparse` |
-| 54 Size | Stripped Linux size per chunk and tanda, ≤ 23,000,000, stop at 22,800,000, recorded | Every chunk's final checks; 12.3; orchestrator CI |
+| 54 Size | Stripped Linux size per chunk and tanda, ≤ 23,000,000, stop at 22,800,000, recorded | Every chunk's final checks; 12.4; orchestrator CI |
 | 55 Docs | `docs/formats{,.es}.md`, README tables, `.po` guide run by `tests/guide.rs`, skill names | 12.1 |
-| 56 Version | `s4 --version` prints 1.1.0; criterion 34 with the M6 tests on four systems | 12.3; orchestrator CI |
+| 56 Version | `s4 --version` prints 1.1.0; criterion 34 with the M6 tests on four systems; the `package` job's checks read the version from Cargo.toml | 12.3, 12.4; orchestrator CI |
 
 | M6 spec section | Coverage |
 |---|---|
@@ -3863,24 +4146,26 @@ release, `cargo publish` or package (header, «M6 publishes nothing»).
 | §14 Docs | C12.1; schema and tree label lines in each chunk's registration |
 | §15 Parts | Chunk graph, D1 |
 | §16 Criteria | Table above |
-| Open questions | Notes 2 and 3; option A in C1.3, C7.1, C9.3 |
+| Open questions | Question 1 answered A (note 2, D21); question 2 note 3; option A in C1.3, C7.1, C9.3 |
 
 ## Risks and what is verified only in CI
 
 | Risk / status | Local Linux evidence | Native CI evidence / response |
 |---|---|---|
-| Signal 4 adds work to every `.json` and `.html` file before the search, **deduced, measured by #51** | C11.3 corpus with those names; C1.2 keys signal 4 by extension and filters by literal name | Timing stays local; CI runs the evaluator self-test only |
+| Signal 4 adds work to every `.json`, `.html` and `.txt` file before the search, **deduced, measured by #51** | C11.3 corpus with those names; C1.2 keys signal 4 by extension and filters by a literal run of the name | Timing stays local; CI runs the evaluator self-test only |
 | globset's `\` normalization on Windows, **read in globset 0.4.15's source per spec §4.1, not run** | `/` cases; GNU clippy compiles the `cfg!(windows)` branch | windows job: `m6_path_separators_are_native` and automatic variants under `ssh/`, `nginx/`, `ChatExport_m6/` |
 | Case-insensitive file systems collapse name spellings, **deduced** | Detector tests use path strings | macOS and Windows jobs; fix by separate directories |
 | 2 s fuzz deadline on slower runners, **deduced** | `taskset -c 0` reproduction | macos-15-intel and windows-2022 timings; a budget change needs Sebastián |
 | `fuzz_m6` absent from both workflows and cfg rows absent from `docs/platforms.md`, **verified on `59bb971`** | `cargo test -- --list` | Orchestrator's pre-push inventory commit |
-| Linux CI's «Memory and bomb checks» runs every ignored `perf` test, now with 9 × 50 MiB and 3 × 1 GiB generated files, **runner disk and time not verified** | Same tests locally with `SEARCHFOR_PERF_TIMING=1` | Record step duration and free disk; if the runner refuses, report instead of dropping the test |
+| Linux CI's «Memory and bomb checks» runs every ignored `perf` test, now with 9 × 50 MiB and 3 × 1 GiB generated files, **runner disk and time not verified** | Same tests locally with `SEARCHFOR_PERF_TIMING=1`; the files go to `m6_perf_dir` (`SEARCHFOR_PERF_DIR`, else `CARGO_TARGET_DIR`, else `target/`), never a tmpfs `/tmp` | Record step duration and free disk of the target directory's file system; if the runner refuses, report instead of dropping the test |
 | `bash`/`python3` resolution on Windows, **deduced** | Self-test on Linux | windows job; PATH pinning or a documented row |
 | Binary size near 22.8 MB with seven new scanners | Stripped size per chunk and tanda | Linux job builds the same release; stop rule unchanged |
-| Cargo.lock still records 1.0.0 (D20) | C12.3 stops on `--locked` refusal | CI uses `--locked`; resolved before the push |
+| Cargo.lock still records 1.0.0 (D20) | C12.4 stops on `--locked` refusal | CI uses `--locked`; resolved before the push |
+| The `package` job's version checks at 1.1.0 (D22), **the reading step runs only in native CI** | C12.3's test: no version written in ci.yml, one read, the dry run kept | All four `package` jobs at the integrated commit |
 | Telegram's export template changes its class names | C7.3 generic-HTML fallback test | None needed; the Match survives, the decoration falls back |
-| Localized WhatsApp names lack a source (D21) | English/iOS names only | Docs state the gap; no inferred translation |
-| Open questions 1 and 2 still unanswered (Hilo 855) | Option A throughout | Notes 2 and 3 list the tasks B would change |
+| `*WhatsApp*.txt` claims a `.txt` that is no export (D21), **deduced** | C9.3's `WhatsApp notes.txt`: the first-line check leaves every Trail empty | None needed; the Matches show as rg shows them |
+| The export's name differs in a language without «WhatsApp» in it, **not verified: no localized source here** | `_chat.txt` and the glob | A renamed export is read with `--format`, as the docs show |
+| Open question 2 still unanswered (Hilo 855); question 1 answered A (#12694) | Option A throughout | Note 3 lists the tasks B would change |
 | Timing criteria #49–#53 on shared runners | Local Linux, three alternated series, `uptime` recorded | CI timing is never evidence for them |
 
 Every chunk hands off: commit IDs, exact RED/GREEN commands and results,
