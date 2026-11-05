@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+2: Directory /x › K │ K needle
+4: Directory /x › K │ K needle

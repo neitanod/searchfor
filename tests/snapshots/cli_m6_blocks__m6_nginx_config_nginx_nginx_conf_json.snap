@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"config/nginx/nginx.conf"}}}
+{"type":"match","data":{"path":{"text":"config/nginx/nginx.conf"},"lines":{"text":"   proxy_pass http://needle:8080;\n"},"line_number":4,"absolute_offset":35,"submatches":[{"match":{"text":"needle"},"start":21,"end":27}],"format":"nginx","trail":[{"kind":"block","name":"http","line":1,"end_line":8},{"kind":"block","name":"server example.com","line":2,"end_line":7},{"kind":"block","name":"location /api","line":3,"end_line":5},{"kind":"key","name":"proxy_pass","line":4,"end_line":4}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"config/nginx/nginx.conf"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":105,"bytes_printed":573,"matched_lines":1,"matches":1}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":573,"bytes_searched":105,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":1,"matches":1,"searches":1,"searches_with_match":1}},"type":"summary"}

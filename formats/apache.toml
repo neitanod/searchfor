@@ -1,0 +1,13 @@
+# formats/apache.toml — Apache sections and directives (M6 spec §7.7):
+# `VirtualHost *:443 example.com › Directory /var/www › Require`.
+name       = "apache"
+names      = ["httpd.conf", "apache2.conf", ".htaccess"]
+# The Detector reads `paths` from Chunk 1 (M6 plan, Task 1.1); until both are merged this
+# line stays a comment, as a key the Definition does not know yet fails the built-in.
+# paths    = ["**/apache2/**/*.conf", "**/httpd/**/*.conf", "**/apache2/sites-available/*", "**/apache2/sites-enabled/*"]
+processor  = "blocks"
+
+[params]
+syntax = "apache"
+# Characters of a section's name (`Name args`) before it is cut with `…`.
+name_chars = 40

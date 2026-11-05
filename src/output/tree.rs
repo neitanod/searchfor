@@ -23,6 +23,8 @@ pub fn label(s: &Segment) -> String {
         // sheets, slides, tables, chapters, cells and notes show their name alone.
         "document" | "key" | "element" | "tag" | "row" | "object" | "section" | "symbol"
         | "page" | "sheet" | "slide" | "table" | "chapter" | "cell" | "notes" => name.into_owned(),
+        // M6: a block (nginx, Apache, HCL) is named by its directive or section already.
+        "block" => name.into_owned(),
         kind => format!("{kind} {name}"),
     }
 }
@@ -343,6 +345,11 @@ mod tests {
         let mut sig = seg("method", "m", 1, 1);
         sig.signature = Some("fn m(\u{1b})".into());
         assert_eq!(label(&sig), "fn m(\\u{1b})");
+    }
+
+    #[test]
+    fn labels_of_the_m6_block_kinds() {
+        assert_eq!(label(&seg("block", "location /api", 1, 1)), "location /api");
     }
 
     #[test]
