@@ -244,7 +244,8 @@ In each chunk worktree (N is that chunk's integer), export once:
 ```bash
 export CARGO_TARGET_DIR="/home/sebas/robotin/apps/mdgrep/.workspace/t-798-searchfor-m5b-v1-0-windows-macos-ci-y-releases-despues-m6/targets/m6-c${N}"
 # /usr/bin/rg is ripgrep 15.1.0 on this machine since a system upgrade; the reference
-# 14.1.1 is the official musl archive, checked against ci.yml's SHA-256.
+# 14.1.1 is the official musl archive, checked against ci.yml's SHA-256; the extracted
+# binary's SHA-256 is f401154e2393f9002ac77e419f9ee5521c18f4f8cd3e32293972f493ba06fce7.
 export SEARCHFOR_RG="/home/sebas/robotin/apps/mdgrep/.workspace/t-798-searchfor-m5b-v1-0-windows-macos-ci-y-releases-despues-m6/tools/rg-14.1.1/rg"
 export SEARCHFOR_REQUIRE_REFERENCE=1
 ```
@@ -551,12 +552,14 @@ declare them; the text search covers them. Hits, by file and line:
 | Binary magics of group E (`ffd8ff`, `89504e47…`, `WEBP`, `II*\0`/`MM\0*`, `ID3`, `ftyp`, `\0asm`) and `mbox`'s `From ` on a name without extension | No test, fixture or writer produces them; `cafebabe` appears only in the row above and in `cli_m4`'s fat Mach-O writers, valid fat files that stay `macho` (C10.4's ordered validation) | No change |
 | Path globs, compound extensions and names of §4.2 (`.env.*`, `**/.ssh/…`, `nginx/`, `apache2/`, `httpd/`, `systemd/`, `.git/config`, `Dockerfile*`, `Containerfile*`, `Makefile.*`, `[Jj]ustfile`, `.blade.php`, `*WhatsApp*.txt`, `_chat.txt`, `ChatExport_*`, `DataExport_*`) | Nothing in the tests, fixtures or examples names them | No change |
 | `tests/cli_m5.rs:1781`, `fx.file("config")` | The new `tests/fixtures/config/` directory takes the name: `IsADirectory` (seen in the probe) | Task 0, edit 4 |
-| The other 30 fixtures the chunks add under `tests/fixtures/{config,code-c,docs-a,mail,chat}` | `common::Fixture` copies them into every test's tree; the suite passes with them in the probe, and `tests/rg_compat.rs`'s whole-tree cases (skipped here: no rg 14.1.1) compare s4 with rg over the same tree, `--no-trail` | No change |
+| The other 30 fixtures the chunks add under `tests/fixtures/{config,code-c,docs-a,mail,chat}` | `common::Fixture` copies them into every test's tree; the suite passes with them in the probe, and `tests/rg_compat.rs`'s whole-tree cases compare s4 with rg over the same tree, `--no-trail`; they ran against rg 14.1.1 in plan review r3 | No change |
 
 **Verification** (the orchestrator, in its checkout of `t-798-searchfor-m6`):
 
 ```bash
 export CARGO_TARGET_DIR="/home/sebas/robotin/apps/mdgrep/.workspace/t-798-searchfor-m5b-v1-0-windows-macos-ci-y-releases-despues-m6/targets/m6-t0"
+export SEARCHFOR_RG="/home/sebas/robotin/apps/mdgrep/.workspace/t-798-searchfor-m5b-v1-0-windows-macos-ci-y-releases-despues-m6/tools/rg-14.1.1/rg"
+export SEARCHFOR_REQUIRE_REFERENCE=1
 CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m2 m2_07 -- --nocapture
 CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test mcp_m5 -- --nocapture
 CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m5 m5b_mcp_config_trap -- --nocapture
@@ -568,9 +571,9 @@ test -n "$CARGO_TARGET_DIR" && rm -rf -- "$CARGO_TARGET_DIR"
 ```
 
 Expected: every command passes on today's code, Task 0 alone (checked on
-`d14a4c1` in a scratch worktree: the workspace suite 1018 passed, 0 failed, 63
-ignored, the reference-rg tests returning early without rg 14.1.1; fmt and
-clippy clean). The four edits
+`0c32677` with the patch, plan review r3: the workspace suite 1018 passed, 0
+failed, 63 ignored, no comparison skipped against the reference rg 14.1.1; fmt
+and clippy clean). The four edits
 change no assertion's meaning: they move a claim or a file name off a name M6
 takes. Then
 `git add -- tests/cli_m2.rs tests/mcp_m5.rs tests/cli_m5.rs src/formats/detector.rs` and
@@ -2286,8 +2289,11 @@ fn m6_html_scripts() {
   random markup gets its scripts parsed as JavaScript:
   `SEARCHFOR_FUZZ_N=8 CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test fuzz -- --nocapture`.
   Both generated-input tests (`generated_inputs_do_not_panic_the_processors`
-  and `generated_files_do_not_panic_sfor`) must PASS with no panic and no case
-  past the 2 s deadline; a saved case is fixed in `markup/components.rs`, never
+  and `generated_files_do_not_panic_sfor`) must PASS with no panic, within that
+  file's own limits: the in-process Processor test has no time supervision
+  (`fuzz.rs:495`), and each CLI run, over several files, has `CLI_LIMIT` = 10 s
+  (`fuzz.rs:627`). The 2 s per case is C11.1's evidence, from its supervised
+  children, not this command's (plan review r3, Codex #1); a saved case is fixed in `markup/components.rs`, never
   by narrowing the tokens (plan review r2, Fable #3).
 - [ ] **Step 4:** rerun the exact command with `INSTA_UPDATE=always` for new
   snapshots; inspect the tree, flat and JSON snapshots against the assertions.
@@ -4553,7 +4559,7 @@ release, `cargo publish` or package (header, «M6 publishes nothing»).
 | `*WhatsApp*.txt` claims a `.txt` that is no export (D21), **deduced** | C9.3's `WhatsApp notes.txt`: the first-line check leaves every Trail empty | None needed; the Matches show as rg shows them |
 | The export's name differs in a language without «WhatsApp» in it, **not verified: no localized source here** | `_chat.txt` and the glob | A renamed export is read with `--format`, as the docs show |
 | HTML's Trails change from 1.0 in scripts with functions (D24): a script reading 1.0's `--json` sees deeper Trails, **by design** | C7.4: v1 snapshots unchanged, the six limit cases; C12.2 stream = model | Documented in `docs/rg-compat.md`; `--no-trail` unchanged (`rg_compat_m6`) |
-| v1's fuzz of `html` (`tests/fuzz.rs`) now parses JavaScript: its target takes `html.toml`'s `[params]`, `scripts = true` included, and its tokens include `<script>` and `</script>`, **deduced from the code, run by C7.4** | C7.4 Steps 3–4: `SEARCHFOR_FUZZ_N=8 … --test fuzz`, both generated-input tests, 2 s per case | `ci.yml`'s `--test fuzz` step and `fuzz-nightly.yml` run it unchanged on the four systems; a timeout is reproduced under `taskset -c 0` first |
+| v1's fuzz of `html` (`tests/fuzz.rs`) now parses JavaScript: its target takes `html.toml`'s `[params]`, `scripts = true` included, and its tokens include `<script>` and `</script>`, **deduced from the code, run by C7.4** | C7.4 Steps 3–4: `SEARCHFOR_FUZZ_N=8 … --test fuzz`, both generated-input tests, no panic, within `tests/fuzz.rs`'s own limits (in-process test unsupervised, `CLI_LIMIT` 10 s per CLI run); the 2 s per case is C11.1's | `ci.yml`'s `--test fuzz` step and `fuzz-nightly.yml` run it unchanged on the four systems; a timeout is reproduced under `taskset -c 0` first |
 | The JavaScript MIME type list of spec §8.3 is quoted from memory, **not checked against WHATWG HTML here** | C7.4 tests `text/javascript` with spaces and case, `module`, `text/plain` | A missing equivalent keeps 1.0's Trail, never loses a Match |
 | Timing criteria #49–#53 on shared runners | Local Linux, three alternated series, `uptime` recorded | CI timing is never evidence for them |
 
