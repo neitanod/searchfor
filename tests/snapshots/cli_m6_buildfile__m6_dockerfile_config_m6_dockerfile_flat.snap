@@ -1,0 +1,7 @@
+---
+source: tests/cli_m6_buildfile.rs
+expression: text
+---
+5: build › RUN │  needle-build --release
+7: build › RUN │ needle heredoc
+10: stage 1 › COPY │ COPY --from=build /needle /app

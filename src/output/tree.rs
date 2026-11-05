@@ -20,6 +20,9 @@ pub fn label(s: &Segment) -> String {
         // sheets, slides, tables, chapters, cells and notes show their name alone.
         "document" | "key" | "element" | "tag" | "row" | "object" | "section" | "symbol"
         | "page" | "sheet" | "slide" | "table" | "chapter" | "cell" | "notes" => name.into_owned(),
+        // M6: a build file's instructions show their keyword alone; its stages, targets,
+        // conditionals and recipes show their opening line, as their signature.
+        "instruction" => name.into_owned(),
         kind => format!("{kind} {name}"),
     }
 }

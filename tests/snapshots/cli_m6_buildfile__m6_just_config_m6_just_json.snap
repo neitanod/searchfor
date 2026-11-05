@@ -1,0 +1,11 @@
+---
+source: tests/cli_m6_buildfile.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"config/m6.just"}}}
+{"type":"match","data":{"path":{"text":"config/m6.just"},"lines":{"text":"# needle documentation\n"},"line_number":1,"absolute_offset":0,"submatches":[{"match":{"text":"needle"},"start":2,"end":8}],"format":"just","trail":[],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/m6.just"},"lines":{"text":"    rsync -a build/ host:/srv/needle/\n"},"line_number":4,"absolute_offset":58,"submatches":[{"match":{"text":"needle"},"start":30,"end":36}],"format":"just","trail":[{"kind":"recipe","name":"deploy","line":2,"end_line":4,"signature":"@deploy host='prod': build"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/m6.just"},"lines":{"text":"URL := 'needle'\n"},"line_number":6,"absolute_offset":97,"submatches":[{"match":{"text":"needle"},"start":8,"end":14}],"format":"just","trail":[{"kind":"key","name":"URL","line":6,"end_line":6}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/m6.just"},"lines":{"text":"alias ship := deploy # needle\n"},"line_number":7,"absolute_offset":113,"submatches":[{"match":{"text":"needle"},"start":23,"end":29}],"format":"just","trail":[{"kind":"key","name":"ship","line":7,"end_line":7}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"config/m6.just"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":143,"bytes_printed":1250,"matched_lines":4,"matches":4}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1250,"bytes_searched":143,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":4,"matches":4,"searches":1,"searches_with_match":1}},"type":"summary"}

@@ -1,0 +1,13 @@
+---
+source: tests/cli_m6_buildfile.rs
+expression: text
+---
+config/m6.dockerfile
+  FROM ${BASE} AS build
+    RUN
+      5: needle-build --release
+    RUN
+      7:needle heredoc
+  FROM scratch
+    COPY
+      10:COPY --from=build /needle /app

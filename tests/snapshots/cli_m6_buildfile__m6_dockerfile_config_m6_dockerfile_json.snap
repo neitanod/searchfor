@@ -1,0 +1,10 @@
+---
+source: tests/cli_m6_buildfile.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"config/m6.dockerfile"}}}
+{"type":"match","data":{"path":{"text":"config/m6.dockerfile"},"lines":{"text":" needle-build --release\n"},"line_number":5,"absolute_offset":79,"submatches":[{"match":{"text":"needle"},"start":1,"end":7}],"format":"dockerfile","trail":[{"kind":"stage","name":"build","line":2,"end_line":8,"signature":"FROM ${BASE} AS build"},{"kind":"instruction","name":"RUN","line":3,"end_line":5}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/m6.dockerfile"},"lines":{"text":"needle heredoc\n"},"line_number":7,"absolute_offset":113,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"dockerfile","trail":[{"kind":"stage","name":"build","line":2,"end_line":8,"signature":"FROM ${BASE} AS build"},{"kind":"instruction","name":"RUN","line":6,"end_line":8}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/m6.dockerfile"},"lines":{"text":"COPY --from=build /needle /app\n"},"line_number":10,"absolute_offset":145,"submatches":[{"match":{"text":"needle"},"start":19,"end":25}],"format":"dockerfile","trail":[{"kind":"stage","name":"stage 1","line":9,"end_line":10,"signature":"FROM scratch"},{"kind":"instruction","name":"COPY","line":10,"end_line":10}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"config/m6.dockerfile"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":176,"bytes_printed":1277,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1277,"bytes_searched":176,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

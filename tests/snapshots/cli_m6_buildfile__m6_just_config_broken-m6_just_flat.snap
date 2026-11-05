@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_buildfile.rs
+expression: text
+---
+2: a │     needle
+3: stray needle

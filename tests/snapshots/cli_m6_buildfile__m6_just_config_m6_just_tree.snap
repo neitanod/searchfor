@@ -1,0 +1,12 @@
+---
+source: tests/cli_m6_buildfile.rs
+expression: text
+---
+config/m6.just
+  1:# needle documentation
+  @deploy host='prod': build
+    4:    rsync -a build/ host:/srv/needle/
+  URL
+    6:URL := 'needle'
+  ship
+    7:alias ship := deploy # needle

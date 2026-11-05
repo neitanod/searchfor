@@ -1,0 +1,12 @@
+---
+source: tests/cli_m6_buildfile.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"config/m6.mk"}}}
+{"type":"match","data":{"path":{"text":"config/m6.mk"},"lines":{"text":"\t@echo needle\n"},"line_number":3,"absolute_offset":43,"submatches":[{"match":{"text":"needle"},"start":7,"end":13}],"format":"make","trail":[{"kind":"conditional","name":"ifeq ($(OS),Windows_NT)","line":1,"end_line":9,"signature":"ifeq ($(OS),Windows_NT)"},{"kind":"target","name":"release test","line":2,"end_line":6,"signature":"release test: deps"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/m6.mk"},"lines":{"text":"\techo needle again\n"},"line_number":6,"absolute_offset":78,"submatches":[{"match":{"text":"needle"},"start":6,"end":12}],"format":"make","trail":[{"kind":"conditional","name":"ifeq ($(OS),Windows_NT)","line":1,"end_line":9,"signature":"ifeq ($(OS),Windows_NT)"},{"kind":"target","name":"release test","line":2,"end_line":6,"signature":"release test: deps"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/m6.mk"},"lines":{"text":"NAME := needle\n"},"line_number":8,"absolute_offset":102,"submatches":[{"match":{"text":"needle"},"start":8,"end":14}],"format":"make","trail":[{"kind":"conditional","name":"ifeq ($(OS),Windows_NT)","line":1,"end_line":9,"signature":"ifeq ($(OS),Windows_NT)"},{"kind":"key","name":"NAME","line":8,"end_line":8}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/m6.mk"},"lines":{"text":"needle body\n"},"line_number":11,"absolute_offset":135,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"make","trail":[{"kind":"key","name":"BODY","line":10,"end_line":12}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/m6.mk"},"lines":{"text":">echo needle pattern\n"},"line_number":15,"absolute_offset":180,"submatches":[{"match":{"text":"needle"},"start":6,"end":12}],"format":"make","trail":[{"kind":"target","name":"%.o","line":14,"end_line":15,"signature":"%.o: %.c"}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"config/m6.mk"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":201,"bytes_printed":1959,"matched_lines":5,"matches":5}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1959,"bytes_searched":201,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":5,"matches":5,"searches":1,"searches_with_match":1}},"type":"summary"}

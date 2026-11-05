@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_buildfile.rs
+expression: text
+---
+3: ifeq ($(OS),Windows_NT) › release test │ 	@echo needle
+6: ifeq ($(OS),Windows_NT) › release test │ 	echo needle again
+8: ifeq ($(OS),Windows_NT) › NAME │ NAME := needle
+11: BODY │ needle body
+15: %.o │ >echo needle pattern
