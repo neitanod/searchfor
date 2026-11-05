@@ -1,0 +1,13 @@
+# formats/whatsapp.toml — WhatsApp text exports (M6 spec §10.4): `31/12/23 › 21:41 Ana`.
+# Told by name and path only (Open question 1, answered A; plan D21): `_chat.txt`, the text
+# inside the export's zip, and the app's name in the export's file name, in any language. A
+# `.txt` the glob claims that is no export fails the chat Processor's first-line check and
+# shows as rg shows it.
+name      = "whatsapp"
+names     = ["_chat.txt"]
+paths     = ["*WhatsApp*.txt"]
+processor = "chat"
+
+[params]
+# Characters of a day's or a message's name before it is cut with `…`.
+name_chars = 40

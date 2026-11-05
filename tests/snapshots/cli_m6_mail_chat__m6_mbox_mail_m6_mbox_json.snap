@@ -1,0 +1,10 @@
+---
+source: tests/cli_m6_mail_chat.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"mail/m6.mbox"}}}
+{"type":"match","data":{"path":{"text":"mail/m6.mbox"},"lines":{"text":"needle one\n"},"line_number":6,"absolute_offset":85,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"mbox","trail":[{"kind":"message","name":"Budget","line":1,"end_line":8,"signature":"Ana · Today · Budget"},{"kind":"part","name":"body","line":6,"end_line":8}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"mail/m6.mbox"},"lines":{"text":">From escaped needle\n"},"line_number":7,"absolute_offset":96,"submatches":[{"match":{"text":"needle"},"start":14,"end":20}],"format":"mbox","trail":[{"kind":"message","name":"Budget","line":1,"end_line":8,"signature":"Ana · Today · Budget"},{"kind":"part","name":"body","line":6,"end_line":8}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"mail/m6.mbox"},"lines":{"text":"needle two\n"},"line_number":12,"absolute_offset":179,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"mbox","trail":[{"kind":"message","name":"Next","line":9,"end_line":12,"signature":"Next"},{"kind":"part","name":"body","line":12,"end_line":12}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"mail/m6.mbox"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":190,"bytes_printed":1179,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1179,"bytes_searched":190,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

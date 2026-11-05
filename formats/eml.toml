@@ -1,0 +1,9 @@
+# formats/eml.toml — one RFC 5322 message (M6 spec §10.1): `Subject`, `part 1 text/plain`.
+name       = "eml"
+extensions = ["eml"]
+processor  = "mail"
+
+[params]
+syntax     = "eml"
+# Characters of a header's, a part's or an attachment's name before it is cut with `…`.
+name_chars = 40

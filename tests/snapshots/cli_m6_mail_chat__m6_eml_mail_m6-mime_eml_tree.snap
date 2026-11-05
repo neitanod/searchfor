@@ -1,0 +1,10 @@
+---
+source: tests/cli_m6_mail_chat.rs
+expression: text
+---
+mail/m6-mime.eml
+  part 1 multipart/alternative
+    part 1.1 text/plain
+      10:needle plain
+  attachment café.txt
+    16:needle attachment

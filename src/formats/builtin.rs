@@ -79,4 +79,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
         "telegram-html.toml",
         include_str!("../../formats/telegram-html.toml"),
     ),
+    ("eml.toml", include_str!("../../formats/eml.toml")),
+    ("mbox.toml", include_str!("../../formats/mbox.toml")),
+    ("whatsapp.toml", include_str!("../../formats/whatsapp.toml")),
 ];

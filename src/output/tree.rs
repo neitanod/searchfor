@@ -31,6 +31,11 @@ pub fn label(s: &Segment) -> String {
         // M6: a notebook's outputs and a Telegram chat show their name alone (`output 1`,
         // `Ana`; a Telegram message shows its signature, above).
         "output" | "chat" => name.into_owned(),
+        // M6: a mail's header fields and parts are named by the field and the part already (an
+        // mbox message shows its signature, above).
+        "header" | "part" => name.into_owned(),
+        // M6: a WhatsApp day is named by its date as written.
+        "day" => name.into_owned(),
         kind => format!("{kind} {name}"),
     }
 }
@@ -358,6 +363,23 @@ mod tests {
         let mut sig = seg("method", "m", 1, 1);
         sig.signature = Some("fn m(\u{1b})".into());
         assert_eq!(label(&sig), "fn m(\\u{1b})");
+    }
+
+    #[test]
+    fn labels_of_the_m6_mail_kinds() {
+        assert_eq!(label(&seg("header", "Subject", 1, 1)), "Subject");
+        assert_eq!(
+            label(&seg("part", "part 1.2 text/plain", 1, 1)),
+            "part 1.2 text/plain"
+        );
+        let mut message = seg("message", "Budget", 1, 9);
+        message.signature = Some("Ana · Today · Budget".into());
+        assert_eq!(label(&message), "Ana · Today · Budget");
+        assert_eq!(label(&seg("day", "31/12/23", 1, 1)), "31/12/23");
+        assert_eq!(
+            label(&seg("message", "21:41 Ana", 1, 1)),
+            "message 21:41 Ana"
+        );
     }
 
     #[test]

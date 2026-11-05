@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_mail_chat.rs
+expression: text
+---
+10: part 1 multipart/alternative › part 1.1 text/plain │ needle plain
+16: attachment café.txt │ needle attachment

@@ -1,0 +1,14 @@
+---
+source: tests/cli_m6_mail_chat.rs
+expression: text
+---
+chat/_chat.txt
+  31/12/23
+    message 21:41 Ana
+      1:31/12/23, 21:41 - Ana: where's the needle?
+      2:continued needle
+    message 21:42
+      3:31/12/23, 21:42 - system needle
+  01/01/24
+    message 09:00:01 Bob
+      4:[01/01/24, 09:00:01] Bob: needle

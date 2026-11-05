@@ -1,0 +1,12 @@
+---
+source: tests/cli_m6_mail_chat.rs
+expression: text
+---
+mail/m6.mbox
+  Ana · Today · Budget
+    body
+      6:needle one
+      7:>From escaped needle
+  Next
+    body
+      12:needle two

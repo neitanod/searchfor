@@ -1,0 +1,17 @@
+Subject: =?UTF-8?Q?Budget_=C3=A9?=
+Content-Type: multipart/mixed; boundary=OUT
+
+--OUT
+Content-Type: multipart/alternative; boundary=IN
+
+--IN
+Content-Type: text/plain
+
+needle plain
+--IN--
+--OUT
+Content-Type: text/plain
+Content-Disposition: attachment; filename*=UTF-8''caf%C3%A9.txt
+
+needle attachment
+--OUT--

@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_mail_chat.rs
+expression: text
+---
+mail/broken-m6.mbox
+  One
+    body
+      4:needle
+      5:>From needle
