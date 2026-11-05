@@ -200,6 +200,81 @@ SELECT $tag$needle ;$tag$;
     );
 }
 
+#[test]
+fn m6_sql_rows() {
+    let fx = Fixture::new();
+    let src = b"CREATE TABLE users (id int,email text);\nINSERT INTO users VALUES (1,'plain'),(2,'needle@example.com');\nINSERT INTO users (email,id) VALUES ('needle',3);\nCOPY public.users (id,email) FROM stdin;\n1\tplain\n2\tneedle@example.com\n\\.\nINSERT INTO unknown VALUES (1,'needle');\n";
+    seed(&fx, "code-c/m6-dump.sql", src);
+    check(
+        &fx,
+        "sql",
+        "code-c/m6-dump.sql",
+        &[
+            "INSERT INTO users › row 2 › email",
+            "INSERT INTO users › row 1 › email",
+            "COPY public.users › row 2 › email",
+            "INSERT INTO unknown › row 1 › column 2",
+        ],
+    );
+    flags(
+        &fx,
+        "sql",
+        "code-c/m6-dump.sql",
+        "email",
+        "email",
+        "^row [0-9]+$",
+    );
+    put(
+        &fx,
+        "tuple.sql",
+        b"INSERT INTO t (a,b) VALUES ('needle',fn(1,2)),('x','needle');\n",
+    );
+    let row = matches(&output(&fx, "sql", "tuple.sql", "needle", &["--json"])).remove(0);
+    assert_eq!(row["submatches"].as_array().unwrap().len(), 2);
+    assert_eq!(row["submatches"][1]["trail"][1]["name"], "row 2");
+    assert_eq!(row["submatches"][1]["trail"][2]["name"], "b");
+    put(&fx, "broken-copy.sql", b"COPY t (a) FROM stdin;\nneedle\n");
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "sql",
+            "broken-copy.sql",
+            "needle",
+            &["--json"]
+        ))),
+        ["COPY t › row 1 › a"]
+    );
+}
+
+/// M6 plan, «Meaningful generated-name exclusion and encoding tests»: `row N` and
+/// `column K` are words s4 adds, which `--in-headings` never finds.
+#[test]
+fn m6_real_generated_names() {
+    let fx = Fixture::new();
+    let owned: &[&str] = &["sql"];
+    let cases: &[(&str, &[u8], &str)] = &[(
+        "sql",
+        b"INSERT INTO t VALUES ('needle');\n",
+        "^row [0-9]+$|^column [0-9]+$",
+    )];
+    for &(format, src, generated) in cases {
+        if !owned.contains(&format) {
+            continue;
+        }
+        put(&fx, "generated.fixture", src);
+        assert_eq!(
+            code(&output(
+                &fx,
+                format,
+                "generated.fixture",
+                generated,
+                &["--json", "--in-headings"]
+            )),
+            1
+        );
+    }
+}
+
 /// M6 plan, «Committed broken fixtures, with three snapshots each», sql_diff's rows.
 #[test]
 fn m6_broken_fixtures() {

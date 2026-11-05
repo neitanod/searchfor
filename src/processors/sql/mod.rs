@@ -1145,6 +1145,31 @@ mod tests {
         );
     }
 
+    /// M6 spec §8.1, Large files: the scan stops at the statement of the Match, and a row is
+    /// read only as far as the Matches in it.
+    #[test]
+    fn the_scan_reads_no_further_than_the_matches() {
+        let mut src = b"INSERT INTO t VALUES ('needle'),\n".to_vec();
+        for _ in 0..10_000 {
+            src.extend_from_slice(b"('x'),\n");
+        }
+        src.extend_from_slice(b"('y');\nSELECT 'never closed\n");
+        let src = src.as_slice();
+        let mut c = SqlCursor::new(src, 40);
+        let t = c.trail(memchr::memmem::find(src, b"needle").unwrap());
+        assert_eq!(t.len(), 3);
+        let stmt_end = memchr::memmem::find(src, b"('y');").unwrap() + 6;
+        assert_eq!(c.units.scanned(), stmt_end);
+        let Some(Stmt {
+            detail: Detail::Rows(rs),
+            ..
+        }) = &c.cur
+        else {
+            panic!("an INSERT");
+        };
+        assert_eq!(rs.rows.count(), 1);
+    }
+
     #[test]
     fn open_from_lets_closed_rows_go() {
         let src = b"INSERT INTO t VALUES ('a'),\n('needle'),\n('b');\n";

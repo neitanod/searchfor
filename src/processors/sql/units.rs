@@ -33,6 +33,12 @@ impl<'s> Units<'s> {
         }
     }
 
+    /// How far the scan went.
+    #[cfg(test)]
+    pub fn scanned(&self) -> usize {
+        self.pos
+    }
+
     /// Where the SQL text of the statement `next_statement` gave last ends.
     pub fn sql_end(&self) -> usize {
         self.sql_end

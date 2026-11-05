@@ -1,0 +1,21 @@
+---
+source: tests/cli_m6_sql_diff.rs
+expression: text
+---
+code-c/m6-dump.sql
+  INSERT INTO users
+    row 2
+      column «email»
+        2:INSERT INTO users VALUES (1,'plain'),(2,'needle@example.com');
+  INSERT INTO users
+    row 1
+      column «email»
+        3:INSERT INTO users (email,id) VALUES ('needle',3);
+  COPY public.users
+    row 2
+      column «email»
+        6:2	needle@example.com
+  INSERT INTO unknown
+    row 1
+      column «column 2»
+        8:INSERT INTO unknown VALUES (1,'needle');
