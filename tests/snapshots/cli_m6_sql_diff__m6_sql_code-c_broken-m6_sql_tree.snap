@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_sql_diff.rs
+expression: text
+---
+code-c/broken-m6.sql
+  SELECT
+    1:SELECT 'needle';
+  3:needle

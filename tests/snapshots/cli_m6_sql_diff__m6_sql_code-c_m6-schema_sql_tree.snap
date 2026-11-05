@@ -1,0 +1,10 @@
+---
+source: tests/cli_m6_sql_diff.rs
+expression: text
+---
+code-c/m6-schema.sql
+  CREATE TABLE users
+    column «email»
+      3: email text NOT NULL, -- needle
+  CREATE OR REPLACE VIEW active_users
+    6:CREATE OR REPLACE VIEW active_users AS SELECT 'needle' AS label;

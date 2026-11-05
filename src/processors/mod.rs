@@ -9,6 +9,7 @@ pub mod keypath;
 pub mod markdown;
 pub mod markup;
 pub mod object;
+pub mod sql;
 pub mod subtitles;
 pub mod treesitter;
 
@@ -162,6 +163,7 @@ pub fn by_name(name: &str) -> Option<&'static dyn Processor> {
         "object" => Some(&object::Object),
         "buildfile" => Some(&buildfile::Buildfile),
         "blocks" => Some(&blocks::Blocks),
+        "sql" => Some(&sql::Sql),
         _ => None,
     }
 }

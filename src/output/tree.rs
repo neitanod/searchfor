@@ -28,6 +28,8 @@ pub fn label(s: &Segment) -> String {
         "component" | "entry" => name.into_owned(),
         // M6: a block (nginx, Apache, HCL) is named by its directive or section already.
         "block" => name.into_owned(),
+        // M6: a SQL statement is named by its leading keywords and object already.
+        "statement" => name.into_owned(),
         kind => format!("{kind} {name}"),
     }
 }
@@ -383,6 +385,16 @@ mod tests {
         ] {
             assert_eq!(label(&seg(kind, "N", 1, 1)), format!("{kind} N"), "{kind}");
         }
+    }
+
+    #[test]
+    fn labels_of_the_m6_sql_kinds() {
+        assert_eq!(
+            label(&seg("statement", "CREATE TABLE users", 1, 1)),
+            "CREATE TABLE users"
+        );
+        assert_eq!(label(&seg("row", "row 2", 1, 1)), "row 2");
+        assert_eq!(label(&seg("column", "email", 1, 1)), "column «email»");
     }
 
     #[test]
