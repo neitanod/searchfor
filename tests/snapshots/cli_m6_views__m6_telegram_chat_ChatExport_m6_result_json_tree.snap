@@ -1,0 +1,16 @@
+---
+source: tests/cli_m6_views.rs
+expression: text
+---
+chat/ChatExport_m6/result.json
+  Ana
+    2024-01-31T10:04:12 Ana
+      text
+        4:  {"text":"needle","date":"2024-01-31T10:04:12","from":"Ana"},
+    2024-01-31T10:05:00 Ana
+      text
+        6:   "text":["needle",{"type":"bold","text":"needle"}],
+          6:   "text":["needle",{"type":"bold","text":"needle"}],
+      text_entities
+        text
+          7:   "text_entities":[{"type":"plain","text":"needle"}]}

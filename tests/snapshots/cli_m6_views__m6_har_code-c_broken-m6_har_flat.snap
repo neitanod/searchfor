@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_views.rs
+expression: text
+---
+1: GET x › x │ {"log":{"entries":[{"request":{"method":"GET","url":"http://x"},"x":"needle"}]}}
+3: needle

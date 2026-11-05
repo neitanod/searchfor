@@ -1,0 +1,7 @@
+---
+source: tests/cli_m6_views.rs
+expression: text
+---
+4: Analysis › Load data › cell 2 │   {"cell_type":"code","source":["df = load('needle.csv')\n"],
+5: Analysis › Load data › cell 2 › output 1 › text/plain │    "outputs":[{"output_type":"execute_result","data":{"text/plain":["needle"]}}]},
+6: Analysis › Load data › cell 3 │   {"cell_type":"raw","source":["needle raw"]}

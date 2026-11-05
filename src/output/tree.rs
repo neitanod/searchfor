@@ -28,6 +28,9 @@ pub fn label(s: &Segment) -> String {
         "component" | "entry" => name.into_owned(),
         // M6: a block (nginx, Apache, HCL) is named by its directive or section already.
         "block" => name.into_owned(),
+        // M6: a notebook's outputs and a Telegram chat show their name alone (`output 1`,
+        // `Ana`; a Telegram message shows its signature, above).
+        "output" | "chat" => name.into_owned(),
         kind => format!("{kind} {name}"),
     }
 }
@@ -383,6 +386,15 @@ mod tests {
         ] {
             assert_eq!(label(&seg(kind, "N", 1, 1)), format!("{kind} N"), "{kind}");
         }
+    }
+
+    #[test]
+    fn labels_of_the_m6_view_kinds() {
+        assert_eq!(label(&seg("output", "output 1", 1, 1)), "output 1");
+        assert_eq!(label(&seg("chat", "Ana", 1, 1)), "Ana");
+        let mut cell = seg("cell", "cell 2", 1, 1);
+        cell.signature = Some("cell 2 (code)".into());
+        assert_eq!(label(&cell), "cell 2 (code)");
     }
 
     #[test]

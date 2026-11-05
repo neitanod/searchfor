@@ -1,0 +1,11 @@
+# formats/jupyter.toml — Jupyter notebooks (M6 spec §6.5): the JSON of nbformat 4, with its
+# Markdown headings over its cells: `Analysis › Load data › cell 7 › output 1 › text/plain`.
+name       = "jupyter"
+extensions = ["ipynb"]
+processor  = "keypath"
+
+[params]
+syntax = "json"
+view   = "jupyter"
+# Characters of a heading's name before it is cut with `…`.
+name_chars = 40

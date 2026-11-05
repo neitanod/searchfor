@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_views.rs
+expression: text
+---
+4: Ana › 2024-01-31T10:04:12 Ana › text │   {"text":"needle","date":"2024-01-31T10:04:12","from":"Ana"},
+6: Ana › 2024-01-31T10:05:00 Ana › text │    "text":["needle",{"type":"bold","text":"needle"}],
+6: Ana › 2024-01-31T10:05:00 Ana › text › text │    "text":["needle",{"type":"bold","text":"needle"}],
+7: Ana › 2024-01-31T10:05:00 Ana › text_entities › text │    "text_entities":[{"type":"plain","text":"needle"}]}

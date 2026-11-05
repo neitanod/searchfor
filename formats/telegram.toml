@@ -1,0 +1,12 @@
+# formats/telegram.toml — Telegram Desktop's JSON exports (M6 spec §10.5): a chat export's
+# `result.json`, or a whole account's, `Ana › 2024-01-31T10:04:12 Ana › text`. A `result.json`
+# anywhere else stays JSON.
+name       = "telegram"
+paths      = ["**/ChatExport_*/result.json", "**/DataExport_*/result.json"]
+processor  = "keypath"
+
+[params]
+syntax = "json"
+view   = "telegram"
+# Characters of a chat's or a message's name before it is cut with `…`.
+name_chars = 40

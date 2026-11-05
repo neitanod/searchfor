@@ -1,0 +1,10 @@
+---
+source: tests/cli_m6_views.rs
+expression: text
+---
+3: GET api.example.com/v1/users › response › content › text │   "response":{"content":{"text":"needle"},"status":200},
+5: GET api.example.com/v1/users › request › header Authorization › value │    "headers":[{"name":"Authorization","value":"needle"}],
+6: GET api.example.com/v1/users › request › cookie session › value │    "cookies":[{"name":"session","value":"needle"}],
+7: GET api.example.com/v1/users › request › queryString q › value │    "queryString":[{"name":"q","value":"needle"}],
+8: GET api.example.com/v1/users › request › postData › param body › value │    "postData":{"params":[{"name":"body","value":"needle"}]}}
+9: Login › id │  }],"pages":[{"title":"Login","id":"needle"}]}}

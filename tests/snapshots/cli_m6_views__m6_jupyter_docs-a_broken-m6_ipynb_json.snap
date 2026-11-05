@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_views.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"docs-a/broken-m6.ipynb"}}}
+{"type":"match","data":{"path":{"text":"docs-a/broken-m6.ipynb"},"lines":{"text":"{\"cells\":[{\"cell_type\":\"code\",\"source\":[\"needle\"]}]}\n"},"line_number":1,"absolute_offset":0,"submatches":[{"match":{"text":"needle"},"start":41,"end":47}],"format":"jupyter","trail":[{"kind":"cell","name":"cell 1","line":1,"end_line":1,"signature":"cell 1 (code)"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"docs-a/broken-m6.ipynb"},"lines":{"text":"needle\n"},"line_number":3,"absolute_offset":58,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"jupyter","trail":[],"fragment":null}}
+{"type":"end","data":{"path":{"text":"docs-a/broken-m6.ipynb"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":65,"bytes_printed":683,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":683,"bytes_searched":65,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

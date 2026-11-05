@@ -1,5 +1,6 @@
 //! keypath: YAML, JSON and TOML key paths (spec §5.2, design note 6), and M6's line syntaxes:
-//! INI, `.properties`, `.env`, SSH, iCalendar/vCard and BibTeX (M6 spec §7, §10.2, §10.3).
+//! INI, `.properties`, `.env`, SSH, iCalendar/vCard and BibTeX (M6 spec §7, §10.2, §10.3), and
+//! JSON views (M6 spec §5.1).
 pub(crate) mod bibtex;
 pub mod collect;
 pub(crate) mod env;
@@ -10,6 +11,7 @@ pub(crate) mod lines;
 pub(crate) mod properties;
 pub(crate) mod ssh;
 pub mod toml;
+pub(crate) mod views;
 pub mod yaml;
 
 use super::{Capability, Prepared, Processor};
@@ -49,6 +51,15 @@ impl Syntax {
     }
 }
 
+/// The JSON view of a Definition (`view`, M6 plan Task 6.1); only JSON has views.
+fn view(params: &::toml::Table) -> anyhow::Result<Option<views::View>> {
+    let view = views::View::of(params)?;
+    if view.is_some() && syntax(params)? != Syntax::Json {
+        anyhow::bail!("keypath's `view` needs `syntax` = \"json\"");
+    }
+    Ok(view)
+}
+
 fn syntax(params: &::toml::Table) -> anyhow::Result<Syntax> {
     match params.get("syntax").and_then(|v| v.as_str()) {
         Some("json") => Ok(Syntax::Json),
@@ -84,6 +95,9 @@ pub(crate) fn prepare_syntax<'a>(
     input: Input<'a>,
     params: &'a ::toml::Table,
 ) -> anyhow::Result<Box<dyn Prepared + 'a>> {
+    if let Some(v) = view(params)? {
+        return views::prepare(input, params, v);
+    }
     Ok(match syntax(params)? {
         Syntax::Json => Box::new(json::prepare(input.bytes)),
         Syntax::Yaml => yaml::prepare(input, params)?,
@@ -132,6 +146,9 @@ impl Processor for Keypath {
         anchors: &[usize],
     ) -> anyhow::Result<Vec<Trail>> {
         let syntax = syntax(params)?;
+        if let Some(v) = view(params)? {
+            return views::trails(input, params, v, anchors);
+        }
         let mut order: Vec<usize> = (0..anchors.len()).collect();
         order.sort_by_key(|&i| anchors[i]);
         let sorted: Vec<usize> = order.iter().map(|&i| anchors[i]).collect();
@@ -158,7 +175,7 @@ impl Processor for Keypath {
 
     fn capability(&self, params: &::toml::Table) -> Capability {
         let native = match syntax(params) {
-            Ok(Syntax::Json) => true,
+            Ok(Syntax::Json) => view(params).is_ok(),
             Ok(Syntax::Yaml) => yaml::NATIVE,
             Ok(Syntax::Toml) => toml::NATIVE,
             Ok(s) => s.lines(),
@@ -172,6 +189,9 @@ impl Processor for Keypath {
     }
 
     fn names(&self, input: &Input, params: &::toml::Table) -> anyhow::Result<Vec<Name>> {
+        if let Some(v) = view(params)? {
+            return views::names(input, params, v);
+        }
         let o = match syntax(params)? {
             Syntax::Toml => toml::outline(input.bytes),
             s if s.lines() => line_outline(s, input.bytes, params, None)?,

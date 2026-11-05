@@ -1,0 +1,27 @@
+---
+source: tests/cli_m6_views.rs
+expression: text
+---
+code-c/m6.har
+  GET https://api.example.com/v1/users 200
+    response
+      content
+        text
+          3:  "response":{"content":{"text":"needle"},"status":200},
+    request
+      header Authorization
+        value
+          5:   "headers":[{"name":"Authorization","value":"needle"}],
+      cookie session
+        value
+          6:   "cookies":[{"name":"session","value":"needle"}],
+      queryString q
+        value
+          7:   "queryString":[{"name":"q","value":"needle"}],
+      postData
+        param body
+          value
+            8:   "postData":{"params":[{"name":"body","value":"needle"}]}}
+  Login
+    id
+      9: }],"pages":[{"title":"Login","id":"needle"}]}}
