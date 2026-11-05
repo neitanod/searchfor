@@ -1,0 +1,12 @@
+# formats/latex.toml — LaTeX titles, sectioning commands and environments (M6 spec §6.4):
+# `A Study of Needles › Methods › Sampling › figure`.
+name       = "latex"
+extensions = ["tex", "ltx", "latex"]
+processor  = "headings"
+
+[params]
+syntax = "latex"
+# Characters of a heading's, an environment's or a code block's name before it is cut with `…`.
+name_chars = 40
+# Environments that hold Segments without showing in Trails or names, as HTML's `body`.
+hidden_environments = ["document", "itemize", "enumerate", "description"]

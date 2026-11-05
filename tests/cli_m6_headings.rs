@@ -254,11 +254,87 @@ fn m6_org() {
     );
 }
 
+#[test]
+fn m6_latex() {
+    let fx = Fixture::new();
+    let src = br#"\title{A Study of Needles}
+\begin{document}
+\section{Methods}
+\subsection[Short]{Sampling}
+\begin{figure}
+\caption{needle distribution}
+\end{figure}
+\begin{minted}{bash}
+\section{needle text}
+\end{minted}
+\end{document}
+"#;
+    seed(&fx, "docs-a/m6.tex", src);
+    check(
+        &fx,
+        "latex",
+        "docs-a/m6.tex",
+        &[
+            "A Study of Needles › Methods › Sampling › figure",
+            "A Study of Needles › Methods › Sampling › bash",
+        ],
+    );
+    flags(&fx, "latex", "docs-a/m6.tex", "Sampling", "Sampling", "");
+    put(
+        &fx,
+        "tex-edge",
+        br#"\section*{One {balanced}
+ title}
+\begin{figure}
+\subsection{Inner}
+needle
+\end{figure}
+needle
+% \section{ignored}
+\% needle
+\end{never}
+"#,
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "latex",
+            "tex-edge",
+            "needle",
+            &["--json"]
+        ))),
+        [
+            "One {balanced} title › figure › Inner",
+            "One {balanced} title",
+            "One {balanced} title"
+        ]
+    );
+    put(
+        &fx,
+        "bad.tex",
+        br#"\section{A}
+\begin{verbatim}
+\section{needle}
+needle
+"#,
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "latex",
+            "bad.tex",
+            "needle",
+            &["--json"]
+        ))),
+        ["A › verbatim", "A › verbatim"]
+    );
+}
+
 /// Each Format's committed broken fixture, with its three snapshots (plan, «Committed broken
 /// fixtures, with three snapshots each»).
 #[test]
 fn m6_broken_fixtures() {
-    let owned: &[&str] = &["asciidoc", "rst", "org"];
+    let owned: &[&str] = &["asciidoc", "rst", "org", "latex"];
     #[allow(clippy::type_complexity)]
     let cases: &[(&str, &str, &[u8], &[&str])] = &[
         (
@@ -278,6 +354,12 @@ fn m6_broken_fixtures() {
             "docs-a/broken-m6.org",
             b"* A\n#+BEGIN_SRC\nneedle\n* needle\n",
             &["A › src", "A › src"],
+        ),
+        (
+            "latex",
+            "docs-a/broken-m6.tex",
+            b"\\section{A}\n\\begin{verbatim}\nneedle\n\\section{needle}\n",
+            &["A › verbatim", "A › verbatim"],
         ),
     ];
     let fx = Fixture::new();

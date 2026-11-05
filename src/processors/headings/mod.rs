@@ -4,6 +4,7 @@
 //! from it once per file, and its cursor streams the Trails (M5b spec §6.1). A file has no
 //! syntax errors here: a block left open runs to the end of the file.
 pub mod asciidoc;
+pub mod latex;
 pub mod org;
 pub mod rst;
 
@@ -27,6 +28,7 @@ enum Syntax {
     Asciidoc,
     Rst,
     Org,
+    Latex,
 }
 
 fn syntax(params: &toml::Table) -> anyhow::Result<Syntax> {
@@ -34,9 +36,10 @@ fn syntax(params: &toml::Table) -> anyhow::Result<Syntax> {
         Some("asciidoc") => Ok(Syntax::Asciidoc),
         Some("rst") => Ok(Syntax::Rst),
         Some("org") => Ok(Syntax::Org),
-        _ => {
-            anyhow::bail!("headings needs `syntax` = \"asciidoc\", \"rst\" or \"org\" in [params]")
-        }
+        Some("latex") => Ok(Syntax::Latex),
+        _ => anyhow::bail!(
+            "headings needs `syntax` = \"asciidoc\", \"rst\", \"org\" or \"latex\" in [params]"
+        ),
     }
 }
 
@@ -78,6 +81,8 @@ pub(crate) struct Item {
     pub search: bool,
     /// The Section's lines when they are not the range's: a column's are its table's.
     pub lines: Option<(u64, u64)>,
+    /// A hidden environment: it holds Segments without showing, and has no searchable name.
+    pub hidden: bool,
 }
 
 impl Item {
@@ -93,6 +98,7 @@ impl Item {
             level: None,
             search: true,
             lines: None,
+            hidden: false,
         }
     }
 }
@@ -210,11 +216,27 @@ impl Open {
     }
 }
 
-fn scan(src: &[u8], syntax: Syntax) -> Vec<Item> {
+/// LaTeX's `hidden_environments`, or its defaults.
+fn hidden_environments(params: &toml::Table) -> Vec<String> {
+    match params.get("hidden_environments").and_then(|v| v.as_array()) {
+        Some(a) => a
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        None => latex::HIDDEN.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+fn scan(src: &[u8], syntax: Syntax, params: &toml::Table) -> Vec<Item> {
     match syntax {
         Syntax::Asciidoc => asciidoc::scan(src),
         Syntax::Rst => rst::scan(src),
         Syntax::Org => org::scan(src),
+        Syntax::Latex => {
+            let hidden = hidden_environments(params);
+            let hidden: Vec<&[u8]> = hidden.iter().map(|s| s.as_bytes()).collect();
+            latex::scan(src, &hidden)
+        }
     }
 }
 
@@ -250,7 +272,8 @@ fn outline(src: &[u8], index: Vec<Item>, name_chars: usize) -> Outline {
                 Named::Ordinal(word, n) => (format!("{word} {n}"), None),
             };
             let mut s = OutlineSegment::new(item.kind, text, item.range, item.label);
-            if let Some(pieces) = pieces.filter(|_| item.search) {
+            s.hidden = item.hidden;
+            if let Some(pieces) = pieces.filter(|_| item.search && !item.hidden) {
                 s.name = Some(pieces);
                 s.name_anchor = item.anchor;
             }
@@ -268,7 +291,7 @@ fn outline(src: &[u8], index: Vec<Item>, name_chars: usize) -> Outline {
 
 fn outline_of(src: &[u8], params: &toml::Table) -> anyhow::Result<Outline> {
     let syntax = syntax(params)?;
-    Ok(outline(src, scan(src, syntax), name_chars(params)))
+    Ok(outline(src, scan(src, syntax, params), name_chars(params)))
 }
 
 impl Processor for Headings {

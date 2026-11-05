@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"docs-a/broken-m6.tex"}}}
+{"type":"match","data":{"path":{"text":"docs-a/broken-m6.tex"},"lines":{"text":"needle\n"},"line_number":3,"absolute_offset":29,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"latex","trail":[{"kind":"heading","name":"A","line":1,"end_line":4,"level":3,"signature":"\\section{A}"},{"kind":"code","name":"verbatim","line":2,"end_line":4,"signature":"\\begin{verbatim}"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"docs-a/broken-m6.tex"},"lines":{"text":"\\section{needle}\n"},"line_number":4,"absolute_offset":36,"submatches":[{"match":{"text":"needle"},"start":9,"end":15}],"format":"latex","trail":[{"kind":"heading","name":"A","line":1,"end_line":4,"level":3,"signature":"\\section{A}"},{"kind":"code","name":"verbatim","line":2,"end_line":4,"signature":"\\begin{verbatim}"}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"docs-a/broken-m6.tex"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":53,"bytes_printed":899,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":899,"bytes_searched":53,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

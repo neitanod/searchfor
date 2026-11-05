@@ -1,0 +1,12 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+docs-a/m6.tex
+  A Study of Needles
+    \section{Methods}
+      \subsection[Short]{Sampling}
+        \begin{figure}
+          6:\caption{needle distribution}
+        \begin{minted}{bash}
+          9:\section{needle text}

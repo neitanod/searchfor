@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+6: A Study of Needles › Methods › Sampling › figure │ \caption{needle distribution}
+9: A Study of Needles › Methods › Sampling › bash │ \section{needle text}

@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"docs-a/m6.tex"}}}
+{"type":"match","data":{"path":{"text":"docs-a/m6.tex"},"lines":{"text":"\\caption{needle distribution}\n"},"line_number":6,"absolute_offset":106,"submatches":[{"match":{"text":"needle"},"start":9,"end":15}],"format":"latex","trail":[{"kind":"document","name":"A Study of Needles","line":1,"end_line":11},{"kind":"heading","name":"Methods","line":3,"end_line":11,"level":3,"signature":"\\section{Methods}"},{"kind":"heading","name":"Sampling","line":4,"end_line":11,"level":4,"signature":"\\subsection[Short]{Sampling}"},{"kind":"environment","name":"figure","line":5,"end_line":7,"signature":"\\begin{figure}"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"docs-a/m6.tex"},"lines":{"text":"\\section{needle text}\n"},"line_number":9,"absolute_offset":170,"submatches":[{"match":{"text":"needle"},"start":9,"end":15}],"format":"latex","trail":[{"kind":"document","name":"A Study of Needles","line":1,"end_line":11},{"kind":"heading","name":"Methods","line":3,"end_line":11,"level":3,"signature":"\\section{Methods}"},{"kind":"heading","name":"Sampling","line":4,"end_line":11,"level":4,"signature":"\\subsection[Short]{Sampling}"},{"kind":"code","name":"bash","line":8,"end_line":10,"signature":"\\begin{minted}{bash}"}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"docs-a/m6.tex"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":220,"bytes_printed":1310,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1310,"bytes_searched":220,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

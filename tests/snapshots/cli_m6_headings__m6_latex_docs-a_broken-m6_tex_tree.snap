@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_headings.rs
+expression: text
+---
+docs-a/broken-m6.tex
+  \section{A}
+    \begin{verbatim}
+      3:needle
+      4:\section{needle}
