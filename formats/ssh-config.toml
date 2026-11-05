@@ -1,0 +1,9 @@
+# formats/ssh-config.toml — OpenSSH Host and Match sections and keywords (M6 spec §7.5).
+name       = "ssh-config"
+names      = ["ssh_config", "sshd_config"]
+paths      = ["**/.ssh/config", "**/.ssh/config.d/*", "**/ssh/ssh_config.d/*.conf", "**/ssh/sshd_config.d/*.conf"]
+processor  = "keypath"
+
+[params]
+syntax     = "ssh"
+name_chars = 40

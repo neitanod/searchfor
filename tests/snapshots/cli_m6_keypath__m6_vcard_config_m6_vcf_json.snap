@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"config/m6.vcf"}}}
+{"type":"match","data":{"path":{"text":"config/m6.vcf"},"lines":{"text":"EMAIL;TYPE=work:ana@needle.example\n"},"line_number":2,"absolute_offset":12,"submatches":[{"match":{"text":"needle"},"start":20,"end":26}],"format":"vcard","trail":[{"kind":"component","name":"VCARD Ana Pérez","line":1,"end_line":4},{"kind":"key","name":"EMAIL","line":2,"end_line":2}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"config/m6.vcf"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":71,"bytes_printed":436,"matched_lines":1,"matches":1}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":436,"bytes_searched":71,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":1,"matches":1,"searches":1,"searches_with_match":1}},"type":"summary"}

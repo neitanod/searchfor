@@ -23,6 +23,9 @@ pub fn label(s: &Segment) -> String {
         // M6: a build file's instructions show their keyword alone; its stages, targets,
         // conditionals and recipes show their opening line, as their signature.
         "instruction" => name.into_owned(),
+        // M6: iCalendar and vCard components show their name alone (a BibTeX entry shows its
+        // signature, above).
+        "component" | "entry" => name.into_owned(),
         kind => format!("{kind} {name}"),
     }
 }

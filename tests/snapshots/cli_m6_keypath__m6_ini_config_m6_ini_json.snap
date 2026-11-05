@@ -1,0 +1,11 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"config/m6.ini"}}}
+{"type":"match","data":{"path":{"text":"config/m6.ini"},"lines":{"text":"host = needle.example\n"},"line_number":3,"absolute_offset":18,"submatches":[{"match":{"text":"needle"},"start":7,"end":13}],"format":"ini","trail":[{"kind":"key","name":"server","line":2,"end_line":5},{"kind":"key","name":"host","line":3,"end_line":4}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/m6.ini"},"lines":{"text":"  continued needle\n"},"line_number":4,"absolute_offset":40,"submatches":[{"match":{"text":"needle"},"start":12,"end":18}],"format":"ini","trail":[{"kind":"key","name":"server","line":2,"end_line":5},{"kind":"key","name":"host","line":3,"end_line":4}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/m6.ini"},"lines":{"text":"url=needle.git\n"},"line_number":7,"absolute_offset":88,"submatches":[{"match":{"text":"needle"},"start":4,"end":10}],"format":"ini","trail":[{"kind":"key","name":"remote \"origin\"","line":6,"end_line":7},{"kind":"key","name":"url","line":7,"end_line":7}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/m6.ini"},"lines":{"text":"k=needle\n"},"line_number":9,"absolute_offset":109,"submatches":[{"match":{"text":"needle"},"start":2,"end":8}],"format":"ini","trail":[{"kind":"key","name":"a.b","line":8,"end_line":9},{"kind":"key","name":"k","line":9,"end_line":9}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"config/m6.ini"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":118,"bytes_printed":1420,"matched_lines":4,"matches":4}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1420,"bytes_searched":118,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":4,"matches":4,"searches":1,"searches_with_match":1}},"type":"summary"}

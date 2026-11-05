@@ -1,0 +1,11 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+docs-a/broken-m6.bib
+  @article{a,
+    title
+      2: title={needle
+  @book{b,
+    title
+      3:@book{b, title={needle}}

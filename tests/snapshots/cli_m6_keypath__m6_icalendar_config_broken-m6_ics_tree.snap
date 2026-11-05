@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+config/broken-m6.ics
+  VEVENT One
+    DESCRIPTION
+      2:DESCRIPTION:needle

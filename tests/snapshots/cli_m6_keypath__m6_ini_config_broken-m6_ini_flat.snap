@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+2: s › k │ k=needle
+4: s › k │ needle

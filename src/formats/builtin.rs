@@ -43,4 +43,21 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ),
     ("make.toml", include_str!("../../formats/make.toml")),
     ("just.toml", include_str!("../../formats/just.toml")),
+    ("ini.toml", include_str!("../../formats/ini.toml")),
+    ("systemd.toml", include_str!("../../formats/systemd.toml")),
+    (
+        "properties.toml",
+        include_str!("../../formats/properties.toml"),
+    ),
+    ("env.toml", include_str!("../../formats/env.toml")),
+    (
+        "ssh-config.toml",
+        include_str!("../../formats/ssh-config.toml"),
+    ),
+    (
+        "icalendar.toml",
+        include_str!("../../formats/icalendar.toml"),
+    ),
+    ("vcard.toml", include_str!("../../formats/vcard.toml")),
+    ("bibtex.toml", include_str!("../../formats/bibtex.toml")),
 ];

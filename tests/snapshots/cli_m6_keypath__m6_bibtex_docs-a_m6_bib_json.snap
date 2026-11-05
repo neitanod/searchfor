@@ -1,0 +1,10 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"docs-a/m6.bib"}}}
+{"type":"match","data":{"path":{"text":"docs-a/m6.bib"},"lines":{"text":" title = {Literate needle {programming}},\n"},"line_number":2,"absolute_offset":20,"submatches":[{"match":{"text":"needle"},"start":19,"end":25}],"format":"bibtex","trail":[{"kind":"entry","name":"knuth1984","line":1,"end_line":4,"signature":"@article{knuth1984,"},{"kind":"key","name":"title","line":2,"end_line":2}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"docs-a/m6.bib"},"lines":{"text":" note = \"needle\" # suffix,\n"},"line_number":3,"absolute_offset":62,"submatches":[{"match":{"text":"needle"},"start":9,"end":15}],"format":"bibtex","trail":[{"kind":"entry","name":"knuth1984","line":1,"end_line":4,"signature":"@article{knuth1984,"},{"kind":"key","name":"note","line":3,"end_line":3}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"docs-a/m6.bib"},"lines":{"text":"@comment{needle ignored}\n"},"line_number":5,"absolute_offset":91,"submatches":[{"match":{"text":"needle"},"start":9,"end":15}],"format":"bibtex","trail":[],"fragment":null}}
+{"type":"end","data":{"path":{"text":"docs-a/m6.bib"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":116,"bytes_printed":1109,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1109,"bytes_searched":116,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+config/.env.m6
+  DATABASE_URL
+    2:export DATABASE_URL=postgres://needle@db/app
+  TEXT
+    4:needle # literal

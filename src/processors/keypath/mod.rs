@@ -1,6 +1,14 @@
-//! keypath: YAML, JSON and TOML key paths (spec §5.2, design note 6).
+//! keypath: YAML, JSON and TOML key paths (spec §5.2, design note 6), and M6's line syntaxes:
+//! INI, `.properties`, `.env`, SSH, iCalendar/vCard and BibTeX (M6 spec §7, §10.2, §10.3).
+pub(crate) mod bibtex;
 pub mod collect;
+pub(crate) mod env;
+pub(crate) mod ical;
+pub(crate) mod ini;
 pub mod json;
+pub(crate) mod lines;
+pub(crate) mod properties;
+pub(crate) mod ssh;
 pub mod toml;
 pub mod yaml;
 
@@ -18,6 +26,27 @@ pub(crate) enum Syntax {
     Json,
     Yaml,
     Toml,
+    Ini,
+    Properties,
+    Env,
+    Ssh,
+    Ical,
+    Bibtex,
+}
+
+impl Syntax {
+    /// The M6 line syntaxes, prepared by `lines` (M6 plan, Task 2.1).
+    fn lines(self) -> bool {
+        matches!(
+            self,
+            Syntax::Ini
+                | Syntax::Properties
+                | Syntax::Env
+                | Syntax::Ssh
+                | Syntax::Ical
+                | Syntax::Bibtex
+        )
+    }
 }
 
 fn syntax(params: &::toml::Table) -> anyhow::Result<Syntax> {
@@ -25,7 +54,15 @@ fn syntax(params: &::toml::Table) -> anyhow::Result<Syntax> {
         Some("json") => Ok(Syntax::Json),
         Some("yaml") => Ok(Syntax::Yaml),
         Some("toml") => Ok(Syntax::Toml),
-        _ => anyhow::bail!("keypath needs `syntax` = \"json\", \"yaml\" or \"toml\" in [params]"),
+        Some("ini") => Ok(Syntax::Ini),
+        Some("properties") => Ok(Syntax::Properties),
+        Some("env") => Ok(Syntax::Env),
+        Some("ssh") => Ok(Syntax::Ssh),
+        Some("ical") => Ok(Syntax::Ical),
+        Some("bibtex") => Ok(Syntax::Bibtex),
+        _ => anyhow::bail!(
+            "keypath needs `syntax` = \"json\", \"yaml\", \"toml\", \"ini\", \"properties\", \"env\", \"ssh\", \"ical\" or \"bibtex\" in [params]"
+        ),
     }
 }
 
@@ -51,7 +88,31 @@ pub(crate) fn prepare_syntax<'a>(
         Syntax::Json => Box::new(json::prepare(input.bytes)),
         Syntax::Yaml => yaml::prepare(input, params)?,
         Syntax::Toml => toml::prepare(input, params)?,
+        Syntax::Ini => ini::prepare(input, params)?,
+        Syntax::Properties => properties::prepare(input, params)?,
+        Syntax::Env => env::prepare(input, params)?,
+        Syntax::Ssh => ssh::prepare(input, params)?,
+        Syntax::Ical => ical::prepare(input, params)?,
+        Syntax::Bibtex => bibtex::prepare(input, params)?,
     })
+}
+
+/// The model's Outline of a line syntax: every Segment (`None`), or those that hold an anchor.
+fn line_outline(
+    syntax: Syntax,
+    src: &[u8],
+    params: &::toml::Table,
+    anchors: Option<&[usize]>,
+) -> anyhow::Result<Outline> {
+    match syntax {
+        Syntax::Ini => ini::outline(src, params, anchors),
+        Syntax::Properties => properties::outline(src, params, anchors),
+        Syntax::Env => env::outline(src, params, anchors),
+        Syntax::Ssh => ssh::outline(src, params, anchors),
+        Syntax::Ical => ical::outline(src, params, anchors),
+        Syntax::Bibtex => bibtex::outline(src, params, anchors),
+        s => unreachable!("{s:?} is no line syntax"),
+    }
 }
 
 fn walk(syntax: Syntax, src: &[u8], c: &mut Collector) -> usize {
@@ -59,6 +120,7 @@ fn walk(syntax: Syntax, src: &[u8], c: &mut Collector) -> usize {
         Syntax::Json => json::walk(src, c),
         Syntax::Yaml => yaml::walk(src, c),
         Syntax::Toml => unreachable!("TOML builds its Outline directly"),
+        s => unreachable!("{s:?} builds its Outline through `lines`"),
     }
 }
 
@@ -73,7 +135,11 @@ impl Processor for Keypath {
         let mut order: Vec<usize> = (0..anchors.len()).collect();
         order.sort_by_key(|&i| anchors[i]);
         let sorted: Vec<usize> = order.iter().map(|&i| anchors[i]).collect();
-        let o = outline_for(input.bytes, syntax, &sorted);
+        let o = if syntax.lines() {
+            line_outline(syntax, input.bytes, params, Some(&sorted))?
+        } else {
+            outline_for(input.bytes, syntax, &sorted)
+        };
         let mut cursor = TrailCursor::new(&o);
         let mut out = vec![Vec::new(); anchors.len()];
         for (k, &i) in order.iter().enumerate() {
@@ -95,6 +161,7 @@ impl Processor for Keypath {
             Ok(Syntax::Json) => true,
             Ok(Syntax::Yaml) => yaml::NATIVE,
             Ok(Syntax::Toml) => toml::NATIVE,
+            Ok(s) => s.lines(),
             Err(_) => false,
         };
         if native {
@@ -107,6 +174,7 @@ impl Processor for Keypath {
     fn names(&self, input: &Input, params: &::toml::Table) -> anyhow::Result<Vec<Name>> {
         let o = match syntax(params)? {
             Syntax::Toml => toml::outline(input.bytes),
+            s if s.lines() => line_outline(s, input.bytes, params, None)?,
             s => {
                 let mut c = Collector::for_names();
                 let end = walk(s, input.bytes, &mut c);

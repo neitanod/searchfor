@@ -1,0 +1,10 @@
+# formats/ini.toml — INI sections and keys (M6 spec §7.1).
+name       = "ini"
+extensions = ["ini", "cfg", "cnf", "inf", "desktop"]
+names      = [".gitconfig", ".gitmodules", ".editorconfig", ".npmrc", ".pypirc", ".flake8", ".pylintrc", ".coveragerc", ".hgrc"]
+paths      = ["**/.git/config", "**/git/config"]
+processor  = "keypath"
+
+[params]
+syntax     = "ini"
+name_chars = 40

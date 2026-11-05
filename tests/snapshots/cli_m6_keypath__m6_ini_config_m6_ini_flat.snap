@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+3: server › host │ host = needle.example
+4: server › host │   continued needle
+7: remote "origin" › url │ url=needle.git
+9: a.b › k │ k=needle

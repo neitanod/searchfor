@@ -1,0 +1,9 @@
+# formats/systemd.toml — systemd units, read as INI (M6 spec §7.2).
+name       = "systemd"
+extensions = ["service", "socket", "timer", "mount", "automount"]
+paths      = ["**/systemd/**/*.{path,target,slice,scope,swap,network,netdev,link,conf}"]
+processor  = "keypath"
+
+[params]
+syntax     = "ini"
+name_chars = 40

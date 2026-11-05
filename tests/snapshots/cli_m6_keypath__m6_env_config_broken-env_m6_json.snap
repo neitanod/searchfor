@@ -1,0 +1,10 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"config/broken-env.m6"}}}
+{"type":"match","data":{"path":{"text":"config/broken-env.m6"},"lines":{"text":"A=needle\n"},"line_number":1,"absolute_offset":0,"submatches":[{"match":{"text":"needle"},"start":2,"end":8}],"format":"env","trail":[{"kind":"key","name":"A","line":1,"end_line":1}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/broken-env.m6"},"lines":{"text":"B=\"needle\n"},"line_number":2,"absolute_offset":9,"submatches":[{"match":{"text":"needle"},"start":3,"end":9}],"format":"env","trail":[{"kind":"key","name":"B","line":2,"end_line":3}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/broken-env.m6"},"lines":{"text":"needle\n"},"line_number":3,"absolute_offset":19,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"env","trail":[{"kind":"key","name":"B","line":2,"end_line":3}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"config/broken-env.m6"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":26,"bytes_printed":909,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":909,"bytes_searched":26,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

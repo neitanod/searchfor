@@ -1,0 +1,7 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+2: knuth1984 › title │  title = {Literate needle {programming}},
+3: knuth1984 › note │  note = "needle" # suffix,
+5: @comment{needle ignored}

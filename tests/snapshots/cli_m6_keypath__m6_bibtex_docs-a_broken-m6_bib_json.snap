@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"docs-a/broken-m6.bib"}}}
+{"type":"match","data":{"path":{"text":"docs-a/broken-m6.bib"},"lines":{"text":" title={needle\n"},"line_number":2,"absolute_offset":12,"submatches":[{"match":{"text":"needle"},"start":8,"end":14}],"format":"bibtex","trail":[{"kind":"entry","name":"a","line":1,"end_line":2,"signature":"@article{a,"},{"kind":"key","name":"title","line":2,"end_line":2}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"docs-a/broken-m6.bib"},"lines":{"text":"@book{b, title={needle}}\n"},"line_number":3,"absolute_offset":27,"submatches":[{"match":{"text":"needle"},"start":16,"end":22}],"format":"bibtex","trail":[{"kind":"entry","name":"b","line":3,"end_line":3,"signature":"@book{b,"},{"kind":"key","name":"title","line":3,"end_line":3}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"docs-a/broken-m6.bib"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":52,"bytes_printed":817,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":817,"bytes_searched":52,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

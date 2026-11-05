@@ -1,0 +1,6 @@
+User root
+Host github.com gitlab.com
+  IdentityFile ~/.ssh/needle_ed25519
+Match user ana
+  ProxyCommand=needle --proxy
+Include /never/read/needle

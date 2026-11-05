@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+2: DATABASE_URL │ export DATABASE_URL=postgres://needle@db/app
+4: TEXT │ needle # literal

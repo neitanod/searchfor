@@ -1,0 +1,8 @@
+# formats/properties.toml — Java .properties keys, decoded (M6 spec §7.3).
+name       = "properties"
+extensions = ["properties"]
+processor  = "keypath"
+
+[params]
+syntax     = "properties"
+name_chars = 40

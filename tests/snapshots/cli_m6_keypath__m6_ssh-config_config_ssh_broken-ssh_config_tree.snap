@@ -1,0 +1,10 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+config/ssh/broken-ssh_config
+  Host x
+    K
+      2:K needle
+    Unknown
+      3:Unknown needle

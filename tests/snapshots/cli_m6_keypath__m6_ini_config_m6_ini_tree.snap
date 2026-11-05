@@ -1,0 +1,15 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+config/m6.ini
+  server
+    host
+      3:host = needle.example
+      4:  continued needle
+  remote "origin"
+    url
+      7:url=needle.git
+  a.b
+    k
+      9:k=needle

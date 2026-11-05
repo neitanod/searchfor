@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+3: VEVENT Team sync › DESCRIPTION │ DESCRIPTION:Bring the needle
+4: VEVENT Team sync › DESCRIPTION │  folded needle

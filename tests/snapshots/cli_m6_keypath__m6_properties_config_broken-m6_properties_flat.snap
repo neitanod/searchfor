@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+1: k │ k=needle
+2: bad\uQQQQ │ bad\uQQQQ=needle
