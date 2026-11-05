@@ -214,10 +214,60 @@ fn m6_servers() {
     );
 }
 
+#[test]
+fn m6_hcl() {
+    let fx = Fixture::new();
+    let src = b"resource \"aws_instance\" \"web\" {\n tags = {\n  Name = \"needle-web\"\n }\n ingress = [\n  { port = 80 },\n  { name = \"needle\" }\n ]\n script = <<-EOT\n  echo needle ${not_a_block}\n  EOT\n}\n";
+    seed(&fx, "config/m6.tf", src);
+    check(
+        &fx,
+        "hcl",
+        "config/m6.tf",
+        &[
+            "resource aws_instance web › tags › Name",
+            "resource aws_instance web › ingress[1] › name",
+            "resource aws_instance web › script",
+        ],
+    );
+    flags(&fx, "hcl", "config/m6.tf", "tags", "Name", "\\[1\\]");
+    put(
+        &fx,
+        "hcl-lex",
+        br#"x "y" {
+ value = "${join("}", ["needle", "%{if true}x%{endif}"])}"
+ /* { */ other = "needle" // }
+}
+}
+needle
+"#,
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "hcl",
+            "hcl-lex",
+            "needle",
+            &["--json"]
+        ))),
+        ["x y › value", "x y › other", ""]
+    );
+    put(&fx, "hcl-name", b"resource \"needle\" \"web\" {\n k=1\n}\n");
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "hcl",
+            "hcl-name",
+            "needle",
+            &["--json"]
+        ))),
+        [""]
+    );
+}
+
 /// M6 plan, «Committed broken fixtures, with three snapshots each», blocks' rows.
 #[test]
 fn m6_broken_fixtures() {
-    let owned: &[&str] = &["nginx", "apache"];
+    let owned: &[&str] = &["nginx", "apache", "hcl"];
     let cases: &[(&str, &str, &[u8], &[&str])] = &[
         (
             "nginx",
@@ -230,6 +280,12 @@ fn m6_broken_fixtures() {
             "config/apache2/broken-apache.conf",
             b"<Directory /x>\nK needle\n</unknown>\nK needle\n",
             &["Directory /x › K", "Directory /x › K"],
+        ),
+        (
+            "hcl",
+            "config/broken-m6.tf",
+            b"x { k=\"needle\" }\n}\nneedle\n",
+            &["x › k", ""],
         ),
     ];
     let fx = Fixture::new();

@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+config/broken-m6.tf
+  x
+    k
+      1:x { k="needle" }
+  3:needle

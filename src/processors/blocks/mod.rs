@@ -3,6 +3,7 @@
 //! of Source ranges, label ranges, parents and name pieces in file order; the cursor builds a
 //! Segment only when a Trail needs it (M6 plan, Chunk 3, D7).
 mod apache;
+mod hcl;
 mod nginx;
 
 use super::{Capability, Cursor, Prepared, Processor};
@@ -19,6 +20,7 @@ pub(crate) const MAX_DEPTH: usize = 256;
 enum Syntax {
     Nginx,
     Apache,
+    Hcl,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -32,7 +34,10 @@ impl Params {
         let syntax = match t.get("syntax").and_then(|v| v.as_str()) {
             Some("nginx") => Syntax::Nginx,
             Some("apache") => Syntax::Apache,
-            _ => anyhow::bail!("blocks needs `syntax` = \"nginx\" or \"apache\" in [params]"),
+            Some("hcl") => Syntax::Hcl,
+            _ => anyhow::bail!(
+                "blocks needs `syntax` = \"nginx\", \"apache\" or \"hcl\" in [params]"
+            ),
         };
         let name_chars = t
             .get("name_chars")
@@ -45,6 +50,7 @@ impl Params {
         match self.syntax {
             Syntax::Nginx => nginx::scan(src, self.name_chars),
             Syntax::Apache => apache::scan(src, self.name_chars),
+            Syntax::Hcl => hcl::scan(src, self.name_chars),
         }
     }
 }
@@ -54,6 +60,7 @@ impl Params {
 pub(crate) enum Kind {
     Block,
     Key,
+    Element,
 }
 
 impl Kind {
@@ -61,6 +68,7 @@ impl Kind {
         match self {
             Kind::Block => "block",
             Kind::Key => "key",
+            Kind::Element => "element",
         }
     }
 }
@@ -70,6 +78,9 @@ impl Kind {
 pub(crate) enum Part {
     /// `len` bytes of the Source from `start`, as written, after a space unless first.
     Src { start: usize, len: u32 },
+    /// `[N]`, 0-based, right after the holder's name: a list element's (M6 spec §7.8). It
+    /// maps to no Source byte, so `--in-headings` never finds it.
+    Index(u32),
 }
 
 impl Part {
@@ -173,6 +184,7 @@ impl BlockIndex {
                     let end = (start + len as usize).min(src.len());
                     n.push_lossy(src, start.min(end)..end);
                 }
+                Part::Index(k) => n.push_str(&format!("[{k}]")),
             }
             first = false;
         }
@@ -798,6 +810,14 @@ pub(crate) mod tests {
         cursor_agrees(
             "apache",
             b"<VirtualHost *:443>\n <Directory /var/www>\n  Require ip 10.0.0.0/8 # needle\n </Directory>\n ServerName example.com\n</VirtualHost>\n",
+        );
+    }
+
+    #[test]
+    fn hcl_cursors_agree_with_the_model() {
+        cursor_agrees(
+            "hcl",
+            b"resource \"aws_instance\" \"web\" {\n tags = {\n  Name = \"needle-web\"\n }\n ingress = [\n  { port = 80 },\n  { name = \"needle\" }\n ]\n script = <<-EOT\n  echo needle ${not_a_block}\n  EOT\n}\nl = [[1, 2], [3]]\n",
         );
     }
 

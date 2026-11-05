@@ -39,4 +39,5 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("sqlite.toml", include_str!("../../formats/sqlite.toml")),
     ("nginx.toml", include_str!("../../formats/nginx.toml")),
     ("apache.toml", include_str!("../../formats/apache.toml")),
+    ("hcl.toml", include_str!("../../formats/hcl.toml")),
 ];

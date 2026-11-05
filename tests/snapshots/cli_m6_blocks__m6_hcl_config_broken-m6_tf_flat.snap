@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+1: x › k │ x { k="needle" }
+3: needle

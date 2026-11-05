@@ -1,0 +1,14 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+config/m6.tf
+  resource aws_instance web
+    tags
+      Name
+        3:  Name = "needle-web"
+    ingress[1]
+      name
+        7:  { name = "needle" }
+    script
+      10:  echo needle ${not_a_block}
