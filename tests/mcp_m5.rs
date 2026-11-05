@@ -212,8 +212,9 @@ fn m5b_mcp_transcript_finishes_after_client_input_eof() {
 }
 
 /// A server whose one search is held by the example helper's wait knobs (M5b plan, Task 2.3)
-/// on a regular `.ini` file, and the pids of that search and of its helper, which the helper
-/// logs once it holds the call. Dropping it releases the helper and kills the server.
+/// on a `.blk` file, an extension only this test's Definition claims (M6 plan, Task 0), and
+/// the pids of that search and of its helper, which the helper logs once it holds the call.
+/// Dropping it releases the helper and kills the server.
 struct NativeRun {
     server: std::process::Child,
     search: u32,
@@ -265,11 +266,11 @@ impl NativeRun {
             time::{Duration, Instant},
         };
         let fx = common::Fixture::new();
-        std::fs::write(fx.file("blocked.ini"), "[section]\nk=needle\n").unwrap();
+        std::fs::write(fx.file("blocked.blk"), "[section]\nk=needle\n").unwrap();
         let bin =
             common::workspace_bin("searchfor-example-helper", "searchfor-example-helper", &[]);
         let def = format!(
-            "name='blocked'\nextensions=['ini']\nprocessor='external'\n[params]\ncommand=[{:?}]\nmode='pool'\ntimeout_ms=30000\n",
+            "name='blocked'\nextensions=['blk']\nprocessor='external'\n[params]\ncommand=[{:?}]\nmode='pool'\ntimeout_ms=30000\n",
             bin.to_str().unwrap()
         );
         std::fs::write(fx.formats.path().join("blocked.toml"), def).unwrap();
@@ -287,7 +288,7 @@ impl NativeRun {
             .stderr(Stdio::null());
         let mut server = command.spawn().unwrap();
         let call = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":"search","arguments":{"pattern":"needle","paths":["blocked.ini"]}}});
+            "params":{"name":"search","arguments":{"pattern":"needle","paths":["blocked.blk"]}}});
         writeln!(server.stdin.as_mut().unwrap(), "{call}").unwrap();
         let deadline = Instant::now() + Duration::from_secs(20);
         let v: serde_json::Value = loop {

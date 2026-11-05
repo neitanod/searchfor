@@ -1778,7 +1778,8 @@ fn each_diagnostic_with_stderr(
 #[test]
 fn m5b_mcp_config_trap_needs_no_executable_script() {
     let fx = Fixture::new();
-    let config = fx.file("config");
+    // Not `config`: M6's fixtures add a `config/` directory to the copied tree (M6 plan, Task 0).
+    let config = fx.file("mcp-trap-config");
     std::fs::write(&config, "--generate=man\n--regexp=ABSENT_CONFIG_SENTINEL\n").unwrap();
     let mut cmd = fx.s4(["--mcp"]);
     cmd.env("SEARCHFOR_CONFIG_PATH", config)

@@ -447,7 +447,8 @@ mod tests {
     }
 
     /// The built-ins plus `bashy` (shebang), `myfy` (magic) and `makey` (exact name). `myfy`'s
-    /// magic is not ELF's, which the built-in `elf` claims since M4.
+    /// magic is not ELF's, which the built-in `elf` claims since M4, and `makey`'s name is no
+    /// built-in's: `Makefile` is M6's `make` (M6 plan, Task 0).
     fn registry() -> Registry {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -462,7 +463,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             d.path().join("makey.toml"),
-            "name='makey'\nnames=['Makefile']\nprocessor='markdown'",
+            "name='makey'\nnames=['Makey']\nprocessor='markdown'",
         )
         .unwrap();
         let (reg, warnings) = Registry::load(Some(d.path()), &known);
@@ -478,10 +479,7 @@ mod tests {
             det.detect(Path::new("a/README.MD"), b"").unwrap().name,
             "markdown"
         );
-        assert_eq!(
-            det.detect(Path::new("Makefile"), b"").unwrap().name,
-            "makey"
-        );
+        assert_eq!(det.detect(Path::new("Makey"), b"").unwrap().name, "makey");
         assert_eq!(
             det.detect(Path::new("prog"), b"\x7fMYF\x02").unwrap().name,
             "myfy"
@@ -501,7 +499,7 @@ mod tests {
         let det = Detector::new(&reg, &[]).unwrap();
         let name = |p: &str| det.detect_by_path(Path::new(p)).map(|d| d.map(|d| &d.name));
         assert_eq!(name("a.md"), Some(Some(&"markdown".to_string())));
-        assert_eq!(name("Makefile"), Some(Some(&"makey".to_string())));
+        assert_eq!(name("Makey"), Some(Some(&"makey".to_string())));
         // myfy (magic) and bashy (shebang) need the first bytes of a name without extension.
         assert_eq!(name("data"), None);
         let (builtin, _) = Registry::load(None, &known);
@@ -544,7 +542,7 @@ mod tests {
         let det = Detector::new(&reg, &[]).unwrap();
         // Exact name beats extension, extension beats magic, magic beats shebang.
         assert_eq!(
-            det.detect(Path::new("Makefile"), b"\x7fMYF").unwrap().name,
+            det.detect(Path::new("Makey"), b"\x7fMYF").unwrap().name,
             "makey"
         );
         assert_eq!(
