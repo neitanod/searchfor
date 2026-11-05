@@ -954,7 +954,10 @@ For every M6 Format:
 Four tandas of twelve chunks (the plan's chunk graph); within each, the chunks touch separate
 files, except the registration points every chunk adds a line to (`src/formats/builtin.rs`,
 `processors::by_name`, the tree's label kinds, the schema's description), which the
-orchestrator merges by hand.
+orchestrator merges by hand. Before tanda 1, the orchestrator commits one preparatory change
+(the plan's Task 0) that frees the existing tests from every name, extension, count and fixture
+directory M6 adds, so every chunk starts from a suite that stays green when it registers its
+Formats.
 
 | Tanda | Chunks | Formats |
 |---|---|---|

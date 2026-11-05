@@ -70,7 +70,8 @@ through the last requested unit. Keep the matching engine and Helper protocol.
 encoding_rs 0.8.34, serde/toml, goblin, tree-sitter 0.24.7, insta and test helpers.
 Existing `.gitattributes` already preserves fixture and snapshot bytes.
 
-**Branch:** `t-798-searchfor-m6`, checked base `59bb971`. Chunk branches are
+**Branch:** `t-798-searchfor-m6`, checked base `59bb971`; chunk branches
+start from Task 0's commit on it (D25). Chunk branches are
 `t-798-searchfor-m6-c<N>`. Symbols and paths below were checked against this
 base. Line references may move; identify edits by symbol. This document specifies
 proposed code and expected RED/GREEN; authoring it does not execute those tests.
@@ -128,11 +129,12 @@ proposed code and expected RED/GREEN; authoring it does not execute those tests.
 | D17 | Move the central stream/model differential edits to C12.2 | C10 also needs src/app.rs for object routing; two tanda-3 chunks must not edit it concurrently |
 | D18 | C12.2 owns the central rg_compat_m6 suite | It can consume completed text and binary fixture writers without a same-tanda dependency |
 | D19 | Existing object --in-headings policy stays as v1 §5.7 | §9 says binary rules are unchanged; legacy object names() stays empty. New binary ownership still excludes its own method-name label |
-| D20 | Check the root lockfile metadata issue at C12.4 | Cargo.lock records searchfor 1.0.0; changing only Cargo.toml can require a root-package version refresh under --locked. Do not update dependencies or package channels to hide this |
+| D20 | C12.4 refreshes the root package's own entry of Cargo.lock with the bump, and nothing else | Cargo.lock records `searchfor 1.0.0`; with 1.1.0 in Cargo.toml every `--locked` command is refused for certain («the lock file … needs to be updated but --locked was passed», checked on `d14a4c1` with `cargo metadata --offline --locked`). CI runs every cargo command with `--locked`, so refreshing that one entry is the only way to keep it; `cargo update --offline --workspace` rewrites exactly the line `version = "1.0.0"` under `name = "searchfor"` and moves no other crate (checked: `1 insertion(+), 1 deletion(-)`). No dependency, helper or package-channel version moves (plan review r2, Fable #4) |
 | D21 | WhatsApp exports are detected by `_chat.txt` and one glob, `*WhatsApp*.txt`; no localized name lists | The app's name is in the export's file name in every language; exact lists need sources this repo lacks (plan r1, Codex #4). A `.txt` the glob claims that is no export fails the chat scanner's first-line check and shows as rg shows it (8385), so a false positive costs nothing visible. Still detection by name and path (answer 1 = A, Hilo 855 #12694) |
 | D22 | CI's version checks read the version from Cargo.toml, once | Bumping to 1.1.0 would otherwise fail nine checks written for 1.0.0 (plan r1, Codex #1); C12.3 does it before C12.4 bumps |
 | D23 | `Segment.level` becomes `Option<usize>` in tanda 1 (C1.4) | Org needs levels above 255; widening it in C5 would break C6's Jupyter headings at the tanda-2 merge and `tree.rs`'s cast under clippy (plan r1, Fable #4) |
 | D24 | HTML reads its JavaScript and `module` scripts and its JSON-LD; other types, scripts over 1 MiB and lines over 1 000 bytes keep 1.0's Trail | Sebastián's answer B with the three limits of #12697 (Hilo 855 #12726). The 1 000-byte line is the minification cap: the repo had none to reuse, hand-written code stays under formatters' 80–120 columns, and a minified bundle's Trails say nothing while being the costly parse (spec §8.3) |
+| D25 | Task 0, the orchestrator's preparatory commit, frees the existing tests from every name, extension and count M6 adds, before tanda 1 | Chunks run in parallel worktrees, so a fix in one chunk's branch reaches its siblings only at the tanda's integration, and their inherited suites would stay red until then (plan review r2, Codex #1, Fable #1 and #2) |
 
 ## Chunk graph and file ownership
 
@@ -153,6 +155,8 @@ No dependency or chunk moves. Registration points are intentionally shared:
 Each chunk contributes its own lines; the orchestrator merges these conflicts.
 
 ```text
+Task 0 (orchestrator, on t-798-searchfor-m6): the preparatory commit
+                         every tanda-1 chunk branch starts from its commit
 Tanda 1 (parallel):  C1 Detector    C2 keypath    C3 blocks    C4 buildfile
                          \             |             |            /
                          all four integrated and size checked
@@ -170,16 +174,22 @@ runs each test binary with `SEARCHFOR_M6_AUTO=1`: the same primary fixtures run
 again without `--format`. This variable controls tests only, never s4.
 C5–C9 use automatic variants at handoff too, Telegram included (note 1 below).
 Each chunk owns `tests/cli_m6_<topic>.rs` and its own snapshots. All fixture
-basenames are unique across groups/chunks. **C2's first commit** rewrites the one
-count in `tests/cli_m2.rs::m2_07_list_and_export_the_new_formats` that
-`--export-formats` checks (`1 + FORMATS.len() + 6 + 12`) as
-`searchfor::formats::builtin::BUILTIN.len()`, so each chunk that registers a TOML
-leaves the suite green; C2 owns that line in tanda 1 and nobody edits it after.
-No test in `tests/` asserts a `user (` origin (grep on `efabcde`: only
-`tests/cli.rs:177` asserts `overridden (`), and the three tests that write a user
-`ini.toml` (`helpers.rs:31`, `cli_m2.rs:279`, `cli_m5.rs:1704`) keep working, so
-no chunk owns INI-origin expectations. C12 owns `tests/guide.rs` and the version
-test in `tests/cli_m5.rs`.
+basenames are unique across groups/chunks.
+
+**Every chunk branch of every tanda starts from Task 0's commit or a later
+integration of it** (plan review r2, Codex #1, Fable #1 and #2). Task 0 is the
+orchestrator's preparatory commit on `t-798-searchfor-m6`, made before tanda 1's
+four branches are created: it removes every dependency an existing test has on
+what M6 adds, so a chunk that registers its TOMLs keeps the inherited suite
+green in its own worktree, with no fix waiting in a sibling branch. It moves the
+`m2_07` count out of C2 (C2's first commit no longer carries it), moves the
+`.ini` claim of `tests/mcp_m5.rs`'s `blocked` Definition, the `Makefile`
+claim of the Detector's unit-test `makey` and the `config` file name of one
+`tests/cli_m5.rs` test (the new `tests/fixtures/config/` directory takes it),
+and lists every other hit of the sweep with where it goes. No chunk edits the
+lines Task 0 changed afterwards. No test in `tests/` asserts a `user (` origin (grep on `efabcde`:
+only `tests/cli.rs:177` asserts `overridden (`), so no chunk owns INI-origin
+expectations. C12 owns `tests/guide.rs` and the version test in `tests/cli_m5.rs`.
 
 ### Spec discrepancies and open-question change notes
 
@@ -214,10 +224,10 @@ test in `tests/cli_m5.rs`.
    plan had none, and C9.3 adds it.
 5. **Version metadata:** user scope says version in Cargo.toml only. C12.3
    makes CI's checks read it from there (D22), so the version stays written in
-   one place; C12.4 exposes Cargo's lock consistency check and the exact
-   one-entry resolution needed if --locked refuses; it is a metadata question
-   for the orchestrator, not authorization to move pins or bump helper/package
-   versions.
+   one place. Cargo.lock repeats the root package's version as metadata, and
+   `--locked` refuses a lock that disagrees with Cargo.toml, so C12.4 refreshes
+   that one entry with the bump (D20): it is the only way compatible with CI's
+   `--locked`, and it moves no pin and no helper or package version.
 6. **Spec amended by plan review r1:** §4.1's cost paragraph, §4.2's WhatsApp
    row, §10.4 (one glob and the first-line check), #43 and #51 (note 4); §13
    names `tests/fuzz_m6.rs` and `tests/cli_m6_object.rs` for the fuzz (D16);
@@ -225,6 +235,7 @@ test in `tests/cli_m5.rs`.
    expectations, since no test asserts one (chunk graph); Open question 1 is
    marked answered. After #12726: §2, §5.1, §8.3, §11, §14, #47, #53 and Open
    question 2 state HTML's scripts and their three limits (note 3, D24).
+   Plan review r2: §15 names the orchestrator's preparatory commit (Task 0, D25).
 
 ### Common command convention
 
@@ -361,6 +372,208 @@ fn flags(fx: &Fixture, format: &str, file: &str, within: &str,
 cannot affect the comparison. The CRLF source copies are UTF-8 primary fixtures;
 invalid-UTF-8 and UTF-16 cases use separate byte-level tests below. `flags` runs
 only on a fixture with a real deepest Section; binary expansion stays rows.
+
+## Task 0: Preparatory commit (orchestrator, before tanda 1)
+
+**Who and where:** the orchestrator, directly on `t-798-searchfor-m6`, before it
+creates any chunk branch. Tanda 1's four branches start from this commit, and
+every later tanda from an integration that contains it (chunk graph). Plan
+review r2, Codex #1, Fable #1 and #2: one class of problem, existing tests that
+break when a new built-in Definition claims what they claim.
+
+**Files:** `tests/cli_m2.rs`, `tests/mcp_m5.rs`, `tests/cli_m5.rs` (one test,
+not C12's version test) and the `#[cfg(test)]` module of
+`src/formats/detector.rs`. No production code, no fixture, no snapshot.
+
+**Edit 1, `tests/cli_m2.rs::m2_07_list_and_export_the_new_formats`:** the count
+of exported files comes from the built-in list, so each TOML a chunk registers
+keeps it right. Replace
+
+```rust
+        std::fs::read_dir(&target).unwrap().count(),
+        // Markdown, M2's Formats, M3's html, xml, csv, tsv, srt and vtt, and M4's elf, pe,
+        // macho and nine document Formats.
+        1 + FORMATS.len() + 6 + 12
+    );
+```
+
+with
+
+```rust
+        std::fs::read_dir(&target).unwrap().count(),
+        // Every built-in Definition, so a Format added later keeps this count right.
+        searchfor::formats::builtin::BUILTIN.len()
+    );
+```
+
+**Edit 2, `tests/mcp_m5.rs::NativeRun`:** the `blocked` Definition claims
+`.ini`, which M6's built-in `ini` takes first (built-ins precede user
+Definitions in the Registry, `detector.rs::Detector::new`'s
+`by_extension.entry(e).or_insert(i)`); the helper would never start and the
+three tests that use `NativeRun` would time out at 20 s. It moves to `.blk`,
+which no v1 or M6 Definition claims, so the test no longer depends on the
+built-in `ini` at all (a `name='ini'` replacement would depend on the
+replace-by-name rule instead). In the doc comment of `struct NativeRun`, replace
+
+```rust
+/// A server whose one search is held by the example helper's wait knobs (M5b plan, Task 2.3)
+/// on a regular `.ini` file, and the pids of that search and of its helper, which the helper
+/// logs once it holds the call. Dropping it releases the helper and kills the server.
+```
+
+with
+
+```rust
+/// A server whose one search is held by the example helper's wait knobs (M5b plan, Task 2.3)
+/// on a `.blk` file, an extension only this test's Definition claims (M6 plan, Task 0), and
+/// the pids of that search and of its helper, which the helper logs once it holds the call.
+/// Dropping it releases the helper and kills the server.
+```
+
+and in `NativeRun::start` replace these three lines, one for one:
+
+```rust
+        std::fs::write(fx.file("blocked.ini"), "[section]\nk=needle\n").unwrap();
+            "name='blocked'\nextensions=['ini']\nprocessor='external'\n[params]\ncommand=[{:?}]\nmode='pool'\ntimeout_ms=30000\n",
+            "params":{"name":"search","arguments":{"pattern":"needle","paths":["blocked.ini"]}}});
+```
+
+```rust
+        std::fs::write(fx.file("blocked.blk"), "[section]\nk=needle\n").unwrap();
+            "name='blocked'\nextensions=['blk']\nprocessor='external'\n[params]\ncommand=[{:?}]\nmode='pool'\ntimeout_ms=30000\n",
+            "params":{"name":"search","arguments":{"pattern":"needle","paths":["blocked.blk"]}}});
+```
+
+**Edit 3, `src/formats/detector.rs`, `tests::registry` and its three
+assertions:** `makey` claims the exact name `Makefile`, which M6's built-in
+`make` takes first (`by_name.entry(n).or_insert(i)`); it moves to `Makey`, a
+name no Definition of spec §4.2 claims. Replace the doc comment and the
+Definition of `registry()`:
+
+```rust
+    /// The built-ins plus `bashy` (shebang), `myfy` (magic) and `makey` (exact name). `myfy`'s
+    /// magic is not ELF's, which the built-in `elf` claims since M4.
+```
+
+```rust
+            "name='makey'\nnames=['Makefile']\nprocessor='markdown'",
+```
+
+with
+
+```rust
+    /// The built-ins plus `bashy` (shebang), `myfy` (magic) and `makey` (exact name). `myfy`'s
+    /// magic is not ELF's, which the built-in `elf` claims since M4, and `makey`'s name is no
+    /// built-in's: `Makefile` is M6's `make` (M6 plan, Task 0).
+```
+
+```rust
+            "name='makey'\nnames=['Makey']\nprocessor='markdown'",
+```
+
+and in the three assertions that expect `"makey"` replace `"Makefile"` by
+`"Makey"`, nothing else. In `signals_in_order` the shorter assertion then fits
+one line, as `cargo fmt` writes it:
+
+```rust
+        assert_eq!(
+            det.detect(Path::new("Makefile"), b"").unwrap().name,
+            "makey"
+        );
+```
+
+becomes
+
+```rust
+        assert_eq!(det.detect(Path::new("Makey"), b"").unwrap().name, "makey");
+```
+
+and the other two keep their layout:
+`the_path_alone_decides_unless_a_format_reads_the_content`
+(`assert_eq!(name("Makey"), Some(Some(&"makey".to_string())));`) and
+`earlier_signals_beat_later_ones` (`det.detect(Path::new("Makey"), b"\x7fMYF")`).
+The other `"Makefile"` strings of the module (`the_built_in_document_names_are_the_document_formats`,
+`only_some_names_may_be_documents`, `names_and_extensions_pick_the_first_active_definition`,
+`names_without_an_extension_are_decided_without_walking_every_definition`)
+compare two answers of the same Detector, or `may_be_document`, which a
+non-document name claim does not change; they stay.
+
+**Edit 4, `tests/cli_m5.rs::m5b_mcp_config_trap_needs_no_executable_script`:**
+the test writes its config file as `fx.file("config")`, at the root of the
+fixture copy; C2, C3 and C4 add the directory `tests/fixtures/config/`
+(`config/m6.ini`, `config/m6.tf`, `config/m6.dockerfile`…), which
+`common::Fixture` copies into every test's tree, so the write fails with
+`IsADirectory` (found by the sweep's probe; no review named it). Replace
+
+```rust
+    let fx = Fixture::new();
+    let config = fx.file("config");
+```
+
+with
+
+```rust
+    let fx = Fixture::new();
+    // Not `config`: M6's fixtures add a `config/` directory to the copied tree (M6 plan, Task 0).
+    let config = fx.file("mcp-trap-config");
+```
+
+**The sweep (on `d14a4c1`).** Every test and test helper (`tests/**`, the
+`#[cfg(test)]` modules of `src/**`, `helpers/**`, the fixtures,
+`docs/examples/**`, `tests/guide.rs`) was searched for a user or test
+Definition, fixture name or expectation that claims an extension, exact name,
+path glob, compound extension or magic of spec §4.2, and for a file that M6
+would make structured. Then a probe ran the whole suite with temporary built-ins
+claiming every §4.2 extension, name and `mbox`'s magic (with the `csv`
+Processor, `headers = false`, so any Match in a claimed file gains a Trail):
+first on `d14a4c1` as it is (seven failures: edits 1–3), then with edits 1–3
+and copies of the 31 primary fixture paths this plan adds, each with two
+`needle` lines (one failure: edit 4), then that test with edit 4. `paths`
+globs and compound extensions do not exist before C1, so the probe could not
+declare them; the text search covers them. Hits, by file and line:
+
+| Hit | What M6 does to it | Where it goes |
+|---|---|---|
+| `tests/cli_m2.rs:182-187`, `m2_07`'s fixed count | Fails with the first registered TOML (seen in the probe) | Task 0, edit 1 |
+| `tests/mcp_m5.rs:268`, `272`, `290` (doc `215`): `blocked` claims `.ini` | `m5b_client_output_disconnect_stops_a_blocked_search` (357), `m5b_server_death_stops_a_blocked_search` (365) and also `m5b_client_input_eof_leaves_no_search` (373, through `NativeRun::finite_search`) fail at 20 s (seen in the probe) | Task 0, edit 2 |
+| `src/formats/detector.rs:465` `makey` `names=['Makefile']`, asserted at `482`, `504`, `547` | Three unit tests fail once `make.toml` registers (seen in the probe) | Task 0, edit 3 |
+| `tests/helpers.rs:31` (`ini()`), `tests/cli_m2.rs:279`, `tests/cli_m5.rs:1704`: user Definitions named `ini` | Replace the built-in `ini` by name; pass in the probe | No change |
+| `tests/helpers.rs:265-276` (`h03b`): user `cfg` with `extensions=['cfg']` | M6's `ini` claims `cfg`, but the same test writes a user `ini` that replaces the built-in and claims only `ini`, so `.cfg` stays the user `cfg`'s; passes in the probe | No change |
+| `tests/fixtures/ini/{app,bom,db,web}.ini`, `tests/helpers.rs` `gen/*.ini`, `long.ini`, `ini/link.ini` | Built-in `ini` files from C2 on; every test that searches them writes the user `ini` first or forces a Format; no snapshot names them | No change |
+| `tests/guide.rs:31-75` with `docs/examples/{ini.toml,sample.ini,ini-helper.py,ini-pre.py}` | The test uses `--format ini-guide` and `--no-trail --pre`, so it passes; the guide's `ini.toml` (`name="ini-guide"`, `extensions=["ini"]`) would lose `.ini` files to the built-in `ini` for a reader who copies it (intended: M6 describes INI) | C12.1, as planned: the example moves to `.po` and the INI files are removed |
+| `tests/rg_compat.rs:518` `types/prod.env` | Built-in `env`; the test compares `--no-trail` output and the file column of `--flat`, which a Trail does not change; runs only with rg 14.1.1, absent here, so read and not run | No change |
+| `src/formats/mod.rs:279`, `plain.object(b"\xca\xfe\xba\xbe")` is `macho` | M6's `java-class` also claims `cafebabe`; it registers after `macho` and `object(head)` stays the first candidate | No change; C10.4 states it |
+| `tests/fixtures/markup/page.html` and v1's `html` fuzz target | HTML reads its scripts (D24) | C7.4: v1 snapshots unchanged, `--test fuzz` rerun (Fable #3) |
+| `*.ini` names in the unit tests of `src/helper/{host,protocol}.rs`, `src/processors/{external,mod}.rs` and `helpers/example/tests/protocol.rs` | Requests built in process, with no Detector | No change |
+| `src/search.rs:844-846`, `tests/rg_compat.rs:514`: `*.env` | rg's file-type table, no Definition | No change |
+| Binary magics of group E (`ffd8ff`, `89504e47…`, `WEBP`, `II*\0`/`MM\0*`, `ID3`, `ftyp`, `\0asm`) and `mbox`'s `From ` on a name without extension | No test, fixture or writer produces them; `cafebabe` appears only in the row above and in `cli_m4`'s fat Mach-O writers, valid fat files that stay `macho` (C10.4's ordered validation) | No change |
+| Path globs, compound extensions and names of §4.2 (`.env.*`, `**/.ssh/…`, `nginx/`, `apache2/`, `httpd/`, `systemd/`, `.git/config`, `Dockerfile*`, `Containerfile*`, `Makefile.*`, `[Jj]ustfile`, `.blade.php`, `*WhatsApp*.txt`, `_chat.txt`, `ChatExport_*`, `DataExport_*`) | Nothing in the tests, fixtures or examples names them | No change |
+| `tests/cli_m5.rs:1781`, `fx.file("config")` | The new `tests/fixtures/config/` directory takes the name: `IsADirectory` (seen in the probe) | Task 0, edit 4 |
+| The other 30 fixtures the chunks add under `tests/fixtures/{config,code-c,docs-a,mail,chat}` | `common::Fixture` copies them into every test's tree; the suite passes with them in the probe, and `tests/rg_compat.rs`'s whole-tree cases (skipped here: no rg 14.1.1) compare s4 with rg over the same tree, `--no-trail` | No change |
+
+**Verification** (the orchestrator, in its checkout of `t-798-searchfor-m6`):
+
+```bash
+export CARGO_TARGET_DIR="/home/sebas/robotin/apps/mdgrep/.workspace/t-798-searchfor-m5b-v1-0-windows-macos-ci-y-releases-despues-m6/targets/m6-t0"
+CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m2 m2_07 -- --nocapture
+CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test mcp_m5 -- --nocapture
+CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m5 m5b_mcp_config_trap -- --nocapture
+CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --lib formats::detector -- --nocapture
+CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo fmt --all --check
+CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo clippy --offline --locked --workspace --all-targets -- -D warnings
+CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --workspace
+test -n "$CARGO_TARGET_DIR" && rm -rf -- "$CARGO_TARGET_DIR"
+```
+
+Expected: every command passes on today's code, Task 0 alone (checked on
+`d14a4c1` in a scratch worktree: the workspace suite 1018 passed, 0 failed, 63
+ignored, the reference-rg tests returning early without rg 14.1.1; fmt and
+clippy clean). The four edits
+change no assertion's meaning: they move a claim or a file name off a name M6
+takes. Then
+`git add -- tests/cli_m2.rs tests/mcp_m5.rs tests/cli_m5.rs src/formats/detector.rs` and
+`git commit -m "test: free existing tests from names the M6 Formats and fixtures take"`.
+Record the commit; it is the base of every tanda-1 chunk branch.
 
 ## Chunk 1: Detector
 
@@ -725,15 +938,11 @@ Use each Definition's exact signals from Task 1.3; parameters below are complete
 M6 additions. Register each TOML in `builtin::BUILTIN`. C6 inherits dispatch
 ownership in tanda 2. Every scanner uses byte offsets of the searched Source.
 
-**First commit of C2, before any TOML:** in `tests/cli_m2.rs::m2_07_list_and_export_the_new_formats`,
-replace the expected count `1 + FORMATS.len() + 6 + 12` with
-`searchfor::formats::builtin::BUILTIN.len()` and its comment with «every
-built-in Definition». Run
-`CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m2 m2_07 -- --nocapture`:
-it passes before the change and must keep passing after each TOML this and
-every later chunk registers. Commit it alone with
-`git add -- tests/cli_m2.rs` and
-`git commit -m "test: count the exported Formats from the built-in list"`.
+C2 starts from Task 0's commit, where `tests/cli_m2.rs::m2_07` already counts
+`searchfor::formats::builtin::BUILTIN.len()` and `tests/mcp_m5.rs`'s `blocked`
+Definition claims `.blk`; C2 edits neither file. After each TOML it registers,
+`CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m2 m2_07 -- --nocapture`
+and `… --test mcp_m5 -- --nocapture` must still PASS.
 
 For each primary fixture listed in these tests, create its `broken-` sibling
 using the explicit malformed/recovery source in that task; test it through
@@ -1213,6 +1422,10 @@ Owns `src/processors/buildfile/{mod,dockerfile,make,just}.rs`,
 `formats/{dockerfile,make,just}.toml`, `tests/cli_m6_buildfile.rs`, its unique
 fixtures and snapshots. Copy the CLI prelude. Register `Buildfile` through
 by_name; Definitions use Task 1.3 signals and `name_chars=40`.
+C4 starts from Task 0's commit, where the Detector unit tests' `makey` claims
+`Makey`, so registering `make.toml` (which claims `Makefile`) leaves
+`cargo test --offline --locked --lib formats::detector` green; C4 edits no file
+of `src/formats/`.
 
 ### Task 4.1: Docker stages, instructions and heredocs
 
@@ -2064,9 +2277,20 @@ fn m6_html_scripts() {
   markup unit tests: none may change. Update `m6_vue`'s `same.html` expectation
   to `["template › ul.items › li[2]","script › addItem","style"]`, the one
   existing M6 assertion this task changes.
+  Then run v1's fuzz, whose `html` target now reaches the scripts:
+  `tests/fuzz.rs` builds that target from `formats/html.toml`'s `[params]`
+  (`fuzz.rs::params`, the `html` row of `targets`) and its `MARKUP` tokens and
+  `markup_doc` tags include `<script>` and `</script>`, so with `scripts = true`
+  random markup gets its scripts parsed as JavaScript:
+  `SEARCHFOR_FUZZ_N=8 CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test fuzz -- --nocapture`.
+  Both generated-input tests (`generated_inputs_do_not_panic_the_processors`
+  and `generated_files_do_not_panic_sfor`) must PASS with no panic and no case
+  past the 2 s deadline; a saved case is fixed in `markup/components.rs`, never
+  by narrowing the tokens (plan review r2, Fable #3).
 - [ ] **Step 4:** rerun the exact command with `INSTA_UPDATE=always` for new
   snapshots; inspect the tree, flat and JSON snapshots against the assertions.
-  Rerun with `INSTA_UPDATE=no`: selected tests PASS, stderr empty.
+  Rerun with `INSTA_UPDATE=no`: selected tests PASS, stderr empty. Rerun the
+  `SEARCHFOR_FUZZ_N=8 … --test fuzz` command of Step 3: PASS.
   All tests run on Linux and all four native CI systems; Windows GNU all-targets clippy also applies.
 - [ ] **Step 5:** stage exactly the files above, the named fixtures and this
   topic's snapshots; commit with
@@ -2818,6 +3042,10 @@ fn m6_wasm_java() {
   fat Mach-O proceeds to Java, valid fat Mach-O stops there. An explicit object
   --format restricts to that Definition, and another path-decided Format still
   prevents object decoration as in v1. All invalid candidates fall back to rg.
+  `java-class.toml` registers after `macho.toml` in `builtin::BUILTIN`, so
+  `object(head)` still answers `macho` for `\xca\xfe\xba\xbe` and the v1 unit
+  test `formats::tests::the_m4_definitions_load_and_detect`
+  (`src/formats/mod.rs:279` on `d14a4c1`) stays as it is (Task 0's sweep).
 - [ ] **Step 4:** rerun using the checked `fat(&[(u32, Vec<u8>)]) -> (Vec<u8>, Vec<usize>)`
   fixture signature. Review snapshots: class, Wasm and valid universal Mach-O all PASS on
   Linux and native CI. Walked binary policy is verified in Task 10.5.
@@ -3854,10 +4082,10 @@ fn m6_ci_versions_come_from_cargo_toml() {
 
 ### Task 12.4: version 1.1.0 and final local verification
 
-**Files:** modify only version in `Cargo.toml`; update
+**Files:** modify only the version in `Cargo.toml` and, with it, the root
+package's own entry of `Cargo.lock` (D20, Step 3; no dependency update); update
 `tests/cli_m5.rs::m5_26_the_version_is_1_0` to the M6 assertion below, renaming it
-`m6_the_version_is_1_1`. Root Cargo.lock metadata is subject to D20, not a
-planned dependency update. Add the measured size to the implementation handoff
+`m6_the_version_is_1_1`. Add the measured size to the implementation handoff
 and the existing criterion-22 record in v1 spec §11.
 
 - [ ] **Step 1 — RED:** replace the existing version test with this code.
@@ -3876,13 +4104,21 @@ fn m6_the_version_is_1_1() {
   `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m5 m6_the_version_is_1_1 -- --nocapture`.
   Expected RED: `s4 1.0.0` versus `s4 1.1.0`.
 - [ ] **Step 3:** change Cargo.toml's package.version to 1.1.0, leaving helper,
-  npm, dist and release versions alone. Run the locked command. If Cargo refuses
-  because the root lock entry still says 1.0.0, stop and show the orchestrator
-  the diagnostic and the proposed root-package-only lock diff. Ask it to resolve
-  the user instruction's literal “Cargo.toml and nothing else” against Cargo's
-  locked invariant; no dependency entry changes are permitted. Resume after a
-  recorded resolution, either the mechanical root entry refresh or a deliberate
-  revision of the locked-check requirement. Never pretend --locked succeeded.
+  npm, dist and release versions alone. Cargo.lock still records
+  `searchfor 1.0.0`, so every `--locked` command is now refused for certain
+  («the lock file … needs to be updated but --locked was passed to prevent
+  this»); CI runs every cargo command with `--locked`, so refreshing the root
+  package's own entry is the only way compatible with it (D20). Refresh exactly
+  that entry, offline:
+  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo update --offline --workspace`
+  (it prints `Updating searchfor v1.0.0 (…) -> v1.1.0` and locks no other
+  package). Then check that no other crate moved:
+  `git diff --numstat -- Cargo.lock` reports one added and one deleted line, and
+  `git diff -U0 -- Cargo.lock` shows only `-version = "1.0.0"` /
+  `+version = "1.1.0"` under `name = "searchfor"`. Any other changed line
+  (a dependency, a helper crate, a checksum) stops the task: restore the lock
+  with `git checkout -- Cargo.lock` and report it. Then run the locked command
+  of Step 2: GREEN.
 - [ ] **Step 4:** run the complete inherited fmt/clippy/native+GNU clippy/suite,
   C10/C11 explicitly ignored checks, the release build and stripped size command.
   Record Linux byte size and compare both ceilings; a >22.8 MB measurement stops
@@ -3890,7 +4126,9 @@ fn m6_the_version_is_1_1() {
   until all four systems pass at the same integrated commit. Review git diff to
   verify only intended M6 work and documentation changes. This authoring task
   itself leaves only this plan as a new file.
-- [ ] **Step 5:** commit with
+- [ ] **Step 5:** stage with
+  `git add -- Cargo.toml Cargo.lock tests/cli_m5.rs docs/specs/2026-10-16-searchfor-design.md`
+  and commit with
   `git commit -m "chore: prepare searchfor 1.1.0 after M6 verification"`.
 ## Supplemental executable matrices (part of their owning tasks)
 
@@ -4307,12 +4545,13 @@ release, `cargo publish` or package (header, «M6 publishes nothing»).
 | Linux CI's «Memory and bomb checks» runs every ignored `perf` test, now with 9 × 50 MiB and 3 × 1 GiB generated files, **runner disk and time not verified** | Same tests locally with `SEARCHFOR_PERF_TIMING=1`; the files go to `m6_perf_dir` (`SEARCHFOR_PERF_DIR`, else `CARGO_TARGET_DIR`, else `target/`), never a tmpfs `/tmp` | Record step duration and free disk of the target directory's file system; if the runner refuses, report instead of dropping the test |
 | `bash`/`python3` resolution on Windows, **deduced** | Self-test on Linux | windows job; PATH pinning or a documented row |
 | Binary size near 22.8 MB with seven new scanners | Stripped size per chunk and tanda | Linux job builds the same release; stop rule unchanged |
-| Cargo.lock still records 1.0.0 (D20) | C12.4 stops on `--locked` refusal | CI uses `--locked`; resolved before the push |
+| Cargo.lock records `searchfor 1.0.0` (D20): with 1.1.0 every `--locked` command is refused, **checked on `d14a4c1`** | C12.4 Step 3 refreshes the root entry with `cargo update --offline --workspace` and checks that `git diff --numstat` reports one line added and one deleted | CI's `--locked` commands at the integrated commit |
 | The `package` job's version checks at 1.1.0 (D22), **the reading step runs only in native CI** | C12.3's test: no version written in ci.yml, one read, the dry run kept | All four `package` jobs at the integrated commit |
 | Telegram's export template changes its class names | C7.3 generic-HTML fallback test | None needed; the Match survives, the decoration falls back |
 | `*WhatsApp*.txt` claims a `.txt` that is no export (D21), **deduced** | C9.3's `WhatsApp notes.txt`: the first-line check leaves every Trail empty | None needed; the Matches show as rg shows them |
 | The export's name differs in a language without «WhatsApp» in it, **not verified: no localized source here** | `_chat.txt` and the glob | A renamed export is read with `--format`, as the docs show |
 | HTML's Trails change from 1.0 in scripts with functions (D24): a script reading 1.0's `--json` sees deeper Trails, **by design** | C7.4: v1 snapshots unchanged, the six limit cases; C12.2 stream = model | Documented in `docs/rg-compat.md`; `--no-trail` unchanged (`rg_compat_m6`) |
+| v1's fuzz of `html` (`tests/fuzz.rs`) now parses JavaScript: its target takes `html.toml`'s `[params]`, `scripts = true` included, and its tokens include `<script>` and `</script>`, **deduced from the code, run by C7.4** | C7.4 Steps 3–4: `SEARCHFOR_FUZZ_N=8 … --test fuzz`, both generated-input tests, 2 s per case | `ci.yml`'s `--test fuzz` step and `fuzz-nightly.yml` run it unchanged on the four systems; a timeout is reproduced under `taskset -c 0` first |
 | The JavaScript MIME type list of spec §8.3 is quoted from memory, **not checked against WHATWG HTML here** | C7.4 tests `text/javascript` with spaces and case, `module`, `text/plain` | A missing equivalent keeps 1.0's Trail, never loses a Match |
 | Timing criteria #49–#53 on shared runners | Local Linux, three alternated series, `uptime` recorded | CI timing is never evidence for them |
 
