@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_mail_chat.rs
+expression: text
+---
+chat/broken-_chat.txt
+  31/12/23
+    message 21:41 Ana
+      1:31/12/23, 21:41 - Ana: needle
+      2:not a date needle

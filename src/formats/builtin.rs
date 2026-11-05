@@ -67,4 +67,5 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("protobuf.toml", include_str!("../../formats/protobuf.toml")),
     ("eml.toml", include_str!("../../formats/eml.toml")),
     ("mbox.toml", include_str!("../../formats/mbox.toml")),
+    ("whatsapp.toml", include_str!("../../formats/whatsapp.toml")),
 ];

@@ -1,6 +1,7 @@
 //! Processors turn Match anchors into Trails (design note 6).
 pub mod blocks;
 pub mod buildfile;
+pub mod chat;
 pub mod csv;
 pub mod cursor;
 pub mod external;
@@ -164,6 +165,7 @@ pub fn by_name(name: &str) -> Option<&'static dyn Processor> {
         "buildfile" => Some(&buildfile::Buildfile),
         "blocks" => Some(&blocks::Blocks),
         "mail" => Some(&mail::Mail),
+        "chat" => Some(&chat::Chat),
         _ => None,
     }
 }

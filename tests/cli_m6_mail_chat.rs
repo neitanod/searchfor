@@ -188,7 +188,7 @@ fn m6_mail() {
 /// fixtures, with three snapshots each»).
 #[test]
 fn m6_broken_fixtures() {
-    let owned: &[&str] = &["eml", "mbox"];
+    let owned: &[&str] = &["eml", "mbox", "whatsapp"];
     #[allow(clippy::type_complexity)]
     let cases: &[(&str, &str, &[u8], &[&str])] = &[
         (
@@ -202,6 +202,12 @@ fn m6_broken_fixtures() {
             "mail/broken-m6.mbox",
             b"From a x\nSubject: One\n\nneedle\n>From needle\n",
             &["One › body", "One › body"],
+        ),
+        (
+            "whatsapp",
+            "chat/broken-_chat.txt",
+            b"31/12/23, 21:41 - Ana: needle\nnot a date needle\n",
+            &["31/12/23 › 21:41 Ana", "31/12/23 › 21:41 Ana"],
         ),
     ];
     let fx = Fixture::new();
@@ -387,4 +393,102 @@ fn m6_real_generated_names() {
             0
         );
     }
+}
+
+#[test]
+fn m6_whatsapp() {
+    let fx = Fixture::new();
+    let src = "31/12/23, 21:41 - Ana: where's the needle?\ncontinued needle\n31/12/23, 21:42 - system needle\n[01/01/24, 09:00:01] Bob: needle\n";
+    seed(&fx, "chat/_chat.txt", src.as_bytes());
+    check(
+        &fx,
+        "whatsapp",
+        "chat/_chat.txt",
+        &[
+            "31/12/23 › 21:41 Ana",
+            "31/12/23 › 21:41 Ana",
+            "31/12/23 › 21:42",
+            "01/01/24 › 09:00:01 Bob",
+        ],
+    );
+    flags(&fx, "whatsapp", "chat/_chat.txt", "Ana", "Ana", "");
+    for line in [
+        "12/31/23, 9:41 PM - Ana: needle\n",
+        "\u{200e}[31/12/23, 21:41:05] Ana: needle\n",
+        "12/31/23, 9:41\u{202f}PM - Ana: needle\n",
+    ] {
+        put(&fx, "date-case", line.as_bytes());
+        let rows = matches(&output(&fx, "whatsapp", "date-case", "needle", &["--json"]));
+        assert_eq!(rows[0]["trail"].as_array().unwrap().len(), 2);
+        assert!(
+            rows[0]["trail"][1]["name"]
+                .as_str()
+                .unwrap()
+                .ends_with("Ana")
+        );
+    }
+    put(
+        &fx,
+        "bad-chat",
+        b"31/12/23, 21:41 - Ana: needle\nnot a date needle\n99/no date needle\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "whatsapp",
+            "bad-chat",
+            "needle",
+            &["--json"]
+        ))),
+        [
+            "31/12/23 › 21:41 Ana",
+            "31/12/23 › 21:41 Ana",
+            "31/12/23 › 21:41 Ana"
+        ]
+    );
+    put(&fx, "renamed.txt", src.as_bytes());
+    let auto = run(&mut fx.s4(["--no-docs", "--json", "needle", "renamed.txt"]));
+    assert!(matches(&auto).iter().all(|r| r["format"].is_null()));
+    // The glob finds an export by the app's name in any language.
+    put(&fx, "Chat de WhatsApp con Ana.txt", src.as_bytes());
+    let auto = matches(&run(&mut fx.s4([
+        "--no-docs",
+        "--json",
+        "needle",
+        "Chat de WhatsApp con Ana.txt",
+    ])));
+    assert!(auto.iter().all(|r| r["format"] == "whatsapp"));
+    assert_eq!(paths(&auto)[0], "31/12/23 › 21:41 Ana");
+    // A `.txt` the glob claims that is no export: its first line opens no
+    // message, so every Match keeps an empty Trail, even after a date line.
+    let notes = b"WhatsApp backup notes: needle\n31/12/23, 21:41 - Ana: needle\n";
+    put(&fx, "WhatsApp notes.txt", notes);
+    let rows = matches(&run(&mut fx.s4([
+        "--no-docs",
+        "--json",
+        "needle",
+        "WhatsApp notes.txt",
+    ])));
+    assert_eq!(paths(&rows), ["", ""]);
+    put(
+        &fx,
+        "bom-chat",
+        [
+            b"\xef\xbb\xbf".as_slice(),
+            "\u{200e}".as_bytes(),
+            src.as_bytes(),
+        ]
+        .concat()
+        .as_slice(),
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "whatsapp",
+            "bom-chat",
+            "needle",
+            &["--json"]
+        )))[0],
+        "31/12/23 › 21:41 Ana"
+    );
 }

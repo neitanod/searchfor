@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_mail_chat.rs
+expression: text
+---
+1: 31/12/23 › 21:41 Ana │ 31/12/23, 21:41 - Ana: needle
+2: 31/12/23 › 21:41 Ana │ not a date needle
