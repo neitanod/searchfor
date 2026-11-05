@@ -40,6 +40,7 @@ The groups of Q49 left for M6 (grill-respuestas.md, «What happened since»):
 | C · Next to the code | SQL | `sql` (new) | §8.1 |
 | | Diffs and patches | `diff` (new) | §8.2 |
 | | Vue and Svelte single-file components, Blade | `markup`, with scripts and template blocks | §8.3–§8.5 |
+| | The scripts of HTML pages (a change to v1.0's HTML output, Open question 2 answered B) | `markup`, `scripts` on in `html.toml` | §8.3 |
 | | GraphQL, Protobuf | `blocks` (new) | §8.6–§8.7 |
 | | HAR captures | `keypath`, JSON with the `har` view | §8.8 |
 | E · Data and binaries | Image metadata (JPEG, PNG, WebP, TIFF: EXIF, PNG text, XMP), audio and video tags (ID3, MP4), WebAssembly, Java `.class` | `object`, new layouts | §9 |
@@ -241,9 +242,9 @@ Notes on the table, each a decision with its reason:
 | Processor | Status | M6 Formats | What M6 adds to it |
 |---|---|---|---|
 | `keypath` | reused | Jupyter, HAR, Telegram JSON (JSON views); INI, systemd, `.properties`, `.env`, ssh config, iCalendar, vCard, BibTeX | syntaxes `ini`, `properties`, `env`, `ssh`, `ical`, `bibtex`; a `view` parameter for JSON (`jupyter`, `har`, `telegram`) |
-| `markup` | reused | Vue, Svelte, Blade, Telegram HTML | parameters `scripts` (Trails inside `<script>` from the compiled-in JavaScript and TypeScript Grammars), `templates` (`svelte`, `blade`) and `view` (`telegram`) |
+| `markup` | reused | Vue, Svelte, Blade, Telegram HTML; HTML's scripts | parameters `scripts` (Trails inside `<script>` from the compiled-in JavaScript and TypeScript Grammars, and keypath's JSON for JSON-LD), `script_max_bytes` and `script_max_line`, `templates` (`svelte`, `blade`) and `view` (`telegram`) |
 | `object` | reused | JPEG, PNG, WebP, TIFF, ID3, MP4, WebAssembly, Java class | a `layout` parameter that picks the reader; ELF, PE and Mach-O keep goblin with no `layout` |
-| `treesitter` | reused inside `markup` | the `<script>` of Vue and Svelte | none: it parses a byte range of the file |
+| `treesitter` | reused inside `markup` | the `<script>` of Vue, Svelte and HTML | none: it parses a byte range of the file |
 | `headings` | new | AsciiDoc, reStructuredText, Org-mode, LaTeX | a line scanner per `syntax`, giving Markdown's Segment kinds |
 | `blocks` | new | nginx, Apache, HCL, GraphQL, Protobuf | a block scanner per `syntax` (braces, or Apache's `<Section>` tags) |
 | `buildfile` | new | Dockerfile, Makefile, justfile | a line scanner per `syntax`, with continuations and recipes |
@@ -612,6 +613,32 @@ the compiled-in Grammar its `lang` names (`ts` and `typescript` TypeScript, `tsx
 Grammar Definition's `max_bytes`, or of a `lang` with no compiled-in Grammar, keeps the `script`
 Segment alone. `<style>` is text (no CSS Grammar is compiled in).
 
+**Which scripts are read** (Sebastián, Hilo 855 #12726, the three limits of #12697), in every
+markup Format with `scripts`, HTML included:
+
+1. **JavaScript:** a `<script>` with no `type`, an empty one, `module`, or a JavaScript MIME type
+   (`text/javascript`, `application/javascript`, `text/ecmascript`, `application/ecmascript`,
+   their `x-` forms, `text/jscript`, `text/livescript` and `text/javascript1.0`–`1.5`, the list
+   of WHATWG HTML's «JavaScript MIME type», quoted from memory and not checked against the
+   standard here), compared after trimming spaces and without case, as browsers decide what to
+   run. Its `lang` then picks TypeScript or TSX as above, in HTML too (browsers ignore the
+   attribute, and a page that writes one means it).
+2. **JSON-LD:** `type="application/ld+json"` is read by keypath's JSON (spec §5.2), its key
+   Segments under the `script` element: `page.html:12: head › script › offers › price │ …`.
+3. **The rest keeps v1.0's Trail:** any other `type` (`text/x-template`, `text/plain`,
+   `importmap`, `speculationrules`…) is the `script` element's text, as in 1.0; and so is a
+   script whose content passes `script_max_bytes` or holds a line longer than
+   `script_max_line`.
+
+`html.toml` sets `scripts = true`, `script_max_bytes = 1048576` (1 MiB) and
+`script_max_line = 1000`; Vue and Svelte leave both caps unset, so the Grammar Definition's
+`max_bytes` is their only one. Why 1 000 bytes: the project had no minification cap (`src/` has
+only the Fragments' width rules); hand-written code keeps its lines under the 80–120 columns
+formatters and style guides break at, while a minifier writes a bundle on one line or a few
+very long ones, whose Trails (`a`, `e`, `t`) would say nothing and whose parse is the costly
+part of a page. Why 1 MiB: an inline script past it is generated (a framework's state or a
+bundle), and the cap bounds what one Match makes s4 parse.
+
 ### 8.4 Svelte components
 
 `markup`, `syntax = "html"`, `scripts = true`, `templates = "svelte"`. Svelte's blocks
@@ -632,8 +659,12 @@ blocks; `@section` with two arguments is inline and opens nothing. `{{-- … --}
 `@verbatim` holds text. PHP inside `@php` is text (scripts apply to `<script>` alone).
 `cart.blade.php:8: @section('content') › div.cart › @foreach($items as $item) › li │ …`
 
-**HTML keeps its v1 output**: `scripts` and `templates` are off in `html.toml`, so no snapshot
-of spec §5.4 changes. Turning `scripts` on for HTML is Open question 2.
+**HTML's output changes from v1.0 in its scripts only** (Open question 2, answered B):
+`html.toml` turns `scripts` on with the limits above, so a Match in a function of a page's
+script gets `script › onClick` under the element's Trail, where 1.0 stopped at `script`.
+`templates` stays off. The v1 snapshots of spec §5.4 do not change: their one script
+(`tests/fixtures/markup/page.html`) declares no function, so the JavaScript query names nothing
+in it. The change is recorded in `docs/rg-compat.md` (§14); `--no-trail` is untouched.
 
 ### 8.6 GraphQL
 
@@ -841,6 +872,11 @@ These requirements hold for every M6 Processor and are what criteria 49–52 mea
   read no further than the unit of the last Match.
 - **Dense files.** M5b §6.3's criterion extends to one Format of each new Processor family
   (criterion 50).
+- **Scripts in HTML.** A script is parsed only when a Match (or `--in-headings`' names) falls in
+  it, once, and never past `script_max_bytes`; finding its longest line is a `memchr` pass over
+  those bytes. A page whose Matches are outside its scripts parses none, so a large HTML file
+  costs the markup scanner's rate, and each parsed script tree-sitter's rate for a `.js` file
+  (spec §4.3). Criterion 53 measures a 50 MB page.
 - **Binary layouts** read only the file a Match was found in, as §5.7's object files, at
   100 MB/s or more (spec §11 #26's rate).
 
@@ -903,6 +939,11 @@ For every M6 Format:
   Formats (the description is what makes an agent load it), with three examples: a config
   Trail, a SQL dump row, a diff hunk.
 - **`docs/json-schema.json`**: the `kind` description lists the M6 kinds.
+- **`docs/rg-compat.md`** (generated from `src/cli/rg_flags.rs`), a section «Trails that changed
+  since 1.0»: HTML's scripts (§8.3), with
+  a before/after example and the three limits. It lists the one change to an existing Format's
+  Trails; `--no-trail` and rg's own output are unaffected, so no flag row changes. The README's
+  HTML row and `docs/formats{,.es}.md` say the same.
 - **CONTEXT.md**: Segment's definition adds «a statement, block, directive, hunk, message part,
   cell or field of the M6 Formats»; no new term is needed.
 - **`--help`** and the man page list `paths` and compound extensions where they describe
@@ -951,8 +992,11 @@ New, numbered after M5b's #42:
     named on the command line, its rows carry the Trails of §9's table; `-v`, `-c` and
     `--no-trail` print rg's output.
 47. **Single-file components (M6).** A Match in a Vue method gets `script › addItem`, in a Svelte
-    `{#each}` its `block`, in a Blade `@foreach` its `block`; every snapshot of `html.toml`'s
-    fixtures is unchanged.
+    `{#each}` its `block`, in a Blade `@foreach` its `block`. In HTML (§8.3): a function in a
+    script with no `type` and in a `module` script gets its function Trail, a JSON-LD script its
+    key Trails, and a `text/x-template` script, one over 1 MiB and one with a line over 1 000
+    bytes keep the `script` element's Trail; every v1 snapshot of `html.toml`'s fixtures is
+    unchanged.
 48. **The fuzz (M6)** of §13 runs every new Processor and layout: no panic, each case within
     2 s, every Segment inside the file.
 49. **Per-file cost (M6).** `scripts/bench-m6.sh`: over a generated corpus of the M6 text
@@ -974,7 +1018,9 @@ New, numbered after M5b's #42:
     Match in its first unit, get their Trails within rg's time plus 0.5 s and rg's peak RSS plus
     64 MiB.
 53. **Fifty-megabyte files (M6).** A 50 MB file of each new text Processor family with three
-    Matches gets its Trails within rg's time plus 1 s (criterion 13's rule).
+    Matches gets its Trails within rg's time plus 1 s (criterion 13's rule); so does a 50 MB
+    HTML page of scripts, with its three Matches inside three scripts and, separately, outside
+    every script.
 54. **Binary size (M6).** Criterion 22 holds (≤ 23 MB) and the plan records M6's size.
 55. **Docs (M6).** `docs/formats.md` and `docs/formats.es.md` describe every M6 Format with its
     example; the README and README.es list every Format; the guide's worked example runs with
@@ -996,7 +1042,9 @@ New, numbered after M5b's #42:
    - **B**: for a `.txt` with a Match (and only then, so files without Matches cost nothing),
      look at its first line for WhatsApp's date pattern. Finds renamed exports, and makes the
      first exception to «no content sniffing».
-2. **Scripts inside HTML.** §8.3's `scripts` gives a `<script>` in a Vue file the Trails of its
+2. **Scripts inside HTML.** *Answered B with three limits (Sebastián, Hilo 855 #12726,
+   accepting #12697): JavaScript and `module` scripts only, JSON-LD by keypath's JSON, and
+   scripts past 1 MiB or with a minified line keep 1.0's Trail (§8.3).* §8.3's `scripts` gives a `<script>` in a Vue file the Trails of its
    JavaScript; HTML pages hold scripts too. Options:
    - **A** (recommended): off for HTML in 1.1, so v1.0's HTML output and snapshots stay as they
      are; a user Definition can turn it on (`scripts = true` in a copy of `html.toml`).

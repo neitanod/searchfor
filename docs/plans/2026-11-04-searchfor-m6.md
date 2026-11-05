@@ -101,8 +101,9 @@ proposed code and expected RED/GREEN; authoring it does not execute those tests.
 | Q57.plataformas | Existing five release targets, four native test systems | Orchestrator CI; no packaging changes |
 | Q57.fuzz-ci / #9835 | Budgeted fuzz; flat dense time reported, JSON bounded | C10.5, C11.1–C11.2; orchestrator CI |
 | 12653–12664, especially 12659 and 12664 | Develop M6 now on its own branch; 1.0 tag from M5b, M6 is 1.1 | This branch, C12.3 (CI versions from Cargo.toml), C12.4; publication excluded |
-| Hilo 855 #12687 | Two unanswered options | A for both; change notes below |
+| Hilo 855 #12687 | Two open options, both answered since | Question 1 A (#12694), question 2 B (#12726); notes 2 and 3 |
 | Hilo 855 #12694 | Question 1 answered A: detection by name and path | D21; C1.3, C9.3 |
+| Hilo 855 #12726 (accepting #12697) | Question 2 answered B: HTML scripts with three limits | D24; C7.4, C11.2, C12.1, C12.2 |
 
 ## Design decisions
 
@@ -131,6 +132,7 @@ proposed code and expected RED/GREEN; authoring it does not execute those tests.
 | D21 | WhatsApp exports are detected by `_chat.txt` and one glob, `*WhatsApp*.txt`; no localized name lists | The app's name is in the export's file name in every language; exact lists need sources this repo lacks (plan r1, Codex #4). A `.txt` the glob claims that is no export fails the chat scanner's first-line check and shows as rg shows it (8385), so a false positive costs nothing visible. Still detection by name and path (answer 1 = A, Hilo 855 #12694) |
 | D22 | CI's version checks read the version from Cargo.toml, once | Bumping to 1.1.0 would otherwise fail nine checks written for 1.0.0 (plan r1, Codex #1); C12.3 does it before C12.4 bumps |
 | D23 | `Segment.level` becomes `Option<usize>` in tanda 1 (C1.4) | Org needs levels above 255; widening it in C5 would break C6's Jupyter headings at the tanda-2 merge and `tree.rs`'s cast under clippy (plan r1, Fable #4) |
+| D24 | HTML reads its JavaScript and `module` scripts and its JSON-LD; other types, scripts over 1 MiB and lines over 1 000 bytes keep 1.0's Trail | Sebastián's answer B with the three limits of #12697 (Hilo 855 #12726). The 1 000-byte line is the minification cap: the repo had none to reuse, hand-written code stays under formatters' 80–120 columns, and a minified bundle's Trails say nothing while being the costly parse (spec §8.3) |
 
 ## Chunk graph and file ownership
 
@@ -194,9 +196,15 @@ test in `tests/cli_m5.rs`.
    Format, C11.3 measures the cost. #43 is no longer blocked.
 2. **Question 1, answered A** (Sebastián, Hilo 855 #12694): app names and paths
    only. The tasks B would have changed (C1.3, C9.3, C11.3, C12.1) stay as A.
-3. **Question 2, use A:** scripts only Vue/Svelte. B changes C7.1's HTML
-   preservation assertions and `formats/html.toml`, C12.1 compatibility/docs;
-   script range translation and all other chunks are unchanged.
+3. **Question 2, answered B with three limits** (Sebastián, Hilo 855 #12726,
+   accepting #12697; D24): HTML's scripts get Trails when they have no `type`, a
+   JavaScript type or `module`; JSON-LD gets keypath's JSON Trails; any other
+   type, a script over 1 MiB and one with a line over 1 000 bytes keep 1.0's
+   Trail. Tasks: C7.4 (`formats/html.toml`, the six limit cases, v1 snapshots
+   unchanged) and the `same.html` assertion of C7.1; C11.2's `m6_html_scripts_cost`;
+   C12.1 documents the change in `docs/rg-compat.md`, the READMEs and
+   `docs/formats{,.es}.md`; C12.2 adds the HTML fixture to the stream/model
+   differential. Script range translation is C7.1's, unchanged.
 4. **WhatsApp by one glob (D21):** the spec's localized name lists, which needed
    sources this repository lacks (plan r1, Codex #4), became `*WhatsApp*.txt`
    plus `_chat.txt`. The glob writes `.txt`, so it is signal 4 under `txt` and
@@ -215,7 +223,8 @@ test in `tests/cli_m5.rs`.
    names `tests/fuzz_m6.rs` and `tests/cli_m6_object.rs` for the fuzz (D16);
    §15 states the four tandas (D1); §14 no longer asks to change `user` origin
    expectations, since no test asserts one (chunk graph); Open question 1 is
-   marked answered.
+   marked answered. After #12726: §2, §5.1, §8.3, §11, §14, #47, #53 and Open
+   question 2 state HTML's scripts and their three limits (note 3, D24).
 
 ### Common command convention
 
@@ -1774,7 +1783,9 @@ Owns `markup/{mod,scan,components,templates,telegram}.rs`, required treesitter
 range composition, four new TOMLs, `tests/cli_m6_markup.rs`, its fixtures and
 snapshots. Copy the CLI prelude. C7 also owns per-run configured-markup plumbing
 in `processors/mod.rs` and `src/app.rs` in tanda 2. New module/by_name lines
-from C5/C8/C9 remain shared registration conflicts. HTML scripts stay off.
+from C5/C8/C9 remain shared registration conflicts. C7 also owns
+`formats/html.toml`: Task 7.4 turns HTML's scripts on with spec §8.3's three
+limits (Open question 2 answered B, D24).
 
 ### Task 7.1: Vue script composition with source coordinates
 
@@ -1831,6 +1842,8 @@ fn m6_vue() {
     let expanded=matches(&output(&fx,"vue","code-c/m6.vue","needle",&["--json","--within","addItem","--expand"]));
     assert_eq!(expanded[0]["section"]["start_line"],5);
     assert_eq!(expanded[0]["section"]["end_line"],7);
+    // HTML's scripts are still off here; Task 7.4 turns them on and changes this
+    // expectation to `script › addItem` (the `lang="ts"` picks TypeScript there too).
     put(&fx,"same.html",src);
     assert_eq!(paths(&matches(&output(&fx,"html","same.html","needle",&["--json"]))),
         ["template › ul.items › li[2]","script","style"]);
@@ -1865,8 +1878,9 @@ fn m6_vue() {
   Native prepare caches script trees only once; cursor merges their Trails
   below script. Add `open_from` and `open_from_with` explicitly to the existing
   MarkupCursor (which currently implements neither), using census ranges and
-  the outer markup/template scope. Test both default HTML and component cursors. Keep HTML's
-  default scripts/templates/view absent, and rerun every existing HTML snapshot.
+  the outer markup/template scope. Test both default HTML and component cursors. Leave
+  `html.toml` alone in this task (Task 7.4 owns its scripts), and rerun every existing HTML
+  snapshot.
 - [ ] **Step 4:** rerun the exact command with `INSTA_UPDATE=always` for new
   snapshots; inspect the tree, flat and JSON snapshots against the assertions.
   Rerun with `INSTA_UPDATE=no`: selected tests PASS, stderr empty.
@@ -1980,6 +1994,83 @@ fn m6_telegram_html() {
 - [ ] **Step 5:** stage exactly the files above, the named fixtures and this
   topic's snapshots; commit with
   `git commit -m "feat: project Telegram HTML messages and inherited senders"`.
+
+### Task 7.4: HTML scripts with the three limits (Open question 2 = B)
+
+**Files:** modify `markup/components.rs` (`ScriptKind` and the caps),
+`markup/mod.rs::{Params,params}`, `formats/html.toml`; append `m6_html_scripts`
+to `tests/cli_m6_markup.rs`; create `tests/fixtures/code-c/m6-scripts.html`
+and its broken sibling. Spec §8.3 «Which scripts are read» and «HTML's output
+changes» (Sebastián, Hilo 855 #12726, D24).
+
+```rust
+// markup/components.rs: what a <script>'s attributes make of its content.
+pub(crate) enum ScriptKind { Code(Lang), JsonLd, Text }
+pub(crate) fn script_kind(type_attr: Option<&[u8]>, lang: Option<&[u8]>) -> ScriptKind;
+```
+
+`formats/html.toml` gains, under `[params]`, `scripts = true`,
+`script_max_bytes = 1048576` and `script_max_line = 1000`, each with a one-line
+comment giving spec §8.3's reason. Vue and Svelte set neither cap.
+
+- [ ] **Step 1 — RED:** append this complete test and its literal primary fixture bytes.
+
+```rust
+#[test]
+fn m6_html_scripts() {
+    let fx=Fixture::new();
+    let src=b"<html><head>\n<script>\nfunction onClick() {\n  return 'needle';\n}\n</script>\n<script type=\"module\">\nexport function load() { return 'needle'; }\n</script>\n<script type=\"application/ld+json\">\n{\"@type\":\"Product\",\"offers\":{\"price\":\"needle\"}}\n</script>\n<script type=\"text/x-template\">\nfunction tpl() { needle }\n</script>\n</head></html>\n";
+    seed(&fx,"code-c/m6-scripts.html",src);
+    check(&fx,"html","code-c/m6-scripts.html",&[
+        "head › script[1] › onClick","head › script[2] › load",
+        "head › script[3] › offers › price","head › script[4]"]);
+    flags(&fx,"html","code-c/m6-scripts.html","onClick","onClick","");
+    let one=|file:&str,src:&[u8]|{put(&fx,file,src);paths(&matches(&output(&fx,"html",file,"needle",&["--json"])))};
+    // A JavaScript MIME type, trimmed and without case; any other type is text.
+    assert_eq!(one("case.html",b"<script type=\" Text/JavaScript \">function f(){ 'needle' }</script>\n"),["script › f"]);
+    assert_eq!(one("plain.html",b"<script type=\"text/plain\">function f(){ 'needle' }</script>\n"),["script"]);
+    // script_max_line = 1000 bytes: a 1000-byte line is read, a 1001-byte one is minified.
+    let line=|n:usize|format!("<script>\nfunction edge() {{ 'needle'; }}\nvar x=\"{}\";\n</script>\n","a".repeat(n-9));
+    assert_eq!(one("edge.html",line(1000).as_bytes()),["script › edge"]);
+    assert_eq!(one("min.html",line(1001).as_bytes()),["script"]);
+    // script_max_bytes = 1 MiB: past it, the element's Trail.
+    let big=format!("<script>\nfunction big() {{ 'needle'; }}\n{}</script>\n","// pad\n".repeat((1<<20)/7+1));
+    assert_eq!(one("big.html",big.as_bytes()),["script"]);
+    // v1.0's HTML snapshots stay as they are: page.html's script declares no function.
+    let page=output(&fx,"html","markup/page.html","needle",&["--json"]);
+    assert!(paths(&matches(&page)).iter().any(|p|p=="head › script"));
+}
+```
+
+- [ ] **Step 2:** run
+  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --test cli_m6_markup m6_html_scripts -- --nocapture`.
+  Expected RED: HTML scripts unread (`head › script[1]` alone), JSON-LD without
+  key Trails, or a cap not applied.
+- [ ] **Step 3:** classify each `<script>` from its start tag once, in the
+  census: `type` absent, empty, `module` or one of spec §8.3's JavaScript MIME
+  types (trimmed, ASCII case-insensitive) is `Code`, with `lang` picking TS/TSX
+  as in Task 7.1; `application/ld+json` is `JsonLd`; anything else is `Text`.
+  Read the caps from params (absent means none). Parse a `Code` or `JsonLd`
+  script lazily, the first time a Match or the name search lands in it, after
+  checking its content length against `script_max_bytes` and its longest line
+  (one `memchr` pass for `\n`, a CR before it excluded) against
+  `script_max_line`; a script past either is `Text` for the run. `JsonLd` uses
+  keypath's JSON outline over the script slice, translated by base like the
+  Grammar outlines (D10): ranges, labels, Name pieces, anchors. No change to
+  keypath's code; C7 calls its existing outline entry. `Text` keeps the
+  `script` Segment alone, as in 1.0. The native cursor and `open_from` of Task
+  7.1 cover HTML too. Then rerun every v1 HTML snapshot with
+  `INSTA_UPDATE=no` (`cargo test --offline --locked --test cli_m3`) and the
+  markup unit tests: none may change. Update `m6_vue`'s `same.html` expectation
+  to `["template › ul.items › li[2]","script › addItem","style"]`, the one
+  existing M6 assertion this task changes.
+- [ ] **Step 4:** rerun the exact command with `INSTA_UPDATE=always` for new
+  snapshots; inspect the tree, flat and JSON snapshots against the assertions.
+  Rerun with `INSTA_UPDATE=no`: selected tests PASS, stderr empty.
+  All tests run on Linux and all four native CI systems; Windows GNU all-targets clippy also applies.
+- [ ] **Step 5:** stage exactly the files above, the named fixtures and this
+  topic's snapshots; commit with
+  `git commit -m "feat: give HTML scripts their JavaScript and JSON-LD Trails within three limits"`.
 
 ## Chunk 8: sql and diff
 
@@ -3015,7 +3106,7 @@ fn m6_mutations() {
 
 ### Task 11.2: nine dense families, 50 MB scans and first-unit gigabyte files
 
-**Files:** extend `tests/perf.rs::{m6_perf_dir,m6_dense_bytes,m6_dense,m6_sparse,m6_first_unit}`,
+**Files:** extend `tests/perf.rs::{m6_perf_dir,m6_dense_bytes,m6_dense,m6_sparse,m6_first_unit,m6_html_scripts_cost}`,
 reusing checked `alone`, `measure_drained`, `sfor_bin`, `rg_bin`, `timing_enabled`.
 Tests stay Linux-gated where `/usr/bin/time -v` provides peak RSS. Functional
 small versions of the generators run on all systems through the CLI tests.
@@ -3126,6 +3217,44 @@ fn m6_first_unit() {
         std::fs::remove_file(file).unwrap();
     }
 }
+#[test]
+#[ignore="M6 50 MB HTML page of scripts; local timing"]
+#[cfg(target_os="linux")]
+fn m6_html_scripts_cost() {
+    // Spec §11 «Scripts in HTML», #53: Matches inside three scripts parse those
+    // three only; Matches outside every script parse none.
+    let _alone=alone();let fx=Fixture::new();let rg=rg_bin().unwrap();
+    let big=m6_perf_dir();let file=big.path().join("scripts.html");let file=file.to_str().unwrap();
+    // 66 KB scripts of short lines, under both caps, about 50 MB in all.
+    let body="function f() { return 'plain'; }\n".repeat(2000);
+    let script=format!("<script>\n{body}</script>\n<p>text</p>\n");
+    let count=50_000_000/script.len();
+    for (case,inside) in [("inside",true),("outside",false)] {
+        let mut page=String::from("<html><body>\n");
+        for i in 0..count {
+            let hit=[0,count/2,count-1].contains(&i);
+            if hit&&inside {page.push_str(&script.replacen("'plain'","'M6HIT!'",1));}
+            else if hit {page.push_str(&script.replacen("<p>text</p>","<p>M6HIT!</p>",1));}
+            else {page.push_str(&script);}
+        }
+        page.push_str("</body></html>\n");
+        std::fs::write(file,&page).unwrap();
+        let out=common::run(&mut fx.s4(["--no-docs","--json","--format","html","M6HIT!",file]));
+        assert_eq!(common::code(&out),0);
+        let rows:Vec<serde_json::Value>=common::stdout(&out).lines()
+            .filter_map(|l|serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v|v["type"]=="match").collect();
+        assert_eq!(rows.len(),3,"{case}");
+        for r in &rows {
+            let last=r["data"]["trail"].as_array().unwrap().last().unwrap()["name"].as_str().unwrap();
+            assert_eq!(last=="f",inside,"{case}: {last}");
+        }
+        let (ts,_)=measure_drained(&sfor_bin(),&fx,&["--no-docs","--flat","--format","html","M6HIT!",file],0).unwrap();
+        let (tr,_)=measure_drained(&rg,&fx,&["M6HIT!",file],0).unwrap();
+        eprintln!("m6 html scripts/{case}: s4={ts:?} rg={tr:?}");
+        if timing_enabled(){assert!(ts<=tr+std::time::Duration::from_secs(1),"{case}: {ts:?}/{tr:?}");}
+    }
+}
 ```
 
 - [ ] **Step 2:** run
@@ -3143,6 +3272,11 @@ fn m6_first_unit() {
   with no parsing of its gigabyte of messages. No `-m1` shortcut in criterion 52.
   Add multithreaded dense structural-mode coverage using N×8 MiB spool allowance
   as M5b does; complete supplemental test code appears below.
+  `m6_html_scripts_cost` (D24) needs C7.4 merged, which tanda 2 guarantees: a
+  Trail ending in `f` proves the script was parsed. The `outside` case holds
+  rg + 1 s with 50 MB of unmatched scripts; parsing all of them would, by our
+  estimate of tree-sitter's rate (not measured yet), take several seconds, so
+  the bound catches an eager parse. Record both times.
 - [ ] **Step 4:** rerun GREEN and repeat with `SEARCHFOR_PERF_TIMING=1` locally.
   Linux CI runs RSS assertions with timing disabled. macOS and Windows execute
   portable functional and fuzz tests; their timing/RSS is not inferred from GNU
@@ -3320,7 +3454,8 @@ orchestrator's CI inventory commit) and the root version. No release machinery.
 
 **Files:** modify `README.md`, `README.es.md`, `CONTEXT.md`,
 `skills/searchfor/SKILL.md`, `docs/external-processors{,.es}.md`,
-`src/cli/mod.rs::Args` definition help, `tests/guide.rs`;
+`src/cli/mod.rs::Args` definition help, `tests/guide.rs`,
+`src/cli/rg_flags.rs::DEVIATIONS` and the `docs/rg-compat.md` it generates;
 create `docs/formats.md`, `docs/formats.es.md`,
 `docs/examples/{sample.po,po-helper.py,po-pre.py,po.toml}`;
 remove superseded `docs/examples/{sample.ini,ini-helper.py,ini-pre.py,ini.toml}`
@@ -3477,7 +3612,16 @@ fn m6_po_guide_runs() {
   Move every old guide test/transcript to the PO sample, retaining names/error
   request-id tests. Existing INI override tests keep their custom helper behavior and
   need no edit, since none asserts the `user` origin (chunk graph); never rename
-  these tests' user Definition to evade replacement behavior. Add one Formats table
+  these tests' user Definition to evade replacement behavior. Record HTML's
+  script Trails (D24, spec §8.3 and §14) as the one change to an existing
+  Format's output since 1.0: `docs/rg-compat.md` is generated, so append a
+  section «Trails that changed since 1.0» to the end of `DEVIATIONS` in
+  `src/cli/rg_flags.rs`, with the 1.0 and 1.1 line of a Match in a page's
+  `onClick`, the three limits and the note that `--no-trail` and every flag row
+  are unchanged; regenerate with
+  `CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 cargo test --offline --locked --lib rg_compat_doc -- --ignored`
+  and check `rg_compat_doc_is_current` passes. The HTML row of both READMEs and
+  `docs/formats{,.es}.md` say it too. Add one Formats table
   listing all v1+M6 Formats with one example Trail each to both READMEs and move
   detail into the two new references. Document all limits, error recovery,
   name-only chat overrides, stdin diff use, syntax/view parameters and binary
@@ -3572,7 +3716,9 @@ fn m6_stream_matches_model() {
         ("graphql","code-c/m6.graphql"),("protobuf","code-c/m6.proto"),("har","code-c/m6.har"),
         ("eml","mail/m6.eml"),("mbox","mail/m6.mbox"),("icalendar","config/m6.ics"),
         ("vcard","config/m6.vcf"),("bibtex","docs-a/m6.bib"),("whatsapp","chat/_chat.txt"),
-        ("telegram","chat/ChatExport_m6/result.json"),("telegram-html","chat/ChatExport_m6/messages.html")];
+        ("telegram","chat/ChatExport_m6/result.json"),("telegram-html","chat/ChatExport_m6/messages.html"),
+        // D24: HTML's scripts, JSON-LD and the text-typed script, streamed natively too.
+        ("html","code-c/m6-scripts.html")];
     fn normalized(bytes: &[u8],json: bool)->Vec<u8>{
         if !json{return bytes.to_vec()}
         fn mask(v:&mut serde_json::Value){match v{
@@ -3771,7 +3917,7 @@ run automatic variants, Telegram's included.
 | buildfile | `["dockerfile","make","just"]` |
 | headings | `["asciidoc","rst","org","latex"]` |
 | views | `["jupyter","har","telegram"]` |
-| markup | `["vue","svelte","blade","telegram-html"]` |
+| markup | `["vue","svelte","blade","telegram-html","html"]` |
 | sql_diff | `["sql","diff"]` |
 | mail_chat | `["eml","mbox","whatsapp"]` |
 
@@ -3807,6 +3953,7 @@ fn m6_broken_fixtures() {
         ("vue","code-c/broken-m6.vue",b"<script lang='coffee'>\nneedle\n",&["script"]),
         ("svelte","code-c/broken-m6.svelte",b"{#if x}\n<div>needle\n",&["#if x › div"]),
         ("blade","code-c/broken-m6.blade.php",b"@if($x)\n<div>needle\n",&["@if($x) › div"]),
+        ("html","code-c/broken-m6-scripts.html",b"<script type=\"application/ld+json\">\n{\"a\":\"needle\",\n</script>\nneedle\n",&["script › a",""]),
         ("telegram-html","chat/ChatExport_m6/broken-messages.html",b"<div class='message'><div class='date' title='2024'>x</div><div class='from_name'>Ana</div><div class='text'>needle\n",&["2024 Ana"]),
         ("sql","code-c/broken-m6.sql",b"SELECT 'needle';\nSELECT 'open\nneedle\n",&["SELECT",""]),
         ("diff","code-c/broken-m6.patch",b"--- a/x\n+++ b/x\n@@ -1,99 +2,99 @@\n+needle\n--- a/y\n+++ b/y\n@@ -1 +3 @@\n+needle\n",&["x › +2","y › +3"]),
@@ -4107,8 +4254,8 @@ release, `cargo publish` or package (header, «M6 publishes nothing»).
 - [ ] Rerun until the four `build` jobs and `package` pass at one commit. Then
   #56 is met; record the commit, the four job URLs and the Linux size in the
   acceptance table's evidence and in v1 spec §11's criterion-22 record.
-- [ ] Report GREEN or the remaining blockers to Sebastián, with the open
-  question's state (note 3; question 1 is answered, note 2). The branch push is not approval to tag 1.1.0.
+- [ ] Report GREEN or the remaining blockers to Sebastián; both open
+  questions are answered (notes 2 and 3). The branch push is not approval to tag 1.1.0.
 
 ## Acceptance criteria 43–56 and spec coverage
 
@@ -4118,15 +4265,15 @@ release, `cargo publish` or package (header, «M6 publishes nothing»).
 | 44 Every Format | Primary fixture, tree/flat/JSON snapshots, each example Trail of §6–§10, automatic variant; `--no-trail` and `--json --no-trail` equal rg over every fixture | 2.1–2.4, 3.1–3.3, 4.1–4.3, 5.1–5.3, 6.1–6.3, 7.1–7.3, 8.1–8.3, 9.1–9.3, 10.1–10.4; 12.2 `rg_compat_m6` |
 | 45 Rules of §3 | Committed broken fixture per Format with three snapshots; `flags` source-name and generated-name searches; own-name parent Trail; encoding, BOM, UTF-16 and lone CR | Supplemental matrices in C2–C9; 10.5; 11.1 `m6_depth_and_names` |
 | 46 Binaries | Walked JPEG/MP3/class without `--binary` equal rg; named files carry §9's Trails; `-v`, `-c`, `--no-trail` equal rg | 10.1–10.5; 12.2 |
-| 47 Components | `script › addItem`, Svelte `#each`, Blade `@foreach`; every existing HTML snapshot unchanged | 7.1, 7.2 |
+| 47 Components | `script › addItem`, Svelte `#each`, Blade `@foreach`; HTML scripts: no-type and `module` function Trails, JSON-LD key Trail, `text/x-template`, > 1 MiB and > 1 000-byte line keep `script`; every v1 HTML snapshot unchanged; stream equals model on the HTML fixture | 7.1, 7.2, 7.4, 12.2 |
 | 48 Fuzz | Every new text Processor and binary layout, no panic, 2 s per case, Segments inside the file; every text Format meets all four mutation operations | 11.1, 10.5; `fuzz_m6` CI steps added by the orchestrator |
 | 49 Per-file cost | `scripts/bench-m6.sh` gates: mixed no-match ≤ 1.1 × rg, sparse additive bound, M4 corpus 1.05 gates, M6 against M5b ≤ 1.03 ×; the self-test checks the same evaluator | 11.3 (local Linux timings) |
 | 50 Dense | Nine 50 MiB families, memory bound, JSON time bound, flat time reported | 11.2 `m6_dense` |
 | 51 Detection cost | 100 000 unclaimed names including `.json`, `.html`, `.txt`, `result.json`, `messages.html`, `notes.txt` outside Telegram folders, ≤ 1.02 × M5b | 1.2 (index), 11.3 `unclaimed-detection` |
 | 52 Large files | 1 GiB SQL, mbox, WhatsApp with a first-unit Match: rg time + 0.5 s, rg RSS + 64 MiB | 11.2 `m6_first_unit` |
-| 53 50 MB files | Each new text family, three Matches, rg time + 1 s | 11.2 `m6_sparse` |
+| 53 50 MB files | Each new text family, three Matches, rg time + 1 s; a 50 MB HTML page of scripts with its Matches inside three scripts and outside all | 11.2 `m6_sparse`, `m6_html_scripts_cost` |
 | 54 Size | Stripped Linux size per chunk and tanda, ≤ 23,000,000, stop at 22,800,000, recorded | Every chunk's final checks; 12.4; orchestrator CI |
-| 55 Docs | `docs/formats{,.es}.md`, README tables, `.po` guide run by `tests/guide.rs`, skill names | 12.1 |
+| 55 Docs | `docs/formats{,.es}.md`, README tables, `.po` guide run by `tests/guide.rs`, skill names; HTML's script Trails in `docs/rg-compat.md` «Trails that changed since 1.0» | 12.1 |
 | 56 Version | `s4 --version` prints 1.1.0; criterion 34 with the M6 tests on four systems; the `package` job's checks read the version from Cargo.toml | 12.3, 12.4; orchestrator CI |
 
 | M6 spec section | Coverage |
@@ -4137,7 +4284,7 @@ release, `cargo publish` or package (header, «M6 publishes nothing»).
 | §5 Processors | C2–C10; D11 (no new Grammar); size checks; header (no crate) |
 | §6 Group A | C5.1–C5.3, C6.1 |
 | §7 Group B | C2.1–C2.3, C3.1–C3.2, C4.1–C4.3 |
-| §8 Group C | C8.1–C8.3, C7.1–C7.2, C3.3, C6.2 |
+| §8 Group C | C8.1–C8.3, C7.1–C7.2, C7.4 (HTML scripts), C3.3, C6.2 |
 | §9 Group E | C10.1–C10.5 |
 | §10 Group F | C9.1–C9.3, C2.4, C6.3, C7.3 |
 | §11 Cost and streaming | Header «native streaming», C11.2, C11.3, C10.5, C12.2 differential |
@@ -4146,7 +4293,7 @@ release, `cargo publish` or package (header, «M6 publishes nothing»).
 | §14 Docs | C12.1; schema and tree label lines in each chunk's registration |
 | §15 Parts | Chunk graph, D1 |
 | §16 Criteria | Table above |
-| Open questions | Question 1 answered A (note 2, D21); question 2 note 3; option A in C1.3, C7.1, C9.3 |
+| Open questions | Question 1 answered A (note 2, D21) in C1.3, C9.3; question 2 answered B (note 3, D24) in C7.4, C11.2, C12.1, C12.2 |
 
 ## Risks and what is verified only in CI
 
@@ -4165,7 +4312,8 @@ release, `cargo publish` or package (header, «M6 publishes nothing»).
 | Telegram's export template changes its class names | C7.3 generic-HTML fallback test | None needed; the Match survives, the decoration falls back |
 | `*WhatsApp*.txt` claims a `.txt` that is no export (D21), **deduced** | C9.3's `WhatsApp notes.txt`: the first-line check leaves every Trail empty | None needed; the Matches show as rg shows them |
 | The export's name differs in a language without «WhatsApp» in it, **not verified: no localized source here** | `_chat.txt` and the glob | A renamed export is read with `--format`, as the docs show |
-| Open question 2 still unanswered (Hilo 855); question 1 answered A (#12694) | Option A throughout | Note 3 lists the tasks B would change |
+| HTML's Trails change from 1.0 in scripts with functions (D24): a script reading 1.0's `--json` sees deeper Trails, **by design** | C7.4: v1 snapshots unchanged, the six limit cases; C12.2 stream = model | Documented in `docs/rg-compat.md`; `--no-trail` unchanged (`rg_compat_m6`) |
+| The JavaScript MIME type list of spec §8.3 is quoted from memory, **not checked against WHATWG HTML here** | C7.4 tests `text/javascript` with spaces and case, `module`, `text/plain` | A missing equivalent keeps 1.0's Trail, never loses a Match |
 | Timing criteria #49–#53 on shared runners | Local Linux, three alternated series, `uptime` recorded | CI timing is never evidence for them |
 
 Every chunk hands off: commit IDs, exact RED/GREEN commands and results,
