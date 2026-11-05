@@ -23,12 +23,18 @@ pub(crate) fn name_chars(params: &::toml::Table) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     Key,
+    /// An iCalendar or vCard component (M6 spec §10.2).
+    Component,
+    /// A BibTeX entry (M6 spec §10.3).
+    Entry,
 }
 
 impl Kind {
     fn as_str(self) -> &'static str {
         match self {
             Kind::Key => "key",
+            Kind::Component => "component",
+            Kind::Entry => "entry",
         }
     }
 }
@@ -40,6 +46,19 @@ pub(crate) enum NameSrc {
     Verbatim(Range<usize>),
     /// A `.properties` key, decoded (`properties::push_key`).
     Properties(Range<usize>),
+    /// An iCalendar or vCard component (`ical::push_component`): the `X` of its `BEGIN:X`,
+    /// then the value of its SUMMARY, FN or TZID, unfolded, or else its ordinal among its
+    /// siblings of that `X`.
+    Component {
+        x: Range<usize>,
+        value: Option<Range<usize>>,
+        ordinal: u32,
+    },
+    /// A BibTeX entry: its name as written, and its signature (`@article{knuth1984,`).
+    Entry {
+        name: Range<usize>,
+        signature: Range<usize>,
+    },
 }
 
 /// One Segment of a line syntax, as the scan found it.
@@ -140,6 +159,15 @@ impl Builder {
         Some(i)
     }
 
+    /// How many Segments are open.
+    pub fn depth(&self) -> usize {
+        self.open.len()
+    }
+
+    pub fn entry_mut(&mut self, i: usize) -> &mut Entry {
+        &mut self.entries[i]
+    }
+
     /// Closes the open Segments past the first `depth` at `end`.
     pub fn close_to(&mut self, depth: usize, end: usize) {
         while self.open.len() > depth {
@@ -221,8 +249,22 @@ impl<'a> LinePrepared<'a> {
         match &e.name {
             NameSrc::Verbatim(r) => n.push_lossy(self.src, r.clone()),
             NameSrc::Properties(r) => super::properties::push_key(self.src, r.clone(), &mut n),
+            NameSrc::Component { x, value, ordinal } => {
+                super::ical::push_component(self.src, x, value.as_ref(), *ordinal, &mut n)
+            }
+            NameSrc::Entry { name, .. } => n.push_lossy(self.src, name.clone()),
         }
         n.finish()
+    }
+
+    /// The signature of `e`: a BibTeX entry's header, cut at twice `name_chars`.
+    fn signature(&self, e: &Entry) -> Option<String> {
+        let NameSrc::Entry { signature, .. } = &e.name else {
+            return None;
+        };
+        let mut n = CutName::new(self.name_chars.saturating_mul(2));
+        n.push_lossy(self.src, signature.clone());
+        Some(n.finish().0)
     }
 
     fn segment(&self, e: &Entry) -> Segment {
@@ -232,7 +274,7 @@ impl<'a> LinePrepared<'a> {
             line: e.line,
             end_line: e.end_line,
             level: None,
-            signature: None,
+            signature: self.signature(e),
         }
     }
 
@@ -260,7 +302,7 @@ impl<'a> LinePrepared<'a> {
                         line: e.line,
                         end_line: e.end_line,
                         level: None,
-                        signature: None,
+                        signature: self.signature(e),
                     },
                     range: e.range.clone(),
                     label: e.label.clone(),

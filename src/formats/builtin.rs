@@ -48,4 +48,10 @@ pub const BUILTIN: &[(&str, &str)] = &[
         "ssh-config.toml",
         include_str!("../../formats/ssh-config.toml"),
     ),
+    (
+        "icalendar.toml",
+        include_str!("../../formats/icalendar.toml"),
+    ),
+    ("vcard.toml", include_str!("../../formats/vcard.toml")),
+    ("bibtex.toml", include_str!("../../formats/bibtex.toml")),
 ];

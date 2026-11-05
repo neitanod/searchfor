@@ -1,0 +1,8 @@
+# formats/icalendar.toml — iCalendar components and properties (M6 spec §10.2).
+name       = "icalendar"
+extensions = ["ics", "ical", "ifb"]
+processor  = "keypath"
+
+[params]
+syntax     = "ical"
+name_chars = 40

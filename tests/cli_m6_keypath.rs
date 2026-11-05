@@ -294,9 +294,140 @@ fn m6_ssh() {
 }
 
 #[test]
+fn m6_ical_bibtex() {
+    let fx = Fixture::new();
+    let ics = b"BEGIN:VCALENDAR\nBEGIN:VEVENT\nDESCRIPTION:Bring the needle\n folded needle\nSUMMARY:Team sync\nEND:VEVENT\nEND:VCALENDAR\n";
+    seed(&fx, "config/m6.ics", ics);
+    check(
+        &fx,
+        "icalendar",
+        "config/m6.ics",
+        &[
+            "VEVENT Team sync › DESCRIPTION",
+            "VEVENT Team sync › DESCRIPTION",
+        ],
+    );
+    flags(
+        &fx,
+        "icalendar",
+        "config/m6.ics",
+        "Team sync",
+        "Team sync",
+        "",
+    );
+    let vcf = "BEGIN:VCARD\nEMAIL;TYPE=work:ana@needle.example\nFN:Ana Pérez\nEND:VCARD\n";
+    seed(&fx, "config/m6.vcf", vcf.as_bytes());
+    check(&fx, "vcard", "config/m6.vcf", &["VCARD Ana Pérez › EMAIL"]);
+    flags(&fx, "vcard", "config/m6.vcf", "EMAIL", "Ana", "");
+    let bib = b"@article{knuth1984,\n title = {Literate needle {programming}},\n note = \"needle\" # suffix,\n}\n@comment{needle ignored}\n";
+    seed(&fx, "docs-a/m6.bib", bib);
+    check(
+        &fx,
+        "bibtex",
+        "docs-a/m6.bib",
+        &["knuth1984 › title", "knuth1984 › note", ""],
+    );
+    flags(&fx, "bibtex", "docs-a/m6.bib", "knuth1984", "knuth1984", "");
+    put(
+        &fx,
+        "bad.ics",
+        b"BEGIN:VCALENDAR\nBEGIN:VEVENT\nDESCRIPTION:needle\nEND:UNKNOWN\nSUMMARY:One\nEND:VCALENDAR\nneedle\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "icalendar",
+            "bad.ics",
+            "needle",
+            &["--json"]
+        ))),
+        ["VEVENT One › DESCRIPTION", ""]
+    );
+    put(
+        &fx,
+        "bad.bib",
+        b"@article{a,\n title={needle\n@book(b, title=\"needle\")\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "bibtex",
+            "bad.bib",
+            "needle",
+            &["--json"]
+        ))),
+        ["a › title", "b › title"]
+    );
+    put(
+        &fx,
+        "kinds.ics",
+        b"BEGIN:VCALENDAR\nBEGIN:VEVENT\nX:needle\nEND:VEVENT\nBEGIN:VEVENT\nX:needle\nEND:VEVENT\nEND:VCALENDAR\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "icalendar",
+            "kinds.ics",
+            "needle",
+            &["--json"]
+        ))),
+        ["VEVENT[1] › X", "VEVENT[2] › X"]
+    );
+    put(
+        &fx,
+        "kinds.vcf",
+        b"BEGIN:VCARD\nEMAIL:needle\nEND:VCARD\nBEGIN:VCARD\nEMAIL:needle\nEND:VCARD\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "vcard",
+            "kinds.vcf",
+            "needle",
+            &["--json"]
+        ))),
+        ["VCARD[1] › EMAIL", "VCARD[2] › EMAIL"]
+    );
+    // `X` of BEGIN:X is the file's text (§3 rule 4, §10.2), with or without SUMMARY/FN.
+    for (format, file, name, lines) in [
+        ("icalendar", "config/m6.ics", "VEVENT", vec![2u64]),
+        ("icalendar", "kinds.ics", "VEVENT", vec![2, 5]),
+        ("vcard", "config/m6.vcf", "VCARD", vec![1]),
+        ("vcard", "kinds.vcf", "VCARD", vec![1, 4]),
+    ] {
+        let rows = matches(&output(
+            &fx,
+            format,
+            file,
+            name,
+            &["--json", "--in-headings"],
+        ));
+        let got: Vec<u64> = rows
+            .iter()
+            .map(|r| r["line_number"].as_u64().unwrap())
+            .collect();
+        assert_eq!(got, lines, "{file}: {name}");
+    }
+    // The ordinal is added: it matches the name's text and has no source piece.
+    for (format, file) in [("icalendar", "kinds.ics"), ("vcard", "kinds.vcf")] {
+        let out = output(&fx, format, file, "\\[1\\]", &["--json", "--in-headings"]);
+        assert_eq!(code(&out), 1, "{file}: {}", stdout(&out));
+    }
+}
+
+#[test]
 fn m6_broken_fixtures() {
     // The keypath row of the plan's table: every Format of this topic file.
-    let owned: &[&str] = &["ini", "systemd", "properties", "env", "ssh-config"];
+    let owned: &[&str] = &[
+        "ini",
+        "systemd",
+        "properties",
+        "env",
+        "ssh-config",
+        "icalendar",
+        "vcard",
+        "bibtex",
+    ];
     let cases: &[(&str, &str, &[u8], &[&str])] = &[
         (
             "ini",
@@ -327,6 +458,24 @@ fn m6_broken_fixtures() {
             "config/ssh/broken-ssh_config",
             b"Host x\nK needle\nUnknown needle\n",
             &["Host x › K", "Host x › Unknown"],
+        ),
+        (
+            "icalendar",
+            "config/broken-m6.ics",
+            b"BEGIN:VEVENT\nDESCRIPTION:needle\nEND:UNKNOWN\nSUMMARY:One\n",
+            &["VEVENT One › DESCRIPTION"],
+        ),
+        (
+            "vcard",
+            "config/broken-m6.vcf",
+            b"BEGIN:VCARD\nEMAIL:needle\nFN:Ana\n",
+            &["VCARD Ana › EMAIL"],
+        ),
+        (
+            "bibtex",
+            "docs-a/broken-m6.bib",
+            b"@article{a,\n title={needle\n@book{b, title={needle}}\n",
+            &["a › title", "b › title"],
         ),
     ];
     let fx = Fixture::new();

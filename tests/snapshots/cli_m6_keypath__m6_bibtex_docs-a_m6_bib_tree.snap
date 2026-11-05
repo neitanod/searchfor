@@ -1,0 +1,11 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+docs-a/m6.bib
+  @article{knuth1984,
+    title
+      2: title = {Literate needle {programming}},
+    note
+      3: note = "needle" # suffix,
+  5:@comment{needle ignored}

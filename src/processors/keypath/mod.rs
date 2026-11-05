@@ -1,7 +1,9 @@
 //! keypath: YAML, JSON and TOML key paths (spec §5.2, design note 6), and M6's line syntaxes:
 //! INI, `.properties`, `.env`, SSH, iCalendar/vCard and BibTeX (M6 spec §7, §10.2, §10.3).
+pub(crate) mod bibtex;
 pub mod collect;
 pub(crate) mod env;
+pub(crate) mod ical;
 pub(crate) mod ini;
 pub mod json;
 pub(crate) mod lines;
@@ -28,6 +30,8 @@ pub(crate) enum Syntax {
     Properties,
     Env,
     Ssh,
+    Ical,
+    Bibtex,
 }
 
 impl Syntax {
@@ -35,7 +39,12 @@ impl Syntax {
     fn lines(self) -> bool {
         matches!(
             self,
-            Syntax::Ini | Syntax::Properties | Syntax::Env | Syntax::Ssh
+            Syntax::Ini
+                | Syntax::Properties
+                | Syntax::Env
+                | Syntax::Ssh
+                | Syntax::Ical
+                | Syntax::Bibtex
         )
     }
 }
@@ -49,6 +58,8 @@ fn syntax(params: &::toml::Table) -> anyhow::Result<Syntax> {
         Some("properties") => Ok(Syntax::Properties),
         Some("env") => Ok(Syntax::Env),
         Some("ssh") => Ok(Syntax::Ssh),
+        Some("ical") => Ok(Syntax::Ical),
+        Some("bibtex") => Ok(Syntax::Bibtex),
         _ => anyhow::bail!(
             "keypath needs `syntax` = \"json\", \"yaml\", \"toml\", \"ini\", \"properties\", \"env\", \"ssh\", \"ical\" or \"bibtex\" in [params]"
         ),
@@ -81,6 +92,8 @@ pub(crate) fn prepare_syntax<'a>(
         Syntax::Properties => properties::prepare(input, params)?,
         Syntax::Env => env::prepare(input, params)?,
         Syntax::Ssh => ssh::prepare(input, params)?,
+        Syntax::Ical => ical::prepare(input, params)?,
+        Syntax::Bibtex => bibtex::prepare(input, params)?,
     })
 }
 
@@ -96,6 +109,8 @@ fn line_outline(
         Syntax::Properties => properties::outline(src, params, anchors),
         Syntax::Env => env::outline(src, params, anchors),
         Syntax::Ssh => ssh::outline(src, params, anchors),
+        Syntax::Ical => ical::outline(src, params, anchors),
+        Syntax::Bibtex => bibtex::outline(src, params, anchors),
         s => unreachable!("{s:?} is no line syntax"),
     }
 }

@@ -1,0 +1,5 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+2: VEVENT One › DESCRIPTION │ DESCRIPTION:needle

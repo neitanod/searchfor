@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"config/m6.ics"}}}
+{"type":"match","data":{"path":{"text":"config/m6.ics"},"lines":{"text":"DESCRIPTION:Bring the needle\n"},"line_number":3,"absolute_offset":29,"submatches":[{"match":{"text":"needle"},"start":22,"end":28}],"format":"icalendar","trail":[{"kind":"component","name":"VEVENT Team sync","line":2,"end_line":6},{"kind":"key","name":"DESCRIPTION","line":3,"end_line":4}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/m6.ics"},"lines":{"text":" folded needle\n"},"line_number":4,"absolute_offset":58,"submatches":[{"match":{"text":"needle"},"start":8,"end":14}],"format":"icalendar","trail":[{"kind":"component","name":"VEVENT Team sync","line":2,"end_line":6},{"kind":"key","name":"DESCRIPTION","line":3,"end_line":4}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"config/m6.ics"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":116,"bytes_printed":807,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":807,"bytes_searched":116,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

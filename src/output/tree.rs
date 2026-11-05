@@ -23,6 +23,9 @@ pub fn label(s: &Segment) -> String {
         // sheets, slides, tables, chapters, cells and notes show their name alone.
         "document" | "key" | "element" | "tag" | "row" | "object" | "section" | "symbol"
         | "page" | "sheet" | "slide" | "table" | "chapter" | "cell" | "notes" => name.into_owned(),
+        // M6: iCalendar and vCard components show their name alone (a BibTeX entry shows its
+        // signature, above).
+        "component" | "entry" => name.into_owned(),
         kind => format!("{kind} {name}"),
     }
 }

@@ -1,0 +1,8 @@
+# formats/bibtex.toml — BibTeX entries and fields (M6 spec §10.3).
+name       = "bibtex"
+extensions = ["bib"]
+processor  = "keypath"
+
+[params]
+syntax     = "bibtex"
+name_chars = 40
