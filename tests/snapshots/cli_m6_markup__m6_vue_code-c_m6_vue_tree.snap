@@ -1,0 +1,14 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+code-c/m6.vue
+  template
+    ul.items
+      li[2]
+        2:<ul class="items"><li>x</li><li>needle template</li></ul>
+  script
+    function addItem()
+      6:  const value: string = 'needle';
+  style
+    9:<style>.needle { color:red }</style>

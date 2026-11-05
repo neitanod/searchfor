@@ -1,0 +1,5 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+2: script │ needle

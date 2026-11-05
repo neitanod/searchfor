@@ -1,0 +1,14 @@
+# formats/vue.toml — Vue single-file components (M6 spec §8.3): the template's element paths,
+# and the Trails of the compiled-in JavaScript or TypeScript Grammar inside `<script>`:
+# `template › ul.items › li[2]`, `script › addItem`.
+name       = "vue"
+extensions = ["vue"]
+processor  = "markup"
+
+[params]
+syntax = "html"
+# Each `<script>` is parsed by the Grammar its `lang` names (none or `js` JavaScript, `ts`
+# TypeScript, `tsx` TSX), with that Format Definition's query and `max_bytes`.
+scripts = true
+# Characters of an element's name (`tag#id.class…`) before it is cut with `…`.
+name_chars = 40

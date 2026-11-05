@@ -166,11 +166,12 @@ pub fn by_name(name: &str) -> Option<&'static dyn Processor> {
     }
 }
 
-/// A Processor for one file: a built-in, the run's treesitter, or the Helper Processor of its
-/// Definition.
+/// A Processor for one file: a built-in, the run's treesitter, the Helper Processor of its
+/// Definition, or a built-in configured for the run (`Processors::for_definition_in`).
 pub enum ProcessorRef<'a> {
     BuiltIn(&'a dyn Processor),
     Helper(std::sync::Arc<external::HelperProcessor>),
+    Configured(std::sync::Arc<dyn Processor>),
 }
 
 impl<'a> std::ops::Deref for ProcessorRef<'a> {
@@ -179,6 +180,7 @@ impl<'a> std::ops::Deref for ProcessorRef<'a> {
         match self {
             ProcessorRef::BuiltIn(p) => *p,
             ProcessorRef::Helper(h) => h.as_ref(),
+            ProcessorRef::Configured(p) => p.as_ref(),
         }
     }
 }
@@ -200,6 +202,9 @@ pub struct Processors {
     grammars: Option<std::path::PathBuf>,
     /// The Grammar Helpers installed there, read once per run (review r1, Codex #5).
     installed: std::sync::OnceLock<Vec<crate::grammars::Installed>>,
+    /// The markup Processor of each Definition that reads its scripts, by its name, built
+    /// once with the Registry's script Definitions (M6 plan, Task 7.1).
+    configured: std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<dyn Processor>>>,
 }
 
 impl Processors {
@@ -213,6 +218,7 @@ impl Processors {
             treesitter: treesitter::TreeSitter::default(),
             grammars: None,
             installed: std::sync::OnceLock::new(),
+            configured: Default::default(),
         }
     }
 
@@ -334,6 +340,27 @@ impl Processors {
             "docs" => None,
             p => by_name(p).map(ProcessorRef::BuiltIn),
         }
+    }
+
+    /// `for_definition`, with what a Definition takes from the rest of the run's `registry`:
+    /// a markup Definition that reads its scripts gets a `ComponentMarkup` with the Registry's
+    /// `javascript`, `typescript` and `tsx` Definitions, a user's copy included, built and
+    /// cached the first time, so its queries compile once per run (M6 spec §8.3, plan D11).
+    /// Every other lookup is `for_definition`'s.
+    pub fn for_definition_in<'a>(
+        &'a self,
+        def: &crate::formats::definition::FormatDefinition,
+        registry: &crate::formats::Registry,
+    ) -> Option<ProcessorRef<'a>> {
+        if def.processor != "markup" || !markup::scripts_on(&def.params) {
+            return self.for_definition(def);
+        }
+        let mut map = self.configured.lock().unwrap();
+        let p = map.entry(def.name.clone()).or_insert_with(|| {
+            let defs = markup::components::ScriptDefinitions::from_registry(registry);
+            std::sync::Arc::new(markup::components::ComponentMarkup::new(defs))
+        });
+        Some(ProcessorRef::Configured(p.clone()))
     }
 
     fn helper(
@@ -640,6 +667,33 @@ mod tests {
             crate::helper::DEFAULT_TIMEOUT
         );
         assert!(ps.grammar_helper_config(&plain, "cobol").is_none());
+    }
+
+    #[test]
+    fn a_markup_definition_with_scripts_gets_one_configured_processor() {
+        let (w, seen) = collecting();
+        let ps = Processors::new(4, w);
+        let registry = crate::formats::Registry::load(None, &Processors::known).0;
+        let vue = def("name='vue'\nprocessor='markup'\n[params]\nsyntax='html'\nscripts=true");
+        let a = ps.for_definition_in(&vue, &registry);
+        let b = ps.for_definition_in(&vue, &registry);
+        match (a, b) {
+            (Some(ProcessorRef::Configured(a)), Some(ProcessorRef::Configured(b))) => {
+                assert!(std::sync::Arc::ptr_eq(&a, &b));
+            }
+            _ => panic!("a configured markup Processor"),
+        }
+        // Without scripts, and for any other Processor, the lookup is `for_definition`'s.
+        let xml = def("name='xml'\nprocessor='markup'\n[params]\nsyntax='xml'");
+        assert!(matches!(
+            ps.for_definition_in(&xml, &registry),
+            Some(ProcessorRef::BuiltIn(_))
+        ));
+        assert!(matches!(
+            ps.for_definition_in(&def("name='m'\nprocessor='markdown'"), &registry),
+            Some(ProcessorRef::BuiltIn(_))
+        ));
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[test]

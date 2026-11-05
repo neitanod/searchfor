@@ -1,6 +1,8 @@
 //! markup: HTML and XML element paths (spec §5.4, M3 plan design note 3). One walk over the
 //! tags feeds keypath's Collector the elements that hold an anchor, so a big file with three
-//! Matches keeps three short stacks.
+//! Matches keeps three short stacks. With `scripts`, the content of a `<script>` gets the
+//! Trails of its Grammar under the `script` element (M6 spec §8.3, `components`).
+pub mod components;
 pub mod html;
 pub mod scan;
 
@@ -13,6 +15,9 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use crate::text::Pieces;
+use components::Scripts;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 pub struct Markup;
 
@@ -32,6 +37,14 @@ pub(crate) enum Syntax {
 struct Params {
     syntax: Syntax,
     name_chars: usize,
+    /// HTML: each `<script>`'s content is read by its Grammar (M6 spec §8.3).
+    scripts: bool,
+}
+
+/// Whether a markup Definition's `[params]` read its scripts: then a run gives it a
+/// `ComponentMarkup` with the Registry's script Definitions (`Processors::for_definition_in`).
+pub(crate) fn scripts_on(t: &toml::Table) -> bool {
+    t.get("scripts").and_then(|v| v.as_bool()) == Some(true)
 }
 
 fn params(t: &toml::Table) -> anyhow::Result<Params> {
@@ -45,7 +58,27 @@ fn params(t: &toml::Table) -> anyhow::Result<Params> {
         .and_then(|v| v.as_integer())
         .filter(|&n| n > 0)
         .map_or(DEFAULT_NAME_CHARS, |n| n as usize);
-    Ok(Params { syntax, name_chars })
+    let scripts = scripts_on(t);
+    if scripts && syntax != Syntax::Html {
+        anyhow::bail!("markup reads `scripts` only with `syntax` = \"html\"");
+    }
+    Ok(Params {
+        syntax,
+        name_chars,
+        scripts,
+    })
+}
+
+/// The scripts a walk reads with `p`: `configured`'s, else the built-in Definitions'; None
+/// when `p` reads none.
+fn scripts_of<'s>(p: &Params, configured: Option<&'s Scripts>) -> Option<&'s Scripts> {
+    p.scripts
+        .then(|| configured.unwrap_or_else(|| components::builtin()))
+}
+
+/// Whether the element `name` is a `<script>` whose content a walk with `scripts` reads.
+fn is_script(src: &[u8], name: &Range<usize>, scripts: bool) -> bool {
+    scripts && src[name.clone()].eq_ignore_ascii_case(b"script")
 }
 
 /// One open element of the walk.
@@ -72,6 +105,9 @@ struct Frame {
     /// Its children that may be Segments, from the first one on: a leaf, and every element
     /// past MAX_DEPTH, costs only the Frame (M3 code review r1, Fable #4).
     children: Option<Box<Children>>,
+    /// A `<script>` a walk with `scripts` reads: where its content ends (it starts at the end
+    /// of `tag`).
+    script_end: Option<usize>,
 }
 
 /// The children of an open element, counted for their `[n]`.
@@ -103,6 +139,7 @@ impl Frame {
             ordinal: 0,
             seq: NO_SEQ,
             children: None,
+            script_end: None,
         }
     }
 }
@@ -115,6 +152,10 @@ const NO_SEQ: u32 = u32::MAX;
 struct Walk<'s, 'c, 'a> {
     src: &'s [u8],
     p: Params,
+    /// The scripts' Definitions, when `p.scripts`.
+    scripts: Option<&'s Scripts>,
+    /// The line breaks before byte `.0`, the last script content counted (`lines_before`).
+    lines: (usize, u64),
     mode: Mode<'c, 'a>,
     stack: Vec<Frame>,
     /// The `seq` of the next element that may be a Segment.
@@ -274,6 +315,8 @@ struct Open {
     tag: Range<usize>,
     hidden: bool,
     ordinal: u32,
+    /// `Frame::script_end`.
+    script_end: Option<usize>,
 }
 
 /// A cursor's state between two steps of its walk: the scanner's, the open elements, and the
@@ -487,6 +530,9 @@ impl<'a> Walk<'_, '_, 'a> {
         };
         self.flush(&mut f);
         self.recycle(&mut f);
+        if keep && let Some(content_end) = f.script_end {
+            self.script(&f, f.tag.end..content_end);
+        }
         if keep {
             let (text, pieces, has_id) = self.name_of(&f);
             let mut s = OutlineSegment::new("tag", text, f.tag.start..end, f.tag.clone());
@@ -502,6 +548,38 @@ impl<'a> Walk<'_, '_, 'a> {
                 let parent = self.stack.last_mut().unwrap();
                 let ch = parent.children.as_mut().expect("counted by `slot`");
                 ch.pending.push((s, f.slot, f.ordinal));
+            }
+        }
+    }
+
+    /// The line breaks before `byte`, counted on from the last byte asked.
+    fn lines_before(&mut self, byte: usize) -> u64 {
+        let (at, n) = self.lines;
+        let n = if byte >= at {
+            n + memchr::memchr_iter(b'\n', &self.src[at..byte]).count() as u64
+        } else {
+            n - memchr::memchr_iter(b'\n', &self.src[byte..at]).count() as u64
+        };
+        self.lines = (byte, n);
+        n
+    }
+
+    /// A kept `<script>`'s Segments, read when its content holds an anchor (or for names),
+    /// handed to the Collector beside its element's: the Outline sorts them under it.
+    fn script(&mut self, f: &Frame, content: Range<usize>) {
+        let Some(scripts) = self.scripts else { return };
+        if !self.collector().keeps(content.start, content.end) {
+            return;
+        }
+        let lines = self.lines_before(content.start);
+        let Some(o) = scripts.outline(self.src, &f.tag, f.name.end, content, lines) else {
+            return;
+        };
+        let c = self.collector();
+        for s in o.segments {
+            if c.keeps(s.range.start, s.range.end) {
+                let end = s.range.end;
+                c.closed(s, end);
             }
         }
     }
@@ -603,6 +681,7 @@ impl<'a> Walk<'_, '_, 'a> {
             return;
         }
         let raw = info.raw_text;
+        let script = is_script(self.src, &name, self.scripts.is_some());
         let reach = html::reach(
             &self.stack.last().unwrap().reach,
             &info,
@@ -626,9 +705,13 @@ impl<'a> Walk<'_, '_, 'a> {
             ordinal,
             seq,
             children: None,
+            script_end: None,
         });
         if raw {
             sc.skip_raw_text(&self.src[name]);
+            if script {
+                self.stack.last_mut().unwrap().script_end = Some(sc.pos());
+            }
         }
     }
 
@@ -686,6 +769,7 @@ impl<'a> Walk<'_, '_, 'a> {
                             tag: f.tag.clone(),
                             hidden: f.info.hidden,
                             ordinal: f.ordinal,
+                            script_end: f.script_end,
                         })
                         .collect(),
                     next_seq: self.next_seq,
@@ -727,10 +811,12 @@ impl<'a> Walk<'_, '_, 'a> {
 }
 
 impl<'s, 'c, 'a> Walk<'s, 'c, 'a> {
-    fn new(src: &'s [u8], p: Params, mode: Mode<'c, 'a>) -> Self {
+    fn new(src: &'s [u8], p: Params, scripts: Option<&'s Scripts>, mode: Mode<'c, 'a>) -> Self {
         Walk {
             src,
             p,
+            scripts,
+            lines: (0, 0),
             mode,
             stack: vec![Frame::root()],
             next_seq: 0,
@@ -744,8 +830,8 @@ impl<'s, 'c, 'a> Walk<'s, 'c, 'a> {
     }
 }
 
-fn outline(src: &[u8], p: Params, mut c: Collector<'_>) -> Outline {
-    let end = Walk::new(src, p, Mode::Collect(&mut c)).run();
+fn outline(src: &[u8], p: Params, scripts: Option<&Scripts>, mut c: Collector<'_>) -> Outline {
+    let end = Walk::new(src, p, scripts, Mode::Collect(&mut c)).run();
     c.finish(end, src)
 }
 
@@ -757,16 +843,25 @@ struct MarkupPrepared<'a> {
     params: &'a toml::Table,
     p: Params,
     census: Census,
+    scripts: Option<&'a Scripts>,
+    /// The Outline of each script a Match landed in, by its element's `seq`, read once (None:
+    /// it keeps its element's Segment alone).
+    parsed: RefCell<HashMap<u32, Option<Rc<Outline>>>>,
 }
 
-fn census(src: &[u8], p: Params) -> Census {
+fn census(src: &[u8], p: Params, scripts: Option<&Scripts>) -> Census {
     // At most about a thousand marks, each as long as the elements open there.
-    census_marked(src, p, (src.len() / 1024).max(1 << 20))
+    census_marked(src, p, scripts, (src.len() / 1024).max(1 << 20))
 }
 
 /// The census of `src`, with a mark every `mark_every` bytes.
-fn census_marked(src: &[u8], p: Params, mark_every: usize) -> Census {
-    let mut w = Walk::new(src, p, Mode::Census(Census::new(src.len(), mark_every)));
+fn census_marked(src: &[u8], p: Params, scripts: Option<&Scripts>, mark_every: usize) -> Census {
+    let mut w = Walk::new(
+        src,
+        p,
+        scripts,
+        Mode::Census(Census::new(src.len(), mark_every)),
+    );
     let end = w.run();
     match w.mode {
         Mode::Census(mut c) => {
@@ -779,11 +874,11 @@ fn census_marked(src: &[u8], p: Params, mark_every: usize) -> Census {
 
 impl Prepared for MarkupPrepared<'_> {
     fn cursor(&self) -> Box<dyn Cursor + '_> {
-        Box::new(MarkupCursor::new(self.input.bytes, self.p, &self.census))
+        Box::new(MarkupCursor::new(self))
     }
 
     fn names(&self) -> anyhow::Result<Vec<Name>> {
-        Markup.names(&self.input, self.params)
+        names_in(&self.input, self.params, self.scripts)
     }
 
     fn streams(&self) -> bool {
@@ -800,6 +895,7 @@ struct MarkupCursor<'s> {
     src: &'s [u8],
     p: Params,
     census: &'s Census,
+    prepared: &'s MarkupPrepared<'s>,
     sc: Scanner<'s>,
     /// The open elements that may be Segments, from the outermost; some may have ended
     /// already, at an implied end the walk has not reached.
@@ -818,11 +914,13 @@ struct MarkupCursor<'s> {
 }
 
 impl<'s> MarkupCursor<'s> {
-    fn new(src: &'s [u8], p: Params, census: &'s Census) -> Self {
+    fn new(prepared: &'s MarkupPrepared<'s>) -> Self {
+        let (src, p) = (prepared.input.bytes, prepared.p);
         MarkupCursor {
             src,
             p,
-            census,
+            census: &prepared.census,
+            prepared,
             sc: Scanner::new(src, p.syntax == Syntax::Xml),
             open: Vec::new(),
             next_seq: 0,
@@ -910,7 +1008,8 @@ impl<'s> MarkupCursor<'s> {
         }
         // Past MAX_DEPTH open elements, no more Segments: every element the census numbered
         // is below it, so the open ones it numbered are all the open ones.
-        if self.open.len() < MAX_DEPTH {
+        let pushed = self.open.len() < MAX_DEPTH;
+        if pushed {
             let seq = self.next_seq;
             self.next_seq += 1;
             let ordinal = if self.census.ends.get(seq).1 & LATER != 0 {
@@ -925,11 +1024,36 @@ impl<'s> MarkupCursor<'s> {
                 tag,
                 hidden: info.hidden,
                 ordinal,
+                script_end: None,
             });
         }
         if info.raw_text {
-            self.sc.skip_raw_text(&self.src[name]);
+            self.sc.skip_raw_text(&self.src[name.clone()]);
+            if pushed && is_script(self.src, &name, self.prepared.scripts.is_some()) {
+                self.open.last_mut().unwrap().script_end = Some(self.sc.pos());
+            }
         }
+    }
+
+    /// The Outline of the script of the open element at `k`, read the first time a Match
+    /// lands in it and kept by the preparation for its other Matches and cursors.
+    fn script_outline(&mut self, k: usize) -> Option<Rc<Outline>> {
+        let scripts = self.prepared.scripts?;
+        let o = &self.open[k];
+        let (seq, tag, name_end) = (o.seq, o.tag.clone(), o.name.end);
+        let content = tag.end..o.script_end?;
+        if let Some(known) = self.prepared.parsed.borrow().get(&seq) {
+            return known.clone();
+        }
+        let lines = self.line_of(content.start) - 1;
+        let parsed = scripts
+            .outline(self.src, &tag, name_end, content, lines)
+            .map(Rc::new);
+        self.prepared
+            .parsed
+            .borrow_mut()
+            .insert(seq, parsed.clone());
+        parsed
     }
 
     /// The line of `byte`, counted on from the last one asked.
@@ -995,6 +1119,22 @@ impl Cursor for MarkupCursor<'_> {
                 ks.push(k);
             }
         }
+        // In the content of a script, the Segments of its Outline follow its element's: by
+        // their indices, after a separator no `seq` takes.
+        let script = ks.last().copied().and_then(|k| {
+            let o = &self.open[k];
+            let content = o.tag.end..o.script_end?;
+            content.contains(&byte).then_some(k)
+        });
+        let script = script.and_then(|k| self.script_outline(k));
+        let mut inner = Vec::new();
+        if let Some(o) = &script {
+            script_trail(o, byte, &mut inner);
+            if !inner.is_empty() {
+                seqs.push(NO_SEQ);
+                seqs.extend(inner.iter().map(|&i| i as u32));
+            }
+        }
         if let Some((s, t)) = &self.last
             && *s == seqs
         {
@@ -1002,7 +1142,7 @@ impl Cursor for MarkupCursor<'_> {
             self.seqs = seqs;
             return Ok(t);
         }
-        let mut trail = Vec::with_capacity(ks.len());
+        let mut trail = Vec::with_capacity(ks.len() + inner.len());
         for (i, &k) in ks.iter().enumerate() {
             // A Segment of the last Trail is the same element: its Segment is copied.
             let known = self
@@ -1014,11 +1154,101 @@ impl Cursor for MarkupCursor<'_> {
                 None => self.segment(k),
             });
         }
+        if let Some(o) = &script {
+            trail.extend(inner.iter().map(|&i| o.segments[i].segment.clone()));
+        }
         let t: SharedTrail = std::rc::Rc::from(trail);
         self.last = Some((seqs.clone(), t.clone()));
         self.seqs = seqs;
         Ok(t)
     }
+
+    /// The start of the outermost open element that holds the last offset and is shown: no
+    /// later Trail ends with an element that ended before it, nor with one that opens later
+    /// and starts before it. A script's Segments are inside their element, which it answers
+    /// for them (an earlier start, which keeps more Matches: `Cursor::open_from`).
+    fn open_from(&mut self) -> Option<usize> {
+        let at = self.at;
+        Some(
+            self.open
+                .iter()
+                .find(|o| !o.hidden && self.census.end_of(o.seq) > at)
+                .map_or(at, |o| o.tag.start),
+        )
+    }
+}
+
+/// The indices of the Trail of `byte` in a script's Outline, as `trail_for` gives it: the last
+/// Segment that starts at or before it, then its parents, those that hold it, outside their
+/// labels.
+fn script_trail(o: &Outline, byte: usize, out: &mut Vec<usize>) {
+    out.clear();
+    let k = o.segments.partition_point(|s| s.range.start <= byte);
+    let mut cur = k.checked_sub(1);
+    while let Some(i) = cur {
+        let s = &o.segments[i];
+        if s.range.contains(&byte) && !s.hidden && !s.label.contains(&byte) {
+            out.push(i);
+        }
+        cur = s.parent;
+    }
+    out.reverse();
+}
+
+/// `Processor::trails` of a markup file, its scripts read with `configured`'s Definitions
+/// (None: the built-in ones).
+pub(crate) fn trails_in(
+    input: &Input,
+    params: &toml::Table,
+    anchors: &[usize],
+    configured: Option<&Scripts>,
+) -> anyhow::Result<Vec<Trail>> {
+    let p = self::params(params)?;
+    let mut order: Vec<usize> = (0..anchors.len()).collect();
+    order.sort_by_key(|&i| anchors[i]);
+    let sorted: Vec<usize> = order.iter().map(|&i| anchors[i]).collect();
+    let scripts = scripts_of(&p, configured);
+    let o = outline(input.bytes, p, scripts, Collector::for_anchors(&sorted));
+    let mut cursor = TrailCursor::new(&o);
+    let mut out = vec![Vec::new(); anchors.len()];
+    for (k, &i) in order.iter().enumerate() {
+        out[i] = cursor.trail(sorted[k]);
+    }
+    Ok(out)
+}
+
+/// `Processor::names` of a markup file (`trails_in`).
+pub(crate) fn names_in(
+    input: &Input,
+    params: &toml::Table,
+    configured: Option<&Scripts>,
+) -> anyhow::Result<Vec<Name>> {
+    let p = self::params(params)?;
+    let scripts = scripts_of(&p, configured);
+    Ok(names_of(&outline(
+        input.bytes,
+        p,
+        scripts,
+        Collector::for_names(),
+    )))
+}
+
+/// The census of the file's elements, then a cursor that follows the Matches (`trails_in`).
+pub(crate) fn prepare_in<'a>(
+    input: Input<'a>,
+    params: &'a toml::Table,
+    configured: Option<&'a Scripts>,
+) -> anyhow::Result<Box<dyn Prepared + 'a>> {
+    let p = self::params(params)?;
+    let scripts = scripts_of(&p, configured);
+    Ok(Box::new(MarkupPrepared {
+        census: census(input.bytes, p, scripts),
+        input,
+        params,
+        p,
+        scripts,
+        parsed: RefCell::default(),
+    }))
 }
 
 impl Processor for Markup {
@@ -1028,22 +1258,11 @@ impl Processor for Markup {
         params: &toml::Table,
         anchors: &[usize],
     ) -> anyhow::Result<Vec<Trail>> {
-        let p = self::params(params)?;
-        let mut order: Vec<usize> = (0..anchors.len()).collect();
-        order.sort_by_key(|&i| anchors[i]);
-        let sorted: Vec<usize> = order.iter().map(|&i| anchors[i]).collect();
-        let o = outline(input.bytes, p, Collector::for_anchors(&sorted));
-        let mut cursor = TrailCursor::new(&o);
-        let mut out = vec![Vec::new(); anchors.len()];
-        for (k, &i) in order.iter().enumerate() {
-            out[i] = cursor.trail(sorted[k]);
-        }
-        Ok(out)
+        trails_in(input, params, anchors, None)
     }
 
     fn names(&self, input: &Input, params: &toml::Table) -> anyhow::Result<Vec<Name>> {
-        let p = self::params(params)?;
-        Ok(names_of(&outline(input.bytes, p, Collector::for_names())))
+        names_in(input, params, None)
     }
 
     /// The census of the file's elements, then a cursor that follows the Matches.
@@ -1052,13 +1271,7 @@ impl Processor for Markup {
         input: Input<'a>,
         params: &'a toml::Table,
     ) -> anyhow::Result<Box<dyn Prepared + 'a>> {
-        let p = self::params(params)?;
-        Ok(Box::new(MarkupPrepared {
-            census: census(input.bytes, p),
-            input,
-            params,
-            p,
-        }))
+        prepare_in(input, params, None)
     }
 
     fn capability(&self, _: &toml::Table) -> Capability {
@@ -1375,13 +1588,19 @@ mod tests {
 
     /// The cursor against `trails` at every byte of `src`, then once more from the start.
     fn every_byte(src: &[u8], syntax: &str) {
+        every_byte_with(src, &params(syntax));
+    }
+
+    /// `every_byte` with these `[params]`.
+    fn every_byte_with(src: &[u8], params: &toml::Table) {
+        let syntax = params["syntax"].as_str().unwrap();
         let input = Input {
             bytes: src,
             path: Path::new("x"),
             format: syntax,
             disk: None,
         };
-        let params = params(syntax);
+        let params = params.clone();
         let anchors: Vec<usize> = (0..src.len()).collect();
         let expected = Markup.trails(&input, &params, &anchors).unwrap();
         let prepared = Markup.prepare(input, &params).unwrap();
@@ -1398,11 +1617,14 @@ mod tests {
         // each byte alone, by a new cursor, which shares no Segment with a Trail before.
         let p = super::params(&params).unwrap();
         for every in [1, 7, 64] {
+            let scripts = scripts_of(&p, None);
             let prepared = MarkupPrepared {
                 input,
                 params: &params,
                 p,
-                census: census_marked(src, p, every),
+                census: census_marked(src, p, scripts, every),
+                scripts,
+                parsed: RefCell::default(),
             };
             let mut c = prepared.cursor();
             for (&at, t) in anchors.iter().zip(&expected) {
@@ -1479,5 +1701,116 @@ mod tests {
             "</d>".repeat(MAX_DEPTH + 4)
         );
         every_byte(deep.as_bytes(), "xml");
+    }
+
+    /// M6 Task 7.1: the Trails of a script's Segments under its element, from the cursor as
+    /// from `trails`, in HTML with `scripts` and in a component with the run's Definitions.
+    const SCRIPTS: &[u8] = b"<div>\n<script lang=\"ts\">\nclass A {\n  m() { return 'x'; }\n}\nfunction f() { 1 }\n</script><p>y</p>\n<script>\nconst g = () => 2;\n</script>\n<script lang=coffee>h</script></div>\n<script>function tail() {\n";
+
+    #[test]
+    fn the_markup_cursor_gives_script_trails_at_every_byte() {
+        let params: toml::Table = toml::from_str("syntax = 'html'\nscripts = true").unwrap();
+        every_byte_with(SCRIPTS, &params);
+        every_byte_with(
+            b"<script>function f() {}</script><script>x</script>",
+            &params,
+        );
+        let at = memchr::memmem::find(SCRIPTS, b"'x'").unwrap();
+        let input = Input {
+            bytes: SCRIPTS,
+            path: Path::new("x"),
+            format: "html",
+            disk: None,
+        };
+        let t = Markup.trails(&input, &params, &[at]).unwrap();
+        let got: Vec<(&str, &str, u64, u64)> = t[0]
+            .iter()
+            .map(|s| (s.kind.as_str(), s.name.as_str(), s.line, s.end_line))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("tag", "div", 1, 11),
+                ("tag", "script[1]", 2, 7),
+                ("class", "A", 3, 5),
+                ("method", "m", 4, 4)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_component_cursor_reads_its_scripts_with_its_definitions() {
+        use components::{ComponentMarkup, ScriptDefinitions};
+        let params: toml::Table = toml::from_str("syntax = 'html'\nscripts = true").unwrap();
+        let mut defs = ScriptDefinitions::builtin();
+        // A TypeScript Definition that names classes only.
+        defs.typescript.insert(
+            "query".into(),
+            "(class_declaration name: (type_identifier) @name) @segment".into(),
+        );
+        let p = ComponentMarkup::new(defs);
+        let input = Input {
+            bytes: SCRIPTS,
+            path: Path::new("x.vue"),
+            format: "vue",
+            disk: None,
+        };
+        let anchors: Vec<usize> = (0..SCRIPTS.len()).collect();
+        let expected = p.trails(&input, &params, &anchors).unwrap();
+        let prepared = p.prepare(input, &params).unwrap();
+        assert!(prepared.streams());
+        let mut c = prepared.cursor();
+        for (&at, t) in anchors.iter().zip(&expected) {
+            assert_eq!(c.trail_at(at).unwrap().as_ref(), t.as_slice(), "byte {at}");
+        }
+        let at = memchr::memmem::find(SCRIPTS, b"'x'").unwrap();
+        let names: Vec<&str> = expected[at].iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["div", "script[1]", "A"]);
+        let names: Vec<String> = p
+            .names(&input, &params)
+            .unwrap()
+            .into_iter()
+            .map(|n| n.text)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "div",
+                "script[1]",
+                "A",
+                "p",
+                "script[2]",
+                "g",
+                "script[3]",
+                "script"
+            ]
+        );
+    }
+
+    /// M6 Task 7.1: the markup cursor's `open_from` is the start of the outermost shown
+    /// element open at the last offset, or that offset outside every element.
+    #[test]
+    fn the_markup_cursor_tells_where_its_open_sections_start() {
+        let params: toml::Table = toml::from_str("syntax = 'html'\nscripts = true").unwrap();
+        let src = b"<html><body><div>\n<script>\nfunction f() { 1 }\n</script>\n</div>\nx<p>y\n";
+        let input = Input {
+            bytes: src,
+            path: Path::new("x"),
+            format: "html",
+            disk: None,
+        };
+        let prepared = Markup.prepare(input, &params).unwrap();
+        let mut c = prepared.cursor();
+        let div = memchr::memmem::find(src, b"<div>").unwrap();
+        let one = memchr::memmem::find(src, b"1 }").unwrap();
+        c.trail_at(one).unwrap();
+        assert_eq!(c.open_from(), Some(div), "html and body are hidden");
+        let x = memchr::memmem::find(src, b"\nx").unwrap() + 1;
+        c.trail_at(x).unwrap();
+        assert_eq!(c.open_from(), Some(x));
+        let y = memchr::memmem::find(src, b"y\n").unwrap();
+        c.trail_at(y).unwrap();
+        assert_eq!(c.open_from(), Some(y - 3));
+        assert_eq!(c.open_from_with(&mut |_| None), Some(y - 3));
     }
 }

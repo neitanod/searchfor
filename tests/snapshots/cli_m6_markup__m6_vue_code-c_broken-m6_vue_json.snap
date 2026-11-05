@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"code-c/broken-m6.vue"}}}
+{"type":"match","data":{"path":{"text":"code-c/broken-m6.vue"},"lines":{"text":"needle\n"},"line_number":2,"absolute_offset":23,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"vue","trail":[{"kind":"tag","name":"script","line":1,"end_line":2}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"code-c/broken-m6.vue"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":30,"bytes_printed":350,"matched_lines":1,"matches":1}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":350,"bytes_searched":30,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":1,"matches":1,"searches":1,"searches_with_match":1}},"type":"summary"}
