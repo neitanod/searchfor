@@ -243,7 +243,9 @@ In each chunk worktree (N is that chunk's integer), export once:
 
 ```bash
 export CARGO_TARGET_DIR="/home/sebas/robotin/apps/mdgrep/.workspace/t-798-searchfor-m5b-v1-0-windows-macos-ci-y-releases-despues-m6/targets/m6-c${N}"
-export SEARCHFOR_RG="${SEARCHFOR_RG:-/usr/bin/rg}"
+# /usr/bin/rg is ripgrep 15.1.0 on this machine since a system upgrade; the reference
+# 14.1.1 is the official musl archive, checked against ci.yml's SHA-256.
+export SEARCHFOR_RG="/home/sebas/robotin/apps/mdgrep/.workspace/t-798-searchfor-m5b-v1-0-windows-macos-ci-y-releases-despues-m6/tools/rg-14.1.1/rg"
 export SEARCHFOR_REQUIRE_REFERENCE=1
 ```
 
