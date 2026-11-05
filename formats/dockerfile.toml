@@ -1,0 +1,10 @@
+# formats/dockerfile.toml — Dockerfile stages and instructions (M6 spec §7.9): `build › RUN`.
+name       = "dockerfile"
+names      = ["Dockerfile", "Containerfile", "dockerfile"]
+extensions = ["dockerfile", "containerfile"]
+processor  = "buildfile"
+
+[params]
+syntax = "dockerfile"
+# Characters of a stage's or an instruction's name before it is cut with `…`.
+name_chars = 40

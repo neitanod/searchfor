@@ -1,4 +1,5 @@
 //! Processors turn Match anchors into Trails (design note 6).
+pub mod buildfile;
 pub mod csv;
 pub mod cursor;
 pub mod external;
@@ -158,6 +159,7 @@ pub fn by_name(name: &str) -> Option<&'static dyn Processor> {
         "csv" => Some(&csv::Csv),
         "subtitles" => Some(&subtitles::Subtitles),
         "object" => Some(&object::Object),
+        "buildfile" => Some(&buildfile::Buildfile),
         _ => None,
     }
 }
