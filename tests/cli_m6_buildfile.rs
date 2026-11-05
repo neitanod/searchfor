@@ -197,18 +197,75 @@ fn m6_dockerfile() {
     );
 }
 
+#[test]
+fn m6_make() {
+    let fx = Fixture::new();
+    let src = b"ifeq ($(OS),Windows_NT)\nrelease test: deps\n\t@echo needle\n\n# within recipe gap\n\techo needle again\nelse\nNAME := needle\nendif\ndefine BODY\nneedle body\nendef\n.RECIPEPREFIX = >\n%.o: %.c\n>echo needle pattern\n";
+    seed(&fx, "config/m6.mk", src);
+    check(
+        &fx,
+        "make",
+        "config/m6.mk",
+        &[
+            "ifeq ($(OS),Windows_NT) › release test",
+            "ifeq ($(OS),Windows_NT) › release test",
+            "ifeq ($(OS),Windows_NT) › NAME",
+            "BODY",
+            "%.o",
+        ],
+    );
+    flags(&fx, "make", "config/m6.mk", "release test", "release", "");
+    put(
+        &fx,
+        "make-lex",
+        b"OBJ := $(OBJ:.o=.c)\nKEY += needle \\\n more\nfoo:: deps\n\techo needle\nendif\nendef\nneedle\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "make",
+            "make-lex",
+            "needle",
+            &["--json"]
+        ))),
+        ["KEY", "foo", ""]
+    );
+    for operator in ["=", ":=", "::=", "?=", "+=", "!="] {
+        let src = format!("override export NAME {operator} needle\n");
+        put(&fx, "operators.mk", src.as_bytes());
+        assert_eq!(
+            paths(&matches(&output(
+                &fx,
+                "make",
+                "operators.mk",
+                "needle",
+                &["--json"]
+            ))),
+            ["NAME"]
+        );
+    }
+}
+
 /// Each Format's committed broken fixture, with its three snapshots (plan, «Committed broken
 /// fixtures, with three snapshots each»).
 #[test]
 fn m6_broken_fixtures() {
-    let owned: &[&str] = &["dockerfile"];
+    let owned: &[&str] = &["dockerfile", "make"];
     #[allow(clippy::type_complexity)]
-    let cases: &[(&str, &str, &[u8], &[&str])] = &[(
-        "dockerfile",
-        "config/broken-m6.dockerfile",
-        b"FROM alpine AS build\nRUN <<END\nneedle\nFROM needle\n",
-        &["build › RUN", "build › RUN"],
-    )];
+    let cases: &[(&str, &str, &[u8], &[&str])] = &[
+        (
+            "dockerfile",
+            "config/broken-m6.dockerfile",
+            b"FROM alpine AS build\nRUN <<END\nneedle\nFROM needle\n",
+            &["build › RUN", "build › RUN"],
+        ),
+        (
+            "make",
+            "config/broken-m6.mk",
+            b"a:\n\techo needle\nendif\nendef\nneedle\n",
+            &["a", ""],
+        ),
+    ];
     let fx = Fixture::new();
     let mut count = 0;
     for &(format, file, src, want) in cases {
@@ -246,4 +303,57 @@ fn m6_real_generated_names() {
             1
         );
     }
+}
+
+/// UTF-16 and a BOM read as UTF-8, and a lone CR breaks no line (plan, «Meaningful
+/// generated-name exclusion and encoding tests»): make is this topic's representative.
+#[test]
+fn m6_encoding_and_lone_cr() {
+    let fx = Fixture::new();
+    let (format, src) = ("make", "KEY=needle\n");
+    put(&fx, "encoding.fixture", src.as_bytes());
+    let lf = paths(&matches(&output(
+        &fx,
+        format,
+        "encoding.fixture",
+        "needle",
+        &["--json"],
+    )));
+    assert_eq!(lf, ["KEY"]);
+    let utf16: Vec<u8> = [
+        vec![0xff, 0xfe],
+        src.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+    ]
+    .concat();
+    put(&fx, "utf16.fixture", &utf16);
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            format,
+            "utf16.fixture",
+            "needle",
+            &["--json"]
+        ))),
+        lf
+    );
+    put(
+        &fx,
+        "bom.fixture",
+        &[b"\xef\xbb\xbf".as_slice(), src.as_bytes()].concat(),
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            format,
+            "bom.fixture",
+            "needle",
+            &["--json"]
+        ))),
+        lf
+    );
+    // A lone CR before the needle, in the value: the same line and the same Trail.
+    put(&fx, "cr.fixture", b"KEY=\rneedle\n");
+    let rows = matches(&output(&fx, format, "cr.fixture", "needle", &["--json"]));
+    assert_eq!(paths(&rows), lf);
+    assert_eq!(rows[0]["line_number"], 1);
 }

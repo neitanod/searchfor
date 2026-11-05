@@ -1,7 +1,8 @@
-//! buildfile: the stages and instructions of a Dockerfile (M6 spec §7.9), with one line scanner
-//! per `syntax`. A scanner gives a compact index of Source ranges, with no text; the Outline is
+//! buildfile: the stages and instructions of a Dockerfile, the targets, variables and
+//! conditionals of a Makefile (M6 spec §7.9–§7.10), with one line scanner per `syntax`. A scanner gives a compact index of Source ranges, with no text; the Outline is
 //! built from it once per file, and its cursor streams the Trails (M5b spec §6.1).
 pub mod dockerfile;
+pub mod make;
 
 use super::{Capability, Cursor, Prepared, Processor};
 use crate::model::{Input, Name, SharedTrail, Trail};
@@ -19,12 +20,14 @@ const SIGNATURE_CHARS: usize = 200;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Syntax {
     Dockerfile,
+    Make,
 }
 
 fn syntax(params: &toml::Table) -> anyhow::Result<Syntax> {
     match params.get("syntax").and_then(|v| v.as_str()) {
         Some("dockerfile") => Ok(Syntax::Dockerfile),
-        _ => anyhow::bail!("buildfile needs `syntax` = \"dockerfile\" in [params]"),
+        Some("make") => Ok(Syntax::Make),
+        _ => anyhow::bail!("buildfile needs `syntax` = \"dockerfile\" or \"make\" in [params]"),
     }
 }
 
@@ -106,6 +109,7 @@ pub(crate) fn trim(src: &[u8], r: Range<usize>) -> Range<usize> {
 fn scan(src: &[u8], syntax: Syntax) -> BuildIndex {
     match syntax {
         Syntax::Dockerfile => dockerfile::scan(src),
+        Syntax::Make => make::scan(src),
     }
 }
 
@@ -317,6 +321,14 @@ mod tests {
         cursor_equals_model(
             b"ARG A=1\nFROM a AS b\nRUN x \\\n# c\n y\nRUN <<E\nz\nE\nFROM c\nCOPY . /\n",
             "dockerfile",
+        );
+    }
+
+    #[test]
+    fn the_make_cursor_equals_its_model() {
+        cursor_equals_model(
+            b"ifeq (a,b)\nx: y\n\tz\n\n# c\n\tw\nelse\nN := 1\nendif\ndefine D\nq\nendef\nK += v \\\n u\n",
+            "make",
         );
     }
 }

@@ -1,0 +1,15 @@
+---
+source: tests/cli_m6_buildfile.rs
+expression: text
+---
+config/m6.mk
+  ifeq ($(OS),Windows_NT)
+    release test: deps
+      3:	@echo needle
+      6:	echo needle again
+    NAME
+      8:NAME := needle
+  BODY
+    11:needle body
+  %.o: %.c
+    15:>echo needle pattern

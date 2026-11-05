@@ -41,4 +41,5 @@ pub const BUILTIN: &[(&str, &str)] = &[
         "dockerfile.toml",
         include_str!("../../formats/dockerfile.toml"),
     ),
+    ("make.toml", include_str!("../../formats/make.toml")),
 ];

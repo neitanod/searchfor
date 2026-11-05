@@ -1,0 +1,11 @@
+# formats/make.toml — Makefile targets, variables and conditionals (M6 spec §7.10):
+# `ifeq ($(OS),Windows_NT) › release`.
+name       = "make"
+names      = ["Makefile", "makefile", "GNUmakefile", "BSDmakefile"]
+extensions = ["mk", "mak", "make"]
+processor  = "buildfile"
+
+[params]
+syntax = "make"
+# Characters of a target's, a variable's or a conditional's name before it is cut with `…`.
+name_chars = 40
