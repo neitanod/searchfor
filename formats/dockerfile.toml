@@ -2,6 +2,7 @@
 name       = "dockerfile"
 names      = ["Dockerfile", "Containerfile", "dockerfile"]
 extensions = ["dockerfile", "containerfile"]
+paths      = ["Dockerfile.*", "Containerfile.*"]
 processor  = "buildfile"
 
 [params]

@@ -3,6 +3,7 @@
 name       = "make"
 names      = ["Makefile", "makefile", "GNUmakefile", "BSDmakefile"]
 extensions = ["mk", "mak", "make"]
+paths      = ["Makefile.*"]
 processor  = "buildfile"
 
 [params]
