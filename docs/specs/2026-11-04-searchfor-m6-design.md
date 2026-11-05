@@ -170,9 +170,9 @@ name); a file no glob can match costs the same lookups as today. Signal 4 runs b
 extension, so it is the one that reaches files with a claimed extension: its globs are found
 through the lowercase extension the Detector already looks up, so a file whose extension no
 signal-4 glob writes pays nothing more; a file whose extension one writes (with the built-ins,
-every `.json` and `.html`) pays a comparison of its file name against the glob's literal part
-(`result.json`, the prefix `messages`), and only a name that passes it runs the glob. Criterion
-51 measures it, with `.json` and `.html` files in its corpus.
+every `.json`, `.html` and `.txt`) pays a comparison of its file name against the glob's literal
+part (`result.json`, the prefix `messages`, the infix `WhatsApp`), and only a name that passes it
+runs the glob. Criterion 51 measures it, with `.json`, `.html` and `.txt` files in its corpus.
 
 ### 4.2 Detection table
 
@@ -209,7 +209,7 @@ every `.json` and `.html`) pays a comparison of its file name against the glob's
 | `mbox` | `mbox` | `mbox`, `mbx` | | `46726f6d20` (`From `) |
 | `icalendar`, `vcard` | | `ics`, `ical`, `ifb`; `vcf`, `vcard` | | |
 | `bibtex` | | `bib` | | |
-| `whatsapp` | `_chat.txt` | | `WhatsApp Chat with *.txt`, `WhatsApp Chat - *.txt` (and the localized names of §10.4) | |
+| `whatsapp` | `_chat.txt` | | `*WhatsApp*.txt` | |
 | `telegram` | | | `**/ChatExport_*/result.json`, `**/DataExport_*/result.json` | |
 | `telegram-html` | | | `**/ChatExport_*/messages*.html` | |
 
@@ -229,9 +229,10 @@ Notes on the table, each a decision with its reason:
 - **mbox's `From ` magic** applies, as every magic, only to names without an extension
   (Thunderbird's `Inbox`, `Sent`).
 - **The chat exports are told by the names their apps give them** (§10.4, §10.5), with no look
-  at the content: Open question 1. Telegram's globs write the extension (`result.json`,
-  `messages*.html`), so they are signal 4 of §4.1 and win over `json` and `html` inside a
-  `ChatExport_*` or `DataExport_*` folder only.
+  at the content: Open question 1, answered A. Telegram's globs write the extension
+  (`result.json`, `messages*.html`), so they are signal 4 of §4.1 and win over `json` and
+  `html` inside a `ChatExport_*` or `DataExport_*` folder only. WhatsApp's glob,
+  `*WhatsApp*.txt`, writes `.txt` and is signal 4 too, which no Definition claims.
 
 ## 5. Processors
 
@@ -788,11 +789,16 @@ newer exports put in them — and runs over the lines up to the next such line.
   it). A message is a `message` Segment named by its time as written and its sender
   (`21:41 Ana`), or its time alone for a system message.
 - **Example.** `WhatsApp Chat with Ana.txt:120: 31/12/23 › 21:41 Ana │ 31/12/23, 21:41 - Ana: where's the needle?`
-- **Detection.** By the names WhatsApp gives exports: `WhatsApp Chat with *.txt`,
-  `WhatsApp Chat - *.txt`, `_chat.txt` (iOS), and the localized names the plan collects from
-  WhatsApp's own strings for Spanish, Portuguese, French, Italian and German (not verified
-  here: the plan lists each with its source). Open question 1.
-- **Failure.** Lines before the first message are at the top.
+- **Detection.** By name and path, with no look at the content (Open question 1, answered A):
+  `_chat.txt`, the name of the text inside the export's zip, and one glob, `*WhatsApp*.txt`.
+  The app's name is in the export's file name in every language (`WhatsApp Chat with Ana.txt`,
+  `Chat de WhatsApp con Ana.txt`), so one glob replaces lists of localized names, which would
+  need sources this repository does not have. A `.txt` that matches the glob and is no export
+  costs nothing visible: it fails the first-line check below and its Matches show as rg shows
+  them (8385).
+- **Failure.** The first line, after a BOM and a U+200E, must open a message; a file whose first
+  line does not is no export, and every Match in it has an empty Trail. After that, a line that
+  opens no message continues the message before it.
 
 ### 10.5 Telegram
 
@@ -870,7 +876,8 @@ For every M6 Format:
   `tests/rg_compat_m6.rs`.
 - **The structural flags**: `--within` with a Trail of that Format, `--expand` printing its
   Sections, `--in-headings` finding a name and not an added word (§3 rule 4).
-- **The fuzz**: `tests/fuzz.rs` runs each new Processor and layout over mutated fixtures (bytes
+- **The fuzz**: `tests/fuzz_m6.rs` (the text Formats) and `tests/cli_m6_object.rs` (the binary
+  layouts) run each new Processor and layout over mutated fixtures (bytes
   changed, cut, repeated): nothing panics, a file ends within 2 s, every Segment lies inside
   the file and every name inside its Section's lines or generated.
 - **Detection**: a unit test per row of §4.2, and the cases of §4.1 (compound extension over
@@ -889,8 +896,9 @@ For every M6 Format:
   keeps showing a Plain file becoming a described one; the README's Helper Processors example
   moves with it. The tests that write a user `ini` Definition (`tests/cli_m2.rs`,
   `tests/cli_m5.rs`, `tests/helpers.rs`) keep working, since a user Definition replaces the
-  built-in with its name (spec §4.2); their expectations of its origin change from `user` to
-  `overridden`.
+  built-in with its name (spec §4.2). `--list-formats` shows that `ini` as `overridden` instead
+  of `user`, and none of the three asserts its origin (checked on `efabcde`), so they need no
+  change.
 - **The skill** (`skills/searchfor/SKILL.md`): its description and Formats list name the M6
   Formats (the description is what makes an agent load it), with three examples: a config
   Trail, a SQL dump row, a diff hunk.
@@ -902,15 +910,17 @@ For every M6 Format:
 
 ## 15. Milestone parts
 
-Three tandas; within each, the chunks touch separate files, except the registration points every
-chunk adds a line to (`src/formats/builtin.rs`, `processors::by_name`, the tree's label kinds,
-the schema's description), which the plan gives to one chunk per tanda or merges by hand.
+Four tandas of twelve chunks (the plan's chunk graph); within each, the chunks touch separate
+files, except the registration points every chunk adds a line to (`src/formats/builtin.rs`,
+`processors::by_name`, the tree's label kinds, the schema's description), which the
+orchestrator merges by hand.
 
 | Tanda | Chunks | Formats |
 |---|---|---|
 | 1 · Detection and configuration | Detector: compound extensions and `paths` (§4) · keypath syntaxes `ini`, `properties`, `env`, `ssh`, `ical`, `bibtex` · `blocks` (nginx, Apache, HCL, GraphQL, Protobuf) · `buildfile` (Dockerfile, Makefile, justfile) | 16 |
 | 2 · Documents and code | `headings` (AsciiDoc, rST, Org, LaTeX) · JSON views (Jupyter, HAR, Telegram) · `markup` scripts, templates and the Telegram view (Vue, Svelte, Blade, Telegram HTML) · `sql` · `diff` · `mail` (`.eml`, mbox) · `chat` (WhatsApp) | 16 |
-| 3 · Binaries and closing | `object` layouts (JPEG, PNG, WebP, TIFF, ID3, MP4, WebAssembly, Java class) · cost and dense criteria over every new Processor (§11) · fuzz · docs (§14) · version 1.1.0 | 8 |
+| 3 · Binaries and cost | `object` layouts (JPEG, PNG, WebP, TIFF, ID3, MP4, WebAssembly, Java class) · cost and dense criteria over every new Processor (§11) · fuzz | 8 |
+| 4 · Closing | docs (§14) · version 1.1.0 | 0 |
 
 Tanda 1 goes first because the Detector's `paths` and compound extensions detect Formats of
 tanda 1 itself (nginx, `.env`, ssh config, Dockerfile) and of tanda 2 (Blade, the chat exports);
@@ -926,9 +936,10 @@ New, numbered after M5b's #42:
     `/etc/nginx/sites-enabled/default` are detected by `paths` on the four systems (with `\` on
     Windows); `Makefile.toml` is TOML; `ChatExport_2024/result.json` is `telegram` and
     `ChatExport_2024/messages.html` `telegram-html`, while a `result.json` or `messages.html`
-    outside a `ChatExport_*` folder is JSON or HTML (§4.1, signal 4); a `.conf` outside the
-    paths of §4.2 is Plain; a `cafebabe` file reads as a Java class or a fat Mach-O, whichever
-    it is.
+    outside a `ChatExport_*` folder is JSON or HTML (§4.1, signal 4); `WhatsApp Chat with
+    Ana.txt` and `Chat de WhatsApp con Ana.txt` are `whatsapp`, and a `.txt` without `WhatsApp`
+    in its name Plain; a `.conf` outside the paths of §4.2 is Plain; a `cafebabe` file reads as
+    a Java class or a fat Mach-O, whichever it is.
 44. **Every M6 Format** has a fixture, a snapshot of its tree, one-line and JSON output, and a
     test of each example Trail of §6–§10; `s4 --no-docs --no-trail` and `--json --no-trail` equal
     rg 14.1.1 over every M6 fixture (`tests/rg_compat_m6.rs`).
@@ -956,8 +967,8 @@ New, numbered after M5b's #42:
     new Processor family: AsciiDoc, INI, nginx, Makefile, SQL (an `INSERT` dump), a diff, an
     mbox, a WhatsApp export, and HAR through the JSON view.
 51. **Detection cost (M6).** Over 100 000 files whose names no M6 signal claims, among them
-    `.json` and `.html` files (some named `result.json` and `messages.html`) outside Telegram's
-    folders, which signal 4 of §4.1 consults, s4 with the M6 Definitions ≤ 1.02 × M5b's s4
+    `.json`, `.html` and `.txt` files (some named `result.json`, `messages.html` and
+    `notes.txt`) outside Telegram's folders, which signal 4 of §4.1 consults, s4 with the M6 Definitions ≤ 1.02 × M5b's s4
     (`--no-docs`, a pattern no file matches, median of three alternated series).
 52. **Large files (M6).** A generated 1 GiB SQL dump, mbox and WhatsApp export, each with one
     Match in its first unit, get their Trails within rg's time plus 0.5 s and rg's peak RSS plus
@@ -973,10 +984,13 @@ New, numbered after M5b's #42:
 
 ## Open questions
 
-1. **How chat exports are detected.** WhatsApp names an export `WhatsApp Chat with <name>.txt`
-   (localized), and people rename it or unpack `_chat.txt` from its zip; Telegram's
-   `result.json` and `messages.html` are told apart by their `ChatExport_*` folder. The spec
-   rules out sniffing content (spec §4.1). Options:
+1. **How chat exports are detected.** *Answered A (Sebastián, Hilo 855 #12694); WhatsApp's
+   names became one glob, `*WhatsApp*.txt` (§10.4), and the chat Processor's first-line check
+   decides structure, never the Format, so detection stays by name and path.*
+   WhatsApp names an export `WhatsApp Chat with <name>.txt` (localized), and people rename it
+   or unpack `_chat.txt` from its zip; Telegram's `result.json` and `messages.html` are told
+   apart by their `ChatExport_*` folder. The spec rules out sniffing content (spec §4.1).
+   Options:
    - **A** (recommended): names and paths only, as §4.2; a renamed export is read with
      `--format 'chats/*.txt=whatsapp'`, which the docs show. Keeps the rule and its zero cost.
    - **B**: for a `.txt` with a Match (and only then, so files without Matches cost nothing),
