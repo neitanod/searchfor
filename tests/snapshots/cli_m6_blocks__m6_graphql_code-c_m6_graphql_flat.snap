@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+2: User › email │  email: String! # needle
+7: GetUser › user › posts › title │    title(needle: true)

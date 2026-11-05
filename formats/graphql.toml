@@ -1,0 +1,10 @@
+# formats/graphql.toml — GraphQL definitions, fields and selections (M6 spec §8.6):
+# `User › email`, `GetUser › user › posts › title`.
+name       = "graphql"
+extensions = ["graphql", "gql", "graphqls"]
+processor  = "blocks"
+
+[params]
+syntax = "graphql"
+# Characters of a definition's or a field's name before it is cut with `…`.
+name_chars = 40

@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"code-c/broken-m6.proto"}}}
+{"type":"match","data":{"path":{"text":"code-c/broken-m6.proto"},"lines":{"text":"message A { string x=1; // needle\n"},"line_number":1,"absolute_offset":0,"submatches":[{"match":{"text":"needle"},"start":27,"end":33}],"format":"protobuf","trail":[{"kind":"message","name":"A","line":1,"end_line":2},{"kind":"field","name":"x","line":1,"end_line":1}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code-c/broken-m6.proto"},"lines":{"text":"needle\n"},"line_number":4,"absolute_offset":38,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"protobuf","trail":[],"fragment":null}}
+{"type":"end","data":{"path":{"text":"code-c/broken-m6.proto"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":45,"bytes_printed":676,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":676,"bytes_searched":45,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

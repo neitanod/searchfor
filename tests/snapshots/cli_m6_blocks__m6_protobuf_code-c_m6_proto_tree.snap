@@ -1,0 +1,14 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+code-c/m6.proto
+  message User
+    field email
+      2: string email = 1 [json_name = "needle"];
+    oneof choice
+      field nick
+        4:  string nick = 2; // needle
+  service Users
+    rpc Get
+      8: rpc Get (User) returns (User) { option note = "needle"; }

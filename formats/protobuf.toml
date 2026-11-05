@@ -1,0 +1,10 @@
+# formats/protobuf.toml — Protobuf messages, services and members (M6 spec §8.7):
+# `User › choice › nick`, `Users › Get`.
+name       = "protobuf"
+extensions = ["proto"]
+processor  = "blocks"
+
+[params]
+syntax = "protobuf"
+# Characters of a message's, a service's or a member's name before it is cut with `…`.
+name_chars = 40

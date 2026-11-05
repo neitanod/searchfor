@@ -3,8 +3,10 @@
 //! of Source ranges, label ranges, parents and name pieces in file order; the cursor builds a
 //! Segment only when a Trail needs it (M6 plan, Chunk 3, D7).
 mod apache;
+mod graphql;
 mod hcl;
 mod nginx;
+mod protobuf;
 
 use super::{Capability, Cursor, Prepared, Processor};
 use crate::model::{Input, Name, Segment, SharedTrail, Trail};
@@ -21,6 +23,8 @@ enum Syntax {
     Nginx,
     Apache,
     Hcl,
+    Graphql,
+    Protobuf,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -35,8 +39,10 @@ impl Params {
             Some("nginx") => Syntax::Nginx,
             Some("apache") => Syntax::Apache,
             Some("hcl") => Syntax::Hcl,
+            Some("graphql") => Syntax::Graphql,
+            Some("protobuf") => Syntax::Protobuf,
             _ => anyhow::bail!(
-                "blocks needs `syntax` = \"nginx\", \"apache\" or \"hcl\" in [params]"
+                "blocks needs `syntax` = \"nginx\", \"apache\", \"hcl\", \"graphql\" or \"protobuf\" in [params]"
             ),
         };
         let name_chars = t
@@ -51,6 +57,8 @@ impl Params {
             Syntax::Nginx => nginx::scan(src, self.name_chars),
             Syntax::Apache => apache::scan(src, self.name_chars),
             Syntax::Hcl => hcl::scan(src, self.name_chars),
+            Syntax::Graphql => graphql::scan(src, self.name_chars),
+            Syntax::Protobuf => protobuf::scan(src, self.name_chars),
         }
     }
 }
@@ -61,6 +69,26 @@ pub(crate) enum Kind {
     Block,
     Key,
     Element,
+    // GraphQL's definitions (M6 spec §8.6); `enum`, `extend` and `field` are Protobuf's too.
+    Type,
+    Interface,
+    Input,
+    Enum,
+    Union,
+    Scalar,
+    Schema,
+    Directive,
+    Extend,
+    Query,
+    Mutation,
+    Subscription,
+    Fragment,
+    Field,
+    // Protobuf's (M6 spec §8.7).
+    Message,
+    Service,
+    Rpc,
+    Oneof,
 }
 
 impl Kind {
@@ -69,6 +97,24 @@ impl Kind {
             Kind::Block => "block",
             Kind::Key => "key",
             Kind::Element => "element",
+            Kind::Type => "type",
+            Kind::Interface => "interface",
+            Kind::Input => "input",
+            Kind::Enum => "enum",
+            Kind::Union => "union",
+            Kind::Scalar => "scalar",
+            Kind::Schema => "schema",
+            Kind::Directive => "directive",
+            Kind::Extend => "extend",
+            Kind::Query => "query",
+            Kind::Mutation => "mutation",
+            Kind::Subscription => "subscription",
+            Kind::Fragment => "fragment",
+            Kind::Field => "field",
+            Kind::Message => "message",
+            Kind::Service => "service",
+            Kind::Rpc => "rpc",
+            Kind::Oneof => "oneof",
         }
     }
 }
@@ -81,7 +127,13 @@ pub(crate) enum Part {
     /// `[N]`, 0-based, right after the holder's name: a list element's (M6 spec §7.8). It
     /// maps to no Source byte, so `--in-headings` never finds it.
     Index(u32),
+    /// A word s4 adds, `WORDS[k]`, after a space unless first: GraphQL's anonymous `query`.
+    /// It maps to no Source byte either.
+    Word(u8),
 }
+
+/// The words of `Part::Word`.
+const WORDS: &[&str] = &["query"];
 
 impl Part {
     pub(crate) fn src(r: Range<usize>) -> Self {
@@ -185,6 +237,12 @@ impl BlockIndex {
                     n.push_lossy(src, start.min(end)..end);
                 }
                 Part::Index(k) => n.push_str(&format!("[{k}]")),
+                Part::Word(k) => {
+                    if !first {
+                        n.push_str(" ");
+                    }
+                    n.push_str(WORDS[k as usize]);
+                }
             }
             first = false;
         }
@@ -710,6 +768,18 @@ impl Processor for Blocks {
     }
 }
 
+/// Where a member that ends with its line ends: past its last token at `last` and the rest of
+/// that line (an end-of-line comment), but before the next token at `next` and its white space.
+pub(crate) fn tail_end(src: &[u8], last: usize, next: usize) -> usize {
+    let last = last.min(src.len());
+    let eol = memchr::memchr(b'\n', &src[last..]).map_or(src.len(), |k| last + k);
+    let mut end = eol.min(next.max(last));
+    while end > last && is_space(src[end - 1]) {
+        end -= 1;
+    }
+    end
+}
+
 /// ASCII white space, a lone CR included (M6 spec §3, point 7: no line break).
 pub(crate) fn is_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b'\x0b' | b'\x0c')
@@ -819,6 +889,26 @@ pub(crate) mod tests {
             "hcl",
             b"resource \"aws_instance\" \"web\" {\n tags = {\n  Name = \"needle-web\"\n }\n ingress = [\n  { port = 80 },\n  { name = \"needle\" }\n ]\n script = <<-EOT\n  echo needle ${not_a_block}\n  EOT\n}\nl = [[1, 2], [3]]\n",
         );
+    }
+
+    #[test]
+    fn schema_cursors_agree_with_the_model() {
+        cursor_agrees(
+            "graphql",
+            b"type User {\n email: String! # needle\n}\nquery GetUser {\n user(id: 1) {\n  posts {\n   title(needle: true)\n  }\n }\n}\n{ a { b(c: 1) } }\nunion U = A | B # x\n",
+        );
+        cursor_agrees(
+            "protobuf",
+            b"message User {\n string email = 1 [json_name = \"needle\"];\n oneof choice {\n  string nick = 2; // needle\n }\n}\nservice Users {\n rpc Get (User) returns (User) { option note = \"needle\"; }\n rpc Put (User) returns (User); // x\n}\n",
+        );
+    }
+
+    #[test]
+    fn tail_ends_take_the_comment_but_not_the_next_token() {
+        let src = b"a; // c\r\nb; c;\n";
+        assert_eq!(tail_end(src, 2, 10), 7);
+        assert_eq!(tail_end(src, 11, 12), 11);
+        assert_eq!(tail_end(src, 14, 15), 14);
     }
 
     #[test]

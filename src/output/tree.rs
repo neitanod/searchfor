@@ -350,6 +350,29 @@ mod tests {
     #[test]
     fn labels_of_the_m6_block_kinds() {
         assert_eq!(label(&seg("block", "location /api", 1, 1)), "location /api");
+        // GraphQL's and Protobuf's kinds print before the name (M6 spec §8.6).
+        for kind in [
+            "type",
+            "interface",
+            "input",
+            "enum",
+            "union",
+            "scalar",
+            "schema",
+            "directive",
+            "extend",
+            "query",
+            "mutation",
+            "subscription",
+            "fragment",
+            "field",
+            "message",
+            "service",
+            "rpc",
+            "oneof",
+        ] {
+            assert_eq!(label(&seg(kind, "N", 1, 1)), format!("{kind} N"), "{kind}");
+        }
     }
 
     #[test]

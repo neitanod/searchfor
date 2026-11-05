@@ -1,0 +1,3 @@
+query A { x(needle:true) }
+}
+needle

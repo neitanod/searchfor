@@ -264,10 +264,161 @@ needle
     );
 }
 
+#[test]
+fn m6_schema_blocks() {
+    let fx = Fixture::new();
+    let gql = b"type User {\n email: String! # needle\n}\nquery GetUser {\n user(id: 1) {\n  posts {\n   title(needle: true)\n  }\n }\n}\n";
+    seed(&fx, "code-c/m6.graphql", gql);
+    check(
+        &fx,
+        "graphql",
+        "code-c/m6.graphql",
+        &["User › email", "GetUser › user › posts › title"],
+    );
+    flags(&fx, "graphql", "code-c/m6.graphql", "User", "email", "");
+    let proto = b"message User {\n string email = 1 [json_name = \"needle\"];\n oneof choice {\n  string nick = 2; // needle\n }\n}\nservice Users {\n rpc Get (User) returns (User) { option note = \"needle\"; }\n}\n";
+    seed(&fx, "code-c/m6.proto", proto);
+    check(
+        &fx,
+        "protobuf",
+        "code-c/m6.proto",
+        &["User › email", "User › choice › nick", "Users › Get"],
+    );
+    flags(&fx, "protobuf", "code-c/m6.proto", "User", "email", "");
+    for (format, src, want) in [
+        (
+            "graphql",
+            "query A { x(arg: \"needle }\") }\n}\nneedle\n",
+            vec!["A › x", ""],
+        ),
+        (
+            "protobuf",
+            "message A { string x = 1; // needle\n}\n}\nneedle\n",
+            vec!["A › x", ""],
+        ),
+    ] {
+        put(&fx, "bad-schema", src.as_bytes());
+        assert_eq!(
+            paths(&matches(&output(
+                &fx,
+                format,
+                "bad-schema",
+                "needle",
+                &["--json"]
+            ))),
+            want
+        );
+    }
+    put(&fx, "anonymous.gql", b"{ user { id(needle:true) } }\n");
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "graphql",
+            "anonymous.gql",
+            "needle",
+            &["--json"]
+        ))),
+        ["query › user › id"]
+    );
+}
+
+/// M6 plan, «Definition-kind and template keyword completeness», GraphQL and Protobuf.
+#[test]
+fn m6_schema_keyword_kinds() {
+    let fx = Fixture::new();
+    let graphql = [
+        ("type", "type A { x: String # needle\n}\n", "A › x"),
+        (
+            "interface",
+            "interface A { x: String # needle\n}\n",
+            "A › x",
+        ),
+        ("input", "input A { x: String # needle\n}\n", "A › x"),
+        ("enum", "enum A { X # needle\n}\n", "A › X"),
+        ("union", "union A = B | C # needle\n", "A"),
+        ("scalar", "scalar A # needle\n", "A"),
+        (
+            "schema",
+            "schema { query: A # needle\n}\n",
+            "schema › query",
+        ),
+        ("directive", "directive @a on FIELD # needle\n", "a"),
+        ("extend", "extend type A { x: String # needle\n}\n", "A › x"),
+        ("query", "query A { x(needle:true) }\n", "A › x"),
+        ("mutation", "mutation A { x(needle:true) }\n", "A › x"),
+        (
+            "subscription",
+            "subscription A { x(needle:true) }\n",
+            "A › x",
+        ),
+        ("fragment", "fragment A on B { x(needle:true) }\n", "A › x"),
+    ];
+    for (kind, src, want) in graphql {
+        put(&fx, "keyword.gql", src.as_bytes());
+        let rows = matches(&output(
+            &fx,
+            "graphql",
+            "keyword.gql",
+            "needle",
+            &["--json"],
+        ));
+        assert_eq!(paths(&rows), [want]);
+        assert_eq!(rows[0]["trail"][0]["kind"], kind);
+    }
+    for (kind, src, want) in [
+        ("message", "message A { string x=1; // needle\n}\n", "A › x"),
+        ("enum", "enum A { X=0; // needle\n}\n", "A › X"),
+        ("service", "service A { // needle\n}\n", "A"),
+        (
+            "rpc",
+            "service A { rpc B (X) returns (Y) { // needle\n} }\n",
+            "A › B",
+        ),
+        (
+            "oneof",
+            "message A { oneof B { string x=1; // needle\n} }\n",
+            "A › B › x",
+        ),
+        ("extend", "extend A { string x=1; // needle\n}\n", "A › x"),
+    ] {
+        put(&fx, "keyword.proto", src.as_bytes());
+        let rows = matches(&output(
+            &fx,
+            "protobuf",
+            "keyword.proto",
+            "needle",
+            &["--json"],
+        ));
+        assert_eq!(paths(&rows), [want]);
+        assert!(
+            rows[0]["trail"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["kind"] == kind)
+        );
+    }
+    put(
+        &fx,
+        "strings.gql",
+        b"query A { alias: user(arg: \"\"\"needle } {\"\"\") { id } }\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "graphql",
+            "strings.gql",
+            "needle",
+            &["--json"]
+        ))),
+        ["A › alias"]
+    );
+}
+
 /// M6 plan, «Committed broken fixtures, with three snapshots each», blocks' rows.
 #[test]
 fn m6_broken_fixtures() {
-    let owned: &[&str] = &["nginx", "apache", "hcl"];
+    let owned: &[&str] = &["nginx", "apache", "hcl", "graphql", "protobuf"];
     let cases: &[(&str, &str, &[u8], &[&str])] = &[
         (
             "nginx",
@@ -286,6 +437,18 @@ fn m6_broken_fixtures() {
             "config/broken-m6.tf",
             b"x { k=\"needle\" }\n}\nneedle\n",
             &["x › k", ""],
+        ),
+        (
+            "graphql",
+            "code-c/broken-m6.graphql",
+            b"query A { x(needle:true) }\n}\nneedle\n",
+            &["A › x", ""],
+        ),
+        (
+            "protobuf",
+            "code-c/broken-m6.proto",
+            b"message A { string x=1; // needle\n}\n}\nneedle\n",
+            &["A › x", ""],
         ),
     ];
     let fx = Fixture::new();

@@ -1,0 +1,9 @@
+message User {
+ string email = 1 [json_name = "needle"];
+ oneof choice {
+  string nick = 2; // needle
+ }
+}
+service Users {
+ rpc Get (User) returns (User) { option note = "needle"; }
+}

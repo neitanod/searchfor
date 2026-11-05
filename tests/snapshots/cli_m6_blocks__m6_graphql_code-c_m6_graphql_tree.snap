@@ -1,0 +1,13 @@
+---
+source: tests/cli_m6_blocks.rs
+expression: text
+---
+code-c/m6.graphql
+  type User
+    field email
+      2: email: String! # needle
+  query GetUser
+    field user
+      field posts
+        field title
+          7:   title(needle: true)
