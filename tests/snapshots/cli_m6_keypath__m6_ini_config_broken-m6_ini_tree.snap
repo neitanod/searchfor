@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+config/broken-m6.ini
+  s
+    k
+      2:k=needle
+      4:needle

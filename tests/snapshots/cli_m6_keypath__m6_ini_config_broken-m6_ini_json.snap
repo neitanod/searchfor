@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"config/broken-m6.ini"}}}
+{"type":"match","data":{"path":{"text":"config/broken-m6.ini"},"lines":{"text":"k=needle\n"},"line_number":2,"absolute_offset":4,"submatches":[{"match":{"text":"needle"},"start":2,"end":8}],"format":"ini","trail":[{"kind":"key","name":"s","line":1,"end_line":4},{"kind":"key","name":"k","line":2,"end_line":4}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/broken-m6.ini"},"lines":{"text":"needle\n"},"line_number":4,"absolute_offset":21,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"ini","trail":[{"kind":"key","name":"s","line":1,"end_line":4},{"kind":"key","name":"k","line":2,"end_line":4}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"config/broken-m6.ini"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":28,"bytes_printed":722,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":722,"bytes_searched":28,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}
