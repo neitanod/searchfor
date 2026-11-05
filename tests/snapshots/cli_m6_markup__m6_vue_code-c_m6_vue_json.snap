@@ -1,0 +1,10 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"code-c/m6.vue"}}}
+{"type":"match","data":{"path":{"text":"code-c/m6.vue"},"lines":{"text":"<ul class=\"items\"><li>x</li><li>needle template</li></ul>\n"},"line_number":2,"absolute_offset":11,"submatches":[{"match":{"text":"needle"},"start":32,"end":38}],"format":"vue","trail":[{"kind":"tag","name":"template","line":1,"end_line":3},{"kind":"tag","name":"ul.items","line":2,"end_line":2},{"kind":"tag","name":"li[2]","line":2,"end_line":2}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code-c/m6.vue"},"lines":{"text":"  const value: string = 'needle';\n"},"line_number":6,"absolute_offset":121,"submatches":[{"match":{"text":"needle"},"start":25,"end":31}],"format":"vue","trail":[{"kind":"tag","name":"script","line":4,"end_line":8},{"kind":"function","name":"addItem","line":5,"end_line":7,"signature":"function addItem()"}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"code-c/m6.vue"},"lines":{"text":"<style>.needle { color:red }</style>\n"},"line_number":9,"absolute_offset":167,"submatches":[{"match":{"text":"needle"},"start":8,"end":14}],"format":"vue","trail":[{"kind":"tag","name":"style","line":9,"end_line":9}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"code-c/m6.vue"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":204,"bytes_printed":1209,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1209,"bytes_searched":204,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}

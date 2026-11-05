@@ -1,0 +1,7 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+code-c/broken-m6.vue
+  script
+    2:needle

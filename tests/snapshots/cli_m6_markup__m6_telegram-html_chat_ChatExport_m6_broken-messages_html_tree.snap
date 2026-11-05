@@ -1,0 +1,7 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+chat/ChatExport_m6/broken-messages.html
+  message 2024 Ana
+    1:<div class='message'><div class='date' title='2024'>x</div><div class='from_name'>Ana</div><div class='text'>needle

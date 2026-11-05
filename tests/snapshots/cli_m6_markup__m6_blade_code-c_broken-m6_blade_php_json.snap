@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"code-c/broken-m6.blade.php"}}}
+{"type":"match","data":{"path":{"text":"code-c/broken-m6.blade.php"},"lines":{"text":"<div>needle\n"},"line_number":2,"absolute_offset":8,"submatches":[{"match":{"text":"needle"},"start":5,"end":11}],"format":"blade","trail":[{"kind":"block","name":"@if($x)","line":1,"end_line":2},{"kind":"tag","name":"div","line":2,"end_line":2}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"code-c/broken-m6.blade.php"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":20,"bytes_printed":422,"matched_lines":1,"matches":1}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":422,"bytes_searched":20,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":1,"matches":1,"searches":1,"searches_with_match":1}},"type":"summary"}

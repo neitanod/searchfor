@@ -1,0 +1,13 @@
+# formats/telegram-html.toml — Telegram Desktop's HTML chat export (M6 spec §10.5): each
+# message named by its date's title and its sender, `31.01.2024 10:04:12 Ana`. Without the
+# export template's class names, a page keeps HTML's element paths.
+name       = "telegram-html"
+paths      = ["**/ChatExport_*/messages*.html"]
+processor  = "markup"
+
+[params]
+syntax = "html"
+view   = "telegram"
+# Characters of a message's name before it is cut with `…`: an export's date titles take 29
+# (`31.01.2024 10:04:12 UTC-03:00`), so a sender's name keeps room after them.
+name_chars = 80

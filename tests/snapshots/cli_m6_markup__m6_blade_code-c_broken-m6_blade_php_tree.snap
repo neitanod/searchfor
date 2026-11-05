@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+code-c/broken-m6.blade.php
+  @if($x)
+    div
+      2:<div>needle

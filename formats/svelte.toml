@@ -1,0 +1,15 @@
+# formats/svelte.toml — Svelte components (M6 spec §8.4): element paths, `{#if}`, `{#each}`,
+# `{#await}`, `{#key}` and `{#snippet}` blocks, and the Trails of `<script>`:
+# `ul › #each items as item › li`.
+name       = "svelte"
+extensions = ["svelte"]
+processor  = "markup"
+
+[params]
+syntax = "html"
+# Each `<script>` is parsed by the Grammar its `lang` names, as in Vue.
+scripts = true
+# A block is named by its opening tag without braces, and `{/each}` closes it.
+templates = "svelte"
+# Characters of an element's or a block's name before it is cut with `…`.
+name_chars = 40

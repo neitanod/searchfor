@@ -1,0 +1,7 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+2: template › ul.items › li[2] │ <ul class="items"><li>x</li><li>needle template</li></ul>
+6: script › addItem │   const value: string = 'needle';
+9: style │ <style>.needle { color:red }</style>

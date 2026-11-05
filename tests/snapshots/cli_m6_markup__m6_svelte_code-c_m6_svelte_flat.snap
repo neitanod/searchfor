@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+3: ul › #each items as item › li[1] │ <li>{item.needle}</li>
+5: ul › #each items as item › li[2] │ <li>needle empty</li>

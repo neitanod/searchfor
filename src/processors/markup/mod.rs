@@ -1,8 +1,15 @@
 //! markup: HTML and XML element paths (spec §5.4, M3 plan design note 3). One walk over the
 //! tags feeds keypath's Collector the elements that hold an anchor, so a big file with three
-//! Matches keeps three short stacks.
+//! Matches keeps three short stacks. With `scripts`, the content of a `<script>` gets the
+//! Trails of its Grammar under the `script` element (M6 spec §8.3, `components`); with
+//! `templates`, Svelte's and Blade's blocks open and close on the same stack as the elements
+//! (M6 spec §8.4, §8.5, `templates`); with `view = "telegram"`, Telegram's exported messages
+//! are the Segments (M6 spec §10.5, `telegram`).
+pub mod components;
 pub mod html;
 pub mod scan;
+pub mod telegram;
+pub mod templates;
 
 use super::{Capability, Cursor, Prepared, Processor};
 use crate::model::{Input, Name, Segment, SharedTrail, Trail};
@@ -13,6 +20,10 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use crate::text::Pieces;
+use components::Scripts;
+use std::cell::RefCell;
+use std::rc::Rc;
+use templates::TemplateSyntax;
 
 pub struct Markup;
 
@@ -32,6 +43,22 @@ pub(crate) enum Syntax {
 struct Params {
     syntax: Syntax,
     name_chars: usize,
+    /// HTML: each `<script>`'s content is read by its Grammar (M6 spec §8.3).
+    scripts: bool,
+    /// The caps past which a script keeps its element's Segment alone (`script_max_bytes`,
+    /// `script_max_line`).
+    caps: components::Caps,
+    /// HTML: the template blocks read between the tags (M6 spec §8.4, §8.5).
+    templates: Option<TemplateSyntax>,
+    /// HTML: `view = "telegram"`, Telegram's messages when the file has their classes (M6
+    /// spec §10.5).
+    telegram: bool,
+}
+
+/// Whether a markup Definition's `[params]` read its scripts: then a run gives it a
+/// `ComponentMarkup` with the Registry's script Definitions (`Processors::for_definition_in`).
+pub(crate) fn scripts_on(t: &toml::Table) -> bool {
+    t.get("scripts").and_then(|v| v.as_bool()) == Some(true)
 }
 
 fn params(t: &toml::Table) -> anyhow::Result<Params> {
@@ -45,7 +72,54 @@ fn params(t: &toml::Table) -> anyhow::Result<Params> {
         .and_then(|v| v.as_integer())
         .filter(|&n| n > 0)
         .map_or(DEFAULT_NAME_CHARS, |n| n as usize);
-    Ok(Params { syntax, name_chars })
+    let scripts = scripts_on(t);
+    let templates =
+        match t.get("templates").and_then(|v| v.as_str()) {
+            None => None,
+            Some(s) => Some(TemplateSyntax::parse(s).ok_or_else(|| {
+                anyhow::anyhow!("markup's `templates` is \"svelte\" or \"blade\"")
+            })?),
+        };
+    let telegram = match t.get("view").and_then(|v| v.as_str()) {
+        None => false,
+        Some("telegram") => true,
+        Some(_) => anyhow::bail!("markup's `view` is \"telegram\""),
+    };
+    if (scripts || templates.is_some() || telegram) && syntax != Syntax::Html {
+        anyhow::bail!(
+            "markup reads `scripts`, `templates` and `view` only with `syntax` = \"html\""
+        );
+    }
+    let cap = |key: &str| {
+        t.get(key)
+            .and_then(|v| v.as_integer())
+            .filter(|&n| n > 0)
+            .map(|n| n as usize)
+    };
+    let caps = components::Caps {
+        max_bytes: cap("script_max_bytes"),
+        max_line: cap("script_max_line"),
+    };
+    Ok(Params {
+        syntax,
+        name_chars,
+        scripts,
+        caps,
+        templates,
+        telegram,
+    })
+}
+
+/// The scripts a walk reads with `p`: `configured`'s, else the built-in Definitions'; None
+/// when `p` reads none.
+fn scripts_of<'s>(p: &Params, configured: Option<&'s Scripts>) -> Option<&'s Scripts> {
+    p.scripts
+        .then(|| configured.unwrap_or_else(|| components::builtin()))
+}
+
+/// Whether the element `name` is a `<script>` whose content a walk with `scripts` reads.
+fn is_script(src: &[u8], name: &Range<usize>, scripts: bool) -> bool {
+    scripts && src[name.clone()].eq_ignore_ascii_case(b"script")
 }
 
 /// One open element of the walk.
@@ -72,6 +146,13 @@ struct Frame {
     /// Its children that may be Segments, from the first one on: a leaf, and every element
     /// past MAX_DEPTH, costs only the Frame (M3 code review r1, Fable #4).
     children: Option<Box<Children>>,
+    /// A `<script>` a walk with `scripts` reads: where its content ends (it starts at the end
+    /// of `tag`).
+    script_end: Option<usize>,
+    /// A template block: its keyword (`name` is then its name and `tag` its opener).
+    block: Option<u8>,
+    /// Telegram's view: a message, the one Segment of its elements.
+    message: bool,
 }
 
 /// The children of an open element, counted for their `[n]`.
@@ -103,9 +184,15 @@ impl Frame {
             ordinal: 0,
             seq: NO_SEQ,
             children: None,
+            script_end: None,
+            block: None,
+            message: false,
         }
     }
 }
+
+/// `Frame::id` of a template block: no tag's.
+const BLOCK_ID: u32 = u32::MAX;
 
 /// `Frame::seq` of an element that is no Segment.
 const NO_SEQ: u32 = u32::MAX;
@@ -115,6 +202,17 @@ const NO_SEQ: u32 = u32::MAX;
 struct Walk<'s, 'c, 'a> {
     src: &'s [u8],
     p: Params,
+    /// The scripts' Definitions, when `p.scripts`.
+    scripts: Option<&'s Scripts>,
+    /// The line breaks before byte `.0`, the last script content counted (`lines_before`).
+    lines: (usize, u64),
+    /// The open template blocks of each keyword: a closer with none open is ignored at once.
+    blocks: [u32; templates::KEYWORDS],
+    /// Telegram's view, the file having its classes: the open message's name so far and
+    /// whether it is `joined`, and the last sender named.
+    telegram: bool,
+    message: Option<(telegram::MsgName, bool)>,
+    last_sender: Option<Range<usize>>,
     mode: Mode<'c, 'a>,
     stack: Vec<Frame>,
     /// The `seq` of the next element that may be a Segment.
@@ -185,6 +283,10 @@ struct Census {
     marks: Vec<Mark>,
     mark_every: usize,
     next_mark: usize,
+    /// Telegram's view, the file having its classes; then the name of each message, by its
+    /// `seq`, in order.
+    telegram: bool,
+    messages: Vec<(u32, telegram::MsgName)>,
 }
 
 /// `Census::ends`: the end in the low bits, the flags in the two high ones.
@@ -258,11 +360,19 @@ impl Census {
             marks: Vec::new(),
             mark_every,
             next_mark: mark_every,
+            telegram: false,
+            messages: Vec::new(),
         }
     }
 
     fn end_of(&self, seq: u32) -> usize {
         self.ends.get(seq).0
+    }
+
+    /// The name of the message `seq`, None when it is no message.
+    fn message(&self, seq: u32) -> Option<&telegram::MsgName> {
+        let k = self.messages.binary_search_by_key(&seq, |m| m.0).ok()?;
+        Some(&self.messages[k].1)
     }
 }
 
@@ -274,6 +384,16 @@ struct Open {
     tag: Range<usize>,
     hidden: bool,
     ordinal: u32,
+    /// `Frame::script_end`.
+    script_end: Option<usize>,
+    /// A template block (`Frame::block`).
+    block: bool,
+}
+
+impl Open {
+    fn message(&self, census: &Census) -> bool {
+        census.telegram && !self.block && census.message(self.seq).is_some()
+    }
 }
 
 /// A cursor's state between two steps of its walk: the scanner's, the open elements, and the
@@ -281,6 +401,7 @@ struct Open {
 struct Mark {
     pos: usize,
     prolog: bool,
+    quiet: Option<u8>,
     open: Vec<Open>,
     next_seq: u32,
     next_ordinal: usize,
@@ -362,6 +483,13 @@ fn element_name(
     }
     let (text, pieces) = n.finish();
     (text, pieces, has_id)
+}
+
+/// The name of a template block, its opener as written cut at `name_chars` (M6 spec §8.4).
+fn block_name(src: &[u8], p: Params, name: &Range<usize>) -> (String, Pieces) {
+    let mut n = crate::text::CutName::new(p.name_chars);
+    n.push_lossy(src, name.clone());
+    n.finish()
 }
 
 impl<'a> Walk<'_, '_, 'a> {
@@ -472,14 +600,30 @@ impl<'a> Walk<'_, '_, 'a> {
     /// Closes the innermost open element at `end` (exclusive).
     fn close(&mut self, end: usize) {
         let mut f = self.stack.pop().expect("the root is never closed here");
-        if self.p.syntax == Syntax::Html {
+        if let Some(kw) = f.block {
+            self.blocks[kw as usize] -= 1;
+        } else if self.p.syntax == Syntax::Html {
             self.open[f.id as usize] -= 1;
         }
+        let message = f.message.then(|| {
+            let (mut m, joined) = self.message.take().expect("an open message");
+            if m.sender.is_some() {
+                self.last_sender.clone_from(&m.sender);
+            } else if joined {
+                m.inherited.clone_from(&self.last_sender);
+            }
+            m
+        });
+        // Telegram's view keeps its messages alone: every other element is hidden.
+        let shown = !self.telegram || f.message;
         let keep = match &mut self.mode {
-            Mode::Collect(c) => f.seg && c.keeps(f.tag.start, end),
+            Mode::Collect(c) => f.seg && shown && c.keeps(f.tag.start, end),
             Mode::Census(census) => {
                 if f.seq != NO_SEQ {
                     census.ends.set_end(f.seq, end);
+                    if let Some(m) = message {
+                        census.messages.push((f.seq, m));
+                    }
                 }
                 self.recycle(&mut f);
                 return;
@@ -487,6 +631,26 @@ impl<'a> Walk<'_, '_, 'a> {
         };
         self.flush(&mut f);
         self.recycle(&mut f);
+        if keep && let Some(content_end) = f.script_end {
+            self.script(&f, f.tag.end..content_end);
+        }
+        if keep && let Some(m) = message {
+            let (text, pieces) = telegram::project(self.src, self.p.name_chars, &m);
+            let mut s = OutlineSegment::new("message", text, f.tag.start..end, f.tag.clone());
+            s.name = Some(pieces);
+            s.name_anchor = f.tag.start;
+            self.collector().closed(s, end);
+            return;
+        }
+        if keep && f.block.is_some() {
+            // A block is named by its opener: no `[n]`, and its own label.
+            let (text, pieces) = block_name(self.src, self.p, &f.name);
+            let mut s = OutlineSegment::new("block", text, f.tag.start..end, f.tag.clone());
+            s.name = Some(pieces);
+            s.name_anchor = f.name.start;
+            self.collector().closed(s, end);
+            return;
+        }
         if keep {
             let (text, pieces, has_id) = self.name_of(&f);
             let mut s = OutlineSegment::new("tag", text, f.tag.start..end, f.tag.clone());
@@ -502,6 +666,39 @@ impl<'a> Walk<'_, '_, 'a> {
                 let parent = self.stack.last_mut().unwrap();
                 let ch = parent.children.as_mut().expect("counted by `slot`");
                 ch.pending.push((s, f.slot, f.ordinal));
+            }
+        }
+    }
+
+    /// The line breaks before `byte`, counted on from the last byte asked.
+    fn lines_before(&mut self, byte: usize) -> u64 {
+        let (at, n) = self.lines;
+        let n = if byte >= at {
+            n + memchr::memchr_iter(b'\n', &self.src[at..byte]).count() as u64
+        } else {
+            n - memchr::memchr_iter(b'\n', &self.src[byte..at]).count() as u64
+        };
+        self.lines = (byte, n);
+        n
+    }
+
+    /// A kept `<script>`'s Segments, read when its content holds an anchor (or for names),
+    /// handed to the Collector beside its element's: the Outline sorts them under it.
+    fn script(&mut self, f: &Frame, content: Range<usize>) {
+        let Some(scripts) = self.scripts else { return };
+        if !self.collector().keeps(content.start, content.end) {
+            return;
+        }
+        let lines = self.lines_before(content.start);
+        let Some(o) = scripts.outline(self.src, &f.tag, f.name.end, content, lines, self.p.caps)
+        else {
+            return;
+        };
+        let c = self.collector();
+        for s in o.segments {
+            if c.keeps(s.range.start, s.range.end) {
+                let end = s.range.end;
+                c.closed(s, end);
             }
         }
     }
@@ -572,6 +769,20 @@ impl<'a> Walk<'_, '_, 'a> {
         // An empty element (`<x/>`, a void element) holds nothing but its tag: no Segment, but
         // it counts among its siblings.
         let empty = self_closing || info.void;
+        // Telegram's view: an element inside a message gives its name what it holds; one
+        // outside every message with the class `message` is one.
+        let mut message = false;
+        if self.telegram {
+            match &mut self.message {
+                Some((m, _)) => telegram::ingredient(self.src, &tag, name.end, m),
+                None if !empty && telegram::has_class(self.src, &tag, name.end, b"message") => {
+                    message = true;
+                    let joined = telegram::has_class(self.src, &tag, name.end, b"joined");
+                    self.message = Some((telegram::MsgName::default(), joined));
+                }
+                None => {}
+            }
+        }
         let seq = if seg && !empty {
             self.next_seq += 1;
             self.next_seq - 1
@@ -603,6 +814,7 @@ impl<'a> Walk<'_, '_, 'a> {
             return;
         }
         let raw = info.raw_text;
+        let script = is_script(self.src, &name, self.scripts.is_some());
         let reach = html::reach(
             &self.stack.last().unwrap().reach,
             &info,
@@ -626,10 +838,65 @@ impl<'a> Walk<'_, '_, 'a> {
             ordinal,
             seq,
             children: None,
+            script_end: None,
+            block: None,
+            message,
         });
         if raw {
             sc.skip_raw_text(&self.src[name]);
+            if script {
+                self.stack.last_mut().unwrap().script_end = Some(sc.pos());
+            }
         }
+    }
+
+    /// A template block opens: a Frame on the stack of elements, with no place among its
+    /// siblings and no implied end of HTML's reaching past it.
+    fn block(&mut self, kw: u8, name: Range<usize>, tag: Range<usize>) {
+        let seg = self.stack.len() <= MAX_DEPTH;
+        let seq = if seg {
+            self.next_seq += 1;
+            self.next_seq - 1
+        } else {
+            NO_SEQ
+        };
+        if let Mode::Census(census) = &mut self.mode
+            && seq != NO_SEQ
+        {
+            census.ends.push(0);
+        }
+        self.blocks[kw as usize] += 1;
+        self.stack.push(Frame {
+            name,
+            tag,
+            info: html::info(b""),
+            reach: html::NO_REACH,
+            id: BLOCK_ID,
+            seg,
+            slot: 0,
+            ordinal: 0,
+            seq,
+            children: None,
+            script_end: None,
+            block: Some(kw),
+            message: false,
+        });
+    }
+
+    /// A closer: it closes the innermost open block of its keyword and every element inside
+    /// it, as an end tag does; with none open it is text.
+    fn unblock(&mut self, kw: u8, tag: Range<usize>) {
+        if self.blocks[kw as usize] == 0 {
+            return;
+        }
+        let k = (1..self.stack.len())
+            .rev()
+            .find(|&k| self.stack[k].block == Some(kw))
+            .expect("a block of this keyword is open");
+        while self.stack.len() > k + 1 {
+            self.close_implied(tag.start);
+        }
+        self.close(tag.end);
     }
 
     /// An end tag: XML closes the current element or stops (Err with the error's byte); HTML
@@ -664,7 +931,8 @@ impl<'a> Walk<'_, '_, 'a> {
     /// Walks the file; returns where the structure ends: its length, or the byte where XML
     /// stops being well formed (spec §5.4).
     fn run(&mut self) -> usize {
-        let mut sc = Scanner::new(self.src, self.p.syntax == Syntax::Xml);
+        let mut sc =
+            Scanner::new(self.src, self.p.syntax == Syntax::Xml).templated(self.p.templates, None);
         let end = loop {
             if let Some(end) = self.apply(sc.step(), &mut sc) {
                 break end;
@@ -676,6 +944,7 @@ impl<'a> Walk<'_, '_, 'a> {
                 c.marks.push(Mark {
                     pos: sc.pos(),
                     prolog: sc.prolog(),
+                    quiet: sc.quiet(),
                     open: self
                         .stack
                         .iter()
@@ -684,8 +953,10 @@ impl<'a> Walk<'_, '_, 'a> {
                             seq: f.seq,
                             name: f.name.clone(),
                             tag: f.tag.clone(),
-                            hidden: f.info.hidden,
+                            hidden: f.info.hidden || (self.telegram && !f.message),
                             ordinal: f.ordinal,
+                            script_end: f.script_end,
+                            block: f.block.is_some(),
                         })
                         .collect(),
                     next_seq: self.next_seq,
@@ -710,6 +981,8 @@ impl<'a> Walk<'_, '_, 'a> {
                     return Some(at);
                 }
             }
+            Step::Tag(Tag::Block { kw, name, tag }) => self.block(kw, name, tag),
+            Step::Tag(Tag::Unblock { kw, tag }) => self.unblock(kw, tag),
             Step::Eof => return Some(self.src.len()),
             Step::Error(at) => return Some(at),
         }
@@ -727,10 +1000,23 @@ impl<'a> Walk<'_, '_, 'a> {
 }
 
 impl<'s, 'c, 'a> Walk<'s, 'c, 'a> {
-    fn new(src: &'s [u8], p: Params, mode: Mode<'c, 'a>) -> Self {
+    fn new(src: &'s [u8], p: Params, scripts: Option<&'s Scripts>, mode: Mode<'c, 'a>) -> Self {
+        // Telegram's view applies to a file with its classes alone, told before the walk: the
+        // wrappers before the first message are hidden too.
+        let telegram = p.telegram && telegram::detect(src);
+        let mut mode = mode;
+        if let Mode::Census(c) = &mut mode {
+            c.telegram = telegram;
+        }
         Walk {
             src,
             p,
+            scripts,
+            lines: (0, 0),
+            blocks: [0; templates::KEYWORDS],
+            telegram,
+            message: None,
+            last_sender: None,
             mode,
             stack: vec![Frame::root()],
             next_seq: 0,
@@ -744,8 +1030,8 @@ impl<'s, 'c, 'a> Walk<'s, 'c, 'a> {
     }
 }
 
-fn outline(src: &[u8], p: Params, mut c: Collector<'_>) -> Outline {
-    let end = Walk::new(src, p, Mode::Collect(&mut c)).run();
+fn outline(src: &[u8], p: Params, scripts: Option<&Scripts>, mut c: Collector<'_>) -> Outline {
+    let end = Walk::new(src, p, scripts, Mode::Collect(&mut c)).run();
     c.finish(end, src)
 }
 
@@ -757,16 +1043,25 @@ struct MarkupPrepared<'a> {
     params: &'a toml::Table,
     p: Params,
     census: Census,
+    scripts: Option<&'a Scripts>,
+    /// The Outline of each script a Match landed in, by its element's `seq`, read once (None:
+    /// it keeps its element's Segment alone).
+    parsed: RefCell<HashMap<u32, Option<Rc<Outline>>>>,
 }
 
-fn census(src: &[u8], p: Params) -> Census {
+fn census(src: &[u8], p: Params, scripts: Option<&Scripts>) -> Census {
     // At most about a thousand marks, each as long as the elements open there.
-    census_marked(src, p, (src.len() / 1024).max(1 << 20))
+    census_marked(src, p, scripts, (src.len() / 1024).max(1 << 20))
 }
 
 /// The census of `src`, with a mark every `mark_every` bytes.
-fn census_marked(src: &[u8], p: Params, mark_every: usize) -> Census {
-    let mut w = Walk::new(src, p, Mode::Census(Census::new(src.len(), mark_every)));
+fn census_marked(src: &[u8], p: Params, scripts: Option<&Scripts>, mark_every: usize) -> Census {
+    let mut w = Walk::new(
+        src,
+        p,
+        scripts,
+        Mode::Census(Census::new(src.len(), mark_every)),
+    );
     let end = w.run();
     match w.mode {
         Mode::Census(mut c) => {
@@ -779,11 +1074,11 @@ fn census_marked(src: &[u8], p: Params, mark_every: usize) -> Census {
 
 impl Prepared for MarkupPrepared<'_> {
     fn cursor(&self) -> Box<dyn Cursor + '_> {
-        Box::new(MarkupCursor::new(self.input.bytes, self.p, &self.census))
+        Box::new(MarkupCursor::new(self))
     }
 
     fn names(&self) -> anyhow::Result<Vec<Name>> {
-        Markup.names(&self.input, self.params)
+        names_in(&self.input, self.params, self.scripts)
     }
 
     fn streams(&self) -> bool {
@@ -800,14 +1095,16 @@ struct MarkupCursor<'s> {
     src: &'s [u8],
     p: Params,
     census: &'s Census,
+    prepared: &'s MarkupPrepared<'s>,
     sc: Scanner<'s>,
     /// The open elements that may be Segments, from the outermost; some may have ended
     /// already, at an implied end the walk has not reached.
     open: Vec<Open>,
     next_seq: u32,
     next_ordinal: usize,
-    /// The start tag read and not applied yet: it is past the last offset asked.
-    pending: Option<(Range<usize>, Range<usize>, bool)>,
+    /// The start tag or block opener read and not applied yet: it is past the last offset
+    /// asked.
+    pending: Option<Tag>,
     done: bool,
     at: usize,
     /// The line of byte `.0`, the last Segment start counted.
@@ -818,12 +1115,14 @@ struct MarkupCursor<'s> {
 }
 
 impl<'s> MarkupCursor<'s> {
-    fn new(src: &'s [u8], p: Params, census: &'s Census) -> Self {
+    fn new(prepared: &'s MarkupPrepared<'s>) -> Self {
+        let (src, p) = (prepared.input.bytes, prepared.p);
         MarkupCursor {
             src,
             p,
-            census,
-            sc: Scanner::new(src, p.syntax == Syntax::Xml),
+            census: &prepared.census,
+            prepared,
+            sc: Scanner::new(src, p.syntax == Syntax::Xml).templated(p.templates, None),
             open: Vec::new(),
             next_seq: 0,
             next_ordinal: 0,
@@ -844,13 +1143,14 @@ impl<'s> MarkupCursor<'s> {
         let xml = self.p.syntax == Syntax::Xml;
         match k.checked_sub(1).map(|i| &marks[i]) {
             Some(m) => {
-                self.sc = Scanner::resume(self.src, xml, m.pos, m.prolog);
+                self.sc = Scanner::resume(self.src, xml, m.pos, m.prolog)
+                    .templated(self.p.templates, m.quiet);
                 self.open.clone_from(&m.open);
                 self.next_seq = m.next_seq;
                 self.next_ordinal = m.next_ordinal;
             }
             None => {
-                self.sc = Scanner::new(self.src, xml);
+                self.sc = Scanner::new(self.src, xml).templated(self.p.templates, None);
                 self.open.clear();
                 self.next_seq = 0;
                 self.next_ordinal = 0;
@@ -864,54 +1164,89 @@ impl<'s> MarkupCursor<'s> {
     /// end tag holds `byte` is still open.
     fn reach(&mut self, byte: usize) {
         while !self.done {
-            let (name, tag, self_closing) = match self.pending.take() {
+            let t = match self.pending.take() {
                 Some(t) => t,
                 None => match self.sc.step() {
-                    Step::Tag(Tag::Start {
-                        name,
-                        tag,
-                        self_closing,
-                    }) => (name, tag, self_closing),
-                    // The census closed the elements: their ends say where.
-                    Step::Tag(Tag::End { .. }) => continue,
+                    // The census closed the elements and blocks: their ends say where.
+                    Step::Tag(Tag::End { .. } | Tag::Unblock { .. }) => continue,
+                    Step::Tag(t) => t,
                     Step::Eof | Step::Error(_) => {
                         self.done = true;
                         return;
                     }
                 },
             };
+            let start = match &t {
+                Tag::Start { tag, .. } | Tag::Block { tag, .. } => tag.start,
+                Tag::End { .. } | Tag::Unblock { .. } => unreachable!("not kept"),
+            };
             // Past where the structure ends, the census applied no tag.
-            if tag.start >= self.census.end {
+            if start >= self.census.end {
                 self.done = true;
                 return;
             }
-            if tag.start > byte {
-                self.pending = Some((name, tag, self_closing));
+            if start > byte {
+                self.pending = Some(t);
                 return;
             }
-            self.start(name, tag, self_closing);
+            match t {
+                Tag::Start {
+                    name,
+                    tag,
+                    self_closing,
+                } => self.start(name, tag, self_closing),
+                Tag::Block { name, tag, .. } => self.block(name, tag),
+                Tag::End { .. } | Tag::Unblock { .. } => {}
+            }
         }
     }
 
     /// A start tag: the elements that ended before it are left, and it opens an element as
     /// `Walk::start` does, numbered as the census numbered it.
-    fn start(&mut self, name: Range<usize>, tag: Range<usize>, self_closing: bool) {
-        let html = self.p.syntax == Syntax::Html;
-        let info = html::info(if html { &self.src[name.clone()] } else { b"" });
+    /// Leaves the elements that ended at or before `at`.
+    fn leave(&mut self, at: usize) {
         while self
             .open
             .last()
-            .is_some_and(|o| self.census.end_of(o.seq) <= tag.start)
+            .is_some_and(|o| self.census.end_of(o.seq) <= at)
         {
             self.open.pop();
         }
+    }
+
+    /// A template block opens, numbered as the census numbered it (`Walk::block`).
+    fn block(&mut self, name: Range<usize>, tag: Range<usize>) {
+        self.leave(tag.start);
+        if self.open.len() < MAX_DEPTH {
+            let seq = self.next_seq;
+            self.next_seq += 1;
+            self.open.push(Open {
+                seq,
+                name,
+                tag,
+                hidden: false,
+                ordinal: 1,
+                script_end: None,
+                block: true,
+            });
+        }
+    }
+
+    fn start(&mut self, name: Range<usize>, tag: Range<usize>, self_closing: bool) {
+        let html = self.p.syntax == Syntax::Html;
+        let info = html::info(if html { &self.src[name.clone()] } else { b"" });
+        self.leave(tag.start);
         if self_closing || info.void {
             return;
         }
         // Past MAX_DEPTH open elements, no more Segments: every element the census numbered
         // is below it, so the open ones it numbered are all the open ones.
-        if self.open.len() < MAX_DEPTH {
+        let pushed = self.open.len() < MAX_DEPTH;
+        if pushed {
             let seq = self.next_seq;
+            // Telegram's view hides every element but its messages.
+            let hidden =
+                info.hidden || (self.census.telegram && self.census.message(seq).is_none());
             self.next_seq += 1;
             let ordinal = if self.census.ends.get(seq).1 & LATER != 0 {
                 self.next_ordinal += 1;
@@ -923,13 +1258,39 @@ impl<'s> MarkupCursor<'s> {
                 seq,
                 name: name.clone(),
                 tag,
-                hidden: info.hidden,
+                hidden,
                 ordinal,
+                script_end: None,
+                block: false,
             });
         }
         if info.raw_text {
-            self.sc.skip_raw_text(&self.src[name]);
+            self.sc.skip_raw_text(&self.src[name.clone()]);
+            if pushed && is_script(self.src, &name, self.prepared.scripts.is_some()) {
+                self.open.last_mut().unwrap().script_end = Some(self.sc.pos());
+            }
         }
+    }
+
+    /// The Outline of the script of the open element at `k`, read the first time a Match
+    /// lands in it and kept by the preparation for its other Matches and cursors.
+    fn script_outline(&mut self, k: usize) -> Option<Rc<Outline>> {
+        let scripts = self.prepared.scripts?;
+        let o = &self.open[k];
+        let (seq, tag, name_end) = (o.seq, o.tag.clone(), o.name.end);
+        let content = tag.end..o.script_end?;
+        if let Some(known) = self.prepared.parsed.borrow().get(&seq) {
+            return known.clone();
+        }
+        let lines = self.line_of(content.start) - 1;
+        let parsed = scripts
+            .outline(self.src, &tag, name_end, content, lines, self.p.caps)
+            .map(Rc::new);
+        self.prepared
+            .parsed
+            .borrow_mut()
+            .insert(seq, parsed.clone());
+        parsed
     }
 
     /// The line of `byte`, counted on from the last one asked.
@@ -948,16 +1309,27 @@ impl<'s> MarkupCursor<'s> {
     fn segment(&mut self, k: usize) -> Segment {
         let o = &self.open[k];
         let (start, seq, ordinal) = (o.tag.start, o.seq, o.ordinal);
-        let (mut name, _, has_id) = element_name(self.src, self.p, &o.name, &o.tag);
-        let (end, flags) = self.census.ends.get(seq);
-        if !has_id && flags & REPEATS != 0 {
-            name.push_str(&format!("[{ordinal}]"));
-        }
+        let (kind, name) = if o.block {
+            ("block", block_name(self.src, self.p, &o.name).0)
+        } else if o.message(self.census) {
+            let m = self.census.message(seq).expect("a message");
+            (
+                "message",
+                telegram::project(self.src, self.p.name_chars, m).0,
+            )
+        } else {
+            let (mut name, _, has_id) = element_name(self.src, self.p, &o.name, &o.tag);
+            if !has_id && self.census.ends.get(seq).1 & REPEATS != 0 {
+                name.push_str(&format!("[{ordinal}]"));
+            }
+            ("tag", name)
+        };
+        let end = self.census.end_of(seq);
         let line = self.line_of(start);
         let last = end.saturating_sub(1).max(start).min(self.src.len());
         let end_line = line + memchr::memchr_iter(b'\n', &self.src[start..last]).count() as u64;
         Segment {
-            kind: "tag".into(),
+            kind: kind.into(),
             name,
             line,
             end_line,
@@ -995,6 +1367,22 @@ impl Cursor for MarkupCursor<'_> {
                 ks.push(k);
             }
         }
+        // In the content of a script, the Segments of its Outline follow its element's: by
+        // their indices, after a separator no `seq` takes.
+        let script = ks.last().copied().and_then(|k| {
+            let o = &self.open[k];
+            let content = o.tag.end..o.script_end?;
+            content.contains(&byte).then_some(k)
+        });
+        let script = script.and_then(|k| self.script_outline(k));
+        let mut inner = Vec::new();
+        if let Some(o) = &script {
+            script_trail(o, byte, &mut inner);
+            if !inner.is_empty() {
+                seqs.push(NO_SEQ);
+                seqs.extend(inner.iter().map(|&i| i as u32));
+            }
+        }
         if let Some((s, t)) = &self.last
             && *s == seqs
         {
@@ -1002,7 +1390,7 @@ impl Cursor for MarkupCursor<'_> {
             self.seqs = seqs;
             return Ok(t);
         }
-        let mut trail = Vec::with_capacity(ks.len());
+        let mut trail = Vec::with_capacity(ks.len() + inner.len());
         for (i, &k) in ks.iter().enumerate() {
             // A Segment of the last Trail is the same element: its Segment is copied.
             let known = self
@@ -1014,11 +1402,101 @@ impl Cursor for MarkupCursor<'_> {
                 None => self.segment(k),
             });
         }
+        if let Some(o) = &script {
+            trail.extend(inner.iter().map(|&i| o.segments[i].segment.clone()));
+        }
         let t: SharedTrail = std::rc::Rc::from(trail);
         self.last = Some((seqs.clone(), t.clone()));
         self.seqs = seqs;
         Ok(t)
     }
+
+    /// The start of the outermost open element that holds the last offset and is shown: no
+    /// later Trail ends with an element that ended before it, nor with one that opens later
+    /// and starts before it. A script's Segments are inside their element, which it answers
+    /// for them (an earlier start, which keeps more Matches: `Cursor::open_from`).
+    fn open_from(&mut self) -> Option<usize> {
+        let at = self.at;
+        Some(
+            self.open
+                .iter()
+                .find(|o| !o.hidden && self.census.end_of(o.seq) > at)
+                .map_or(at, |o| o.tag.start),
+        )
+    }
+}
+
+/// The indices of the Trail of `byte` in a script's Outline, as `trail_for` gives it: the last
+/// Segment that starts at or before it, then its parents, those that hold it, outside their
+/// labels.
+fn script_trail(o: &Outline, byte: usize, out: &mut Vec<usize>) {
+    out.clear();
+    let k = o.segments.partition_point(|s| s.range.start <= byte);
+    let mut cur = k.checked_sub(1);
+    while let Some(i) = cur {
+        let s = &o.segments[i];
+        if s.range.contains(&byte) && !s.hidden && !s.label.contains(&byte) {
+            out.push(i);
+        }
+        cur = s.parent;
+    }
+    out.reverse();
+}
+
+/// `Processor::trails` of a markup file, its scripts read with `configured`'s Definitions
+/// (None: the built-in ones).
+pub(crate) fn trails_in(
+    input: &Input,
+    params: &toml::Table,
+    anchors: &[usize],
+    configured: Option<&Scripts>,
+) -> anyhow::Result<Vec<Trail>> {
+    let p = self::params(params)?;
+    let mut order: Vec<usize> = (0..anchors.len()).collect();
+    order.sort_by_key(|&i| anchors[i]);
+    let sorted: Vec<usize> = order.iter().map(|&i| anchors[i]).collect();
+    let scripts = scripts_of(&p, configured);
+    let o = outline(input.bytes, p, scripts, Collector::for_anchors(&sorted));
+    let mut cursor = TrailCursor::new(&o);
+    let mut out = vec![Vec::new(); anchors.len()];
+    for (k, &i) in order.iter().enumerate() {
+        out[i] = cursor.trail(sorted[k]);
+    }
+    Ok(out)
+}
+
+/// `Processor::names` of a markup file (`trails_in`).
+pub(crate) fn names_in(
+    input: &Input,
+    params: &toml::Table,
+    configured: Option<&Scripts>,
+) -> anyhow::Result<Vec<Name>> {
+    let p = self::params(params)?;
+    let scripts = scripts_of(&p, configured);
+    Ok(names_of(&outline(
+        input.bytes,
+        p,
+        scripts,
+        Collector::for_names(),
+    )))
+}
+
+/// The census of the file's elements, then a cursor that follows the Matches (`trails_in`).
+pub(crate) fn prepare_in<'a>(
+    input: Input<'a>,
+    params: &'a toml::Table,
+    configured: Option<&'a Scripts>,
+) -> anyhow::Result<Box<dyn Prepared + 'a>> {
+    let p = self::params(params)?;
+    let scripts = scripts_of(&p, configured);
+    Ok(Box::new(MarkupPrepared {
+        census: census(input.bytes, p, scripts),
+        input,
+        params,
+        p,
+        scripts,
+        parsed: RefCell::default(),
+    }))
 }
 
 impl Processor for Markup {
@@ -1028,22 +1506,11 @@ impl Processor for Markup {
         params: &toml::Table,
         anchors: &[usize],
     ) -> anyhow::Result<Vec<Trail>> {
-        let p = self::params(params)?;
-        let mut order: Vec<usize> = (0..anchors.len()).collect();
-        order.sort_by_key(|&i| anchors[i]);
-        let sorted: Vec<usize> = order.iter().map(|&i| anchors[i]).collect();
-        let o = outline(input.bytes, p, Collector::for_anchors(&sorted));
-        let mut cursor = TrailCursor::new(&o);
-        let mut out = vec![Vec::new(); anchors.len()];
-        for (k, &i) in order.iter().enumerate() {
-            out[i] = cursor.trail(sorted[k]);
-        }
-        Ok(out)
+        trails_in(input, params, anchors, None)
     }
 
     fn names(&self, input: &Input, params: &toml::Table) -> anyhow::Result<Vec<Name>> {
-        let p = self::params(params)?;
-        Ok(names_of(&outline(input.bytes, p, Collector::for_names())))
+        names_in(input, params, None)
     }
 
     /// The census of the file's elements, then a cursor that follows the Matches.
@@ -1052,13 +1519,7 @@ impl Processor for Markup {
         input: Input<'a>,
         params: &'a toml::Table,
     ) -> anyhow::Result<Box<dyn Prepared + 'a>> {
-        let p = self::params(params)?;
-        Ok(Box::new(MarkupPrepared {
-            census: census(input.bytes, p),
-            input,
-            params,
-            p,
-        }))
+        prepare_in(input, params, None)
     }
 
     fn capability(&self, _: &toml::Table) -> Capability {
@@ -1375,13 +1836,19 @@ mod tests {
 
     /// The cursor against `trails` at every byte of `src`, then once more from the start.
     fn every_byte(src: &[u8], syntax: &str) {
+        every_byte_with(src, &params(syntax));
+    }
+
+    /// `every_byte` with these `[params]`.
+    fn every_byte_with(src: &[u8], params: &toml::Table) {
+        let syntax = params["syntax"].as_str().unwrap();
         let input = Input {
             bytes: src,
             path: Path::new("x"),
             format: syntax,
             disk: None,
         };
-        let params = params(syntax);
+        let params = params.clone();
         let anchors: Vec<usize> = (0..src.len()).collect();
         let expected = Markup.trails(&input, &params, &anchors).unwrap();
         let prepared = Markup.prepare(input, &params).unwrap();
@@ -1398,11 +1865,14 @@ mod tests {
         // each byte alone, by a new cursor, which shares no Segment with a Trail before.
         let p = super::params(&params).unwrap();
         for every in [1, 7, 64] {
+            let scripts = scripts_of(&p, None);
             let prepared = MarkupPrepared {
                 input,
                 params: &params,
                 p,
-                census: census_marked(src, p, every),
+                census: census_marked(src, p, scripts, every),
+                scripts,
+                parsed: RefCell::default(),
             };
             let mut c = prepared.cursor();
             for (&at, t) in anchors.iter().zip(&expected) {
@@ -1479,5 +1949,178 @@ mod tests {
             "</d>".repeat(MAX_DEPTH + 4)
         );
         every_byte(deep.as_bytes(), "xml");
+    }
+
+    /// M6 Task 7.1: the Trails of a script's Segments under its element, from the cursor as
+    /// from `trails`, in HTML with `scripts` and in a component with the run's Definitions.
+    const SCRIPTS: &[u8] = b"<div>\n<script lang=\"ts\">\nclass A {\n  m() { return 'x'; }\n}\nfunction f() { 1 }\n</script><p>y</p>\n<script>\nconst g = () => 2;\n</script>\n<script lang=coffee>h</script></div>\n<script>function tail() {\n";
+
+    #[test]
+    fn the_markup_cursor_gives_script_trails_at_every_byte() {
+        let params: toml::Table = toml::from_str("syntax = 'html'\nscripts = true").unwrap();
+        every_byte_with(SCRIPTS, &params);
+        every_byte_with(
+            b"<script>function f() {}</script><script>x</script>",
+            &params,
+        );
+        let at = memchr::memmem::find(SCRIPTS, b"'x'").unwrap();
+        let input = Input {
+            bytes: SCRIPTS,
+            path: Path::new("x"),
+            format: "html",
+            disk: None,
+        };
+        let t = Markup.trails(&input, &params, &[at]).unwrap();
+        let got: Vec<(&str, &str, u64, u64)> = t[0]
+            .iter()
+            .map(|s| (s.kind.as_str(), s.name.as_str(), s.line, s.end_line))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("tag", "div", 1, 11),
+                ("tag", "script[1]", 2, 7),
+                ("class", "A", 3, 5),
+                ("method", "m", 4, 4)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_component_cursor_reads_its_scripts_with_its_definitions() {
+        use components::{ComponentMarkup, ScriptDefinitions};
+        let params: toml::Table = toml::from_str("syntax = 'html'\nscripts = true").unwrap();
+        let mut defs = ScriptDefinitions::builtin();
+        // A TypeScript Definition that names classes only.
+        defs.typescript.insert(
+            "query".into(),
+            "(class_declaration name: (type_identifier) @name) @segment".into(),
+        );
+        let p = ComponentMarkup::new(defs);
+        let input = Input {
+            bytes: SCRIPTS,
+            path: Path::new("x.vue"),
+            format: "vue",
+            disk: None,
+        };
+        let anchors: Vec<usize> = (0..SCRIPTS.len()).collect();
+        let expected = p.trails(&input, &params, &anchors).unwrap();
+        let prepared = p.prepare(input, &params).unwrap();
+        assert!(prepared.streams());
+        let mut c = prepared.cursor();
+        for (&at, t) in anchors.iter().zip(&expected) {
+            assert_eq!(c.trail_at(at).unwrap().as_ref(), t.as_slice(), "byte {at}");
+        }
+        let at = memchr::memmem::find(SCRIPTS, b"'x'").unwrap();
+        let names: Vec<&str> = expected[at].iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["div", "script[1]", "A"]);
+        let names: Vec<String> = p
+            .names(&input, &params)
+            .unwrap()
+            .into_iter()
+            .map(|n| n.text)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "div",
+                "script[1]",
+                "A",
+                "p",
+                "script[2]",
+                "g",
+                "script[3]",
+                "script"
+            ]
+        );
+    }
+
+    /// M6 Task 7.4: JSON-LD's key paths and the caps of HTML's scripts, from the cursor as
+    /// from `trails`.
+    #[test]
+    fn the_markup_cursor_gives_json_ld_and_capped_trails_at_every_byte() {
+        let params: toml::Table = toml::from_str(
+            "syntax = 'html'\nscripts = true\nscript_max_bytes = 60\nscript_max_line = 20",
+        )
+        .unwrap();
+        every_byte_with(
+            b"<head><script type=application/ld+json>\n{\"a\":{\"b\":[1,{\"c\":2}]}}\n</script><script type=text/plain>function p(){}</script>\n<script>\nfunction ok() {}\n</script><script>\nfunction long() { 'aaaaaaaaaaaa' }\n</script><script>\nfunction a() {}\nfunction b() {}\nfunction c() {}\nfunction d() {}\n</script><script type=application/ld+json>{\"x\":",
+            &params,
+        );
+    }
+
+    /// M6 Task 7.2: template blocks on the stack of elements, from the cursor as from
+    /// `trails`, at every byte and from marks taken inside quiet Blade blocks.
+    #[test]
+    fn the_markup_cursor_gives_template_trails_at_every_byte() {
+        let svelte: toml::Table =
+            toml::from_str("syntax = 'html'\nscripts = true\ntemplates = 'svelte'").unwrap();
+        every_byte_with(
+            b"<ul>\n{#each items as item}\n<li>{item}\n{:else}\n<li>none</ul>{/each}\n{#if a}<p>x{#key k}<b>y{/if}z{/key}{/missing}<script>{#if q}function f(){}</script>",
+            &svelte,
+        );
+        let blade: toml::Table = toml::from_str("syntax = 'html'\ntemplates = 'blade'").unwrap();
+        every_byte_with(
+            b"@section('a')\n<div>@foreach($i as $x)<li>a\n@endforeach</div>@verbatim\n@if(x)<p>q</p>@endif\n@endverbatim@php $a = '<b>'; @endphp{{-- @if(y) --}}@section('x','y')@show tail@endsection",
+            &blade,
+        );
+    }
+
+    /// M6 Task 7.3: Telegram's messages, their names from elements after their start tags
+    /// and a joined message's sender, from the cursor as from `trails`; a page without the
+    /// export's classes keeps HTML's Trails.
+    #[test]
+    fn the_markup_cursor_gives_telegram_trails_at_every_byte() {
+        let params: toml::Table = toml::from_str("syntax = 'html'\nview = 'telegram'").unwrap();
+        let src = b"<html><body><div class=page_wrap><p>head</p><div class=history>\n<div class=\"message service\">x</div><div class='message default'><div class='date' title='1.1 &amp; 2'>t</div><div class=from_name> Ana </div><div class=text>a<b>b</b></div></div>\n<div class='message default joined'><div class=text>c</div></div><div class='message'><div class=from_name>Bo</div>d</div>";
+        every_byte_with(src, &params);
+        every_byte_with(b"<main><p>a</p><p>b</p></main>", &params);
+        let input = Input {
+            bytes: src,
+            path: Path::new("messages.html"),
+            format: "telegram-html",
+            disk: None,
+        };
+        let at = memchr::memmem::find(src, b">c<").unwrap() + 1;
+        let t = Markup.trails(&input, &params, &[at]).unwrap();
+        let got: Vec<(&str, &str)> = t[0]
+            .iter()
+            .map(|s| (s.kind.as_str(), s.name.as_str()))
+            .collect();
+        assert_eq!(got, [("message", "Ana")]);
+        let names: Vec<String> = Markup
+            .names(&input, &params)
+            .unwrap()
+            .into_iter()
+            .map(|n| n.text)
+            .collect();
+        assert_eq!(names, ["", "1.1 & 2 Ana", "Ana", "Bo"]);
+    }
+
+    /// M6 Task 7.1: the markup cursor's `open_from` is the start of the outermost shown
+    /// element open at the last offset, or that offset outside every element.
+    #[test]
+    fn the_markup_cursor_tells_where_its_open_sections_start() {
+        let params: toml::Table = toml::from_str("syntax = 'html'\nscripts = true").unwrap();
+        let src = b"<html><body><div>\n<script>\nfunction f() { 1 }\n</script>\n</div>\nx<p>y\n";
+        let input = Input {
+            bytes: src,
+            path: Path::new("x"),
+            format: "html",
+            disk: None,
+        };
+        let prepared = Markup.prepare(input, &params).unwrap();
+        let mut c = prepared.cursor();
+        let div = memchr::memmem::find(src, b"<div>").unwrap();
+        let one = memchr::memmem::find(src, b"1 }").unwrap();
+        c.trail_at(one).unwrap();
+        assert_eq!(c.open_from(), Some(div), "html and body are hidden");
+        let x = memchr::memmem::find(src, b"\nx").unwrap() + 1;
+        c.trail_at(x).unwrap();
+        assert_eq!(c.open_from(), Some(x));
+        let y = memchr::memmem::find(src, b"y\n").unwrap();
+        c.trail_at(y).unwrap();
+        assert_eq!(c.open_from(), Some(y - 3));
+        assert_eq!(c.open_from_with(&mut |_| None), Some(y - 3));
     }
 }

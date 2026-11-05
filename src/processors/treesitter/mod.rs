@@ -174,6 +174,44 @@ pub fn outline(c: &Compiled, tree: &Tree, src: &[u8], range: Option<Range<usize>
     Outline::build(segs, src)
 }
 
+/// The whole Outline of `script`, a slice of `source` that starts at byte `base`, in
+/// `source`'s coordinates (M6 plan, D10): ranges, labels, name pieces, anchors and lines, as if
+/// `source` had been parsed and the query had named only what lies in the slice. It counts the
+/// lines before `base`; the markup walk, which reads many scripts of one file, keeps that count
+/// as it goes and calls `shift` with it, so a page's names cost one count, not one per script.
+#[allow(dead_code)]
+pub(crate) fn shifted_outline(
+    c: &Compiled,
+    tree: &Tree,
+    script: &[u8],
+    source: &[u8],
+    base: usize,
+) -> Outline {
+    let before = memchr::memchr_iter(b'\n', &source[..base.min(source.len())]).count();
+    let mut o = outline(c, tree, script, None);
+    shift(&mut o, base, before as u64);
+    o
+}
+
+/// Moves an Outline built over a slice to the Source it was cut from: every byte offset by
+/// `base`, every line by `lines`, the line breaks before the slice. The order of the Segments
+/// and their parents stay as they were.
+pub(crate) fn shift(o: &mut Outline, base: usize, lines: u64) {
+    let by = |r: &mut Range<usize>| *r = r.start + base..r.end + base;
+    for s in &mut o.segments {
+        by(&mut s.range);
+        by(&mut s.label);
+        if let Some(pieces) = &mut s.name {
+            for (_, src) in pieces.iter_mut() {
+                by(src);
+            }
+        }
+        s.name_anchor += base;
+        s.segment.line += lines;
+        s.segment.end_line += lines;
+    }
+}
+
 /// A Definition's slot: the compiled query, or None after a failure.
 type Slot = Arc<OnceLock<Option<Arc<Compiled>>>>;
 
@@ -841,6 +879,29 @@ mod tests {
         );
         let again = ts.trails(&input, &p, &[0]).unwrap_err();
         assert!(again.downcast_ref::<crate::helper::Unavailable>().is_some());
+    }
+
+    #[test]
+    fn a_shifted_outline_is_in_the_coordinates_of_its_source() {
+        let source = b"<x>\n<script>\nfunction f() {\n  needle;\n}\n</script>\n";
+        let base = memchr::memmem::find(source, b"function").unwrap();
+        let end = memchr::memmem::find(source, b"</script").unwrap();
+        let script = &source[base..end];
+        let c = TreeSitter::default()
+            .compiled("javascript", &params("javascript"))
+            .unwrap()
+            .unwrap();
+        let tree = parse(&c, script).unwrap();
+        let o = shifted_outline(&c, &tree, script, source, base);
+        let at = memchr::memmem::find(source, b"needle").unwrap();
+        let t = trail_for(&o, at);
+        assert_eq!(t.len(), 1);
+        assert_eq!((t[0].name.as_str(), t[0].line, t[0].end_line), ("f", 3, 5));
+        let f = &o.segments[0];
+        assert_eq!(f.range, base..end - 1);
+        assert_eq!(&source[f.label.clone()], b"f");
+        assert_eq!(&source[f.name.as_ref().unwrap()[0].1.clone()], b"f");
+        assert_eq!(f.name_anchor, f.label.start);
     }
 
     #[test]

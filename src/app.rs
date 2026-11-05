@@ -1112,9 +1112,8 @@ struct Ctx<'a> {
     linked: AtomicBool,
     /// The built-in Processor of each of the run's Definitions, by the Definition's name, when
     /// it gives a native cursor (`Ctx::outliner`): found once per run, not once per file (M5b
-    /// plan, Task 3.2).
-    outliners:
-        std::sync::OnceLock<std::collections::HashMap<String, Option<&'static dyn Processor>>>,
+    /// plan, Task 3.2), a configured one included (M6 plan, Task 7.1).
+    outliners: std::sync::OnceLock<std::collections::HashMap<String, Option<Outliner>>>,
     /// The Grammar directory (`Env::grammars`), for a Registry loaded once needed.
     grammars: Option<PathBuf>,
     /// `Env::model_only`.
@@ -1125,7 +1124,37 @@ struct Ctx<'a> {
     probe: Option<std::sync::Arc<Probe>>,
 }
 
+/// A Processor of `Ctx::outliners`: a stateless built-in, or one configured for the run with
+/// what its Definition takes from the Registry (`Processors::for_definition_in`), kept here
+/// for the whole run so a streamed file borrows it.
+enum Outliner {
+    Static(&'static dyn Processor),
+    Configured(std::sync::Arc<dyn Processor>),
+}
+
+impl Outliner {
+    fn get(&self) -> &dyn Processor {
+        match self {
+            Outliner::Static(p) => *p,
+            Outliner::Configured(p) => p.as_ref(),
+        }
+    }
+}
+
 impl<'a> Ctx<'a> {
+    /// The Processor for files of `def`: `Processors::for_definition_in` with the run's
+    /// Registry once it is loaded, which configures what a Definition takes from it (M6 plan,
+    /// Task 7.1); before, `for_definition`'s.
+    fn processor_for(
+        &self,
+        def: &formats::definition::FormatDefinition,
+    ) -> Option<processors::ProcessorRef<'_>> {
+        match self.registry.get() {
+            Some(r) => self.processors.for_definition_in(def, r),
+            None => self.processors.for_definition(def),
+        }
+    }
+
     /// Walks the paths, sequentially where ripgrep 14.1.1 uses one thread (`--sort path`, `-j1`,
     /// one file), else in parallel with one `Worker` per thread (design note 11), and calls
     /// `visit` for every file to search.
@@ -1240,10 +1269,18 @@ impl<'a> Ctx<'a> {
         };
         let known = self.outliners.get_or_init(|| {
             let defs = self.registry.get().map_or(&[][..], Registry::all);
-            defs.iter().map(|d| (d.name.clone(), of(d))).collect()
+            defs.iter()
+                .map(|d| {
+                    let p = of(d).map(|p| match self.processor_for(d) {
+                        Some(processors::ProcessorRef::Configured(c)) => Outliner::Configured(c),
+                        _ => Outliner::Static(p),
+                    });
+                    (d.name.clone(), p)
+                })
+                .collect()
         });
         match known.get(def.name.as_str()) {
-            Some(p) => p.map(|p| p as &dyn Processor),
+            Some(p) => p.as_ref().map(Outliner::get),
             None => of(def).map(|p| p as &dyn Processor),
         }
     }
@@ -2276,7 +2313,7 @@ impl<'a> Ctx<'a> {
         let same = detector
             .detect(&src.path, src.head())
             .is_some_and(|d| d.name == def.name);
-        let Some(p) = self.processors.for_definition(def).filter(|_| same) else {
+        let Some(p) = self.processor_for(def).filter(|_| same) else {
             return false;
         };
         let disk = disk_of(t, &src);
@@ -2777,7 +2814,7 @@ impl<'a> Ctx<'a> {
                 let described = def
                     .filter(|_| fm.stats.binary_offset.is_none())
                     .and_then(|d| {
-                        let p = self.processors.for_definition(d)?;
+                        let p = self.processor_for(d)?;
                         let disk = disk_of(t, &src);
                         let input = Input {
                             bytes: src.bytes(),
@@ -3063,39 +3100,37 @@ impl<'a> Ctx<'a> {
             }
         }
         // A document's names are its Outline's: its headings (M4 plan, D11).
-        let (names, format) = if let (Some(doc), Some(Through::Docs(name, _))) =
-            (&t.doc, &t.through)
-        {
-            (crate::trail::names_of(&doc.outline), name.clone())
-        } else {
-            let def = detector.detect(&src.path, src.head());
-            // A Format without a Processor is Plain: no names (D33).
-            let Some((p, def)) = def.and_then(|d| Some((self.processors.for_definition(d)?, d)))
-            else {
-                self.count_unnamed(st, binary.as_ref(), &src);
-                return Ok(None);
-            };
-            let disk = if replaced { None } else { disk_of(t, &src) };
-            let input = Input {
-                bytes: src.bytes(),
-                path: &src.path,
-                format: &def.name,
-                disk: disk.as_deref(),
-            };
-            let names = match p.names(&input, &def.params) {
-                Ok(n) => n,
-                Err(e) => {
-                    // A failing Processor skips the file with one warning; an unavailable one
-                    // (a disabled helper) says nothing more (spec §4.4, Failures).
-                    if e.downcast_ref::<crate::helper::Unavailable>().is_none() {
-                        self.msgs
-                            .warn(format_args!("s4: {}: {e:#}", src.path.display()));
+        let (names, format) =
+            if let (Some(doc), Some(Through::Docs(name, _))) = (&t.doc, &t.through) {
+                (crate::trail::names_of(&doc.outline), name.clone())
+            } else {
+                let def = detector.detect(&src.path, src.head());
+                // A Format without a Processor is Plain: no names (D33).
+                let Some((p, def)) = def.and_then(|d| Some((self.processor_for(d)?, d))) else {
+                    self.count_unnamed(st, binary.as_ref(), &src);
+                    return Ok(None);
+                };
+                let disk = if replaced { None } else { disk_of(t, &src) };
+                let input = Input {
+                    bytes: src.bytes(),
+                    path: &src.path,
+                    format: &def.name,
+                    disk: disk.as_deref(),
+                };
+                let names = match p.names(&input, &def.params) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        // A failing Processor skips the file with one warning; an unavailable one
+                        // (a disabled helper) says nothing more (spec §4.4, Failures).
+                        if e.downcast_ref::<crate::helper::Unavailable>().is_none() {
+                            self.msgs
+                                .warn(format_args!("s4: {}: {e:#}", src.path.display()));
+                        }
+                        return Err(());
                     }
-                    return Err(());
-                }
+                };
+                (names, def.name.clone())
             };
-            (names, def.name.clone())
-        };
         let mut found = self.heading_matches(matcher, &src, &names);
         // What rg detects: `-m` and its after context may stop its search first.
         let detected = binary.as_ref().and_then(|b| {

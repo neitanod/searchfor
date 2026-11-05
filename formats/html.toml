@@ -1,9 +1,19 @@
-# formats/html.toml — HTML element paths (spec §5.4): `section#pricing › table › tr[3] › td[2]`.
+# formats/html.toml — HTML element paths (spec §5.4): `section#pricing › table › tr[3] › td[2]`,
+# and since 1.1 the Trails inside a page's scripts (M6 spec §8.3): `head › script › onClick`.
 name       = "html"
 extensions = ["html", "htm", "xhtml"]
 processor  = "markup"
 
 [params]
 syntax = "html"
+# A `<script>` with no type, `module` or a JavaScript type gets the JavaScript Grammar's
+# Trails (TypeScript or TSX by its `lang`), and JSON-LD gets JSON's key paths; any other type
+# keeps the `script` element's Trail, as in 1.0.
+scripts = true
+# An inline script past 1 MiB is generated (a framework's state, a bundle): it is not parsed.
+script_max_bytes = 1048576
+# A line past 1 000 bytes is minified code, whose names say nothing and whose parse is the
+# costly part of a page; formatters keep hand-written lines under 80–120 columns.
+script_max_line = 1000
 # Characters of an element's name (`tag#id.class…`) before it is cut with `…`.
 name_chars = 40
