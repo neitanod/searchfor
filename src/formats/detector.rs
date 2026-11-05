@@ -1,5 +1,9 @@
-//! The Detector (spec §4.1): override, exact name, extension, magic bytes, shebang.
-use super::{Registry, definition::FormatDefinition};
+//! The Detector (spec §4.1, M6 spec §4.1): override, exact name, compound extension, path glob
+//! that writes the extension, extension, path glob that leaves it open, magic bytes, shebang.
+use super::{
+    Registry,
+    definition::{FormatDefinition, path_glob},
+};
 use globset::{Glob, GlobMatcher};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -28,6 +32,10 @@ pub struct Detector<'r> {
     /// other name costs the extension lookup it costs without them. Each compound appears
     /// once, with the first active Definition (in the Registry's order) that claims it.
     compound: HashMap<String, Vec<(String, usize)>>,
+    /// The `paths` globs of the active Definitions (M6 spec §4.1 signals 4 and 6).
+    paths: PathIndex,
+    /// With `--docs`, the `paths` globs of the document Formats (`may_be_document`).
+    doc_paths: PathIndex,
     /// What `detect` gives a name without an extension and an empty head, past its exact
     /// names: the first active Definition whose magic bytes are empty.
     empty_head: Option<usize>,
@@ -65,6 +73,8 @@ impl<'r> Detector<'r> {
             by_name: HashMap::new(),
             by_extension: HashMap::new(),
             compound: HashMap::new(),
+            paths: PathIndex::default(),
+            doc_paths: PathIndex::default(),
             empty_head: None,
             by_content: false,
             doc_magic: Vec::new(),
@@ -78,6 +88,8 @@ impl<'r> Detector<'r> {
         self.by_name.clear();
         self.by_extension.clear();
         self.compound.clear();
+        self.paths = PathIndex::default();
+        self.doc_paths = PathIndex::default();
         self.empty_head = None;
         self.by_content = false;
         self.doc_magic.clear();
@@ -97,6 +109,14 @@ impl<'r> Detector<'r> {
             for n in &d.names {
                 self.by_name.entry(n.clone()).or_insert(i);
             }
+            for p in &d.paths {
+                // `FormatDefinition::parse` refused a Definition with an invalid glob.
+                let Ok(glob) = path_glob(p) else { continue };
+                self.paths.add(i, p, &glob);
+                if d.processor == "docs" {
+                    self.doc_paths.add(i, p, &glob);
+                }
+            }
             for e in &d.extensions {
                 let e = e.to_ascii_lowercase();
                 match e.rsplit_once('.') {
@@ -112,6 +132,18 @@ impl<'r> Detector<'r> {
                 }
             }
         }
+    }
+
+    /// The path globs of a name without an extension: a dotfile's (`.env`) glob that writes
+    /// the rest of its name as an extension (signal 4), then every glob that leaves it open.
+    fn by_paths_without_extension(&self, path: &Path) -> Option<usize> {
+        if self.paths.is_empty() {
+            return None;
+        }
+        let at = At::new(path);
+        self.paths
+            .before_extension(&at)
+            .or_else(|| self.paths.after_extension(&at))
     }
 
     /// The first Definition, in the Registry's order, whose compound extension ends
@@ -164,6 +196,11 @@ impl<'r> Detector<'r> {
             || self
                 .doc_extensions
                 .contains(normalized_extension(ext).as_ref())
+            || (!self.doc_paths.is_empty() && {
+                let at = At::new(path);
+                self.doc_paths.before_extension(&at).is_some()
+                    || self.doc_paths.after_extension(&at).is_some()
+            })
     }
 
     /// Whether `detect` may find a document Format in `head`, the first bytes of a name
@@ -207,7 +244,10 @@ impl<'r> Detector<'r> {
                 .and_then(|n| n.to_str())
                 .and_then(|n| self.by_name.get(n))
                 .copied();
-            if let Some(i) = named.or(self.empty_head) {
+            if let Some(i) = named
+                .or_else(|| self.by_paths_without_extension(path))
+                .or(self.empty_head)
+            {
                 return Some(Some(&defs[i]));
             }
             return (!self.by_content).then_some(None);
@@ -244,22 +284,40 @@ impl<'r> Detector<'r> {
         {
             return Some(&defs[i]);
         }
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            let ext = normalized_extension(ext);
-            // A compound extension beats the last extension alone (M6 spec §4.1 signal 3).
-            if !self.compound.is_empty()
-                && let Some(file_name) = path.file_name().and_then(|n| n.to_str())
-                && let Some(i) = self.compound_of(file_name, &ext)
+        if let Some(ext) = path.extension() {
+            if let Some(ext) = ext.to_str() {
+                let ext = normalized_extension(ext);
+                // A compound extension beats the last extension alone (M6 spec §4.1 signal 3).
+                if !self.compound.is_empty()
+                    && let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+                    && let Some(i) = self.compound_of(file_name, &ext)
+                {
+                    return Some(&defs[i]);
+                }
+                // A path glob that writes the extension beats it (signal 4), looked up by the
+                // extension: a name whose extension no such glob writes pays one lookup.
+                if !self.paths.is_empty()
+                    && let Some(i) = self
+                        .paths
+                        .before_extension(&At::with_key(path, Some(ext.as_ref())))
+                {
+                    return Some(&defs[i]);
+                }
+                if let Some(&i) = self.by_extension.get(ext.as_ref()) {
+                    return Some(&defs[i]);
+                }
+            }
+            // A path glob that leaves the extension open (signal 6).
+            if !self.paths.is_empty()
+                && let Some(i) = self.paths.after_extension(&At::with_key(path, None))
             {
                 return Some(&defs[i]);
             }
-            if let Some(&i) = self.by_extension.get(ext.as_ref()) {
-                return Some(&defs[i]);
-            }
-        }
-        // Magic bytes and shebangs decide only for a name without extension (M2 plan, D15).
-        if path.extension().is_some() {
+            // Magic bytes and shebangs decide only for a name without extension (M2 plan, D15).
             return None;
+        }
+        if let Some(i) = self.by_paths_without_extension(path) {
+            return Some(&defs[i]);
         }
         if let Some(d) = defs.iter().find(|d| self.active(d) && d.magic_at(head)) {
             return Some(d);
@@ -267,6 +325,362 @@ impl<'r> Detector<'r> {
         let interp = shebang_interpreter(head)?;
         defs.iter().find(|d| d.shebangs.iter().any(|s| s == interp))
     }
+}
+
+/// A file's path, as the path globs look at it.
+struct At<'p> {
+    path: &'p Path,
+    /// The file name, or empty.
+    name: &'p [u8],
+    /// The lowercase extension signal 4 looks up: the path's, or for a dotfile without one
+    /// (`.env`) the rest of its name, which a glob such as `*.env` writes as an extension.
+    key: Option<std::borrow::Cow<'p, str>>,
+}
+
+impl<'p> At<'p> {
+    fn new(path: &'p Path) -> Self {
+        let key = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(normalized_extension);
+        Self::from_key(path, key)
+    }
+
+    /// `new`, with the extension `detect` already normalized.
+    fn with_key(path: &'p Path, key: Option<&'p str>) -> Self {
+        Self::from_key(path, key.map(std::borrow::Cow::Borrowed))
+    }
+
+    fn from_key(path: &'p Path, key: Option<std::borrow::Cow<'p, str>>) -> Self {
+        let name = path
+            .file_name()
+            .map(|n| n.as_encoded_bytes())
+            .unwrap_or_default();
+        let key = key.or_else(|| {
+            let rest = path
+                .extension()
+                .is_none()
+                .then(|| name.strip_prefix(b"."))??;
+            let rest = std::str::from_utf8(rest).ok()?;
+            (!rest.is_empty() && !rest.contains('.')).then(|| normalized_extension(rest))
+        });
+        Self { path, name, key }
+    }
+
+    /// Whether a directory above the file is `token`, or starts with it.
+    fn has_directory(&self, filter: &DirFilter) -> bool {
+        let Some(parent) = self.path.parent() else {
+            return false;
+        };
+        parent.components().any(|c| {
+            let c = c.as_os_str().as_encoded_bytes();
+            match filter {
+                DirFilter::Component(t) => c == t.as_slice(),
+                DirFilter::Prefix(t) => c.starts_with(t),
+            }
+        })
+    }
+}
+
+/// A literal run of a glob's last component, which every file name it matches holds.
+enum NameFilter {
+    Any,
+    Prefix(Vec<u8>),
+    Infix(Box<memchr::memmem::Finder<'static>>),
+}
+
+impl NameFilter {
+    fn passes(&self, name: &[u8]) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Prefix(p) => name.starts_with(p),
+            Self::Infix(f) => f.find(name).is_some(),
+        }
+    }
+}
+
+/// A directory of the path every match has: a literal component of the glob (`.ssh`,
+/// `nginx`), or a component's literal start (`ChatExport_`).
+enum DirFilter {
+    Component(Vec<u8>),
+    Prefix(Vec<u8>),
+}
+
+struct PathRule {
+    definition: usize,
+    matcher: GlobMatcher,
+    /// A glob without a `/`, matched against the file name only.
+    basename: bool,
+    name: NameFilter,
+    dir: Option<DirFilter>,
+}
+
+/// The `paths` globs, sorted once into M6 spec §4.1's signal 4 or 6 and indexed by literals a
+/// match needs, so a file no glob can match runs no matcher: the filters only skip rules, the
+/// rule's GlobMatcher decides, and the first Definition in the Registry's order wins.
+#[derive(Default)]
+struct PathIndex {
+    rules: Vec<PathRule>,
+    /// Signal 4: globs that write the extension, under each lowercase extension they write.
+    before_extension: HashMap<String, Vec<usize>>,
+    /// Signal 6, by a literal component a match has (a directory or the whole file name).
+    by_component: HashMap<Vec<u8>, Vec<usize>>,
+    /// Signal 6, by the file name through its first dot after the first byte (`Makefile.`,
+    /// `.env.`): the key of every name a literal prefix that holds that dot admits.
+    by_name_prefix: HashMap<Vec<u8>, Vec<usize>>,
+    /// Signal 6 globs with no literal to index (`**/*`): asked of every name past the
+    /// extension, through their filters (D5).
+    fallback: Vec<usize>,
+}
+
+impl PathIndex {
+    fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
+    fn add(&mut self, definition: usize, pattern: &str, glob: &globset::Glob) {
+        let shape = GlobShape::of(pattern);
+        let id = self.rules.len();
+        self.rules.push(PathRule {
+            definition,
+            matcher: glob.compile_matcher(),
+            basename: !pattern.contains('/'),
+            name: shape.name_filter(),
+            dir: shape.dir_filter(),
+        });
+        if let Some(extensions) = shape.extensions() {
+            for e in extensions {
+                let at = self.before_extension.entry(e).or_default();
+                if !at.contains(&id) {
+                    at.push(id);
+                }
+            }
+            return;
+        }
+        match shape.token() {
+            Some(Token::Component(c)) => self.by_component.entry(c).or_default().push(id),
+            Some(Token::NamePrefix(p)) => self.by_name_prefix.entry(p).or_default().push(id),
+            None => self.fallback.push(id),
+        }
+    }
+
+    /// Signal 4: the first Definition whose glob that writes the file's extension matches.
+    fn before_extension(&self, at: &At) -> Option<usize> {
+        let key = at.key.as_deref()?;
+        let ids = self.before_extension.get(key)?;
+        self.first(at, ids.iter().copied())
+    }
+
+    /// Signal 6: the first Definition whose glob that leaves the extension open matches.
+    fn after_extension(&self, at: &At) -> Option<usize> {
+        let mut found = None;
+        let mut take = |ids: Option<&Vec<usize>>| {
+            if let Some(ids) = ids
+                && let Some(d) = self.first(at, ids.iter().copied())
+            {
+                found = Some(found.map_or(d, |f: usize| f.min(d)));
+            }
+        };
+        if !self.by_name_prefix.is_empty()
+            && let Some(key) = name_prefix_key(at.name)
+        {
+            take(self.by_name_prefix.get(key));
+        }
+        if !self.by_component.is_empty() {
+            for c in at.path.components() {
+                if let std::path::Component::Normal(c) = c {
+                    take(self.by_component.get(c.as_encoded_bytes()));
+                }
+            }
+        }
+        if !self.fallback.is_empty() {
+            take(Some(&self.fallback));
+        }
+        found
+    }
+
+    /// The smallest Definition among `ids` whose rule matches `at`: a rule of a later
+    /// Definition than one already matched runs no matcher.
+    fn first(&self, at: &At, ids: impl Iterator<Item = usize>) -> Option<usize> {
+        let mut best: Option<usize> = None;
+        for id in ids {
+            let r = &self.rules[id];
+            if best.is_some_and(|b| b <= r.definition)
+                || !r.name.passes(at.name)
+                || r.dir.as_ref().is_some_and(|d| !at.has_directory(d))
+            {
+                continue;
+            }
+            let hit = if r.basename {
+                at.path.file_name().is_some_and(|n| r.matcher.is_match(n))
+            } else {
+                r.matcher.is_match(at.path)
+            };
+            if hit {
+                best = Some(r.definition);
+            }
+        }
+        best
+    }
+}
+
+/// The file name through its first dot after the first byte: `Makefile.` of
+/// `Makefile.debug`, `.env.` of `.env.production`.
+fn name_prefix_key(name: &[u8]) -> Option<&[u8]> {
+    let dot = 1 + memchr::memchr(b'.', name.get(1..)?)?;
+    Some(&name[..=dot])
+}
+
+/// How a signal-6 glob is found.
+enum Token {
+    Component(Vec<u8>),
+    NamePrefix(Vec<u8>),
+}
+
+/// The literal parts of a glob that every path it matches holds.
+struct GlobShape<'g> {
+    /// The components before the last, empty for a glob without a `/`.
+    dirs: Vec<&'g str>,
+    last: &'g str,
+    /// False when a literal of the glob may not be a literal of the path: an escape, or a
+    /// `{…}` or `[…]` group that holds a `/`. Such a glob has no filter.
+    plain: bool,
+}
+
+impl<'g> GlobShape<'g> {
+    fn of(pattern: &'g str) -> Self {
+        let plain = !pattern.contains('\\') && !group_holds_slash(pattern);
+        let (dirs, last) = match pattern.rsplit_once('/') {
+            Some((dirs, last)) => (dirs.split('/').collect(), last),
+            None => (Vec::new(), pattern),
+        };
+        Self { dirs, last, plain }
+    }
+
+    /// Signal 4's lowercase extensions when the text after the last `.` of the last component
+    /// is a literal extension or a `{…}` list of literal ones, with no `*`, `?` or `[`.
+    fn extensions(&self) -> Option<Vec<String>> {
+        let (_, after) = self.last.rsplit_once('.')?;
+        let literal =
+            |e: &str| !e.is_empty() && !e.contains(['*', '?', '[', ']', '{', '}', '\\', '/']);
+        if let Some(list) = after.strip_prefix('{').and_then(|a| a.strip_suffix('}')) {
+            let all: Vec<&str> = list.split(',').collect();
+            return all
+                .iter()
+                .all(|e| literal(e))
+                .then(|| all.iter().map(|e| e.to_ascii_lowercase()).collect());
+        }
+        literal(after).then(|| vec![after.to_ascii_lowercase()])
+    }
+
+    /// The longest literal run of the last component (before a written extension), as a
+    /// prefix when it starts the component; the whole component when it is all literal.
+    fn name_filter(&self) -> NameFilter {
+        if !self.plain {
+            return NameFilter::Any;
+        }
+        if is_literal(self.last) {
+            return NameFilter::Prefix(self.last.as_bytes().to_vec());
+        }
+        let stem = match self.extensions() {
+            Some(_) => self.last.rsplit_once('.').map_or(self.last, |(s, _)| s),
+            None => self.last,
+        };
+        match longest_run(stem) {
+            Some((0, run)) => NameFilter::Prefix(run.as_bytes().to_vec()),
+            Some((_, run)) => NameFilter::Infix(Box::new(
+                memchr::memmem::Finder::new(run.as_bytes()).into_owned(),
+            )),
+            None => NameFilter::Any,
+        }
+    }
+
+    /// The longest literal directory component, else the longest literal start of one.
+    fn dir_filter(&self) -> Option<DirFilter> {
+        if !self.plain {
+            return None;
+        }
+        let usable = |c: &&str| !c.is_empty() && *c != "." && *c != ".." && !c.contains(':');
+        if let Some(c) = self
+            .dirs
+            .iter()
+            .copied()
+            .filter(usable)
+            .filter(|c| is_literal(c))
+            .max_by_key(|c| c.len())
+        {
+            return Some(DirFilter::Component(c.as_bytes().to_vec()));
+        }
+        self.dirs
+            .iter()
+            .copied()
+            .filter(usable)
+            .filter_map(|c| longest_run(c).filter(|(at, _)| *at == 0))
+            .map(|(_, run)| run)
+            .max_by_key(|run| run.len())
+            .map(|run| DirFilter::Prefix(run.as_bytes().to_vec()))
+    }
+
+    /// The index key of a signal-6 glob: its literal directory, its whole literal file name,
+    /// or its file name's literal start through a dot after the first byte.
+    fn token(&self) -> Option<Token> {
+        if !self.plain {
+            return None;
+        }
+        if let Some(DirFilter::Component(c)) = self.dir_filter() {
+            return Some(Token::Component(c));
+        }
+        if is_literal(self.last) && self.last != "." && self.last != ".." {
+            return Some(Token::Component(self.last.as_bytes().to_vec()));
+        }
+        if self.dirs.is_empty()
+            && let NameFilter::Prefix(p) = self.name_filter()
+            && let Some(key) = name_prefix_key(&p)
+        {
+            return Some(Token::NamePrefix(key.to_vec()));
+        }
+        None
+    }
+}
+
+/// Whether `s` has no glob syntax.
+fn is_literal(s: &str) -> bool {
+    !s.is_empty() && !s.contains(['*', '?', '[', ']', '{', '}', '\\'])
+}
+
+/// The longest run of literal characters of `component` before its first `[`, `{` or `\`, and
+/// where it starts.
+fn longest_run(component: &str) -> Option<(usize, &str)> {
+    let end = component.find(['[', '{', '\\']).unwrap_or(component.len());
+    let mut best: Option<(usize, &str)> = None;
+    let mut start = 0;
+    for (i, c) in component[..end]
+        .char_indices()
+        .chain(std::iter::once((end, '*')))
+    {
+        if c == '*' || c == '?' {
+            if i > start && best.is_none_or(|(_, b)| b.len() < i - start) {
+                best = Some((start, &component[start..i]));
+            }
+            start = i + c.len_utf8();
+        }
+    }
+    best
+}
+
+/// Whether a `{…}` or `[…]` group of `pattern` holds a `/`.
+fn group_holds_slash(pattern: &str) -> bool {
+    let mut open: Option<char> = None;
+    for c in pattern.chars() {
+        match (open, c) {
+            (None, '{') => open = Some('}'),
+            (None, '[') => open = Some(']'),
+            (Some(close), c) if c == close => open = None,
+            (Some(_), '/') => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// The exact names and the extensions (lowercase) the built-in document Formats claim
@@ -493,6 +907,128 @@ mod tests {
         }
         let forced = Detector::new(&r, &["pdf".into()]).unwrap().with_docs(true);
         assert!(forced.document_magic(b"plain text\n"));
+    }
+
+    /// M6 plan, Task 1.2: the literals that index a path glob only skip rules that cannot
+    /// match, so the index answers what the glob alone answers, for every glob shape.
+    #[test]
+    fn the_path_index_answers_what_the_glob_answers() {
+        let patterns = [
+            "**/ChatExport_*/result.json",
+            "**/ChatExport_*/messages*.html",
+            "*WhatsApp*.txt",
+            "**/nginx/**/*.conf",
+            "**/nginx/sites-enabled/*",
+            "**/.ssh/config",
+            "**/.ssh/config.d/*",
+            "**/systemd/**/*.{path,target,conf}",
+            "**/.git/config",
+            ".env.*",
+            "Makefile.*",
+            "Dockerfile.*",
+            "*.conf",
+            "*.env",
+            "**/*",
+            "*",
+            "config",
+            "foo*bar.txt",
+            "?akefile.*",
+            "[ab]*.txt",
+            "{a,b}/c.txt",
+            "{x/y,z}/*.md",
+            "a[/]b/*.md",
+            "\\*.txt",
+            "**/x.d/*.{a,B}",
+            "src/**/mod.rs",
+            "**/ChatExport_*/*",
+        ];
+        let paths = [
+            "x/ChatExport_2024/result.json",
+            "ChatExport_1/result.json",
+            "x/ChatExport_1/messages/y.html",
+            "x/ChatExport_1/messages2.html",
+            "x/ChatExport_1/a/result.json",
+            "x/result.json",
+            "x/WhatsApp Chat with Ana.txt",
+            "x/WhatsApp/notes.txt",
+            "/etc/nginx/a/b.conf",
+            "/etc/nginx.conf",
+            "/etc/xnginx/b.conf",
+            "/etc/nginx/sites-enabled/default",
+            "/etc/nginx/sites-enabled/a/b",
+            "/home/x/.ssh/config",
+            "/home/x/.ssh/config.d/local",
+            "/home/x/.ssh/configure",
+            "/etc/systemd/system/demo.path",
+            "/etc/systemd/system/demo.PATH",
+            "/etc/systemd/a.conf",
+            "repo/.git/config",
+            ".env",
+            ".env.production",
+            "x/.env.local",
+            ".conf",
+            "..env",
+            "Makefile.debug",
+            "Makefile",
+            "makefile.x",
+            "Dockerfile.dev",
+            "config",
+            "a/config",
+            "foo-and-bar.txt",
+            "a.txt",
+            "b.txt",
+            "a/c.txt",
+            "z/q.md",
+            "x/y/q.md",
+            "*.txt",
+            "a/x.d/f.a",
+            "a/x.d/f.B",
+            "a/x.d/f.b",
+            "src/a/b/mod.rs",
+            "./src/mod.rs",
+            "naïve/ChatExport_é/result.json",
+            "x.tar.gz",
+            "noext",
+        ];
+        for pattern in patterns {
+            let glob = path_glob(pattern).unwrap();
+            let matcher = glob.compile_matcher();
+            let mut index = PathIndex::default();
+            index.add(0, pattern, &glob);
+            for path in paths {
+                let p = Path::new(path);
+                let want = if pattern.contains('/') {
+                    matcher.is_match(p)
+                } else {
+                    p.file_name().is_some_and(|n| matcher.is_match(n))
+                };
+                let at = At::new(p);
+                let got = index.before_extension(&at).or(index.after_extension(&at));
+                assert_eq!(got.is_some(), want, "{pattern} on {path}");
+            }
+        }
+    }
+
+    #[test]
+    fn globs_sort_into_signal_4_or_6() {
+        let ext = |p: &str| GlobShape::of(p).extensions();
+        let v = |e: &[&str]| Some(e.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(ext("**/ChatExport_*/result.json"), v(&["json"]));
+        assert_eq!(ext("**/ChatExport_*/messages*.html"), v(&["html"]));
+        assert_eq!(ext("*WhatsApp*.TXT"), v(&["txt"]));
+        assert_eq!(ext("**/systemd/**/*.{path,Target}"), v(&["path", "target"]));
+        for six in [
+            "**/.ssh/config",
+            "**/nginx/sites-enabled/*",
+            "Dockerfile.*",
+            ".env.*",
+            "Makefile.*",
+            "x.[ch]",
+            "x.{a,*}",
+            "x.",
+        ] {
+            assert_eq!(ext(six), None, "{six}");
+        }
     }
 
     fn known(p: &str) -> bool {

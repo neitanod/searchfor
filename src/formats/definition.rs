@@ -44,6 +44,14 @@ pub struct FormatDefinition {
     pub origin: Origin,
 }
 
+/// A glob of `paths`, as the Detector compiles it: `*` and `?` stay within one component, so a
+/// literal part of the glob's last component is a part of the file name (M6 spec §4.1).
+pub fn path_glob(pattern: &str) -> Result<globset::Glob, globset::Error> {
+    globset::GlobBuilder::new(pattern)
+        .literal_separator(true)
+        .build()
+}
+
 fn builtin() -> Origin {
     Origin::BuiltIn
 }
@@ -59,6 +67,9 @@ impl FormatDefinition {
         }
         if !known_processor(&d.processor) {
             return Err(format!("unknown processor `{}`", d.processor));
+        }
+        for p in &d.paths {
+            path_glob(p).map_err(|e| format!("`paths`: invalid glob `{p}`: {e}"))?;
         }
         for m in &d.magic {
             if m.hex.is_empty()
@@ -123,6 +134,13 @@ mod tests {
                 .unwrap_err()
                 .contains("bogus")
         );
+    }
+
+    #[test]
+    fn an_invalid_path_glob_names_the_field() {
+        let e = FormatDefinition::parse("name='x'\nprocessor='markdown'\npaths=['a[']", known)
+            .unwrap_err();
+        assert!(e.contains("`paths`") && e.contains("a["), "{e}");
     }
 
     #[test]
