@@ -38,6 +38,8 @@ impl Kind {
 pub(crate) enum NameSrc {
     /// The Source bytes as written.
     Verbatim(Range<usize>),
+    /// A `.properties` key, decoded (`properties::push_key`).
+    Properties(Range<usize>),
 }
 
 /// One Segment of a line syntax, as the scan found it.
@@ -64,6 +66,11 @@ pub(crate) struct Lines<'a> {
 impl<'a> Lines<'a> {
     pub fn new(src: &'a [u8]) -> Self {
         Self { src, at: 0 }
+    }
+
+    /// The lines from the one that starts at `at`.
+    pub fn starting(src: &'a [u8], at: usize) -> Self {
+        Self { src, at }
     }
 }
 
@@ -213,6 +220,7 @@ impl<'a> LinePrepared<'a> {
         let mut n = CutName::new(self.name_chars);
         match &e.name {
             NameSrc::Verbatim(r) => n.push_lossy(self.src, r.clone()),
+            NameSrc::Properties(r) => super::properties::push_key(self.src, r.clone(), &mut n),
         }
         n.finish()
     }

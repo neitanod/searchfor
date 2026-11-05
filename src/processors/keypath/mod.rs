@@ -1,9 +1,11 @@
 //! keypath: YAML, JSON and TOML key paths (spec §5.2, design note 6), and M6's line syntaxes:
 //! INI, `.properties`, `.env`, SSH, iCalendar/vCard and BibTeX (M6 spec §7, §10.2, §10.3).
 pub mod collect;
+pub(crate) mod env;
 pub(crate) mod ini;
 pub mod json;
 pub(crate) mod lines;
+pub(crate) mod properties;
 pub mod toml;
 pub mod yaml;
 
@@ -22,12 +24,14 @@ pub(crate) enum Syntax {
     Yaml,
     Toml,
     Ini,
+    Properties,
+    Env,
 }
 
 impl Syntax {
     /// The M6 line syntaxes, prepared by `lines` (M6 plan, Task 2.1).
     fn lines(self) -> bool {
-        matches!(self, Syntax::Ini)
+        matches!(self, Syntax::Ini | Syntax::Properties | Syntax::Env)
     }
 }
 
@@ -37,6 +41,8 @@ fn syntax(params: &::toml::Table) -> anyhow::Result<Syntax> {
         Some("yaml") => Ok(Syntax::Yaml),
         Some("toml") => Ok(Syntax::Toml),
         Some("ini") => Ok(Syntax::Ini),
+        Some("properties") => Ok(Syntax::Properties),
+        Some("env") => Ok(Syntax::Env),
         _ => anyhow::bail!(
             "keypath needs `syntax` = \"json\", \"yaml\", \"toml\", \"ini\", \"properties\", \"env\", \"ssh\", \"ical\" or \"bibtex\" in [params]"
         ),
@@ -66,6 +72,8 @@ pub(crate) fn prepare_syntax<'a>(
         Syntax::Yaml => yaml::prepare(input, params)?,
         Syntax::Toml => toml::prepare(input, params)?,
         Syntax::Ini => ini::prepare(input, params)?,
+        Syntax::Properties => properties::prepare(input, params)?,
+        Syntax::Env => env::prepare(input, params)?,
     })
 }
 
@@ -78,6 +86,8 @@ fn line_outline(
 ) -> anyhow::Result<Outline> {
     match syntax {
         Syntax::Ini => ini::outline(src, params, anchors),
+        Syntax::Properties => properties::outline(src, params, anchors),
+        Syntax::Env => env::outline(src, params, anchors),
         s => unreachable!("{s:?} is no line syntax"),
     }
 }

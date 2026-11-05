@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+config/broken-m6.properties
+  k
+    1:k=needle
+  bad\uQQQQ
+    2:bad\uQQQQ=needle

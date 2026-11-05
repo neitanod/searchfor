@@ -39,4 +39,9 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("sqlite.toml", include_str!("../../formats/sqlite.toml")),
     ("ini.toml", include_str!("../../formats/ini.toml")),
     ("systemd.toml", include_str!("../../formats/systemd.toml")),
+    (
+        "properties.toml",
+        include_str!("../../formats/properties.toml"),
+    ),
+    ("env.toml", include_str!("../../formats/env.toml")),
 ];

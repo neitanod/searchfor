@@ -188,9 +188,61 @@ fn m6_ini() {
 }
 
 #[test]
+fn m6_properties_env() {
+    let fx = Fixture::new();
+    let prop = b"# comment\nspring.datasource.url=jdbc:needle://db\ncaf\\u00e9\\:key : needle\\\n continued\n";
+    seed(&fx, "config/m6.properties", prop);
+    check(
+        &fx,
+        "properties",
+        "config/m6.properties",
+        &["spring.datasource.url", "café:key"],
+    );
+    flags(
+        &fx,
+        "properties",
+        "config/m6.properties",
+        "spring.datasource.url",
+        "café",
+        "",
+    );
+    let env = b"# config\nexport DATABASE_URL=postgres://needle@db/app\nTEXT=\"first\nneedle # literal\nlast\" # end\n";
+    seed(&fx, "config/.env.m6", env);
+    check(&fx, "env", "config/.env.m6", &["DATABASE_URL", "TEXT"]);
+    flags(&fx, "env", "config/.env.m6", "TEXT", "DATABASE_URL", "");
+    put(
+        &fx,
+        "bad.properties",
+        b"k=needle\nbad\\uQQQQ=needle\nlast=needle\n",
+    );
+    let bad = output(&fx, "properties", "bad.properties", "needle", &["--json"]);
+    assert!(bad.stderr.is_empty());
+    assert_eq!(matches(&bad).len(), 3);
+    put(&fx, "bad.env", b"A=needle\nB=\"needle\nneedle tail\n");
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "env",
+            "bad.env",
+            "needle",
+            &["--json"]
+        ))),
+        ["A", "B", "B"]
+    );
+    let own = matches(&output(
+        &fx,
+        "env",
+        "config/.env.m6",
+        "DATABASE_URL",
+        &["--json"],
+    ));
+    assert_eq!(paths(&own), [""]);
+}
+
+#[test]
 fn m6_broken_fixtures() {
     // The keypath row of the plan's table: every Format of this topic file.
-    let owned: &[&str] = &["ini", "systemd"];
+    let owned: &[&str] = &["ini", "systemd", "properties", "env"];
     let cases: &[(&str, &str, &[u8], &[&str])] = &[
         (
             "ini",
@@ -203,6 +255,18 @@ fn m6_broken_fixtures() {
             "config/broken-m6.service",
             b"[Service]\nExecStart=needle\\\n needle\n",
             &["Service › ExecStart", "Service › ExecStart"],
+        ),
+        (
+            "properties",
+            "config/broken-m6.properties",
+            b"k=needle\nbad\\uQQQQ=needle\n",
+            &["k", "bad\\uQQQQ"],
+        ),
+        (
+            "env",
+            "config/broken-env.m6",
+            b"A=needle\nB=\"needle\nneedle\n",
+            &["A", "B", "B"],
         ),
     ];
     let fx = Fixture::new();

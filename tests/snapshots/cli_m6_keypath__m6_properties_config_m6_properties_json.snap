@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"config/m6.properties"}}}
+{"type":"match","data":{"path":{"text":"config/m6.properties"},"lines":{"text":"spring.datasource.url=jdbc:needle://db\n"},"line_number":2,"absolute_offset":10,"submatches":[{"match":{"text":"needle"},"start":27,"end":33}],"format":"properties","trail":[{"kind":"key","name":"spring.datasource.url","line":2,"end_line":2}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/m6.properties"},"lines":{"text":"caf\\u00e9\\:key : needle\\\n"},"line_number":3,"absolute_offset":49,"submatches":[{"match":{"text":"needle"},"start":17,"end":23}],"format":"properties","trail":[{"kind":"key","name":"café:key","line":3,"end_line":4}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"config/m6.properties"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":85,"bytes_printed":724,"matched_lines":2,"matches":2}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":724,"bytes_searched":85,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":2,"matches":2,"searches":1,"searches_with_match":1}},"type":"summary"}

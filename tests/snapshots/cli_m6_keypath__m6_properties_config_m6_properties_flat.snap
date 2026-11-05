@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+2: spring.datasource.url │ spring.datasource.url=jdbc:needle://db
+3: café:key │ caf\u00e9\:key : needle\
