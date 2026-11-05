@@ -141,7 +141,7 @@ impl OutlineProcessor for Markdown {
                 Event::Start(Tag::BlockQuote(_)) => containers.push(r.clone()),
                 Event::Start(Tag::Heading { level, .. }) => {
                     let mut s = OutlineSegment::new("heading", "", r.clone(), r.clone());
-                    s.segment.level = Some(level as u8);
+                    s.segment.level = Some(level as usize);
                     segs.push(s);
                     headings.push((segs.len() - 1, level as u8));
                     heading = Some(OpenHeading {

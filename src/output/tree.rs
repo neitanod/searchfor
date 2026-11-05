@@ -11,10 +11,7 @@ pub fn label(s: &Segment) -> String {
     }
     let name = crate::text::visible(&s.name);
     match s.kind.as_str() {
-        "heading" => format!(
-            "{} {name}",
-            "#".repeat(s.level.unwrap_or(1).max(1) as usize)
-        ),
+        "heading" => format!("{} {name}", "#".repeat(s.level.unwrap_or(1).max(1))),
         "code" => format!("```{name}"),
         "item" => format!("• {name}"),
         "column" => format!("column «{name}»"),
@@ -329,6 +326,13 @@ mod tests {
     use crate::output::fixture::*;
     use crate::output::tests::opts;
     use termcolor::{Ansi, NoColor};
+
+    #[test]
+    fn heading_label_keeps_a_level_above_255() {
+        let mut s = crate::output::fixture::seg("heading", "Deep", 1, 1);
+        s.level = Some(300);
+        assert_eq!(label(&s), format!("{} Deep", "#".repeat(300)));
+    }
 
     #[test]
     fn labels_of_the_m3_kinds_and_escaped_names() {

@@ -1826,7 +1826,7 @@ pub(crate) mod fixture {
 
     pub fn h(level: u8, name: &str, line: u64, end_line: u64) -> Segment {
         Segment {
-            level: Some(level),
+            level: Some(usize::from(level)),
             ..seg("heading", name, line, end_line)
         }
     }

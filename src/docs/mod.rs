@@ -291,7 +291,7 @@ impl Builder {
         let at = self.text.len();
         let id = self.segments.len();
         let mut s = OutlineSegment::new("chapter", name, at..at, at..at);
-        s.segment.level = Some(level);
+        s.segment.level = Some(usize::from(level));
         self.segments.push(s);
         self.open.push((id, Some((CHAPTER, level))));
     }
@@ -319,7 +319,7 @@ impl Builder {
         self.text.push(b'\n');
         let id = self.segments.len();
         let mut s = OutlineSegment::new("heading", name.clone(), start..start, start..end + 1);
-        s.segment.level = Some(level);
+        s.segment.level = Some(usize::from(level));
         s.name = Some(vec![(0..name.len(), start..end)]);
         s.name_anchor = start;
         if repeats {

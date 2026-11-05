@@ -15,7 +15,7 @@ pub struct Segment {
     /// 1-based last line of the Section (inclusive).
     pub end_line: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub level: Option<u8>,
+    pub level: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
 }
