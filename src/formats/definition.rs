@@ -29,6 +29,10 @@ pub struct FormatDefinition {
     pub extensions: Vec<String>,
     #[serde(default)]
     pub names: Vec<String>,
+    /// Path globs (M6 spec §4.1): one without a `/` is matched against the file name, one
+    /// with a `/` against the whole path.
+    #[serde(default)]
+    pub paths: Vec<String>,
     #[serde(default)]
     pub shebangs: Vec<String>,
     #[serde(default)]

@@ -23,6 +23,11 @@ pub struct Detector<'r> {
     /// extension (lowercase): `detect` asks them of every file.
     by_name: HashMap<String, usize>,
     by_extension: HashMap<String, usize>,
+    /// Compound extensions (`blade.php`, M6 spec §4.1 signal 3), lowercase, keyed by their last
+    /// extension: only a name whose last extension is a key compares its last two, so every
+    /// other name costs the extension lookup it costs without them. Each compound appears
+    /// once, with the first active Definition (in the Registry's order) that claims it.
+    compound: HashMap<String, Vec<(String, usize)>>,
     /// What `detect` gives a name without an extension and an empty head, past its exact
     /// names: the first active Definition whose magic bytes are empty.
     empty_head: Option<usize>,
@@ -59,6 +64,7 @@ impl<'r> Detector<'r> {
             doc_extensions: HashSet::new(),
             by_name: HashMap::new(),
             by_extension: HashMap::new(),
+            compound: HashMap::new(),
             empty_head: None,
             by_content: false,
             doc_magic: Vec::new(),
@@ -71,6 +77,7 @@ impl<'r> Detector<'r> {
     fn index(&mut self) {
         self.by_name.clear();
         self.by_extension.clear();
+        self.compound.clear();
         self.empty_head = None;
         self.by_content = false;
         self.doc_magic.clear();
@@ -91,9 +98,31 @@ impl<'r> Detector<'r> {
                 self.by_name.entry(n.clone()).or_insert(i);
             }
             for e in &d.extensions {
-                self.by_extension.entry(e.to_ascii_lowercase()).or_insert(i);
+                let e = e.to_ascii_lowercase();
+                match e.rsplit_once('.') {
+                    Some((_, last)) => {
+                        let same = self.compound.entry(last.to_string()).or_default();
+                        if !same.iter().any(|(c, _)| *c == e) {
+                            same.push((e, i));
+                        }
+                    }
+                    None => {
+                        self.by_extension.entry(e).or_insert(i);
+                    }
+                }
             }
         }
+    }
+
+    /// The first Definition, in the Registry's order, whose compound extension ends
+    /// `file_name`, whose last extension is `ext` (lowercase).
+    fn compound_of(&self, file_name: &str, ext: &str) -> Option<usize> {
+        self.compound
+            .get(ext)?
+            .iter()
+            .filter(|(c, _)| ends_with_extension(file_name, c))
+            .map(|&(_, i)| i)
+            .min()
     }
 
     /// Detects the document Formats too (`--docs`).
@@ -102,8 +131,14 @@ impl<'r> Detector<'r> {
         if on {
             for d in self.registry.all().iter().filter(|d| d.processor == "docs") {
                 self.doc_names.extend(d.names.iter().cloned());
-                self.doc_extensions
-                    .extend(d.extensions.iter().map(|e| e.to_ascii_lowercase()));
+                // A compound extension (`tar.docx`) by its last one, which a name with it has.
+                self.doc_extensions.extend(d.extensions.iter().map(|e| {
+                    let e = e.to_ascii_lowercase();
+                    match e.rsplit_once('.') {
+                        Some((_, last)) => last.to_string(),
+                        None => e,
+                    }
+                }));
             }
         }
         self.index();
@@ -209,10 +244,18 @@ impl<'r> Detector<'r> {
         {
             return Some(&defs[i]);
         }
-        if let Some(ext) = path.extension().and_then(|e| e.to_str())
-            && let Some(&i) = self.by_extension.get(normalized_extension(ext).as_ref())
-        {
-            return Some(&defs[i]);
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            let ext = normalized_extension(ext);
+            // A compound extension beats the last extension alone (M6 spec §4.1 signal 3).
+            if !self.compound.is_empty()
+                && let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+                && let Some(i) = self.compound_of(file_name, &ext)
+            {
+                return Some(&defs[i]);
+            }
+            if let Some(&i) = self.by_extension.get(ext.as_ref()) {
+                return Some(&defs[i]);
+            }
         }
         // Magic bytes and shebangs decide only for a name without extension (M2 plan, D15).
         if path.extension().is_some() {
@@ -258,6 +301,16 @@ fn normalized_extension(ext: &str) -> std::borrow::Cow<'_, str> {
     } else {
         std::borrow::Cow::Borrowed(ext)
     }
+}
+
+/// Whether `file_name` ends with `.` and `compound` (lowercase), in any case, after a
+/// nonempty stem: `cart.BLADE.PHP` ends with `blade.php`, `blade.php` and `.blade.php` do not,
+/// as their last two extensions are not two.
+fn ends_with_extension(file_name: &str, compound: &str) -> bool {
+    let (name, c) = (file_name.as_bytes(), compound.as_bytes());
+    name.len() > c.len() + 1
+        && name[name.len() - c.len() - 1] == b'.'
+        && name[name.len() - c.len()..].eq_ignore_ascii_case(c)
 }
 
 /// `#!/usr/bin/env bash -e` → "bash"; `#!/bin/sh` → "sh".
