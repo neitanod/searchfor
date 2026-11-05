@@ -1,7 +1,9 @@
 //! buildfile: the stages and instructions of a Dockerfile, the targets, variables and
-//! conditionals of a Makefile (M6 spec §7.9–§7.10), with one line scanner per `syntax`. A scanner gives a compact index of Source ranges, with no text; the Outline is
+//! conditionals of a Makefile, the recipes and variables of a justfile (M6 spec §7.9–§7.11),
+//! with one line scanner per `syntax`. A scanner gives a compact index of Source ranges, with no text; the Outline is
 //! built from it once per file, and its cursor streams the Trails (M5b spec §6.1).
 pub mod dockerfile;
+pub mod just;
 pub mod make;
 
 use super::{Capability, Cursor, Prepared, Processor};
@@ -21,13 +23,17 @@ const SIGNATURE_CHARS: usize = 200;
 enum Syntax {
     Dockerfile,
     Make,
+    Just,
 }
 
 fn syntax(params: &toml::Table) -> anyhow::Result<Syntax> {
     match params.get("syntax").and_then(|v| v.as_str()) {
         Some("dockerfile") => Ok(Syntax::Dockerfile),
         Some("make") => Ok(Syntax::Make),
-        _ => anyhow::bail!("buildfile needs `syntax` = \"dockerfile\" or \"make\" in [params]"),
+        Some("just") => Ok(Syntax::Just),
+        _ => anyhow::bail!(
+            "buildfile needs `syntax` = \"dockerfile\", \"make\" or \"just\" in [params]"
+        ),
     }
 }
 
@@ -110,6 +116,7 @@ fn scan(src: &[u8], syntax: Syntax) -> BuildIndex {
     match syntax {
         Syntax::Dockerfile => dockerfile::scan(src),
         Syntax::Make => make::scan(src),
+        Syntax::Just => just::scan(src),
     }
 }
 
@@ -329,6 +336,14 @@ mod tests {
         cursor_equals_model(
             b"ifeq (a,b)\nx: y\n\tz\n\n# c\n\tw\nelse\nN := 1\nendif\ndefine D\nq\nendef\nK += v \\\n u\n",
             "make",
+        );
+    }
+
+    #[test]
+    fn the_just_cursor_equals_its_model() {
+        cursor_equals_model(
+            b"# doc\n[a]\n@r x='1': d\n  y\n\n  z\nV := 'v'\nalias s := r\nstray\n  w\n",
+            "just",
         );
     }
 }

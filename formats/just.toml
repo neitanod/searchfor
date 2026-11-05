@@ -1,0 +1,10 @@
+# formats/just.toml — just recipes, variables and aliases (M6 spec §7.11): `deploy`.
+name       = "just"
+names      = ["justfile", "Justfile", ".justfile"]
+extensions = ["just"]
+processor  = "buildfile"
+
+[params]
+syntax = "just"
+# Characters of a recipe's or a variable's name before it is cut with `…`.
+name_chars = 40

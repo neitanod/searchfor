@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_buildfile.rs
+expression: text
+---
+1: # needle documentation
+4: deploy │     rsync -a build/ host:/srv/needle/
+6: URL │ URL := 'needle'
+7: ship │ alias ship := deploy # needle

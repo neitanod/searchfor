@@ -246,11 +246,48 @@ fn m6_make() {
     }
 }
 
+#[test]
+fn m6_just() {
+    let fx = Fixture::new();
+    let src = b"# needle documentation\n[linux]\n@deploy host='prod': build\n    rsync -a build/ host:/srv/needle/\n\nURL := 'needle'\nalias ship := deploy # needle\n";
+    seed(&fx, "config/m6.just", src);
+    check(
+        &fx,
+        "just",
+        "config/m6.just",
+        &["", "deploy", "URL", "ship"],
+    );
+    flags(&fx, "just", "config/m6.just", "deploy", "deploy", "");
+    put(
+        &fx,
+        "bad.just",
+        b"run:\n    echo needle\nstray line needle\nother:\n    needle\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "just",
+            "bad.just",
+            "needle",
+            &["--json"]
+        ))),
+        ["run", "", "other"]
+    );
+    let own = matches(&output(
+        &fx,
+        "just",
+        "config/m6.just",
+        "@deploy",
+        &["--json"],
+    ));
+    assert_eq!(paths(&own), [""]);
+}
+
 /// Each Format's committed broken fixture, with its three snapshots (plan, «Committed broken
 /// fixtures, with three snapshots each»).
 #[test]
 fn m6_broken_fixtures() {
-    let owned: &[&str] = &["dockerfile", "make"];
+    let owned: &[&str] = &["dockerfile", "make", "just"];
     #[allow(clippy::type_complexity)]
     let cases: &[(&str, &str, &[u8], &[&str])] = &[
         (
@@ -263,6 +300,12 @@ fn m6_broken_fixtures() {
             "make",
             "config/broken-m6.mk",
             b"a:\n\techo needle\nendif\nendef\nneedle\n",
+            &["a", ""],
+        ),
+        (
+            "just",
+            "config/broken-m6.just",
+            b"a:\n    needle\nstray needle\n",
             &["a", ""],
         ),
     ];
