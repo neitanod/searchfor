@@ -121,17 +121,21 @@ fn m6_path_separators_are_native() {
     let (_dir, r) = registry(&[
         ("ssh-config", "paths=['**/.ssh/config']"),
         ("nginx", "paths=['**/nginx/sites-enabled/*']"),
+        ("telegram", "paths=['**/ChatExport_*/result.json']"),
     ]);
     let d = Detector::new(&r, &[]).unwrap();
+    // Both arrays have one type, so the `/` branch carries Telegram's case too.
     let paths = if cfg!(windows) {
         [
             (r"C:\Users\x\.ssh\config", "ssh-config"),
             (r"C:\etc\nginx\sites-enabled\default", "nginx"),
+            (r"C:\x\ChatExport_2024\result.json", "telegram"),
         ]
     } else {
         [
             ("/home/x/.ssh/config", "ssh-config"),
             ("/etc/nginx/sites-enabled/default", "nginx"),
+            ("/x/ChatExport_2024/result.json", "telegram"),
         ]
     };
     for (path, want) in paths {
@@ -152,5 +156,146 @@ fn m6_invalid_user_glob_warns() {
     assert!(
         warnings[0].contains("broken.toml") && warnings[0].contains("`paths`"),
         "{warnings:?}"
+    );
+}
+#[test]
+fn m6_detection_table() {
+    let definitions = [
+        ("asciidoc", "extensions=['adoc','asciidoc']"),
+        ("rst", "extensions=['rst','rest']"),
+        ("org", "extensions=['org']"),
+        ("latex", "extensions=['tex','ltx','latex']"),
+        ("jupyter", "extensions=['ipynb']"),
+        (
+            "ini",
+            "names=['.gitconfig','.gitmodules','.editorconfig','.npmrc','.pypirc','.flake8','.pylintrc','.coveragerc','.hgrc']\nextensions=['ini','cfg','cnf','inf','desktop']\npaths=['**/.git/config','**/git/config']",
+        ),
+        (
+            "systemd",
+            "extensions=['service','socket','timer','mount','automount']\npaths=['**/systemd/**/*.{path,target,slice,scope,swap,network,netdev,link,conf}']",
+        ),
+        ("properties", "extensions=['properties']"),
+        (
+            "env",
+            "names=['.env']\nextensions=['env']\npaths=['.env.*']",
+        ),
+        (
+            "ssh-config",
+            "names=['ssh_config','sshd_config']\npaths=['**/.ssh/config','**/.ssh/config.d/*','**/ssh/ssh_config.d/*.conf','**/ssh/sshd_config.d/*.conf']",
+        ),
+        (
+            "nginx",
+            "names=['nginx.conf']\npaths=['**/nginx/**/*.conf','**/nginx/sites-available/*','**/nginx/sites-enabled/*']",
+        ),
+        (
+            "apache",
+            "names=['httpd.conf','apache2.conf','.htaccess']\npaths=['**/apache2/**/*.conf','**/httpd/**/*.conf','**/apache2/sites-available/*','**/apache2/sites-enabled/*']",
+        ),
+        ("hcl", "extensions=['tf','tfvars','hcl','nomad']"),
+        (
+            "dockerfile",
+            "names=['Dockerfile','Containerfile','dockerfile']\nextensions=['dockerfile','containerfile']\npaths=['Dockerfile.*','Containerfile.*']",
+        ),
+        (
+            "make",
+            "names=['Makefile','makefile','GNUmakefile','BSDmakefile']\nextensions=['mk','mak','make']\npaths=['Makefile.*']",
+        ),
+        (
+            "just",
+            "names=['justfile','Justfile','.justfile']\nextensions=['just']",
+        ),
+        ("sql", "extensions=['sql','ddl','dml']"),
+        ("diff", "extensions=['diff','patch','rej']"),
+        ("vue", "extensions=['vue']"),
+        ("svelte", "extensions=['svelte']"),
+        ("blade", "extensions=['blade.php']"),
+        ("graphql", "extensions=['graphql','gql','graphqls']"),
+        ("protobuf", "extensions=['proto']"),
+        ("har", "extensions=['har']"),
+        ("eml", "extensions=['eml']"),
+        (
+            "mbox",
+            "names=['mbox']\nextensions=['mbox','mbx']\nmagic=[{hex='46726f6d20'}]",
+        ),
+        ("icalendar", "extensions=['ics','ical','ifb']"),
+        ("vcard", "extensions=['vcf','vcard']"),
+        ("bibtex", "extensions=['bib']"),
+        ("whatsapp", "names=['_chat.txt']\npaths=['*WhatsApp*.txt']"),
+        (
+            "telegram",
+            "paths=['**/ChatExport_*/result.json','**/DataExport_*/result.json']",
+        ),
+        ("telegram-html", "paths=['**/ChatExport_*/messages*.html']"),
+    ];
+    let (_dir, r) = registry(&definitions);
+    let d = Detector::new(&r, &[]).unwrap();
+    for (name, _) in definitions {
+        let def = r.get(name).unwrap();
+        for exact in &def.names {
+            assert_eq!(selected(&d, exact).as_deref(), Some(name), "{exact}");
+        }
+        for extension in &def.extensions {
+            assert_eq!(
+                selected(&d, &format!("sample.{extension}")).as_deref(),
+                Some(name)
+            );
+        }
+    }
+    assert_eq!(
+        d.detect(Path::new("Inbox"), b"From sender\n").unwrap().name,
+        "mbox"
+    );
+    assert!(d.detect(Path::new("Inbox.txt"), b"From sender\n").is_none());
+}
+#[test]
+fn m6_telegram_precedence() {
+    let (_dir, r) = registry(&[
+        (
+            "telegram",
+            "paths=['**/ChatExport_*/result.json','**/DataExport_*/result.json']",
+        ),
+        ("telegram-html", "paths=['**/ChatExport_*/messages*.html']"),
+        ("conf-json", "paths=['**/conf/*.json']"),
+        ("whatsapp", "names=['_chat.txt']\npaths=['*WhatsApp*.txt']"),
+        ("make", "names=['Makefile']\npaths=['Makefile.*']"),
+        ("env", "names=['.env']\npaths=['.env.*']"),
+    ]);
+    let d = Detector::new(&r, &[]).unwrap();
+    // Spec §4.1 signal 4: a glob that writes the extension wins over the extension.
+    for (path, want) in [
+        ("x/ChatExport_2024/result.json", "telegram"),
+        ("x/DataExport_2024/result.json", "telegram"),
+        ("x/ChatExport_2024/messages.html", "telegram-html"),
+        ("x/ChatExport_2024/messages2.html", "telegram-html"),
+        ("x/conf/app.json", "conf-json"),
+        // Outside the folders the claimed extension keeps the file.
+        ("x/result.json", "json"),
+        ("x/messages.html", "html"),
+        ("x/ChatExport_2024/other.json", "json"),
+        ("x/ChatExport_2024/index.html", "html"),
+        // WhatsApp's one glob: the app's name in the export's name, any language.
+        ("x/WhatsApp Chat with Ana.txt", "whatsapp"),
+        ("x/WhatsApp Chat - Ana.txt", "whatsapp"),
+        ("x/Chat de WhatsApp con Ana.txt", "whatsapp"),
+        ("x/_chat.txt", "whatsapp"),
+        // Signal 6: a glob that leaves the extension open comes after it.
+        ("Makefile.toml", "toml"),
+        (".env.json", "json"),
+        ("Makefile.debug", "make"),
+    ] {
+        assert_eq!(selected(&d, path).as_deref(), Some(want), "{path}");
+    }
+    for path in [
+        "x/notes.txt",
+        "x/WhatsApp/notes.txt",
+        "x/WhatsApp Chat with Ana.log",
+    ] {
+        assert!(selected(&d, path).is_none(), "{path}");
+    }
+    // An override still wins over signal 4.
+    let d = Detector::new(&r, &["*.json=json".into()]).unwrap();
+    assert_eq!(
+        selected(&d, "x/ChatExport_2024/result.json").as_deref(),
+        Some("json")
     );
 }
