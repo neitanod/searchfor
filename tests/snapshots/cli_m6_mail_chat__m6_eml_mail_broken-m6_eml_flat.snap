@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_mail_chat.rs
+expression: text
+---
+2: X │ X: needle
+3: body │ not a header needle

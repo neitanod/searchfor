@@ -6,6 +6,7 @@ pub mod cursor;
 pub mod external;
 pub mod frontmatter;
 pub mod keypath;
+pub mod mail;
 pub mod markdown;
 pub mod markup;
 pub mod object;
@@ -162,6 +163,7 @@ pub fn by_name(name: &str) -> Option<&'static dyn Processor> {
         "object" => Some(&object::Object),
         "buildfile" => Some(&buildfile::Buildfile),
         "blocks" => Some(&blocks::Blocks),
+        "mail" => Some(&mail::Mail),
         _ => None,
     }
 }

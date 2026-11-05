@@ -1,0 +1,7 @@
+---
+source: tests/cli_m6_mail_chat.rs
+expression: text
+---
+3: Subject │ Subject: Your needle invoice
+5: X-Long │  needle folded
+7: body │ needle body

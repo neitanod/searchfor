@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_mail_chat.rs
+expression: text
+---
+4: One › body │ needle
+5: One › body │ >From needle

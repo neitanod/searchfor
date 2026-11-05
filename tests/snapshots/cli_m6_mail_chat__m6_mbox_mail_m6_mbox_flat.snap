@@ -1,0 +1,7 @@
+---
+source: tests/cli_m6_mail_chat.rs
+expression: text
+---
+6: Budget › body │ needle one
+7: Budget › body │ >From escaped needle
+12: Next › body │ needle two

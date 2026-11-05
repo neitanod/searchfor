@@ -1,0 +1,11 @@
+---
+source: tests/cli_m6_mail_chat.rs
+expression: text
+---
+mail/m6.eml
+  Subject
+    3:Subject: Your needle invoice
+  X-Long
+    5: needle folded
+  body
+    7:needle body
