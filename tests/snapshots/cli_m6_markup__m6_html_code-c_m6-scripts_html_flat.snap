@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+4: head › script[1] › onClick │   return 'needle';
+8: head › script[2] › load │ export function load() { return 'needle'; }
+11: head › script[3] › offers › price │ {"@type":"Product","offers":{"price":"needle"}}
+14: head › script[4] │ function tpl() { needle }

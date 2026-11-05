@@ -157,8 +157,7 @@ fn m6_vue() {
     ));
     assert_eq!(expanded[0]["section"]["start_line"], 5);
     assert_eq!(expanded[0]["section"]["end_line"], 7);
-    // HTML's scripts are still off here; Task 7.4 turns them on and changes this
-    // expectation to `script › addItem` (the `lang="ts"` picks TypeScript there too).
+    // HTML reads its scripts too (Task 7.4): the `lang="ts"` picks TypeScript there as well.
     put(&fx, "same.html", src);
     assert_eq!(
         paths(&matches(&output(
@@ -168,7 +167,7 @@ fn m6_vue() {
             "needle",
             &["--json"]
         ))),
-        ["template › ul.items › li[2]", "script", "style"]
+        ["template › ul.items › li[2]", "script › addItem", "style"]
     );
     put(
         &fx,
@@ -384,6 +383,69 @@ fn m6_telegram_html() {
     );
 }
 
+#[test]
+fn m6_html_scripts() {
+    let fx = Fixture::new();
+    let src = b"<html><head>\n<script>\nfunction onClick() {\n  return 'needle';\n}\n</script>\n<script type=\"module\">\nexport function load() { return 'needle'; }\n</script>\n<script type=\"application/ld+json\">\n{\"@type\":\"Product\",\"offers\":{\"price\":\"needle\"}}\n</script>\n<script type=\"text/x-template\">\nfunction tpl() { needle }\n</script>\n</head></html>\n";
+    seed(&fx, "code-c/m6-scripts.html", src);
+    check(
+        &fx,
+        "html",
+        "code-c/m6-scripts.html",
+        &[
+            "head › script[1] › onClick",
+            "head › script[2] › load",
+            "head › script[3] › offers › price",
+            "head › script[4]",
+        ],
+    );
+    flags(
+        &fx,
+        "html",
+        "code-c/m6-scripts.html",
+        "onClick",
+        "onClick",
+        "",
+    );
+    let one = |file: &str, src: &[u8]| {
+        put(&fx, file, src);
+        paths(&matches(&output(&fx, "html", file, "needle", &["--json"])))
+    };
+    // A JavaScript MIME type, trimmed and without case; any other type is text.
+    assert_eq!(
+        one(
+            "case.html",
+            b"<script type=\" Text/JavaScript \">function f(){ 'needle' }</script>\n"
+        ),
+        ["script › f"]
+    );
+    assert_eq!(
+        one(
+            "plain.html",
+            b"<script type=\"text/plain\">function f(){ 'needle' }</script>\n"
+        ),
+        ["script"]
+    );
+    // script_max_line = 1000 bytes: a 1000-byte line is read, a 1001-byte one is minified.
+    let line = |n: usize| {
+        format!(
+            "<script>\nfunction edge() {{ 'needle'; }}\nvar x=\"{}\";\n</script>\n",
+            "a".repeat(n - 9)
+        )
+    };
+    assert_eq!(one("edge.html", line(1000).as_bytes()), ["script › edge"]);
+    assert_eq!(one("min.html", line(1001).as_bytes()), ["script"]);
+    // script_max_bytes = 1 MiB: past it, the element's Trail.
+    let big = format!(
+        "<script>\nfunction big() {{ 'needle'; }}\n{}</script>\n",
+        "// pad\n".repeat((1 << 20) / 7 + 1)
+    );
+    assert_eq!(one("big.html", big.as_bytes()), ["script"]);
+    // v1.0's HTML snapshots stay as they are: page.html's script declares no function.
+    let page = output(&fx, "html", "markup/page.html", "needle", &["--json"]);
+    assert!(paths(&matches(&page)).iter().any(|p| p == "head › script"));
+}
+
 /// M6 plan, «Meaningful generated-name exclusion and encoding tests», markup's row: Vue's
 /// `[2]` is a word s4 adds, so `--in-headings` never finds it.
 #[test]
@@ -465,7 +527,7 @@ fn m6_encoding_and_lone_cr() {
 /// M6 plan, «Committed broken fixtures, with three snapshots each», markup's rows.
 #[test]
 fn m6_broken_fixtures() {
-    let owned: &[&str] = &["vue", "svelte", "blade", "telegram-html"];
+    let owned: &[&str] = &["vue", "svelte", "blade", "telegram-html", "html"];
     let cases: &[(&str, &str, &[u8], &[&str])] = &[
         (
             "vue",
@@ -490,6 +552,12 @@ fn m6_broken_fixtures() {
             "chat/ChatExport_m6/broken-messages.html",
             b"<div class='message'><div class='date' title='2024'>x</div><div class='from_name'>Ana</div><div class='text'>needle\n",
             &["2024 Ana"],
+        ),
+        (
+            "html",
+            "code-c/broken-m6-scripts.html",
+            b"<script type=\"application/ld+json\">\n{\"a\":\"needle\",\n</script>\nneedle\n",
+            &["script › a", ""],
         ),
     ];
     let fx = Fixture::new();

@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+code-c/broken-m6-scripts.html
+  script
+    a
+      2:{"a":"needle",
+  4:needle

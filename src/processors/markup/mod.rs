@@ -45,6 +45,9 @@ struct Params {
     name_chars: usize,
     /// HTML: each `<script>`'s content is read by its Grammar (M6 spec §8.3).
     scripts: bool,
+    /// The caps past which a script keeps its element's Segment alone (`script_max_bytes`,
+    /// `script_max_line`).
+    caps: components::Caps,
     /// HTML: the template blocks read between the tags (M6 spec §8.4, §8.5).
     templates: Option<TemplateSyntax>,
     /// HTML: `view = "telegram"`, Telegram's messages when the file has their classes (M6
@@ -87,10 +90,21 @@ fn params(t: &toml::Table) -> anyhow::Result<Params> {
             "markup reads `scripts`, `templates` and `view` only with `syntax` = \"html\""
         );
     }
+    let cap = |key: &str| {
+        t.get(key)
+            .and_then(|v| v.as_integer())
+            .filter(|&n| n > 0)
+            .map(|n| n as usize)
+    };
+    let caps = components::Caps {
+        max_bytes: cap("script_max_bytes"),
+        max_line: cap("script_max_line"),
+    };
     Ok(Params {
         syntax,
         name_chars,
         scripts,
+        caps,
         templates,
         telegram,
     })
@@ -676,7 +690,8 @@ impl<'a> Walk<'_, '_, 'a> {
             return;
         }
         let lines = self.lines_before(content.start);
-        let Some(o) = scripts.outline(self.src, &f.tag, f.name.end, content, lines) else {
+        let Some(o) = scripts.outline(self.src, &f.tag, f.name.end, content, lines, self.p.caps)
+        else {
             return;
         };
         let c = self.collector();
@@ -1269,7 +1284,7 @@ impl<'s> MarkupCursor<'s> {
         }
         let lines = self.line_of(content.start) - 1;
         let parsed = scripts
-            .outline(self.src, &tag, name_end, content, lines)
+            .outline(self.src, &tag, name_end, content, lines, self.p.caps)
             .map(Rc::new);
         self.prepared
             .parsed
@@ -2017,6 +2032,20 @@ mod tests {
                 "script[3]",
                 "script"
             ]
+        );
+    }
+
+    /// M6 Task 7.4: JSON-LD's key paths and the caps of HTML's scripts, from the cursor as
+    /// from `trails`.
+    #[test]
+    fn the_markup_cursor_gives_json_ld_and_capped_trails_at_every_byte() {
+        let params: toml::Table = toml::from_str(
+            "syntax = 'html'\nscripts = true\nscript_max_bytes = 60\nscript_max_line = 20",
+        )
+        .unwrap();
+        every_byte_with(
+            b"<head><script type=application/ld+json>\n{\"a\":{\"b\":[1,{\"c\":2}]}}\n</script><script type=text/plain>function p(){}</script>\n<script>\nfunction ok() {}\n</script><script>\nfunction long() { 'aaaaaaaaaaaa' }\n</script><script>\nfunction a() {}\nfunction b() {}\nfunction c() {}\nfunction d() {}\n</script><script type=application/ld+json>{\"x\":",
+            &params,
         );
     }
 

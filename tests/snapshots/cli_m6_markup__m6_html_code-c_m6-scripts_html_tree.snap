@@ -1,0 +1,18 @@
+---
+source: tests/cli_m6_markup.rs
+expression: text
+---
+code-c/m6-scripts.html
+  head
+    script[1]
+      function onClick()
+        4:  return 'needle';
+    script[2]
+      function load()
+        8:export function load() { return 'needle'; }
+    script[3]
+      offers
+        price
+          11:{"@type":"Product","offers":{"price":"needle"}}
+    script[4]
+      14:function tpl() { needle }
