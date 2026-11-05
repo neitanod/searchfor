@@ -44,4 +44,8 @@ pub const BUILTIN: &[(&str, &str)] = &[
         include_str!("../../formats/properties.toml"),
     ),
     ("env.toml", include_str!("../../formats/env.toml")),
+    (
+        "ssh-config.toml",
+        include_str!("../../formats/ssh-config.toml"),
+    ),
 ];

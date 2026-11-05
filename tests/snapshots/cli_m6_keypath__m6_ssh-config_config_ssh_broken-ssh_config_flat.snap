@@ -1,0 +1,6 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+2: Host x › K │ K needle
+3: Host x › Unknown │ Unknown needle

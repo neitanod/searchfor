@@ -6,6 +6,7 @@ pub(crate) mod ini;
 pub mod json;
 pub(crate) mod lines;
 pub(crate) mod properties;
+pub(crate) mod ssh;
 pub mod toml;
 pub mod yaml;
 
@@ -26,12 +27,16 @@ pub(crate) enum Syntax {
     Ini,
     Properties,
     Env,
+    Ssh,
 }
 
 impl Syntax {
     /// The M6 line syntaxes, prepared by `lines` (M6 plan, Task 2.1).
     fn lines(self) -> bool {
-        matches!(self, Syntax::Ini | Syntax::Properties | Syntax::Env)
+        matches!(
+            self,
+            Syntax::Ini | Syntax::Properties | Syntax::Env | Syntax::Ssh
+        )
     }
 }
 
@@ -43,6 +48,7 @@ fn syntax(params: &::toml::Table) -> anyhow::Result<Syntax> {
         Some("ini") => Ok(Syntax::Ini),
         Some("properties") => Ok(Syntax::Properties),
         Some("env") => Ok(Syntax::Env),
+        Some("ssh") => Ok(Syntax::Ssh),
         _ => anyhow::bail!(
             "keypath needs `syntax` = \"json\", \"yaml\", \"toml\", \"ini\", \"properties\", \"env\", \"ssh\", \"ical\" or \"bibtex\" in [params]"
         ),
@@ -74,6 +80,7 @@ pub(crate) fn prepare_syntax<'a>(
         Syntax::Ini => ini::prepare(input, params)?,
         Syntax::Properties => properties::prepare(input, params)?,
         Syntax::Env => env::prepare(input, params)?,
+        Syntax::Ssh => ssh::prepare(input, params)?,
     })
 }
 
@@ -88,6 +95,7 @@ fn line_outline(
         Syntax::Ini => ini::outline(src, params, anchors),
         Syntax::Properties => properties::outline(src, params, anchors),
         Syntax::Env => env::outline(src, params, anchors),
+        Syntax::Ssh => ssh::outline(src, params, anchors),
         s => unreachable!("{s:?} is no line syntax"),
     }
 }

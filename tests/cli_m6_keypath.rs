@@ -240,9 +240,63 @@ fn m6_properties_env() {
 }
 
 #[test]
+fn m6_ssh() {
+    let fx = Fixture::new();
+    let src = b"User root\nHost github.com gitlab.com\n  IdentityFile ~/.ssh/needle_ed25519\nMatch user ana\n  ProxyCommand=needle --proxy\nInclude /never/read/needle\n";
+    seed(&fx, "config/ssh/ssh_config", src);
+    check(
+        &fx,
+        "ssh-config",
+        "config/ssh/ssh_config",
+        &[
+            "Host github.com gitlab.com › IdentityFile",
+            "Match user ana › ProxyCommand",
+            "Match user ana › Include",
+        ],
+    );
+    flags(
+        &fx,
+        "ssh-config",
+        "config/ssh/ssh_config",
+        "IdentityFile",
+        "github",
+        "",
+    );
+    put(
+        &fx,
+        "broken-ssh",
+        b"hOsT example\nidentityfile needle\nUnrecognized needle\nMatch\nUser needle\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "ssh-config",
+            "broken-ssh",
+            "needle",
+            &["--json"]
+        ))),
+        [
+            "hOsT example › identityfile",
+            "hOsT example › Unrecognized",
+            "Match › User"
+        ]
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "ssh-config",
+            "config/ssh/ssh_config",
+            "IdentityFile",
+            &["--json"]
+        ))),
+        ["Host github.com gitlab.com"]
+    );
+}
+
+#[test]
 fn m6_broken_fixtures() {
     // The keypath row of the plan's table: every Format of this topic file.
-    let owned: &[&str] = &["ini", "systemd", "properties", "env"];
+    let owned: &[&str] = &["ini", "systemd", "properties", "env", "ssh-config"];
     let cases: &[(&str, &str, &[u8], &[&str])] = &[
         (
             "ini",
@@ -267,6 +321,12 @@ fn m6_broken_fixtures() {
             "config/broken-env.m6",
             b"A=needle\nB=\"needle\nneedle\n",
             &["A", "B", "B"],
+        ),
+        (
+            "ssh-config",
+            "config/ssh/broken-ssh_config",
+            b"Host x\nK needle\nUnknown needle\n",
+            &["Host x › K", "Host x › Unknown"],
         ),
     ];
     let fx = Fixture::new();

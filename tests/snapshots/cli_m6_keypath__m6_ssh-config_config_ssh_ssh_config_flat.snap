@@ -1,0 +1,7 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+3: Host github.com gitlab.com › IdentityFile │   IdentityFile ~/.ssh/needle_ed25519
+5: Match user ana › ProxyCommand │   ProxyCommand=needle --proxy
+6: Match user ana › Include │ Include /never/read/needle

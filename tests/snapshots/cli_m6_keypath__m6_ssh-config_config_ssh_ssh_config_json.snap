@@ -1,0 +1,10 @@
+---
+source: tests/cli_m6_keypath.rs
+expression: text
+---
+{"type":"begin","data":{"path":{"text":"config/ssh/ssh_config"}}}
+{"type":"match","data":{"path":{"text":"config/ssh/ssh_config"},"lines":{"text":"  IdentityFile ~/.ssh/needle_ed25519\n"},"line_number":3,"absolute_offset":37,"submatches":[{"match":{"text":"needle"},"start":22,"end":28}],"format":"ssh-config","trail":[{"kind":"key","name":"Host github.com gitlab.com","line":2,"end_line":3},{"kind":"key","name":"IdentityFile","line":3,"end_line":3}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/ssh/ssh_config"},"lines":{"text":"  ProxyCommand=needle --proxy\n"},"line_number":5,"absolute_offset":89,"submatches":[{"match":{"text":"needle"},"start":15,"end":21}],"format":"ssh-config","trail":[{"kind":"key","name":"Match user ana","line":4,"end_line":6},{"kind":"key","name":"ProxyCommand","line":5,"end_line":5}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"config/ssh/ssh_config"},"lines":{"text":"Include /never/read/needle\n"},"line_number":6,"absolute_offset":119,"submatches":[{"match":{"text":"needle"},"start":20,"end":26}],"format":"ssh-config","trail":[{"kind":"key","name":"Match user ana","line":4,"end_line":6},{"kind":"key","name":"Include","line":6,"end_line":6}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"config/ssh/ssh_config"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":146,"bytes_printed":1233,"matched_lines":3,"matches":3}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":1233,"bytes_searched":146,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":3,"matches":3,"searches":1,"searches_with_match":1}},"type":"summary"}
