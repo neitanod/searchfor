@@ -252,11 +252,76 @@ fn m6_har() {
     );
 }
 
+#[test]
+fn m6_telegram_json() {
+    let fx = Fixture::new();
+    let src = br#"{
+ "name":"Ana",
+ "messages":[
+  {"text":"needle","date":"2024-01-31T10:04:12","from":"Ana"},
+  {"date":"2024-01-31T10:05:00","from":"Ana",
+   "text":["needle",{"type":"bold","text":"needle"}],
+   "text_entities":[{"type":"plain","text":"needle"}]}
+ ]
+}
+"#;
+    seed(&fx, "chat/ChatExport_m6/result.json", src);
+    // SEARCHFOR_M6_AUTO=1 also checks detection by the ChatExport_* path.
+    check(
+        &fx,
+        "telegram",
+        "chat/ChatExport_m6/result.json",
+        &[
+            "Ana › 2024-01-31T10:04:12 Ana › text",
+            "Ana › 2024-01-31T10:05:00 Ana › text",
+            "Ana › 2024-01-31T10:05:00 Ana › text_entities › text",
+        ],
+    );
+    flags(
+        &fx,
+        "telegram",
+        "chat/ChatExport_m6/result.json",
+        "Ana",
+        "Ana",
+        "",
+    );
+    put(
+        &fx,
+        "account",
+        br#"{"chats":{"list":[{"name":"Work","messages":[{"text":"needle","from":"Ana","date":"2024"}]}]}}"#,
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "telegram",
+            "account",
+            "needle",
+            &["--json"]
+        ))),
+        ["Work › 2024 Ana › text"]
+    );
+    put(
+        &fx,
+        "bad-telegram",
+        b"{\"name\":\"Ana\",\"messages\":[{\"date\":\"2024\",\"from\":\"Ana\",\"text\":\"needle\"}]}\nnope\nneedle\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "telegram",
+            "bad-telegram",
+            "needle",
+            &["--json"]
+        ))),
+        ["Ana › 2024 Ana › text", ""]
+    );
+}
+
 /// Each Format's committed broken fixture, with its three snapshots (plan, «Committed broken
 /// fixtures, with three snapshots each»).
 #[test]
 fn m6_broken_fixtures() {
-    let owned: &[&str] = &["jupyter", "har"];
+    let owned: &[&str] = &["jupyter", "har", "telegram"];
     #[allow(clippy::type_complexity)]
     let cases: &[(&str, &str, &[u8], &[&str])] = &[
         (
@@ -270,6 +335,12 @@ fn m6_broken_fixtures() {
             "code-c/broken-m6.har",
             b"{\"log\":{\"entries\":[{\"request\":{\"method\":\"GET\",\"url\":\"http://x\"},\"x\":\"needle\"}]}}\nnope\nneedle\n",
             &["GET x › x", ""],
+        ),
+        (
+            "telegram",
+            "chat/ChatExport_m6/broken-result.json",
+            b"{\"name\":\"Ana\",\"messages\":[{\"date\":\"2024\",\"from\":\"Ana\",\"text\":\"needle\"}]}\nnope\nneedle\n",
+            &["Ana › 2024 Ana › text", ""],
         ),
     ];
     let fx = Fixture::new();

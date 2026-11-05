@@ -833,6 +833,16 @@ impl<'s> JsonCursor<'s> {
         self.main.roots
     }
 
+    /// Where the file's first value ends: past its closing bracket, or where the walk stops.
+    pub(super) fn first_end(&mut self) -> usize {
+        loop {
+            if let Some(e) = self.ahead.first_end.or(self.ahead.done) {
+                return e;
+            }
+            self.ahead_step();
+        }
+    }
+
     /// `main` up to `at`: every token that starts at or before it, and a key that starts at or
     /// before it, with its value's first token, so that its member is made.
     fn reach(&mut self, at: usize) {

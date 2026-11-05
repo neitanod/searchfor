@@ -8,6 +8,7 @@
 //! first value keeps keypath's JSON Trails.
 pub(crate) mod har;
 pub(crate) mod jupyter;
+pub(crate) mod telegram;
 
 use super::json::{self, JsonCursor, Met, Open, Step};
 use crate::model::{Input, Name, Segment, SharedTrail, Trail};
@@ -20,6 +21,7 @@ use std::ops::Range;
 pub(crate) enum View {
     Jupyter,
     Har,
+    Telegram,
 }
 
 impl View {
@@ -30,7 +32,8 @@ impl View {
             Some(v) => match v.as_str() {
                 Some("jupyter") => Ok(Some(View::Jupyter)),
                 Some("har") => Ok(Some(View::Har)),
-                _ => anyhow::bail!("keypath's `view` is \"jupyter\" or \"har\""),
+                Some("telegram") => Ok(Some(View::Telegram)),
+                _ => anyhow::bail!("keypath's `view` is \"jupyter\", \"har\" or \"telegram\""),
             },
         }
     }
@@ -62,6 +65,15 @@ pub(super) enum Ctx {
     PostData,
     /// Elements named by their `name`, after this word.
     Named(&'static str),
+    // Telegram (M6 spec §10.5).
+    /// A chat's members: the root of a chat export, or an element of `chats.list`.
+    Chat,
+    /// The root of an account export.
+    Account,
+    Chats,
+    ChatList,
+    Messages,
+    Message,
 }
 
 /// What a view makes of one member.
@@ -90,6 +102,10 @@ pub(super) enum Node {
     Page,
     /// An element named by its `name`: `header Authorization`.
     Named(&'static str),
+    /// A Telegram chat, by its `name`.
+    Chat,
+    /// A Telegram message: `2024-01-31T10:04:12 Ana`.
+    Message,
 }
 
 /// A member, as a view's `project` sees it.
@@ -138,6 +154,9 @@ fn shape(view: View, src: &[u8], root: usize) -> Option<(Ctx, usize)> {
         found = match view {
             View::Jupyter => (p.is("cells") && p.array()).then_some((Ctx::Notebook, m.value.start)),
             View::Har => (p.is("log") && p.object()).then_some((Ctx::Har, m.value.start)),
+            View::Telegram if p.is("messages") && p.array() => Some((Ctx::Chat, m.value.start)),
+            View::Telegram if p.is("chats") && p.object() => Some((Ctx::Account, m.value.start)),
+            View::Telegram => None,
         };
         found.is_none()
     });
@@ -163,6 +182,7 @@ fn project(view: View, ctx: Ctx, p: &Probe) -> (Role, Ctx) {
         (Ctx::Lines, _) => (Role::Hidden, Ctx::Plain),
         (_, View::Jupyter) => jupyter::project(ctx, p),
         (_, View::Har) => har::project(ctx, p),
+        (_, View::Telegram) => telegram::project(ctx, p),
     }
 }
 
@@ -260,8 +280,9 @@ pub(crate) struct ViewPrepared<'a> {
     src: &'a [u8],
     view: View,
     name_chars: usize,
-    /// What the first value's members are.
+    /// What the first value's members are, and where it starts.
     root: Ctx,
+    start: usize,
     /// Jupyter's headings, nested by level.
     headings: Outline,
 }
@@ -281,13 +302,14 @@ pub(crate) fn prepare<'a>(
     let name_chars = super::lines::name_chars(params);
     let headings = match view {
         View::Jupyter => jupyter::headings(src, at, name_chars),
-        View::Har => Outline::default(),
+        View::Har | View::Telegram => Outline::default(),
     };
     Ok(Box::new(ViewPrepared {
         src,
         view,
         name_chars,
         root: ctx,
+        start: root,
         headings,
     }))
 }
@@ -332,6 +354,8 @@ impl<'a> ViewPrepared<'a> {
             ids: Vec::new(),
             last: None,
             nodes: Vec::new(),
+            chat: None,
+            in_chat: false,
         }
     }
 
@@ -342,6 +366,7 @@ impl<'a> ViewPrepared<'a> {
         match self.view {
             View::Jupyter => jupyter::node(self.src, node, value, base, self.name_chars),
             View::Har => har::node(self.src, node, value, base, self.name_chars),
+            View::Telegram => telegram::node(self.src, node, value, base, self.name_chars),
         }
     }
 }
@@ -378,8 +403,9 @@ struct Link {
     role: Role,
 }
 
-/// A heading's identity among the members' (`ViewCursor::ids`).
+/// A heading's identity among the members' (`ViewCursor::ids`), and the root chat's.
 const HEADING: u64 = 1 << 62;
+const CHAT: u64 = u64::MAX;
 
 /// The Trails of a view in file order: keypath's JSON cursor finds the members holding each
 /// offset, and the view projects them.
@@ -394,6 +420,10 @@ struct ViewCursor<'p> {
     last: Option<(Vec<u64>, SharedTrail)>,
     /// The view's Segments of the last offset's members, by member: each named once.
     nodes: Vec<(u64, Option<Built>)>,
+    /// A chat export's root chat, once made, and where it ends; whether it holds the last
+    /// offset.
+    chat: Option<(Option<Built>, usize)>,
+    in_chat: bool,
 }
 
 impl ViewCursor<'_> {
@@ -419,6 +449,33 @@ impl ViewCursor<'_> {
         self.headings.indices(at, &mut self.hix);
         let ids: Vec<u64> = self.links.iter().map(|l| self.open[l.open].id).collect();
         self.nodes.retain(|(id, _)| ids.contains(id));
+    }
+
+    /// The chat a chat export's first value is, if it holds `at` (M6 spec §10.5): no member of
+    /// keypath's, so its end is where the walk finds that value closing.
+    fn chat(&mut self, at: usize) -> Option<Built> {
+        if self.p.root != Ctx::Chat || at < self.p.start {
+            return None;
+        }
+        if self.chat.is_none() {
+            let (src, start) = (self.p.src, self.p.start);
+            let end = self.json.first_end();
+            let last = end.saturating_sub(1).max(start).min(src.len());
+            let line = 1 + memchr::memchr_iter(b'\n', &src[..start.min(src.len())]).count() as u64;
+            let lines = memchr::memchr_iter(b'\n', &src[start.min(last)..last]).count() as u64;
+            let base = Segment {
+                kind: "chat".into(),
+                name: String::new(),
+                line,
+                end_line: line + lines,
+                level: None,
+                signature: None,
+            };
+            let built = telegram::chat(src, start, base, self.p.name_chars);
+            self.chat = Some((built, end));
+        }
+        let (built, end) = self.chat.as_ref().expect("made above");
+        if at < *end { built.clone() } else { None }
     }
 
     /// Whether a heading's own text holds `at`: its parents' Trail, and nothing under it.
@@ -447,7 +504,7 @@ impl ViewCursor<'_> {
     /// first whose label holds `at`.
     fn shown(&mut self, at: usize) -> Vec<(usize, Option<Built>)> {
         let mut out = Vec::new();
-        if self.on_heading(at) {
+        if self.on_heading(at) || self.chat(at).is_some_and(|c| c.label.contains(&at)) {
             return out;
         }
         for k in 0..self.links.len() {
@@ -481,6 +538,10 @@ impl ViewCursor<'_> {
         let start = self.open[self.links[k].open].start;
         let mut trail = Vec::new();
         let mut labels = Vec::new();
+        if let Some(c) = self.chat(start) {
+            trail.push(c.seg);
+            labels.push(c.label);
+        }
         for &h in &self.hix {
             trail.push(self.p.headings.segments[h].segment.clone());
             labels.push(self.p.headings.segments[h].label.clone());
@@ -539,7 +600,11 @@ impl Cursor for ViewCursor<'_> {
     fn trail_at(&mut self, at: usize) -> anyhow::Result<SharedTrail> {
         self.links(at);
         let shown = self.shown(at);
+        let chat = self.chat(at);
+        self.in_chat = chat.is_some();
+        let chat = chat.filter(|c| !c.label.contains(&at));
         self.ids.clear();
+        self.ids.extend(chat.as_ref().map(|_| CHAT));
         self.ids
             .extend(self.hix.iter().map(|&h| HEADING | h as u64));
         self.ids
@@ -549,11 +614,12 @@ impl Cursor for ViewCursor<'_> {
         {
             return Ok(t.clone());
         }
-        let mut trail: Vec<Segment> = self
-            .hix
-            .iter()
-            .map(|&h| self.p.headings.segments[h].segment.clone())
-            .collect();
+        let mut trail: Vec<Segment> = chat.map(|c| c.seg).into_iter().collect();
+        trail.extend(
+            self.hix
+                .iter()
+                .map(|&h| self.p.headings.segments[h].segment.clone()),
+        );
         for (k, built) in shown {
             trail.push(self.segment(k, built).0);
         }
@@ -562,10 +628,13 @@ impl Cursor for ViewCursor<'_> {
         Ok(t)
     }
 
-    /// The outermost member's start or heading's, whichever is first.
+    /// The outermost member's start, heading's or root chat's, whichever is first.
     fn open_from(&mut self) -> Option<usize> {
-        let json = self.json.open_from()?;
-        Some(json.min(self.headings.open_from()))
+        let mut open = self.json.open_from()?.min(self.headings.open_from());
+        if self.in_chat {
+            open = open.min(self.p.start);
+        }
+        Some(open)
     }
 }
 
