@@ -1214,4 +1214,33 @@ mod tests {
         assert_eq!(shebang_interpreter(b"# not a shebang"), None);
         assert_eq!(shebang_interpreter(b""), None);
     }
+
+    /// M6 spec §4.2: `cafebabe` starts a fat Mach-O and a Java class, whose Definitions are
+    /// both candidates, in the Registry's order; `object` stays the first of them. Each binary
+    /// magic of group E names its Format.
+    #[test]
+    fn object_candidates_follow_the_registry_order() {
+        let (builtin, _) = Registry::load(None, &known);
+        let det = Detector::new(&builtin, &[]).unwrap();
+        let names = |head: &[u8]| {
+            det.object_candidates(head)
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(b"\xca\xfe\xba\xbe\0\0\0\x3d"), ["macho", "java-class"]);
+        assert_eq!(det.object(b"\xca\xfe\xba\xbe").unwrap().name, "macho");
+        for (head, name) in [
+            (&b"\xff\xd8\xff\xe1"[..], "jpeg"),
+            (b"\x89PNG\r\n\x1a\n", "png"),
+            (b"RIFF\0\0\0\0WEBPVP8 ", "webp"),
+            (b"II*\0", "tiff"),
+            (b"MM\0*", "tiff"),
+            (b"ID3\x04", "id3"),
+            (b"\0\0\0\x20ftypM4A ", "mp4"),
+            (b"\0asm\x01\0\0\0", "wasm"),
+        ] {
+            assert_eq!(names(head), [name], "{head:?}");
+        }
+        assert!(names(b"plain text").is_empty());
+    }
 }

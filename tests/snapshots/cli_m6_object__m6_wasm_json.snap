@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_object.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"m6-media.bin"}}}
+{"type":"match","data":{"path":{"text":"m6-media.bin"},"lines":{"text":"needle not found"},"line_number":2,"absolute_offset":48,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"wasm","trail":[{"kind":"object","name":"WebAssembly","line":1,"end_line":2},{"kind":"section","name":"data","line":2,"end_line":2},{"kind":"symbol","name":"data[0]","line":2,"end_line":2}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"m6-media.bin"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":64,"bytes_printed":463,"matched_lines":1,"matches":1}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":463,"bytes_searched":64,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":1,"matches":1,"searches":1,"searches_with_match":1}},"type":"summary"}

@@ -10,6 +10,7 @@
 //! symbols the file has room for; of a PE goblin reads the headers and the section table, whose
 //! long names fit in the file together, and the Processor reads the exports itself, each name
 //! once.
+mod class;
 #[doc(hidden)]
 pub mod fixture;
 mod id3;
@@ -19,6 +20,7 @@ mod mp4;
 mod png;
 pub mod rows;
 mod tiff;
+mod wasm;
 mod webp;
 mod xmp;
 

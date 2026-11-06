@@ -130,12 +130,6 @@ impl<'a> Builder<'a> {
         r.start.min(end)..end
     }
 
-    /// A name read from `bytes[r]` as Latin-1 (MP4 box types, PNG keywords), borrowed when it
-    /// is ASCII.
-    pub fn latin1(&self, r: Range<usize>) -> Cow<'a, str> {
-        latin1(self.bytes.get(r).unwrap_or_default())
-    }
-
     /// A name read from `bytes[r]` as UTF-8, its invalid bytes as U+FFFD.
     pub fn utf8(&self, r: Range<usize>) -> Cow<'a, str> {
         String::from_utf8_lossy(self.bytes.get(r).unwrap_or_default())
@@ -171,10 +165,6 @@ pub(super) fn latin1(b: &[u8]) -> Cow<'_, str> {
 }
 
 /// Fixed-width reads that are None past the end of `b`.
-pub(super) fn u8_at(b: &[u8], at: usize) -> Option<u8> {
-    b.get(at).copied()
-}
-
 pub(super) fn u16_at(b: &[u8], at: usize, le: bool) -> Option<u16> {
     let v: [u8; 2] = b.get(at..at.checked_add(2)?)?.try_into().ok()?;
     Some(if le {
@@ -235,6 +225,8 @@ impl<'a> BinaryMap<'a> {
             "webp" => super::webp::layout(&mut b)?,
             "id3" => super::id3::layout(&mut b)?,
             "mp4" => super::mp4::layout(&mut b)?,
+            "wasm" => super::wasm::layout(&mut b)?,
+            "class" => super::class::layout(&mut b)?,
             _ => return None,
         }
         Some(b.finish())

@@ -1,0 +1,9 @@
+---
+source: tests/cli_m6_object.rs
+expression: out
+---
+m6-media.bin
+  Java 17
+    class com.example.Cart
+      method addItem
+        0x50:needle merged

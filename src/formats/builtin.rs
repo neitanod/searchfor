@@ -90,4 +90,9 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("webp.toml", include_str!("../../formats/webp.toml")),
     ("id3.toml", include_str!("../../formats/id3.toml")),
     ("mp4.toml", include_str!("../../formats/mp4.toml")),
+    ("wasm.toml", include_str!("../../formats/wasm.toml")),
+    (
+        "java-class.toml",
+        include_str!("../../formats/java-class.toml"),
+    ),
 ];

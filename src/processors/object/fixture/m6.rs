@@ -132,3 +132,69 @@ pub fn mp4(text: &[u8]) -> Vec<u8> {
     ]
     .concat()
 }
+
+/// `n` as unsigned LEB128.
+fn leb(mut n: usize) -> Vec<u8> {
+    let mut b = Vec::new();
+    loop {
+        let mut x = (n & 127) as u8;
+        n >>= 7;
+        if n != 0 {
+            x |= 128;
+        }
+        b.push(x);
+        if n == 0 {
+            break;
+        }
+    }
+    b
+}
+
+fn wasm_section(id: u8, data: &[u8]) -> Vec<u8> {
+    let mut b = vec![id];
+    b.extend(leb(data.len()));
+    b.extend(data);
+    b
+}
+
+/// A WebAssembly module: one function, exported as `total`, a memory, and one active data
+/// segment holding `text`.
+pub fn wasm(text: &[u8]) -> Vec<u8> {
+    let mut b = b"\0asm\x01\0\0\0".to_vec();
+    b.extend(wasm_section(1, &[1, 0x60, 0, 0]));
+    b.extend(wasm_section(3, &[1, 0]));
+    b.extend(wasm_section(5, &[1, 0, 1]));
+    b.extend(wasm_section(7, &[1, 5, b't', b'o', b't', b'a', b'l', 0, 0]));
+    b.extend(wasm_section(10, &[1, 2, 0, 0x0b]));
+    let mut data = vec![1, 0, 0x41, 0, 0x0b];
+    data.extend(leb(text.len()));
+    data.extend(text);
+    b.extend(wasm_section(11, &data));
+    b
+}
+
+/// A Java 17 class `com.example.Cart` with one method, `addItem`, whose code loads the string
+/// constant `text` (`ldc`, `pop`, `return`).
+pub fn class(text: &[u8]) -> Vec<u8> {
+    fn utf(b: &mut Vec<u8>, s: &[u8]) {
+        b.push(1);
+        b.extend((s.len() as u16).to_be_bytes());
+        b.extend(s);
+    }
+    let mut b = b"\xca\xfe\xba\xbe\0\0\0\x3d\0\x0a".to_vec();
+    utf(&mut b, b"com/example/Cart");
+    b.extend([7, 0, 1]);
+    utf(&mut b, b"java/lang/Object");
+    b.extend([7, 0, 3]);
+    utf(&mut b, b"addItem");
+    utf(&mut b, b"()V");
+    utf(&mut b, b"Code");
+    utf(&mut b, text);
+    b.extend([8, 0, 8]);
+    b.extend([0, 0x21, 0, 2, 0, 4, 0, 0, 0, 0, 0, 1]); // access, this, super, interfaces, fields, methods
+    b.extend([0, 9, 0, 5, 0, 6, 0, 1, 0, 7]); // method and one Code attribute
+    b.extend(16u32.to_be_bytes());
+    b.extend([0, 1, 0, 0, 0, 0, 0, 4, 0x12, 9, 0x57, 0xb1, 0, 0, 0, 0]);
+    b.extend([0, 0]);
+    b
+}

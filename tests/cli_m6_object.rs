@@ -114,3 +114,28 @@ fn m6_id3_mp4() {
         }
     }
 }
+
+#[test]
+fn m6_wasm_java() {
+    binary_case(
+        "wasm",
+        &binary::wasm(b"needle not found"),
+        "WebAssembly › data › data[0]",
+    );
+    binary_case(
+        "java-class",
+        &binary::class(b"needle merged"),
+        "Java 17 › com.example.Cart › addItem",
+    );
+    let fx = Fixture::new();
+    std::fs::write(fx.file("Cart.bin"), binary::class(b"needle")).unwrap();
+    let out = run(&mut fx.s4(["--no-docs", "--json", "addItem", "Cart.bin"]));
+    assert_eq!(names(&rows(&out)[0]), "Java 17 › com.example.Cart");
+    use searchfor::processors::object::fixture::{Spec, fat, macho};
+    let spec = Spec::new().section("__TEXT,__cstring", b"needle\0");
+    let thin = macho(&spec);
+    let (universal, _starts) = fat(&[(0x01000007, thin.file)]);
+    std::fs::write(fx.file("fat.bin"), universal).unwrap();
+    let out = run(&mut fx.s4(["--no-docs", "--json", "needle", "fat.bin"]));
+    assert_eq!(rows(&out)[0]["format"], "macho");
+}

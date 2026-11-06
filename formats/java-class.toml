@@ -1,0 +1,12 @@
+# formats/java-class.toml — Java class files (M6 spec §9): `Java 17 › com.example.Cart ›
+# addItem`. `cafebabe` also starts a fat Mach-O: the object Definitions whose magic matches are
+# tried in the Registry's order until one reads the file, and this one comes after `macho.toml`
+# (M6 spec §4.2), so a valid fat Mach-O stays `macho` and `object(head)` still answers `macho`.
+name      = "java-class"
+magic     = [{ hex = "cafebabe" }]
+processor = "object"
+
+[params]
+layout     = "class"
+# Characters of a class's or a member's name before it is cut with `…`.
+name_chars = 40

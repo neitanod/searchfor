@@ -1,0 +1,11 @@
+# formats/wasm.toml — WebAssembly modules (M6 spec §9): `WebAssembly › export › needle_fn`,
+# `› import › env.log`, `› data › data[0]`, `› code › total`. Told by its magic in a binary file
+# with a Match whose name decides no other Format (M6 spec §4.2).
+name      = "wasm"
+magic     = [{ hex = "0061736d" }]
+processor = "object"
+
+[params]
+layout     = "wasm"
+# Characters of a section's or a symbol's name before it is cut with `…`.
+name_chars = 40
