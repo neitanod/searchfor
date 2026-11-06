@@ -1,6 +1,6 @@
 ---
 name: searchfor
-description: Use when searching Markdown, code, YAML/JSON/TOML, HTML/XML, CSV/TSV, subtitles, PDF/Office/EPUB/SQLite documents or ELF/PE/Mach-O binaries and you need to know which section, function, key, element, row, cue, page, slide, sheet cell or symbol each match belongs to — before running rg and opening whole files
+description: Use when searching Markdown, code, YAML/JSON/TOML, HTML/XML, CSV/TSV, subtitles, PDF/Office/EPUB/SQLite documents, AsciiDoc/reStructuredText/Org/LaTeX/Jupyter, config files (INI, systemd, .properties, .env, SSH, nginx, Apache, Terraform/HCL, Dockerfile, Makefile, justfile), SQL dumps, diffs and patches, Vue/Svelte/Blade, GraphQL/Protobuf, HAR, mail (.eml, mbox), iCalendar/vCard, BibTeX, WhatsApp/Telegram chat exports, image and audio metadata (EXIF, XMP, ID3, MP4), WebAssembly, Java classes or ELF/PE/Mach-O binaries and you need to know which section, function, key, element, row, statement, hunk, message, cue, page, slide, sheet cell or symbol each match belongs to — before running rg and opening whole files
 ---
 
 # searchfor (`s4`)
@@ -15,7 +15,11 @@ its start time (`cue 2 00:00:04,000`); in ELF, PE and Mach-O binaries, the secti
 nearest symbol at the hex offset of the match (`ELF x86-64 › .rodata › main.version+0xe`); and
 in PDF, Word, Excel, PowerPoint, OpenDocument, EPUB and SQLite files, the
 chapter and page, heading and table, sheet and cell, slide, or table, row and column
-(`slide 1 › notes`, `Budget › A3`, `users › row 12 › email`). With
+(`slide 1 › notes`, `Budget › A3`, `users › row 12 › email`). Since 1.1, also the section and
+key of a configuration file, the statement, row and column of a SQL dump, the commit, file and
+hunk of a diff, the heading of an AsciiDoc, reStructuredText, Org or LaTeX document, the cell of
+a notebook, the block of a component template, the tag of a photo's or a song's metadata, and
+the message of a mailbox or a chat export. With
 `--expand` it prints the whole Section that holds the match, so you read that part of the
 file and nothing else.
 
@@ -38,11 +42,19 @@ to running `s4` in a shell when the tool is there: the answer is structured and 
   (`--expand`).
 
 Trails cover Markdown, YAML, JSON, TOML, PHP, JavaScript, TypeScript, TSX, Bash, Go, Rust,
-Python, HTML, XML (also `.svg`, `.rss`, `.csproj`, `.xaml`… and files starting with `<?xml`),
-CSV, TSV, SubRip (`.srt`) and WebVTT (`.vtt`), ELF, PE and Mach-O binaries (by their first
-bytes, any name), and, by default, PDF, Word, Excel, PowerPoint, OpenDocument, EPUB and
-SQLite; `s4 --list-formats` lists them. Every other file (logs, C, Java) prints as `rg` prints
-it, with an empty Trail, so `rg` is just as good there.
+Python, HTML (with the code and JSON-LD of its scripts), XML (also `.svg`, `.rss`, `.csproj`,
+`.xaml`… and files starting with `<?xml`), CSV, TSV, SubRip (`.srt`) and WebVTT (`.vtt`);
+AsciiDoc, reStructuredText, Org-mode, LaTeX and Jupyter notebooks; INI, systemd units,
+`.properties`, `.env`, SSH configuration, nginx, Apache, Terraform and HCL, Dockerfile, Makefile
+and justfile; SQL, diffs and patches, Vue, Svelte, Blade, GraphQL, Protobuf and HAR; mail
+(`.eml`, mbox), iCalendar, vCard, BibTeX, WhatsApp and Telegram exports; ELF, PE and Mach-O
+binaries, JPEG, PNG, WebP, TIFF, ID3, MP4, WebAssembly and Java classes (by their first bytes,
+any name); and, by default, PDF, Word, Excel, PowerPoint, OpenDocument, EPUB and SQLite.
+`s4 --list-formats` lists them, and
+[docs/formats.md](https://github.com/neitanod/searchfor/blob/main/docs/formats.md) describes
+each. Every other file (logs, C, Java sources) prints as `rg` prints it, with an empty Trail, so
+`rg` is just as good there. A file the name does not tell gets its Format with
+`--format 'GLOB=NAME'` (`--format 'chats/*.txt=whatsapp'`); stdin with `--format NAME`.
 
 ## Recipes
 
@@ -83,6 +95,45 @@ index, so `ports[2]` is the third element of `ports`:
 
 ```bash
 s4 --within 'server › ports' --flat 'pattern' config/
+```
+
+Configuration: the block and directive of each match in an nginx, Apache, INI, systemd, SSH or
+Terraform file. A `server` block is named by its `server_name`:
+
+```bash
+s4 --flat --sort path needle config/m6.ini config/nginx/nginx.conf
+```
+
+```
+config/m6.ini:3: server › host │ host = needle.example
+…
+config/nginx/nginx.conf:4: http › server example.com › location /api › proxy_pass │    proxy_pass http://needle:8080;
+```
+
+SQL dumps: the statement, row and column of a value. Columns come from the statement's list or
+the table's `CREATE TABLE` earlier in the file; a dump of gigabytes is read only up to the
+statement of the last match:
+
+```bash
+s4 --flat 'needle@example.com' code-c/
+```
+
+```
+code-c/m6-dump.sql:2: INSERT INTO users › row 2 › email │ INSERT INTO users VALUES (1,'plain'),(2,'needle@example.com');
+code-c/m6-dump.sql:6: COPY public.users › row 2 › email │ 2	needle@example.com
+```
+
+Diffs: the commit, file and hunk of a changed line. A `.patch` or `.diff` file is detected by
+its extension; stdin has no name, so `git log -p | s4 --format diff --flat needle` names its
+Format:
+
+```bash
+s4 --flat needle code-c/m6.patch
+```
+
+```
+4:     Fix the needle crash
+10: 3f2a9c1 Fix the needle crash › src/app.rs › +120 fn describe( │ +    let needle = 1;
 ```
 
 HTML and XML: the matches inside an element. Elements are named `tag#id.class`, with `[n]`

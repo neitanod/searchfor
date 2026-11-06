@@ -619,8 +619,15 @@ pub struct Args {
     /// Fragment width when there is no terminal.
     #[arg(long, default_value_t = 200)]
     pub fragment_width: usize,
+    /// List every Format Definition, built-in and user, with its origin and extensions.
+    ///
+    /// A Definition detects its files by exact `names`, by `extensions` (compound extensions
+    /// (`blade.php`) win over the last extension alone), by `paths` globs (`**/.ssh/config`,
+    /// `Dockerfile.*`), by `magic` bytes and by `shebangs`. A user Definition with a built-in's
+    /// name replaces it.
     #[arg(long)]
     pub list_formats: bool,
+    /// Write the built-in Format Definitions into DIR as TOML files, to copy and edit.
     #[arg(long, value_name = "DIR")]
     pub export_formats: Option<PathBuf>,
     /// List the compiled-in, installed and available Grammars (spec §7).
@@ -1582,6 +1589,22 @@ mod tests {
             "s4: --in-headings selects names; -v has no meaning there"
         );
         assert!(p(&["s4", "--in-headings", "-v", "--no-invert-match", "x"]).in_headings);
+    }
+
+    /// M6 spec §14: where `--help` describes Definitions it names `paths` and compound
+    /// extensions, which the man page (`--generate man`) takes from the same text.
+    #[test]
+    fn m6_help_describes_paths_and_compound_extensions() {
+        let help = command().render_long_help().to_string();
+        let flat = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        for text in [
+            "--list-formats",
+            "--export-formats <DIR>",
+            "`paths` globs",
+            "compound extensions (`blade.php`)",
+        ] {
+            assert!(flat.contains(text), "{text}: {help}");
+        }
     }
 
     #[test]

@@ -23,7 +23,13 @@ de claves; en HTML y XML, la ruta de elementos; en CSV y TSV, la fila y la colum
 subtítulos, el cue; en un binario ELF, PE o Mach-O, la sección y el símbolo más cercano; y en un
 documento (que se busca por defecto), el capítulo y la página de un PDF, el título y la tabla de un
 archivo de Word, la hoja y la celda de una planilla, la diapositiva de una presentación, o la
-tabla, la fila y la columna de una base SQLite.
+tabla, la fila y la columna de una base SQLite. Desde 1.1 también es la sección y la clave de un
+archivo de configuración (`http › server example.com › location /api`), la sentencia y la fila
+de un dump de SQL, el commit, el archivo y el hunk de un parche, la etiqueta de los metadatos de
+una foto (`JPEG › APP1 Exif › IFD0 › Model`), y el mensaje de un buzón de mail o de una
+exportación de chat, sobre los [setenta Formatos](#formatos).
+
+La página del proyecto es https://searchfor.ip1.cc/
 
 Todos los ejemplos de este README son salidas reales sobre [`tests/fixtures/`](tests/fixtures),
 corridas desde adentro de ese directorio. Los archivos objeto y los documentos de `m4/` los
@@ -35,24 +41,29 @@ Los ejemplos sobre `/bin/ls`, sobre el script de `--pre` de
 
 ## Estado
 
-**v1.0 está preparada y todavía sin publicar.** Corre en Linux, macOS y Windows, y suma
-binarios precompilados, Homebrew, npm y scripts de instalación (ver
-[Instalación](#instalación)); cada canal se abre cuando se aprueba su publicación, y hasta
-entonces la versión que se instala desde el repositorio es v0.5. **v0.5: todos los flags de
-ripgrep, y un servidor MCP.** El motor de búsqueda son los crates de
-ripgrep, así que la búsqueda se comporta como `rg`, y funcionan todos los flags de ripgrep
-14.1.1 (ver [Compatibilidad con ripgrep](#compatibilidad-con-ripgrep)); encima de eso, Markdown, YAML, JSON, TOML, el código en ocho
-lenguajes, HTML, XML, CSV, TSV, SubRip y WebVTT tienen Trails, y también los resultados que
-ripgrep encuentra en binarios ELF, PE y Mach-O (ver [Formatos](#formatos)). Los archivos PDF,
-Word, Excel, PowerPoint, OpenDocument, EPUB y SQLite se buscan por defecto en su texto, con su
-estructura, y `--no-docs` lo apaga (ver [Documentos](#documentos)). Las líneas largas se muestran como
-Fragmentos, y `--within`, `--expand` e `--in-headings` filtran y expanden por estructura.
-`s4 --mcp` ofrece la búsqueda a los agentes de IA por el Model Context Protocol (ver
-[Para agentes de IA](#para-agentes-de-ia)). Otros lenguajes se
-pueden describir con un [Helper Processor](#helper-processors), un programa aparte con el que s4
-se comunica. Cualquier otro archivo es **Plain**: sus
-resultados se imprimen con el Trail vacío. Los demás Formatos llegan por hito (ver
-[Hoja de ruta](#hoja-de-ruta)).
+**v1.0 está preparada y todavía sin publicar; 1.1, con los Formatos de M6, está en desarrollo.**
+v1.0 corre en Linux, macOS y Windows, y suma binarios precompilados, Homebrew, npm y scripts de
+instalación (ver [Instalación](#instalación)); cada canal se abre cuando se aprueba su
+publicación, y hasta entonces se instala desde el repositorio. 1.1 le suma cuarenta Formatos a
+los de v1.0: documentos de texto (AsciiDoc, reStructuredText, Org-mode, LaTeX, Jupyter),
+configuración (INI, systemd, `.properties`, `.env`, SSH, nginx, Apache, Terraform y HCL,
+Dockerfile, Makefile, justfile), los archivos que viven al lado del código (SQL, diffs, Vue,
+Svelte, Blade, GraphQL, Protobuf, HAR), los metadatos de imágenes, audio y binarios (JPEG, PNG,
+WebP, TIFF, ID3, MP4, WebAssembly, clases de Java), y mail, calendarios, contactos, BibTeX y los
+chats de WhatsApp y Telegram (ver [Formatos](#formatos)). Su único cambio a un Trail de v1.0
+está dentro de los scripts de las páginas HTML
+([docs/rg-compat.md](docs/rg-compat.md#trails-that-changed-since-10)).
+
+El motor de búsqueda son los crates de ripgrep, así que la búsqueda se comporta como `rg`, y
+funcionan todos los flags de ripgrep 14.1.1 (ver
+[Compatibilidad con ripgrep](#compatibilidad-con-ripgrep)); encima de eso, cada Formato les da
+Trails a sus resultados, y los archivos PDF, Word, Excel, PowerPoint, OpenDocument, EPUB y SQLite
+se buscan por defecto en su texto, con su estructura; `--no-docs` lo apaga. Las líneas largas se
+muestran como Fragmentos, y `--within`, `--expand` e `--in-headings` filtran y expanden por
+estructura. `s4 --mcp` ofrece la búsqueda a los agentes de IA por el Model Context Protocol (ver
+[Para agentes de IA](#para-agentes-de-ia)). Otros lenguajes se pueden describir con un
+[Helper Processor](#helper-processors), un programa aparte con el que s4 se comunica. Cualquier
+otro archivo es **Plain**: sus resultados se imprimen con el Trail vacío.
 
 El glosario está en [CONTEXT.md](CONTEXT.md), el diseño en
 [docs/specs](docs/specs/2026-10-16-searchfor-design.md) y las decisiones de arquitectura en
@@ -154,130 +165,103 @@ consola queda en memoria, porque una copia de sus bytes perdería los colores.
 
 ## Formatos
 
-| Formato | Archivos | Segmentos |
-|---|---|---|
-| Markdown | `.md`, `.markdown`, `.mdx`, `.mkd`, `.mdown` | título del frontmatter, títulos, bloques de código, ítems de lista padres, columnas de tabla |
-| YAML | `.yaml`, `.yml` | claves y elementos de arrays; `document N` para cada documento de un stream |
-| JSON | `.json`, `.jsonc`, `.jsonl`, `.geojson`, `.webmanifest`, `.babelrc`, `.eslintrc` | claves y elementos de arrays; acepta comentarios y comas finales |
-| TOML | `.toml`, `Cargo.lock`, `Pipfile`, `poetry.lock`, `uv.lock` | claves, tablas y arrays de tablas |
-| PHP | `.php`, `.phtml` | namespaces, clases, interfaces, traits, enums, métodos, funciones |
-| JavaScript | `.js`, `.mjs`, `.cjs`, `.jsx` | clases, métodos, funciones, y arrow functions o function expressions que reciben un nombre |
-| TypeScript | `.ts`, `.mts`, `.cts` | los de JavaScript, más namespaces, interfaces y clases abstractas |
-| TSX | `.tsx` | los de TypeScript |
-| Bash | `.sh`, `.bash`, `.bats`, `.bashrc`, `.bash_profile`, `.bash_aliases`, `.profile` | funciones |
-| Go | `.go` | tipos, funciones, y métodos nombrados por su receptor (`Server.Start`) |
-| Rust | `.rs` | módulos, structs, enums, traits, bloques `impl`, funciones |
-| Python | `.py`, `.pyi`, `.pyw` | clases y funciones, también las anidadas |
-| HTML | `.html`, `.htm`, `.xhtml` | elementos como `tag#id.class`, con `[n]` entre los hermanos con el mismo tag; `html` y `body` ocultos |
-| XML | `.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`, `.rss`, `.atom`, `.plist`, `.wsdl`, `.xlf`, `.xliff`, `.kml`, `.gpx`, `.csproj`, `.vbproj`, `.fsproj`, `.nuspec`, `.resx`, `.xaml`, y los archivos que empiezan con `<?xml` | elementos por tag, con `[n]` entre los hermanos con el mismo tag |
-| CSV | `.csv` | `row N › Columna`; el separador (`,` `;` tab `\|`) se lee de la primera línea |
-| TSV | `.tsv` | `row N › Columna` |
-| SubRip | `.srt` | cues: `cue 12 00:01:02,500` |
-| WebVTT | `.vtt` | cues: `cue intro 00:00.000` |
-| ELF | los archivos cuyos primeros bytes lo dicen, con cualquier nombre | imagen › sección › símbolo, en el offset hexadecimal: `ELF x86-64 › .rodata › main.version+0xe` |
-| PE | los archivos cuyos primeros bytes lo dicen, con cualquier nombre | imagen › sección › símbolo, en el offset hexadecimal: `PE x86-64 › .rdata › version_string+0xe` |
-| Mach-O | los archivos cuyos primeros bytes lo dicen, con cualquier nombre; también los fat (universales) | imagen › sección › símbolo, en el offset hexadecimal: `Mach-O arm64 › __TEXT,__cstring › _version+0xe` |
-| PDF | `.pdf`, y los archivos que empiezan con `%PDF-` | los marcadores como capítulos, y las páginas: `1 Intro › page 2` |
-| Word | `.docx`, `.docm`, `.dotx`, `.dotm` | títulos, y tablas: `2 Costs › table 1 › row 2 › Price` |
-| Excel | `.xlsx`, `.xlsm`, `.xltx`, `.xltm` | hojas y celdas: `Budget › A3` |
-| PowerPoint | `.pptx`, `.pptm`, `.potx`, `.potm`, `.ppsx`, `.ppsm` | diapositivas y sus notas: `slide 1 › notes` |
-| Texto de OpenDocument | `.odt`, `.ott`, y los archivos cuyo `mimetype` lo dice | como Word |
-| Planilla de OpenDocument | `.ods`, `.ots`, y los archivos cuyo `mimetype` lo dice | como Excel |
-| Presentación de OpenDocument | `.odp`, `.otp`, y los archivos cuyo `mimetype` lo dice | como PowerPoint |
-| EPUB | `.epub`, y los archivos cuyo `mimetype` lo dice | capítulos, nombrados por el índice, y títulos: `1. Arrival › The Harbour` |
-| SQLite | `.sqlite`, `.sqlite3`, `.db`, `.db3`, `.s3db`, `.sl3`, y los archivos que empiezan con `SQLite format 3` | tablas, filas y columnas: `users › row 12 › email` |
+Cada Formato de abajo les da a sus archivos el Trail del ejemplo, y
+[docs/formats.es.md](docs/formats.es.md) describe cada uno: sus Segmentos, sus límites, qué hace
+con lo que no puede leer, y salidas reales sobre [`tests/fixtures/`](tests/fixtures). La columna
+`--format` es el nombre de su Definición, el que usan `--format` y `--list-formats`.
 
-Un archivo sin extensión también se reconoce por su shebang (`#!/usr/bin/env python3`,
-`node`, `bash`…). Los Formatos de código los parsean Grammars de tree-sitter compiladas
-dentro de `s4`; YAML, JSON y TOML, parsers nativos; HTML, XML, CSV, TSV y los subtítulos,
-scanners propios de s4; los archivos objeto, goblin; y los documentos, Extractores incluidos en
-`s4`, escritos en Rust, sin ningún programa externo. `s4 --list-formats` los lista todos.
+| Formato | `--format` | Archivos | Trail de ejemplo |
+|---|---|---|---|
+| Markdown | `markdown` | `.md`, `.markdown`, `.mdx`, `.mkd`, `.mdown` | `Deploy guide › Install › Linux › bash` |
+| YAML | `yaml` | `.yaml`, `.yml` | `server › ports[2] › host` |
+| JSON | `json` | `.json`, `.jsonc`, `.jsonl`, `.geojson`, `.webmanifest` | `server › ports[2] › host` |
+| TOML | `toml` | `.toml`, `Cargo.lock`, `Pipfile`, `poetry.lock`, `uv.lock` | `products[1] › tags[1]` |
+| PHP | `php` | `.php`, `.phtml` | `Cart › addItem` |
+| JavaScript | `javascript` | `.js`, `.mjs`, `.cjs`, `.jsx` | `Widget › render` |
+| TypeScript | `typescript` | `.ts`, `.mts`, `.cts` | `Geometry › Base › describe` |
+| TSX | `tsx` | `.tsx` | `View › onClick` |
+| Bash | `bash` | `.sh`, `.bash`, `.bats`, `.bashrc`, `.profile` | `deploy` |
+| Go | `go` | `.go` | `Server.Start` |
+| Rust | `rust` | `.rs` | `outer › Thing › helper` |
+| Python | `python` | `.py`, `.pyi`, `.pyw` | `Outer › method › inner` |
+| HTML | `html` | `.html`, `.htm`, `.xhtml` | `main#content › section#pricing.card.wide › p.note[2]`; dentro de un script, desde 1.1, `head › script[1] › onClick` ([qué cambió](docs/rg-compat.md#trails-that-changed-since-10)) |
+| XML | `xml` | `.xml`, `.svg`, `.rss`, `.plist`, `.csproj`, y los archivos que empiezan con `<?xml` | `catalog › book[2] › title` |
+| CSV | `csv` | `.csv` | `row 2 › Plan` |
+| TSV | `tsv` | `.tsv` | `row 2 › Role` |
+| SubRip | `srt` | `.srt` | `cue 2 00:00:04,000` |
+| WebVTT | `vtt` | `.vtt` | `cue intro 00:00.000` |
+| ELF | `elf` | cualquier nombre, por sus primeros bytes | `ELF x86-64 › .rodata › main.version+0xe` |
+| PE | `pe` | cualquier nombre, por sus primeros bytes | `PE x86-64 › .rdata › version_string+0xe` |
+| Mach-O | `macho` | cualquier nombre, por sus primeros bytes; también los fat | `Mach-O arm64 › __TEXT,__cstring › _version+0xe` |
+| PDF | `pdf` | `.pdf` | `1 Intro › page 2` |
+| Word | `docx` | `.docx`, `.docm`, `.dotx`, `.dotm` | `2 Costs › table 1 › row 2 › Price` |
+| Excel | `xlsx` | `.xlsx`, `.xlsm`, `.xltx`, `.xltm` | `Budget › A3` |
+| PowerPoint | `pptx` | `.pptx`, `.pptm`, `.potx`, `.potm`, `.ppsx`, `.ppsm` | `slide 1 › notes` |
+| OpenDocument | `odt`, `ods`, `odp` | `.odt`, `.ott`, `.ods`, `.ots`, `.odp`, `.otp` | como Word, Excel y PowerPoint |
+| EPUB | `epub` | `.epub` | `1. Arrival › The Harbour` |
+| SQLite | `sqlite` | `.sqlite`, `.sqlite3`, `.db`, `.db3`, `.s3db`, `.sl3` | `users › row 12 › email` |
+| AsciiDoc | `asciidoc` | `.adoc`, `.asciidoc` | `Deploy guide › Install › Linux › bash` |
+| reStructuredText | `rst` | `.rst`, `.rest` | `Install › Linux › bash` |
+| Org-mode | `org` | `.org` | `Budget › TODO Costs :work: › Price` |
+| LaTeX | `latex` | `.tex`, `.ltx`, `.latex` | `A Study of Needles › Methods › Sampling › figure` |
+| Jupyter | `jupyter` | `.ipynb` | `Analysis › Load data › cell 2 › output 1 › text/plain` |
+| INI | `ini` | `.ini`, `.cfg`, `.desktop`, `.gitconfig`, `.editorconfig`, `.git/config` | `remote "origin" › url` |
+| Unidades de systemd | `systemd` | `.service`, `.socket`, `.timer`, `.mount`, `systemd/**/*.target` | `Service › ExecStart` |
+| Properties de Java | `properties` | `.properties` | `spring.datasource.url` |
+| dotenv | `env` | `.env`, `.env.*`, `*.env` | `DATABASE_URL` |
+| Configuración de SSH | `ssh-config` | `ssh_config`, `sshd_config`, `.ssh/config` | `Host github.com gitlab.com › IdentityFile` |
+| nginx | `nginx` | `nginx.conf`, `nginx/**/*.conf`, `nginx/sites-enabled/*` | `http › server example.com › location /api › proxy_pass` |
+| Apache | `apache` | `httpd.conf`, `apache2.conf`, `.htaccess`, `apache2/**/*.conf` | `VirtualHost *:443 example.com › Directory /var/www › Require` |
+| Terraform y HCL | `hcl` | `.tf`, `.tfvars`, `.hcl`, `.nomad` | `resource aws_instance web › tags › Name` |
+| Dockerfile | `dockerfile` | `Dockerfile`, `Containerfile`, `Dockerfile.*`, `.dockerfile` | `build › RUN` |
+| Makefile | `make` | `Makefile`, `GNUmakefile`, `Makefile.*`, `.mk` | `ifeq ($(OS),Windows_NT) › release test` |
+| justfile | `just` | `justfile`, `.justfile`, `.just` | `deploy` |
+| SQL | `sql` | `.sql`, `.ddl`, `.dml` | `INSERT INTO users › row 2 › email` |
+| Diffs y parches | `diff` | `.diff`, `.patch`, `.rej` | `3f2a9c1 Fix the needle crash › src/app.rs › +120 fn describe(` |
+| Vue | `vue` | `.vue` | `script › addItem` |
+| Svelte | `svelte` | `.svelte` | `ul › #each items as item › li[1]` |
+| Blade | `blade` | `.blade.php` | `@section('content') › div.cart › @foreach($items as $item) › li` |
+| GraphQL | `graphql` | `.graphql`, `.gql`, `.graphqls` | `GetUser › user › posts › title` |
+| Protobuf | `protobuf` | `.proto` | `User › choice › nick` |
+| HAR | `har` | `.har` | `GET api.example.com/v1/users › request › header Authorization › value` |
+| JPEG | `jpeg` | cualquier nombre, por sus primeros bytes | `JPEG › APP1 Exif › IFD0 › Model` |
+| PNG | `png` | cualquier nombre, por sus primeros bytes | `PNG › tEXt Comment` |
+| WebP | `webp` | cualquier nombre, por sus primeros bytes | `WebP › EXIF › IFD0 › Model` |
+| TIFF | `tiff` | cualquier nombre, por sus primeros bytes | `TIFF › IFD0 › Model` |
+| ID3 (MP3) | `id3` | cualquier nombre, por sus primeros bytes | `ID3v2.4 › TIT2` |
+| MP4 | `mp4` | cualquier nombre, por sus primeros bytes | `MP4 M4A › moov › udta › meta › ilst › ©nam` |
+| WebAssembly | `wasm` | cualquier nombre, por sus primeros bytes | `WebAssembly › data › data[0]` |
+| Clase de Java | `java-class` | cualquier nombre, por sus primeros bytes | `Java 17 › com.example.Cart › addItem` |
+| Mail | `eml` | `.eml` | `part 1 multipart/alternative › part 1.1 text/plain` |
+| mbox | `mbox` | `mbox`, `.mbox`, `.mbx` | `Budget › body` |
+| iCalendar | `icalendar` | `.ics`, `.ical`, `.ifb` | `VEVENT Team sync › DESCRIPTION` |
+| vCard | `vcard` | `.vcf`, `.vcard` | `VCARD Ana Pérez › EMAIL` |
+| BibTeX | `bibtex` | `.bib` | `knuth1984 › title` |
+| WhatsApp | `whatsapp` | `_chat.txt`, `*WhatsApp*.txt` | `31/12/23 › 21:41 Ana` |
+| Telegram | `telegram` | `ChatExport_*/result.json` | `Ana › 2024-01-31T10:04:12 Ana › text` |
+| Telegram HTML | `telegram-html` | `ChatExport_*/messages*.html` | `31.01.2024 10:04:12 Ana` |
 
-La misma ruta de claves en un archivo YAML y en uno JSON:
+Los archivos de esta tabla están abreviados: [docs/formats.es.md](docs/formats.es.md#todos-los-formatos)
+lista cada nombre, extensión y ruta que reclama cada Formato (en inglés, en
+[docs/formats.md](docs/formats.md)). Un archivo sin extensión también se reconoce por su shebang
+(`#!/usr/bin/env python3`, `node`, `bash`…), y los Formatos binarios por sus primeros bytes, con
+cualquier nombre. s4 nunca mira el contenido de un archivo de texto para elegir su Formato:
+`--format 'GLOB=NOMBRE'` lo nombra donde el nombre no lo dice (`--format 'chats/*.txt=whatsapp'`),
+y `git diff | s4 --format diff needle` les da Trails a stdin. Cualquier otro archivo es **Plain**:
+sus resultados se imprimen con el Trail vacío, como los imprime `rg`.
 
-```
-$ s4 needle.example data --flat --sort path
-data/config.json:8: server › ports[2] › host │       {"host": "needle.example", "port": 8443},
-data/config.yaml:9: server › ports[2] › host │     - host: needle.example
-```
-
-`ports[2]` es el tercer elemento del array que guarda `ports`, así que `ports` mismo queda
-fuera del Trail. En el código, la salida de una línea imprime nombres y el árbol imprime la
-línea que declara cada Segmento:
-
-```
-$ s4 needle code/cart.php --tree
-code/cart.php
-  class Cart
-    public function addItem(Item $item, int $qty = 1): void
-      10:        // needle: merge equal items
-  15:function needle_helper(): string
-    17:    return "needle";
-```
-
-```
-$ s4 needle code/cart.php --flat
-10: Cart › addItem │         // needle: merge equal items
-15: function needle_helper(): string
-17: needle_helper │     return "needle";
-```
-
-Un resultado en el nombre de una función, como el de la línea 15, cae fuera de esa función,
-igual que un resultado en la línea de un título cae fuera de su sección.
-
-En HTML y XML el Trail es la ruta de elementos:
-
-```
-$ s4 needle markup/page.html --flat
-4: head › title │   <title>Pricing needle</title>
-5: head › script │   <script>if (a < b) { label = "</div> needle"; }</script>
-12: nav.top.menu › ul › li[3] │       <li><a href="/needle">Needle</a>
-19: main#content › section#pricing.card.wide › p.note[2] │       <p class="note">The needle plan is free.
-23: main#content › section#pricing.card.wide › table › tr[3] › td[2] │         <tr><td>Pro<td>needle 9
-26: main#content › div › div › div │     <div><div><div>deep needle</div></div></div>
-27: main#content │     <img src="needle.png" alt="">
-```
-
-`html` y `body` contienen la página entera, así que los Trails empiezan debajo de ellos.
-`li[3]` es el tercer `li` de su `ul`, un elemento con `id` no lleva índice, y los tags de
-cierre que HTML permite omitir (`<li>`, `<td>`, `<p>`) se deducen. Un resultado dentro de un
-tag de apertura, como el de la línea 27, pertenece al elemento padre. En XML, la primera
-construcción mal formada termina la estructura, y los resultados que vienen después se
-imprimen con el Trail vacío.
-
-En CSV y TSV el Trail es la fila y el encabezado de la columna:
+El Trail es el mismo en todos los layouts, y los Formatos binarios imprimen una fila por string
+en su offset hexadecimal donde ripgrep imprimiría `binary file matches`:
 
 ```
-$ s4 needle table/plans.csv --flat
-3: row 2 › Plan │ 2,Bea,needle,"likes ""quotes"", and commas"
-5: row 3 › Notes │ lines with needle"
-7: row 4 › Notes │ 4,Dan,team,needle at the end,extra
+$ s4 needle config/nginx/nginx.conf --tree
+config/nginx/nginx.conf
+  http
+    server example.com
+      location /api
+        proxy_pass
+          4:   proxy_pass http://needle:8080;
 ```
-
-`row 2` es el segundo registro después del encabezado. La línea 5 es la segunda línea de un
-campo entre comillas de la fila 3, así que sigue estando en la fila 3.
-
-En los subtítulos el Trail es el cue, nombrado por su número (o su identificador de WebVTT) y
-su tiempo de inicio tal como está escrito; el árbol muestra la línea de tiempos completa:
-
-```
-$ s4 needle subs/movie.srt --tree
-subs/movie.srt
-  cue 1 00:00:01,000 --> 00:00:03,500
-    3:Where is the needle?
-  cue 2 00:00:04,000 --> 00:00:06,000
-    8:- A needle, in there?
-  cue 3 00:01:02,500 --> 00:01:04,000
-    12:<i>needle</i>
-```
-
-### Archivos objeto
-
-Un archivo ELF, PE o Mach-O se reconoce por sus primeros bytes, tenga el nombre que tenga
-(`libc.so.6`, `ls`). Donde ripgrep imprimiría `binary file matches`, s4 imprime una fila por
-cada cadena imprimible que tiene resultados, en el offset hexadecimal de su primer resultado. El
-Trail es la imagen (el Formato y la arquitectura), la sección, y el símbolo más cercano en el
-resultado o antes de él, con la distancia hasta ese símbolo:
 
 ```
 $ s4 needle m4/bin/app --flat
@@ -285,154 +269,14 @@ $ s4 needle m4/bin/app --flat
 0x77: ELF x86-64 › .rodata │ another needle here
 ```
 
-```
-$ s4 needle m4/bin/app --tree
-m4/bin/app
-  ELF x86-64
-    .rodata
-      main.version+0xe
-        0x68:version=1.2.3-needle
-      0x77:another needle here
-```
-
-La segunda cadena cae después del final de `main.version`, así que su Trail termina en la
-sección, como todos los Trails de un binario sin símbolos (stripped). Un PE y cada arquitectura
-de un Mach-O fat tienen los mismos tres Segmentos:
-
-```
-$ s4 needle m4/bin/app.exe m4/bin/app-mac --flat --sort path
-m4/bin/app.exe:0x410: PE x86-64 › .rdata › version_string+0xe │ version=1.2.3-needle
-m4/bin/app-mac:0x1141: Mach-O x86-64 › __TEXT,__cstring › _version+0xe │ version=1.2.3-needle
-m4/bin/app-mac:0x2141: Mach-O arm64 › __TEXT,__cstring › _version+0xe │ version=1.2.3-needle
-```
-
-Sobre un binario real, el `/bin/ls` de esta máquina:
-
-```
-$ s4 --flat -m3 'GLIBC_2\.3' /bin/ls
-0x14af: ELF x86-64 › .dynstr │ GLIBC_2.38
-0x14c5: ELF x86-64 › .dynstr │ GLIBC_2.33
-0x14fb: ELF x86-64 › .dynstr │ GLIBC_2.34
-```
-
-Las filas aparecen donde ripgrep encuentra un resultado en un archivo binario: un archivo
-nombrado en la línea de comandos, cualquier archivo con `--binary`, o cualquier archivo con
-`-a`. Un archivo objeto recorrido sin `--binary` se detiene en su primer byte NUL y no imprime
-nada, como en ripgrep. Con `-v`, `-c`, `-l`, `-q` y `--no-trail` el archivo imprime lo que
-imprime ripgrep. Una cadena con varios resultados es una sola fila, y `-m N` se queda con las
-primeras N filas. Los símbolos de Rust se muestran decodificados (demangled) y sin su hash
-(`core::fmt::write`).
-
-### Documentos
-
-Por defecto, los archivos PDF, Word, Excel, PowerPoint, OpenDocument, EPUB y SQLite se buscan
-en el texto que les sacan los Extractores incluidos en s4, igual en una terminal que en un pipe. Cada párrafo, título, ítem de lista o
-fila de tabla es una línea, con las celdas de una fila separadas por tabs, y cada resultado
-lleva el Trail de la estructura del documento:
-
-```
-$ s4 needle m4/report.docx --tree
-m4/report.docx
-  # 1 Intro
-    2:The intro needle.
-    ## 1.1 Scope
-      4:Scope needle.
-  # 2 Costs
-    table 1
-      row 2
-        column «Price»
-          7:Pens	1.50 needle
-```
-
-Un título de Word o de OpenDocument se anida como uno de Markdown, y una tabla es
-`table N › row R`, con la columna nombrada por la celda de la primera fila. Una celda de planilla
-es `Hoja › celda`, una diapositiva es `slide N`, y sus notas del orador son `slide N › notes`:
-
-```
-$ s4 needle m4/budget.xlsx --flat
-3: Budget › A3 │ needle pins	2
-```
-
-```
-$ s4 needle m4/deck.pptx --flat
-2: slide 1 │ a needle margin
-3: slide 1 › notes │ tell the needle joke
-5: slide 2 │ find the needle
-```
-
-Los marcadores de un PDF son capítulos que contienen sus páginas, y cada página es `page N`. Los
-capítulos de un EPUB se nombran por su índice. Una fila de SQLite es
-`tabla › row N › columna`, con sus valores separados por tabs:
-
-```
-$ s4 needle m4/report.pdf --tree
-m4/report.pdf
-  1 Intro
-    page 2
-      3:intro needle
-  2 Costs
-    page 3
-      5:costs needle
-```
-
-```
-$ s4 ana.needle docs/shop.sqlite --flat
-12: users › row 12 › email │ 12	User 12	ana.needle@example.com	18.0
-```
-
-Cada documento de la búsqueda se extrae, tenga o no un resultado, así que un árbol con muchos
-documentos tarda más que ripgrep, y `--no-trail` imprime las líneas de su texto donde ripgrep
-imprime lo que encuentra en sus bytes. Con `--no-docs`, estos Formatos nunca se detectan: los
-archivos se buscan como los busca ripgrep, sin costo extra, e imprimen lo que imprime ripgrep.
-Sirve cuando sobre un árbol lleno de documentos importa más la velocidad que su texto, o cuando
-un script necesita la salida exacta de ripgrep (`s4 --no-docs --no-trail` imprime lo mismo que
-`rg`). `--docs` vuelve a prender el comportamiento por defecto, y entre `--docs` y `--no-docs`
-gana el último que se pasa:
-
-```
-$ s4 --no-docs needle m4/report.pdf
-binary file matches (found "\0" byte around offset 1136)
-```
-
-Un documento que el Extractor no puede leer da un aviso, que `--no-messages` silencia, y después
-se busca como lo busca ripgrep; el código de salida sigue siendo el de ripgrep. Acá
-`broken.docx` empieza con los primeros bytes de un zip sin ser un zip, y el resultado se cuenta
-en sus bytes:
-
-```
-$ s4 -c needle m4/locked.pdf m4/broken.docx
-s4: m4/locked.pdf: pdf: encrypted, and the empty password does not open it
-s4: m4/broken.docx: docx: not a zip file the reader can open (invalid Zip archive: Could not find EOCD)
-m4/broken.docx:1
-```
-
-Cada documento se lee en un proceso aparte, el mismo `s4` corrido de nuevo, nunca un programa
-externo. Ese proceso puede reservar 1 024 MiB, una cuenta que lleva él mismo, y puede tardar
-60 s en un documento. Pasado cualquiera de los dos límites, el documento da un aviso
-(`reading it needed more than the 1024 MiB a reader may use`, o `reading it took more than
-60 s`) y se busca como lo busca ripgrep. La cuenta es el mismo código en Linux, macOS y
-Windows, y cada sistema suma una segunda barrera 64 MiB por encima: `RLIMIT_DATA` en Linux y
-macOS (donde macOS lo acepta), y un límite de memoria de Job Object en Windows. La CI corre la
-cuenta en los cuatro sistemas, y el límite del Job Object en Windows. Contra las bombas de
-descompresión, una parte de un zip se descomprime hasta 256 MiB y un documento entero hasta
-1 GiB, un stream de PDF hasta 64 MiB, y de un documento se sacan como mucho 256 MiB de texto.
-
-- Sólo los archivos regulares son documentos: stdin y los pipes se buscan como los busca
-  ripgrep.
-- La búsqueda en documentos es independiente de `-z`, `-a` y `--binary`. Un archivo que lee
-  `--pre` o `-z` nunca se extrae, así que `report.pdf.gz` con `-z` se busca en sus bytes
-  descomprimidos.
-- `--within` usa todos los Segmentos, y `--expand` imprime la Sección del último: la fila de
-  una celda, la página de un resultado en un PDF. Los nombres de página, hoja, diapositiva,
-  tabla, fila, columna, celda, capítulo y notas quedan fuera del texto, así que
-  `--in-headings` sólo encuentra títulos en los documentos.
-- Un PDF cifrado que abre con la contraseña vacía se lee. El texto dibujado como imagen
-  (escaneos) queda sin texto, porque no hay OCR. Un objeto de un PDF con un entero de más de 64
-  bits queda afuera del lector de PDF, y con él el texto que dibuja, sin aviso.
-- Quedan sin leer los formatos binarios de Office (`.doc`, `.xls`, `.ppt`), los encabezados,
-  pies de página, notas al pie y comentarios de los documentos de Office, y el archivo `-wal`
-  de una base SQLite.
-- Un archivo zip nunca se abre.
+Por defecto, los archivos PDF, Word, Excel, PowerPoint, OpenDocument, EPUB y SQLite se buscan en
+el texto que les sacan los Extractores incluidos en s4, en una terminal y en un pipe por igual,
+cada uno leído en un proceso worker con sus propios límites de memoria y de tiempo. Con
+`--no-docs`, estos Formatos nunca se detectan: los archivos se buscan como los busca ripgrep,
+sin costo extra, y `s4 --no-docs --no-trail` imprime lo mismo que `rg`.
+[docs/formats.es.md](docs/formats.es.md#documentos) tiene los detalles, y
+[docs/rg-compat.md](docs/rg-compat.md#trails-that-changed-since-10) el único Trail que cambió
+1.1: los scripts de las páginas HTML.
 
 ## Uso
 
@@ -515,7 +359,7 @@ de Fragmentos.
 | `--within <TRAIL>` | se queda con los resultados cuyo Trail contiene esos nombres de Segmento, en orden (`›`, `>` o `/` entre nombres; subcadenas sin distinguir mayúsculas) |
 | `--expand` | imprime la Sección entera del último Segmento de cada resultado, una vez por Sección |
 | `--in-headings` | busca sólo dentro de los nombres de Segmento (títulos, claves, nombres de función, elementos, encabezados de CSV, cues); procesa todos los archivos candidatos, así que es más lento |
-| `--no-docs` | busca en los archivos PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB y SQLite como ripgrep, a la velocidad de ripgrep, en vez de en su texto con los Extractores incluidos, que es lo que hace por defecto (ver [Documentos](#documentos)) |
+| `--no-docs` | busca en los archivos PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB y SQLite como ripgrep, a la velocidad de ripgrep, en vez de en su texto con los Extractores incluidos, que es lo que hace por defecto (ver [Documentos](docs/formats.es.md#documentos)) |
 | `--docs` | vuelve a buscar en el texto de los documentos después de un `--no-docs`; gana el último de los dos |
 | `--format <F>` / `--format <GLOB>=<F>` | fuerza un Formato para todos los archivos o para los que coinciden con un glob |
 | `--flat` / `--tree` | fuerza la salida de una línea o la de árbol |
@@ -578,13 +422,14 @@ Diferencias conocidas con ripgrep 14.1.1:
 
 - En la salida `--json`, las `stats` de los mensajes `end` y `summary` cuentan los resultados
   que encontró la búsqueda, antes de que `--within` e `--in-headings` los filtren.
-- Un archivo ELF, PE o Mach-O con un resultado imprime las filas de
-  [Archivos objeto](#archivos-objeto) donde ripgrep imprime `binary file matches`, así que s4
+- Un archivo de un Formato binario con un resultado (ELF, PE, Mach-O, y desde 1.1 imágenes,
+  audio, WebAssembly y clases de Java) imprime las filas de
+  [Archivos objeto](docs/formats.es.md#archivos-objeto) donde ripgrep imprime `binary file matches`, así que s4
   busca en el archivo entero; en `--json`, `bytes_searched` es el tamaño del archivo y
   `binary_offset` es null.
 - Los documentos se buscan por defecto en su texto, también con `--no-trail`, `-c`, `-l`, `-q`
   y `--json`, y cada uno se extrae, lo que cuesta más que la búsqueda de ripgrep en sus bytes.
-  `--no-docs` da la salida y el costo de ripgrep (ver [Documentos](#documentos)).
+  `--no-docs` da la salida y el costo de ripgrep (ver [Documentos](docs/formats.es.md#documentos)).
 - En las salidas con Trail, un archivo cuyo Formato no lo decide su nombre, stdin entre ellos,
   se lee entero antes de imprimir sus filas; `--no-trail` imprime cada línea como ripgrep.
 - `--debug` imprime los mensajes de los crates de ripgrep como ripgrep, y los propios de s4;
@@ -602,13 +447,13 @@ stdin, lee los Trails de su stdout, y le cierra el stdin cuando termina la búsq
 Definición de Formato con `processor = "external"` lo nombra:
 
 ```toml
-name       = "ini"
-extensions = ["ini"]
+name       = "po-guide"
+extensions = ["po"]
 processor  = "external"
 
 [params]
-command    = ["searchfor-example-helper"]
-mode       = "pool"
+command    = ["python3", "/absolute/path/to/docs/examples/po-helper.py"]
+mode       = "oneshot"
 ```
 
 `mode` dice cómo le pasa s4 los archivos:
@@ -627,28 +472,26 @@ se imprime como Plain, con un aviso; después de tres crashes, timeouts o línea
 JSON en una misma corrida, el Formato se imprime como Plain por el resto de la corrida, con un
 aviso más.
 
-[`helpers/example/`](helpers/example) es la implementación de referencia, un helper en Rust
-que describe archivos INI. Con la Definición de arriba en el directorio de formatos y
-`searchfor-example-helper` en el `PATH` (`cargo build --release -p searchfor-example-helper`), sobre un
-archivo `app.ini` escrito para este ejemplo:
+s4 no tiene un Formato de gettext, así que un archivo `.po` es Plain. Con la Definición de
+arriba en el directorio de formatos, [`po-helper.py`](docs/examples/po-helper.py) le da al
+resultado de [`docs/examples/sample.po`](docs/examples/sample.po) el Trail de su contexto y su
+entrada, y sus `names` le permiten a `--in-headings` encontrar la entrada por su texto original:
 
 ```
-$ s4 needle app.ini --tree
-app.ini
-  section database
-    host
-      2:host = needle.local
-  section cache
-    6:; needle in a comment
+$ s4 --flat needle sample.po
+3: menu › Open │ msgstr "needle"
+$ s4 --flat --in-headings Open sample.po
+2: menu │ msgid "Open"
 ```
 
-Los tres modos dan esta misma salida. El protocolo está en
+El protocolo está en
 [la spec, §4.4](docs/specs/2026-10-16-searchfor-design.md#44-helper-processors-7-84518459).
-
 [docs/external-processors.es.md](docs/external-processors.es.md) es la guía para escribir uno:
-el protocolo mensaje por mensaje, los tres modos, las fallas y cómo las informa s4, y un ejemplo
-completo en Python que resuelve un Formato INI primero con `--pre` y después como Helper
-Processor, con la receta para cada sistema.
+el protocolo mensaje por mensaje, los tres modos, las fallas y cómo las informa s4, y este
+ejemplo completo en Python, primero con `--pre` y después como Helper Processor, con la receta
+para cada sistema. [`helpers/example/`](helpers/example) es una implementación de referencia en
+Rust, que describe archivos INI; una Definición suya llamada `ini` reemplaza al Formato INI
+incluido.
 
 ## Grammars
 
@@ -841,9 +684,12 @@ recetas; para instalarlo, copiá ese directorio a `~/.claude/skills/`.
 | M4 (terminado, 2026-10-19) | v0.4 | archivos objeto (ELF, PE, Mach-O, Mach-O fat) como `ELF x86-64 › .rodata › main.version+0xe`; documentos buscados por defecto (`--no-docs` lo apaga), con Extractores para PDF, Word, Excel, PowerPoint, texto, planilla y presentación de OpenDocument, EPUB y SQLite, cada documento leído en un proceso aparte que cuenta su propia memoria; los flags `--pre`, `--pre-glob`, `--no-pre`, `-z` y `--no-search-zip` de ripgrep; el benchmark de M4, los techos de rendimiento y los fuzz targets |
 | M5a (terminado, 2026-10-20) | v0.5 | todos los flags de ripgrep 14.1.1, en `--no-trail` como los imprime ripgrep y en las salidas con Trail (PCRE2, búsqueda en varias líneas, codificaciones, los flags de ignorar y de ordenar, `--files`, `-o`, `--column`, `--vimgrep`, `-r`, `--stats`, hipervínculos, un archivo de configuración, `--generate`, `--debug`); un servidor MCP (`s4 --mcp`) |
 | M5b (preparado, 2026-10-20; publicación pendiente) | v1.0 | binarios precompilados (GitHub Releases), Homebrew y npm; Windows y macOS en CI, donde se corre la cuenta de memoria de los lectores, y un Job Object de Windows sobre cada lector de documentos como segunda barrera; los binarios de los Grammar Helpers publicados en el índice de Grammars; releases firmados; la guía para escribir un Helper Processor; los Trails en streaming para los archivos donde coinciden casi todas las líneas |
-| M6 | v1.x | más Formatos: metadatos de imagen y audio, WebAssembly y `.class` de Java (en el offset hexadecimal del resultado, como los archivos objeto); los formatos binarios de Office (`.doc`, `.xls`, `.ppt`); los encabezados, pies de página, notas al pie y comentarios de los documentos de Office |
+| M6 (en desarrollo) | v1.1 | cuarenta Formatos: AsciiDoc, reStructuredText, Org-mode, LaTeX y Jupyter; INI, systemd, `.properties`, `.env`, SSH, nginx, Apache, Terraform y HCL, Dockerfile, Makefile y justfile; SQL, diffs, Vue, Svelte, Blade, GraphQL, Protobuf y HAR; JPEG, PNG, WebP, TIFF, ID3, MP4, WebAssembly y clases de Java (en el offset hexadecimal del resultado, como los archivos objeto); mail, mbox, iCalendar, vCard, BibTeX, WhatsApp y Telegram; Trails dentro de los scripts de las páginas HTML; `paths` y extensiones compuestas en las Definiciones de Formato |
 
-Los Formatos de empaquetado (zip, tar, 7z, rar, deb, rpm, jar) quedan afuera: searchfor busca
+Los formatos binarios de Office (`.doc`, `.xls`, `.ppt`) y los encabezados, pies de página,
+notas al pie y comentarios de los documentos de Office, que figuraban en M6 antes de su diseño,
+quedan afuera de él. Los Formatos de empaquetado (zip, tar, 7z, rar, deb, rpm, jar) también
+quedan afuera: searchfor busca
 donde busca ripgrep, y `-z` conserva el significado de ripgrep (archivos comprimidos de un
 solo flujo, como `.gz`).
 

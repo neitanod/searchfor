@@ -9,7 +9,7 @@
 //! Build it with the Rust compiler alone, no Cargo project needed:
 //!
 //! ```text
-//! rustc docs/examples/pre-launcher.rs -o ini-pre-launcher
+//! rustc docs/examples/pre-launcher.rs -o po-pre-launcher
 //! ```
 
 use std::process::{Command, ExitCode};
