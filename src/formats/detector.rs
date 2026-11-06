@@ -6,7 +6,34 @@ use super::{
 };
 use globset::{Glob, GlobMatcher};
 use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::path::Path;
+
+/// FNV-1a, for the Detector's maps of short keys (names, extensions, path components): the
+/// default SipHash cost about 25 ns a lookup, and a path asks a few of them plus one for every
+/// directory component (criterion 51). The keys come from the Definitions, so a path cannot
+/// make them collide.
+struct Fnv(u64);
+
+impl Default for Fnv {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Hasher for Fnv {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type Map<K, V> = HashMap<K, V, BuildHasherDefault<Fnv>>;
 
 enum Override {
     All(String),
@@ -25,13 +52,13 @@ pub struct Detector<'r> {
     doc_extensions: HashSet<String>,
     /// The first active Definition (in the Registry's order) of each exact name and of each
     /// extension (lowercase): `detect` asks them of every file.
-    by_name: HashMap<String, usize>,
-    by_extension: HashMap<String, usize>,
+    by_name: Map<String, usize>,
+    by_extension: Map<String, usize>,
     /// Compound extensions (`blade.php`, M6 spec §4.1 signal 3), lowercase, keyed by their last
     /// extension: only a name whose last extension is a key compares its last two, so every
     /// other name costs the extension lookup it costs without them. Each compound appears
     /// once, with the first active Definition (in the Registry's order) that claims it.
-    compound: HashMap<String, Vec<(String, usize)>>,
+    compound: Map<String, Vec<(String, usize)>>,
     /// The `paths` globs of the active Definitions (M6 spec §4.1 signals 4 and 6).
     paths: PathIndex,
     /// With `--docs`, the `paths` globs of the document Formats (`may_be_document`).
@@ -70,9 +97,9 @@ impl<'r> Detector<'r> {
             docs: false,
             doc_names: HashSet::new(),
             doc_extensions: HashSet::new(),
-            by_name: HashMap::new(),
-            by_extension: HashMap::new(),
-            compound: HashMap::new(),
+            by_name: Map::default(),
+            by_extension: Map::default(),
+            compound: Map::default(),
             paths: PathIndex::default(),
             doc_paths: PathIndex::default(),
             empty_head: None,
@@ -110,11 +137,9 @@ impl<'r> Detector<'r> {
                 self.by_name.entry(n.clone()).or_insert(i);
             }
             for p in &d.paths {
-                // `FormatDefinition::parse` refused a Definition with an invalid glob.
-                let Ok(glob) = path_glob(p) else { continue };
-                self.paths.add(i, p, &glob);
+                self.paths.add(i, p);
                 if d.processor == "docs" {
-                    self.doc_paths.add(i, p, &glob);
+                    self.doc_paths.add(i, p);
                 }
             }
             for e in &d.extensions {
@@ -157,8 +182,12 @@ impl<'r> Detector<'r> {
             .min()
     }
 
-    /// Detects the document Formats too (`--docs`).
+    /// Detects the document Formats too (`--docs`). `new` indexed the Definitions without
+    /// them, so `with_docs(false)` indexes nothing again (criterion 51).
     pub fn with_docs(mut self, on: bool) -> Self {
+        if on == self.docs {
+            return self;
+        }
         self.docs = on;
         if on {
             for d in self.registry.all().iter().filter(|d| d.processor == "docs") {
@@ -292,17 +321,21 @@ impl<'r> Detector<'r> {
             }
         }
         // A file name that is not UTF-8 skips the name and extension signals only.
-        if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+        let name = path.file_name();
+        let file_name = name.and_then(|n| n.to_str());
+        if let Some(file_name) = file_name
             && let Some(&i) = self.by_name.get(file_name)
         {
             return Some(&defs[i]);
         }
         if let Some(ext) = path.extension() {
+            // The file name, read once for every signal below (criterion 51).
+            let name = name.map(|n| n.as_encoded_bytes()).unwrap_or_default();
             if let Some(ext) = ext.to_str() {
                 let ext = normalized_extension(ext);
                 // A compound extension beats the last extension alone (M6 spec §4.1 signal 3).
                 if !self.compound.is_empty()
-                    && let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+                    && let Some(file_name) = file_name
                     && let Some(i) = self.compound_of(file_name, &ext)
                 {
                     return Some(&defs[i]);
@@ -310,9 +343,9 @@ impl<'r> Detector<'r> {
                 // A path glob that writes the extension beats it (signal 4), looked up by the
                 // extension: a name whose extension no such glob writes pays one lookup.
                 if !self.paths.is_empty()
-                    && let Some(i) = self
-                        .paths
-                        .before_extension(&At::with_key(path, Some(ext.as_ref())))
+                    && let Some(i) =
+                        self.paths
+                            .before_extension(&At::with_name(path, name, Some(ext.as_ref())))
                 {
                     return Some(&defs[i]);
                 }
@@ -322,7 +355,7 @@ impl<'r> Detector<'r> {
             }
             // A path glob that leaves the extension open (signal 6).
             if !self.paths.is_empty()
-                && let Some(i) = self.paths.after_extension(&At::with_key(path, None))
+                && let Some(i) = self.paths.after_extension(&At::with_name(path, name, None))
             {
                 return Some(&defs[i]);
             }
@@ -359,9 +392,14 @@ impl<'p> At<'p> {
         Self::from_key(path, key)
     }
 
-    /// `new`, with the extension `detect` already normalized.
-    fn with_key(path: &'p Path, key: Option<&'p str>) -> Self {
-        Self::from_key(path, key.map(std::borrow::Cow::Borrowed))
+    /// `new` of a path with an extension, with the file name and the extension (normalized)
+    /// `detect` already read.
+    fn with_name(path: &'p Path, name: &'p [u8], key: Option<&'p str>) -> Self {
+        Self {
+            path,
+            name,
+            key: key.map(std::borrow::Cow::Borrowed),
+        }
     }
 
     fn from_key(path: &'p Path, key: Option<std::borrow::Cow<'p, str>>) -> Self {
@@ -380,8 +418,16 @@ impl<'p> At<'p> {
         Self { path, name, key }
     }
 
-    /// Whether a directory above the file is `token`, or starts with it.
-    fn has_directory(&self, filter: &DirFilter) -> bool {
+    /// Whether a directory above the file is `token`, or starts with it. `bytes` finds
+    /// `token` in the path: a path without it has no such directory, which costs one search
+    /// instead of a walk of its components (criterion 51).
+    fn has_directory(&self, filter: &DirFilter, bytes: &memchr::memmem::Finder) -> bool {
+        if bytes
+            .find(self.path.as_os_str().as_encoded_bytes())
+            .is_none()
+        {
+            return false;
+        }
         let Some(parent) = self.path.parent() else {
             return false;
         };
@@ -421,11 +467,18 @@ enum DirFilter {
 
 struct PathRule {
     definition: usize,
-    matcher: GlobMatcher,
+    /// The glob, compiled into `matcher` the first time a path passes the literal filters:
+    /// compiling the M6 Definitions' globs took about 3 ms at every start (criterion 51,
+    /// measured 06/11/2026), which a search whose paths no filter admits never needs.
+    glob: String,
+    /// None for an invalid glob, which matches nothing (`FormatDefinition::parse` refuses a
+    /// Definition with one).
+    matcher: std::sync::OnceLock<Option<GlobMatcher>>,
     /// A glob without a `/`, matched against the file name only.
     basename: bool,
     name: NameFilter,
-    dir: Option<DirFilter>,
+    /// The directory filter, and a search for its bytes.
+    dir: Option<(DirFilter, memchr::memmem::Finder<'static>)>,
 }
 
 /// The `paths` globs, sorted once into M6 spec §4.1's signal 4 or 6 and indexed by literals a
@@ -435,12 +488,15 @@ struct PathRule {
 struct PathIndex {
     rules: Vec<PathRule>,
     /// Signal 4: globs that write the extension, under each lowercase extension they write.
-    before_extension: HashMap<String, Vec<usize>>,
+    before_extension: Map<String, Vec<usize>>,
     /// Signal 6, by a literal component a match has (a directory or the whole file name).
-    by_component: HashMap<Vec<u8>, Vec<usize>>,
+    by_component: Map<Vec<u8>, Vec<usize>>,
+    /// The `component_bit`s of the keys of `by_component`: a path's component whose bit is
+    /// clear is not looked up.
+    component_bits: [u64; 4],
     /// Signal 6, by the file name through its first dot after the first byte (`Makefile.`,
     /// `.env.`): the key of every name a literal prefix that holds that dot admits.
-    by_name_prefix: HashMap<Vec<u8>, Vec<usize>>,
+    by_name_prefix: Map<Vec<u8>, Vec<usize>>,
     /// Signal 6 globs with no literal to index (`**/*`): asked of every name past the
     /// extension, through their filters (D5).
     fallback: Vec<usize>,
@@ -451,15 +507,30 @@ impl PathIndex {
         self.rules.is_empty()
     }
 
-    fn add(&mut self, definition: usize, pattern: &str, glob: &globset::Glob) {
+    /// How many rules have compiled their glob.
+    #[cfg(test)]
+    fn compiled(&self) -> usize {
+        self.rules
+            .iter()
+            .filter(|r| r.matcher.get().is_some())
+            .count()
+    }
+
+    fn add(&mut self, definition: usize, pattern: &str) {
         let shape = GlobShape::of(pattern);
         let id = self.rules.len();
         self.rules.push(PathRule {
             definition,
-            matcher: glob.compile_matcher(),
+            glob: pattern.to_string(),
+            matcher: std::sync::OnceLock::new(),
             basename: !pattern.contains('/'),
             name: shape.name_filter(),
-            dir: shape.dir_filter(),
+            dir: shape.dir_filter().map(|d| {
+                let bytes = match &d {
+                    DirFilter::Component(t) | DirFilter::Prefix(t) => t.clone(),
+                };
+                (d, memchr::memmem::Finder::new(&bytes).into_owned())
+            }),
         });
         if let Some(extensions) = shape.extensions() {
             for e in extensions {
@@ -471,10 +542,35 @@ impl PathIndex {
             return;
         }
         match shape.token() {
-            Some(Token::Component(c)) => self.by_component.entry(c).or_default().push(id),
+            Some(Token::Component(c)) => {
+                let (word, bit) = component_bit(&c);
+                self.component_bits[word] |= bit;
+                self.by_component.entry(c).or_default().push(id)
+            }
             Some(Token::NamePrefix(p)) => self.by_name_prefix.entry(p).or_default().push(id),
             None => self.fallback.push(id),
         }
+    }
+
+    /// False when no component of `path` is a key of `by_component`: its bytes split at the
+    /// separators hold every component (and `.`, `..` and the empty runs, which are no key), so
+    /// a path no key admits costs a pass over its bytes, not a walk of its components
+    /// (criterion 51). True asks the walk, which decides.
+    fn may_hold_component(&self, path: &Path) -> bool {
+        let bytes = path.as_os_str().as_encoded_bytes();
+        let mut from = 0;
+        for at in separators(bytes).chain(std::iter::once(bytes.len())) {
+            if self.is_component_key(&bytes[from..at]) {
+                return true;
+            }
+            from = at + 1;
+        }
+        false
+    }
+
+    fn is_component_key(&self, c: &[u8]) -> bool {
+        let (word, bit) = component_bit(c);
+        self.component_bits[word] & bit != 0 && self.by_component.contains_key(c)
     }
 
     /// Signal 4: the first Definition whose glob that writes the file's extension matches.
@@ -499,7 +595,7 @@ impl PathIndex {
         {
             take(self.by_name_prefix.get(key));
         }
-        if !self.by_component.is_empty() {
+        if !self.by_component.is_empty() && self.may_hold_component(at.path) {
             for c in at.path.components() {
                 if let std::path::Component::Normal(c) = c {
                     take(self.by_component.get(c.as_encoded_bytes()));
@@ -520,14 +616,20 @@ impl PathIndex {
             let r = &self.rules[id];
             if best.is_some_and(|b| b <= r.definition)
                 || !r.name.passes(at.name)
-                || r.dir.as_ref().is_some_and(|d| !at.has_directory(d))
+                || r.dir.as_ref().is_some_and(|(d, f)| !at.has_directory(d, f))
             {
                 continue;
             }
+            let Some(matcher) = r
+                .matcher
+                .get_or_init(|| path_glob(&r.glob).ok().map(|g| g.compile_matcher()))
+            else {
+                continue;
+            };
             let hit = if r.basename {
-                at.path.file_name().is_some_and(|n| r.matcher.is_match(n))
+                at.path.file_name().is_some_and(|n| matcher.is_match(n))
             } else {
-                r.matcher.is_match(at.path)
+                matcher.is_match(at.path)
             };
             if hit {
                 best = Some(r.definition);
@@ -535,6 +637,23 @@ impl PathIndex {
         }
         best
     }
+}
+
+/// The offsets of the path separators in `bytes`: `/`, and `\\` on Windows.
+fn separators(bytes: &[u8]) -> impl Iterator<Item = usize> + '_ {
+    #[cfg(windows)]
+    return memchr::memchr2_iter(b'/', b'\\', bytes);
+    #[cfg(not(windows))]
+    return memchr::memchr_iter(b'/', bytes);
+}
+
+/// The bit of `PathIndex::component_bits` of component `c`, from its length and its first and
+/// last bytes: (word, bit). Most directories of a path share none with the few keys.
+fn component_bit(c: &[u8]) -> (usize, u64) {
+    let (first, last) = (c.first().copied(), c.last().copied());
+    let k =
+        (c.len() * 31 + usize::from(first.unwrap_or(0)) * 7 + usize::from(last.unwrap_or(0))) % 256;
+    (k / 64, 1 << (k % 64))
 }
 
 /// The file name through its first dot after the first byte: `Makefile.` of
@@ -1007,7 +1126,7 @@ mod tests {
             let glob = path_glob(pattern).unwrap();
             let matcher = glob.compile_matcher();
             let mut index = PathIndex::default();
-            index.add(0, pattern, &glob);
+            index.add(0, pattern);
             for path in paths {
                 let p = Path::new(path);
                 let want = if pattern.contains('/') {
@@ -1245,5 +1364,29 @@ mod tests {
             assert_eq!(names(head), [name], "{head:?}");
         }
         assert!(names(b"plain text").is_empty());
+    }
+
+    /// Criterion 51: building the Detector compiles no glob of `paths` (about 3 ms a time for
+    /// the M6 Definitions, twice per run, measured 06/11/2026); a glob compiles the first time a
+    /// path passes its rule's literal filters, so a run whose paths no filter admits compiles
+    /// none, and the same glob answers as before.
+    #[test]
+    fn path_globs_compile_only_when_a_path_reaches_them() {
+        let (builtin, _) = Registry::load(None, &known);
+        let det = Detector::new(&builtin, &[]).unwrap().with_docs(false);
+        assert!(!det.paths.is_empty());
+        assert_eq!(det.paths.compiled(), 0);
+        for p in [
+            "a/file-1.json",
+            "a/notes.txt",
+            "a/b/c.unclaimed",
+            "a/x.conf",
+        ] {
+            assert!(det.detect_by_path(Path::new(p)).is_some(), "{p}");
+        }
+        assert_eq!(det.paths.compiled(), 0);
+        let nginx = det.detect(Path::new("/etc/nginx/sites-enabled/default"), b"");
+        assert_eq!(nginx.unwrap().name, "nginx");
+        assert_eq!(det.paths.compiled(), 1);
     }
 }
