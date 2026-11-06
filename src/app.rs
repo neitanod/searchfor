@@ -5003,6 +5003,162 @@ mod tests {
         });
     }
 
+    /// M6 plan Task 12.2 (D17): every M6 Format streams natively, with its Format forced, in
+    /// the modes that matter, and prints what the whole-file model prints.
+    #[test]
+    fn m6_stream_matches_model() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let cases = [
+            ("asciidoc", "docs-a/m6.adoc"),
+            ("rst", "docs-a/m6.rst"),
+            ("org", "docs-a/m6.org"),
+            ("latex", "docs-a/m6.tex"),
+            ("jupyter", "docs-a/m6.ipynb"),
+            ("ini", "config/m6.ini"),
+            ("systemd", "config/m6.service"),
+            ("properties", "config/m6.properties"),
+            ("env", "config/.env.m6"),
+            ("ssh-config", "config/ssh/ssh_config"),
+            ("nginx", "config/nginx/nginx.conf"),
+            ("apache", "config/apache2/apache2.conf"),
+            ("hcl", "config/m6.tf"),
+            ("dockerfile", "config/m6.dockerfile"),
+            ("make", "config/m6.mk"),
+            ("just", "config/m6.just"),
+            ("sql", "code-c/m6-dump.sql"),
+            ("diff", "code-c/m6.patch"),
+            ("vue", "code-c/m6.vue"),
+            ("svelte", "code-c/m6.svelte"),
+            ("blade", "code-c/m6.blade.php"),
+            ("graphql", "code-c/m6.graphql"),
+            ("protobuf", "code-c/m6.proto"),
+            ("har", "code-c/m6.har"),
+            ("eml", "mail/m6.eml"),
+            ("mbox", "mail/m6.mbox"),
+            ("icalendar", "config/m6.ics"),
+            ("vcard", "config/m6.vcf"),
+            ("bibtex", "docs-a/m6.bib"),
+            ("whatsapp", "chat/_chat.txt"),
+            ("telegram", "chat/ChatExport_m6/result.json"),
+            ("telegram-html", "chat/ChatExport_m6/messages.html"),
+            // D24: HTML's scripts, JSON-LD and the text-typed script, streamed natively too.
+            ("html", "code-c/m6-scripts.html"),
+        ];
+        // Step 3: the committed broken fixtures of the supplemental manifest, each under its
+        // owner's forced Format, so a renamed bad input takes that Format's recovery.
+        let broken = [
+            ("ini", "config/broken-m6.ini"),
+            ("systemd", "config/broken-m6.service"),
+            ("properties", "config/broken-m6.properties"),
+            ("env", "config/broken-env.m6"),
+            ("ssh-config", "config/ssh/broken-ssh_config"),
+            ("icalendar", "config/broken-m6.ics"),
+            ("vcard", "config/broken-m6.vcf"),
+            ("bibtex", "docs-a/broken-m6.bib"),
+            ("nginx", "config/nginx/broken-nginx.conf"),
+            ("apache", "config/apache2/broken-apache.conf"),
+            ("hcl", "config/broken-m6.tf"),
+            ("graphql", "code-c/broken-m6.graphql"),
+            ("protobuf", "code-c/broken-m6.proto"),
+            ("dockerfile", "config/broken-m6.dockerfile"),
+            ("make", "config/broken-m6.mk"),
+            ("just", "config/broken-m6.just"),
+            ("asciidoc", "docs-a/broken-m6.adoc"),
+            ("rst", "docs-a/broken-m6.rst"),
+            ("org", "docs-a/broken-m6.org"),
+            ("latex", "docs-a/broken-m6.tex"),
+            ("jupyter", "docs-a/broken-m6.ipynb"),
+            ("har", "code-c/broken-m6.har"),
+            ("telegram", "chat/ChatExport_m6/broken-result.json"),
+            ("vue", "code-c/broken-m6.vue"),
+            ("svelte", "code-c/broken-m6.svelte"),
+            ("blade", "code-c/broken-m6.blade.php"),
+            ("html", "code-c/broken-m6-scripts.html"),
+            ("telegram-html", "chat/ChatExport_m6/broken-messages.html"),
+            ("sql", "code-c/broken-m6.sql"),
+            ("diff", "code-c/broken-m6.patch"),
+            ("eml", "mail/broken-m6.eml"),
+            ("mbox", "mail/broken-m6.mbox"),
+            ("whatsapp", "chat/broken-_chat.txt"),
+        ];
+        fn normalized(bytes: &[u8], json: bool) -> Vec<u8> {
+            // `--stats`' two timing lines differ between any two runs (the plan's `--flat
+            // --stats` mode compared them raw); they are masked as the JSON times are.
+            if !json {
+                return String::from_utf8_lossy(bytes)
+                    .lines()
+                    .map(|l| {
+                        if l.ends_with(" seconds") || l.ends_with(" seconds spent searching") {
+                            "<time>"
+                        } else {
+                            l
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .into_bytes();
+            }
+            fn mask(v: &mut serde_json::Value) {
+                match v {
+                    serde_json::Value::Object(m) => {
+                        for (k, v) in m {
+                            if k == "elapsed" || k == "elapsed_total" {
+                                *v = serde_json::json!({"secs":0,"nanos":0,"human":"0s"});
+                            } else {
+                                mask(v)
+                            }
+                        }
+                    }
+                    serde_json::Value::Array(a) => {
+                        for v in a {
+                            mask(v)
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut out = Vec::new();
+            for l in bytes.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+                let mut v = serde_json::from_slice(l).unwrap();
+                mask(&mut v);
+                serde_json::to_writer(&mut out, &v).unwrap();
+                out.push(b'\n');
+            }
+            out
+        }
+        for &(format, file) in cases.iter().chain(&broken) {
+            for mode in [
+                vec!["--flat"],
+                vec!["--tree"],
+                vec!["--json"],
+                vec!["--json", "--expand"],
+                vec!["--flat", "--within", ""],
+                vec!["--tree", "--expand", "-C1"],
+                vec!["--json", "--in-headings"],
+                vec!["--flat", "--stats"],
+                vec!["--json", "--within", "", "-m1"],
+                vec!["--flat", "--expand", "--within", ""],
+                vec!["--flat", "-o"],
+                vec!["--json", "-U"],
+                vec!["--flat", "-r", "X"],
+            ] {
+                let mut args = vec!["--no-docs", "--format", format];
+                args.extend(&mode);
+                args.push("needle");
+                let a = compare_fixture_command(&root.join(file), &args, Pipeline::Model);
+                let b = compare_fixture_command(&root.join(file), &args, Pipeline::Stream);
+                assert_eq!(a.code, b.code, "{format}/{mode:?}");
+                assert_eq!(a.stderr, b.stderr);
+                let json = mode.contains(&"--json");
+                let text = |b: &[u8]| String::from_utf8_lossy(&normalized(b, json)).into_owned();
+                assert_eq!(text(&a.stdout), text(&b.stdout), "{format}/{mode:?}");
+                if !mode.contains(&"-o") && !mode.contains(&"-r") {
+                    assert_eq!(b.described, 0, "{format}/{mode:?}: model fallback");
+                }
+            }
+        }
+    }
+
     /// Code review r2, Fable #1 and #2: --expand over Sections under a Segment open to the end
     /// of the file (a Markdown `# Top`, HTML's `body`, XML's root, YAML's top-level key over
     /// its hidden document), and under a root Section that waits for the end, prints what the
