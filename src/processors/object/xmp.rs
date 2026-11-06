@@ -28,8 +28,8 @@ pub(super) fn read(b: &mut Builder, packet: Range<usize>, parent: usize) {
                 tag,
                 self_closing,
             }) => {
-                let wrapper = open.iter().all(|(_, n)| n.is_none())
-                    && WRAPPERS.contains(&&src[name.clone()]);
+                let wrapper =
+                    open.iter().all(|(_, n)| n.is_none()) && WRAPPERS.contains(&&src[name.clone()]);
                 let node = (!wrapper).then(|| {
                     let under = open.iter().rev().find_map(|(_, n)| *n).unwrap_or(parent);
                     let n = b.open(
@@ -38,7 +38,9 @@ pub(super) fn read(b: &mut Builder, packet: Range<usize>, parent: usize) {
                         b.utf8(base + name.start..base + name.end),
                         base + tag.start..base + tag.end,
                     );
-                    owned.push((n, base + tag.start..base + tag.end));
+                    // A Match in the start tag is outside the element, as `markup`'s XML
+                    // rules read it (M6 spec §3 rule 5); its end tag is inside.
+                    owned.push((n, base + tag.end..base + tag.end));
                     n
                 });
                 if !self_closing {
@@ -69,7 +71,8 @@ pub(super) fn read(b: &mut Builder, packet: Range<usize>, parent: usize) {
     }
     for (node, range) in owned {
         if node != parent {
-            b.set_span(node, range.clone());
+            let start = b.span(node).start;
+            b.set_span(node, start..range.end.max(start));
             b.own(node, range);
         }
     }

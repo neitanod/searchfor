@@ -111,6 +111,11 @@ impl<'a> Builder<'a> {
         self.nodes.len() - 1
     }
 
+    /// The bytes the Section of `node` covers.
+    pub fn span(&self, node: usize) -> Range<usize> {
+        self.nodes[node].span.clone()
+    }
+
     /// The Section of `node` covers `span` (clamped to the file).
     pub fn set_span(&mut self, node: usize, span: Range<usize>) {
         let span = self.clamp(span);
@@ -378,5 +383,51 @@ mod tests {
         let m = b.finish();
         assert_eq!(m.nodes()[0].name, "abc…");
         assert!(m.ranges().all(|r| r.end <= 10));
+    }
+}
+
+/// M6 spec §3 rule 5 over the readers: a Match in a unit's own name, as the file writes it, has
+/// the Trail of the unit's parent.
+#[cfg(test)]
+mod own_names {
+    use super::BinaryMap;
+    use crate::processors::object::fixture::m6;
+    use crate::trail::LineIndex;
+
+    fn trail(bytes: &[u8], layout: &str, needle: &[u8]) -> Vec<String> {
+        let at = bytes
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .unwrap();
+        let m = BinaryMap::parse(bytes, layout).unwrap();
+        m.trail(at, &LineIndex::new(bytes))
+            .into_iter()
+            .map(|s| s.name)
+            .collect()
+    }
+
+    #[test]
+    fn names_written_in_the_file_are_outside_what_they_name() {
+        assert_eq!(trail(&m6::png(b"x"), "png", b"Comment"), ["PNG"]);
+        assert_eq!(trail(&m6::png(b"x"), "png", b"tEXt"), ["PNG"]);
+        assert_eq!(trail(&m6::mp4(b"x"), "mp4", b"udta"), ["MP4 M4A", "moov"]);
+        assert_eq!(trail(&m6::webp(b"x"), "webp", b"EXIF"), ["WebP"]);
+        assert_eq!(trail(&m6::jpeg(b"needle"), "jpeg", b"Exif"), ["JPEG"]);
+        assert_eq!(trail(&m6::id3(b"x"), "id3", b"TIT2"), ["ID3v2.4"]);
+        let xmp = m6::jpeg_xmp(b"<rdf:Description><dc:title>t</dc:title></rdf:Description>");
+        assert_eq!(trail(&xmp, "jpeg", b"dc:title>t"), ["JPEG", "APP1 XMP"]);
+        assert_eq!(
+            trail(&xmp, "jpeg", b"t</dc"),
+            ["JPEG", "APP1 XMP", "dc:title"]
+        );
+        assert_eq!(
+            trail(&xmp, "jpeg", b"/dc:title"),
+            ["JPEG", "APP1 XMP", "dc:title"]
+        );
+        // §9's own example: an export is the Segment of its name.
+        assert_eq!(
+            trail(&m6::wasm(b"x"), "wasm", b"total"),
+            ["WebAssembly", "export", "total"]
+        );
     }
 }

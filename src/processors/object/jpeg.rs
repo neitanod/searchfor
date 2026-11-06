@@ -87,6 +87,12 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
             _ => format!("marker 0x{m:02x}").into(),
         };
         let node = b.node(Some(image), "section", name, seg.start..end);
+        // A Match in the identifier that names the segment is outside it (M6 spec §3 rule 5).
+        for id in [EXIF, XMP] {
+            if m == 0xe1 && payload.starts_with(id) {
+                b.own(image, data.start..data.start + id.len() - 1);
+            }
+        }
         if m == 0xe1 && payload.starts_with(EXIF) {
             super::tiff::read(b, data.start + EXIF.len()..data.end, node);
         } else if m == 0xe1 && payload.starts_with(XMP) {

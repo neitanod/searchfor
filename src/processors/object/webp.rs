@@ -32,6 +32,8 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
         let data = chunk.start + 8..chunk.end;
         let name = latin1(kind.trim_ascii_end());
         let node = b.node(Some(image), "section", name, chunk.clone());
+        // A Match in the chunk's own name is outside it (M6 spec §3 rule 5).
+        b.own(image, chunk.start..chunk.start + 4);
         match kind {
             b"EXIF" => {
                 let skip = if bytes[data.clone()].starts_with(b"Exif\0\0") {

@@ -26,7 +26,12 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
     sub(&all, 0, ftyp)?;
     let brand = bytes[8..12].trim_ascii_end();
     let brand = &brand[..brand.iter().position(|&c| c == 0).unwrap_or(brand.len())];
-    let image = b.node(None, "object", format!("MP4 {}", latin1(brand)).into(), all.clone());
+    let image = b.node(
+        None,
+        "object",
+        format!("MP4 {}", latin1(brand)).into(),
+        all.clone(),
+    );
     // (the bytes holding boxes, their parent node, whether they are ilst items)
     let mut levels: Vec<(Range<usize>, usize, bool)> = vec![(all, image, false)];
     while let Some((range, parent, items)) = levels.pop() {
@@ -52,6 +57,8 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
             let kind: &[u8; 4] = bytes[at + 4..at + 8].try_into().unwrap_or(&[0; 4]);
             let name: Cow<str> = latin1(kind);
             let node = b.node(Some(parent), "section", name, boxed.clone());
+            // A Match in the box's own name is outside it (M6 spec §3 rule 5).
+            b.own(parent, at + 4..at + 8);
             let mut inner = boxed.start + header;
             if kind == b"meta" && bytes.get(inner + 4..inner + 8) != Some(b"hdlr") {
                 // ISO's meta is a full box (version and flags); QuickTime's has no such header.

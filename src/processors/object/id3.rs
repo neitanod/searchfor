@@ -26,7 +26,11 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
     }
     let flags = bytes[5];
     let size = syncsafe(bytes, 6)?;
-    let footer = if major == 4 && flags & 0x10 != 0 { 10 } else { 0 };
+    let footer = if major == 4 && flags & 0x10 != 0 {
+        10
+    } else {
+        0
+    };
     let tag = sub(&all, 0, 10 + size + footer)?;
     let frames = 10..10 + size;
     let image = b.node(None, "object", format!("ID3v2.{major}").into(), tag.clone());
@@ -41,7 +45,9 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
         } else {
             syncsafe(bytes, at)
         };
-        at = ext.and_then(|n| sub(&frames, at, n)).map_or(frames.end, |r| r.end);
+        at = ext
+            .and_then(|n| sub(&frames, at, n))
+            .map_or(frames.end, |r| r.end);
     }
     let tag_unsync = flags & 0x80 != 0;
     let (id_len, header) = if major == 2 { (3, 6) } else { (4, 10) };
@@ -78,14 +84,23 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
             };
         let data = &bytes[at + header..frame.end];
         let id_name = latin1(id);
+        let mut described = 0;
         let name: Cow<str> = match id {
             b"TXXX" | b"WXXX" | b"TXX" | b"WXX" if !opaque => match description(data) {
-                Some(d) if !d.is_empty() => format!("{id_name} {d}").into(),
+                Some((d, n)) if !d.is_empty() => {
+                    described = n;
+                    format!("{id_name} {d}").into()
+                }
                 _ => id_name,
             },
             _ => id_name,
         };
         b.node(Some(image), "section", name, frame.clone());
+        // A Match in the frame's own name, its id or its description, is outside it (M6 spec
+        // §3 rule 5).
+        b.own(image, at..at + id_len);
+        let text = at + header + 1;
+        b.own(image, text..text + described);
         at = frame.end;
     }
     // ID3v1: the last 128 bytes, past the ID3v2 tag.
@@ -114,19 +129,25 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
 }
 
 /// The description of a TXXX or WXXX frame: its encoding byte, then the text up to its
-/// terminator (Latin-1, UTF-16 with a BOM, UTF-16BE or UTF-8).
-fn description(data: &[u8]) -> Option<String> {
+/// terminator (Latin-1, UTF-16 with a BOM, UTF-16BE or UTF-8). (it, its bytes after the
+/// encoding byte, the terminator left out)
+fn description(data: &[u8]) -> Option<(String, usize)> {
     let (&enc, rest) = data.split_first()?;
+    let nul = memchr::memchr(0, rest).unwrap_or(rest.len());
     Some(match enc {
-        0 => latin1(&rest[..memchr::memchr(0, rest).unwrap_or(rest.len())]).into_owned(),
-        3 => String::from_utf8_lossy(&rest[..memchr::memchr(0, rest).unwrap_or(rest.len())])
-            .into_owned(),
+        0 => (latin1(&rest[..nul]).into_owned(), nul),
+        3 => (String::from_utf8_lossy(&rest[..nul]).into_owned(), nul),
         1 | 2 => {
             let (le, text) = match rest {
                 [0xff, 0xfe, t @ ..] => (true, t),
                 [0xfe, 0xff, t @ ..] => (false, t),
                 t => (false, t),
             };
+            let bom = rest.len() - text.len();
+            let n = text
+                .chunks_exact(2)
+                .position(|c| c == [0, 0])
+                .unwrap_or(text.len() / 2);
             let units = text
                 .chunks_exact(2)
                 .map(|c| {
@@ -137,9 +158,10 @@ fn description(data: &[u8]) -> Option<String> {
                     }
                 })
                 .take_while(|&u| u != 0);
-            char::decode_utf16(units)
+            let d = char::decode_utf16(units)
                 .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
-                .collect()
+                .collect();
+            (d, bom + 2 * n)
         }
         _ => return None,
     })

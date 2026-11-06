@@ -2,13 +2,26 @@
 //! `› data › data[0]`, `› code › total` (a function named by the `name` section, else
 //! `func[N]`), `› custom .debug_str`. Sections are named by their id, custom ones `custom NAME`;
 //! every size and count is an unsigned LEB128 checked against the bytes left before it is used.
+//! An export or import is the Segment of its own name, as §9's `› export › needle_fn` says.
 use super::layouts::{Builder, sub};
 use std::borrow::Cow;
 use std::ops::Range;
 
 const SECTIONS: [&str; 14] = [
-    "custom", "type", "import", "function", "table", "memory", "global", "export", "start",
-    "element", "code", "data", "datacount", "tag",
+    "custom",
+    "type",
+    "import",
+    "function",
+    "table",
+    "memory",
+    "global",
+    "export",
+    "start",
+    "element",
+    "code",
+    "data",
+    "datacount",
+    "tag",
 ];
 
 /// An unsigned LEB128 of at most 32 bits at `at`, before `end`: (value, the byte after it).
@@ -143,8 +156,7 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
                     let (size, body) = leb(bytes, at, end)?;
                     let body = sub(&(body..end), body, size)?;
                     let index = imported + i;
-                    let label: Cow<str> = match names.binary_search_by_key(&index, |&(k, _)| k)
-                    {
+                    let label: Cow<str> = match names.binary_search_by_key(&index, |&(k, _)| k) {
                         Ok(k) => b.utf8(names[k].1.clone()),
                         Err(_) => format!("func[{index}]").into(),
                     };
@@ -161,7 +173,12 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
                     };
                     let (len, data) = leb(bytes, at, end)?;
                     let data = sub(&(data..end), data, len)?;
-                    b.node(Some(node), "symbol", format!("data[{i}]").into(), entry..data.end);
+                    b.node(
+                        Some(node),
+                        "symbol",
+                        format!("data[{i}]").into(),
+                        entry..data.end,
+                    );
                     Some(data.end)
                 })(),
             };
@@ -223,7 +240,10 @@ mod tests {
     fn leb128_lengths_are_bounded() {
         assert_eq!(leb(&[0x80, 0x01], 0, 2), Some((128, 2)));
         assert_eq!(leb(&[0x80, 0x01], 0, 1), None);
-        assert_eq!(leb(&[0xff, 0xff, 0xff, 0xff, 0x0f], 0, 5), Some((u32::MAX as usize, 5)));
+        assert_eq!(
+            leb(&[0xff, 0xff, 0xff, 0xff, 0x0f], 0, 5),
+            Some((u32::MAX as usize, 5))
+        );
         assert_eq!(leb(&[0xff, 0xff, 0xff, 0xff, 0x1f], 0, 5), None);
         assert_eq!(leb(&[0x80; 6], 0, 6), None);
     }

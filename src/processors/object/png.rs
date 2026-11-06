@@ -48,9 +48,21 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
             _ => latin1(kind),
         };
         let node = b.node(Some(image), "section", name, chunk.clone());
+        // A Match in the chunk's own name, its type or its keyword, is outside it (M6 spec §3
+        // rule 5).
+        b.own(image, chunk.start + 4..chunk.start + 8);
+        if matches!(kind, b"tEXt" | b"zTXt" | b"iTXt")
+            && let Some(k) = keyword
+        {
+            b.own(image, data.start..data.start + k.len());
+        }
         match kind {
             b"eXIf" => {
-                let skip = if payload.starts_with(b"Exif\0\0") { 6 } else { 0 };
+                let skip = if payload.starts_with(b"Exif\0\0") {
+                    6
+                } else {
+                    0
+                };
                 super::tiff::read(b, data.start + skip..data.end, node);
             }
             b"iTXt" if keyword == Some(b"XML:com.adobe.xmp") => {
