@@ -132,7 +132,7 @@ fn stage_name(src: &[u8], args: Range<usize>) -> Option<Range<usize>> {
 }
 
 pub(crate) fn scan(src: &[u8]) -> BuildIndex {
-    let mut items: BuildIndex = Vec::new();
+    let mut items = BuildIndex::default();
     let mut escape = b'\\';
     let mut leading = true;
     // The open stage, as an index into `items`, and how many stages opened.
@@ -195,7 +195,7 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
         }
         if src[keyword.clone()].eq_ignore_ascii_case(b"FROM") {
             if let Some(open) = stage {
-                items[open].range.end = line.start;
+                items.set_end(open, line.start);
             }
             let name = stage_name(src, keyword.end..line.end);
             items.push(Item {

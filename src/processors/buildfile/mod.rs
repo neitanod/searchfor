@@ -1,23 +1,22 @@
 //! buildfile: the stages and instructions of a Dockerfile, the targets, variables and
 //! conditionals of a Makefile, the recipes and variables of a justfile (M6 spec §7.9–§7.11),
-//! with one line scanner per `syntax`. A scanner gives a compact index of Source ranges, with no text; the Outline is
-//! built from it once per file, and its cursor streams the Trails (M5b spec §6.1).
+//! with one line scanner per `syntax`. A scanner gives a compact index of Source ranges, with no
+//! text (headings' `compact`), whose cursor builds a Segment only when a Trail holds it and
+//! streams the Trails (M5b spec §6.1); the model path builds the Outline from the same index.
 pub mod dockerfile;
 pub mod just;
 pub mod make;
 
+use super::headings::compact::{Index, IndexCursor, Spec, SpecName};
 use super::{Capability, Cursor, Prepared, Processor};
-use crate::model::{Input, Name, SharedTrail, Trail};
-use crate::trail::{Outline, OutlineSegment, TrailCursor, names_of};
+use crate::model::{Input, Name, Trail};
+use crate::trail::{Outline, TrailCursor, names_of};
 use std::ops::Range;
-use std::rc::Rc;
 
 pub struct Buildfile;
 
 /// Characters of a name before it is cut with `…`, when the Definition sets no `name_chars`.
 const NAME_CHARS: usize = 40;
-/// Characters of a signature: an opening line, as treesitter's.
-const SIGNATURE_CHARS: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Syntax {
@@ -53,7 +52,7 @@ pub(crate) enum Named {
     Ordinal(&'static str, usize),
 }
 
-/// One Segment of the index: Source ranges only.
+/// One Segment as a scanner finds it: Source ranges only, kept as `BuildIndex` keeps it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Item {
     pub kind: &'static str,
@@ -66,8 +65,87 @@ pub(crate) struct Item {
     pub signature: Option<Range<usize>>,
 }
 
-/// The Segments a scanner found, in any order.
-pub(crate) type BuildIndex = Vec<Item>;
+/// The Segments a scanner found, in any order, in the compact index (`compact::Index`): a
+/// Segment's position stays the one `push` gave until the scanner is done.
+#[derive(Debug, Default)]
+pub(crate) struct BuildIndex {
+    index: Index,
+    /// The items as the scanner gave them, for the scanners' tests.
+    #[cfg(test)]
+    items: Vec<Item>,
+}
+
+impl BuildIndex {
+    pub fn push(&mut self, item: Item) {
+        let one;
+        let (name, anchor) = match &item.name {
+            Named::Source(r) => {
+                one = [r.clone()];
+                (SpecName::Source(&one), r.start)
+            }
+            Named::Ordinal(w, n) => (SpecName::Ordinal(w, *n), item.range.start),
+        };
+        self.index.push(Spec {
+            kind: item.kind,
+            range: item.range.clone(),
+            label: item.label.clone(),
+            name,
+            anchor,
+            signature: item.signature.clone(),
+            level: None,
+            search: true,
+            lines: None,
+            hidden: false,
+        });
+        #[cfg(test)]
+        self.items.push(item);
+    }
+
+    pub fn len(&self) -> usize {
+        self.index.len()
+    }
+
+    /// Closes Segment `i` at `end`.
+    pub fn set_end(&mut self, i: usize, end: usize) {
+        self.index.set_end(i, end);
+        #[cfg(test)]
+        {
+            self.items[i].range.end = end;
+        }
+    }
+
+    /// The index, sorted and each Segment within its parent.
+    pub fn finish(self) -> Index {
+        self.index.finish()
+    }
+}
+
+/// The items as the scanner gave them, with their ends: what the index holds before `finish`.
+#[cfg(test)]
+impl std::ops::Index<usize> for BuildIndex {
+    type Output = Item;
+    fn index(&self, i: usize) -> &Item {
+        assert_eq!(self.index.range(i), self.items[i].range);
+        assert_eq!(self.index.kind(i), self.items[i].kind);
+        &self.items[i]
+    }
+}
+
+#[cfg(test)]
+impl IntoIterator for BuildIndex {
+    type Item = Item;
+    type IntoIter = std::vec::IntoIter<Item>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.into_iter()
+    }
+}
+
+#[cfg(test)]
+impl BuildIndex {
+    pub fn iter(&self) -> std::slice::Iter<'_, Item> {
+        self.items.iter()
+    }
+}
 
 /// One physical line: `start..end` without its `\n` or `\r\n`, and `next`, where the following
 /// one starts. A lone `\r` breaks no line (M6 spec §3, point 7).
@@ -112,51 +190,21 @@ pub(crate) fn trim(src: &[u8], r: Range<usize>) -> Range<usize> {
     a..b
 }
 
-fn scan(src: &[u8], syntax: Syntax) -> BuildIndex {
-    match syntax {
+fn scan(src: &[u8], syntax: Syntax) -> Index {
+    let items = match syntax {
         Syntax::Dockerfile => dockerfile::scan(src),
         Syntax::Make => make::scan(src),
         Syntax::Just => just::scan(src),
-    }
+    };
+    items.finish()
 }
 
-/// The text of a signature: the opening line, invalid UTF-8 as U+FFFD, cut at
-/// `SIGNATURE_CHARS` characters. Only that many bytes and a few more are decoded.
-fn signature(src: &[u8], r: Range<usize>) -> String {
-    let r = r.start..r.end.min(r.start.saturating_add(4 * SIGNATURE_CHARS + 4));
-    let text = String::from_utf8_lossy(&src[r]);
-    text.trim_end().chars().take(SIGNATURE_CHARS).collect()
-}
-
-/// The Outline of an index: the names and signatures decoded, cut at `name_chars`.
-fn outline(src: &[u8], index: BuildIndex, name_chars: usize) -> Outline {
-    let segments = index
-        .into_iter()
-        .map(|item| {
-            let (text, pieces) = match &item.name {
-                Named::Source(r) => {
-                    let mut n = crate::text::CutName::new(name_chars);
-                    n.push_lossy(src, r.clone());
-                    let (t, p) = n.finish();
-                    (t, Some((p, r.start)))
-                }
-                Named::Ordinal(word, n) => (format!("{word} {n}"), None),
-            };
-            let mut s = OutlineSegment::new(item.kind, text, item.range, item.label);
-            if let Some((pieces, anchor)) = pieces {
-                s.name = Some(pieces);
-                s.name_anchor = anchor;
-            }
-            s.segment.signature = item.signature.map(|r| signature(src, r));
-            s
-        })
-        .collect();
-    Outline::build(segments, src)
+fn index_of(src: &[u8], params: &toml::Table) -> anyhow::Result<Index> {
+    Ok(scan(src, syntax(params)?))
 }
 
 fn outline_of(src: &[u8], params: &toml::Table) -> anyhow::Result<Outline> {
-    let syntax = syntax(params)?;
-    Ok(outline(src, scan(src, syntax), name_chars(params)))
+    Ok(index_of(src, params)?.outline(src, name_chars(params)))
 }
 
 impl Processor for Buildfile {
@@ -186,7 +234,9 @@ impl Processor for Buildfile {
         params: &'a toml::Table,
     ) -> anyhow::Result<Box<dyn Prepared + 'a>> {
         Ok(Box::new(BuildPrepared {
-            outline: outline_of(input.bytes, params)?,
+            src: input.bytes,
+            index: index_of(input.bytes, params)?,
+            name_chars: name_chars(params),
         }))
     }
 
@@ -198,22 +248,21 @@ impl Processor for Buildfile {
     }
 }
 
-/// A build file prepared once: the Outline of its index.
-pub struct BuildPrepared {
-    outline: Outline,
+/// A build file prepared once: its compact index, which the cursors borrow; the Segments of a
+/// Trail are built when it needs them.
+pub struct BuildPrepared<'a> {
+    src: &'a [u8],
+    index: Index,
+    name_chars: usize,
 }
 
-impl Prepared for BuildPrepared {
+impl Prepared for BuildPrepared<'_> {
     fn cursor(&self) -> Box<dyn Cursor + '_> {
-        Box::new(BuildCursor {
-            trails: TrailCursor::new(&self.outline),
-            indices: Vec::new(),
-            last: None,
-        })
+        Box::new(IndexCursor::new(self.src, &self.index, self.name_chars))
     }
 
     fn names(&self) -> anyhow::Result<Vec<Name>> {
-        Ok(names_of(&self.outline))
+        Ok(names_of(&self.index.outline(self.src, self.name_chars)))
     }
 
     fn streams(&self) -> bool {
@@ -221,43 +270,12 @@ impl Prepared for BuildPrepared {
     }
 }
 
-/// The Trails of a prepared build file in file order: a Trail is cloned out of the Outline only
-/// when the indices of its Segments change.
-pub struct BuildCursor<'o> {
-    trails: TrailCursor<'o>,
-    indices: Vec<usize>,
-    last: Option<(Vec<usize>, SharedTrail)>,
-}
-
-impl Cursor for BuildCursor<'_> {
-    fn trail_at(&mut self, byte: usize) -> anyhow::Result<SharedTrail> {
-        self.trails.indices(byte, &mut self.indices);
-        match &self.last {
-            Some((ix, t)) if *ix == self.indices => Ok(t.clone()),
-            _ => {
-                let t: SharedTrail = Rc::from(self.trails.segments(&self.indices));
-                self.last = Some((self.indices.clone(), t.clone()));
-                Ok(t)
-            }
-        }
-    }
-
-    fn open_from(&mut self) -> Option<usize> {
-        Some(self.trails.open_from())
-    }
-
-    fn open_from_with(
-        &mut self,
-        first: &mut dyn FnMut(Range<usize>) -> Option<usize>,
-    ) -> Option<usize> {
-        Some(self.trails.open_from_with(first))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::SharedTrail;
     use std::path::Path;
+    use std::rc::Rc;
 
     fn input<'a>(bytes: &'a [u8], format: &'a str) -> Input<'a> {
         Input {

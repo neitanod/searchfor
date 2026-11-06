@@ -5,7 +5,7 @@
 //! hold no Segment, and nothing in a block is a heading or a table. A table whose first row is
 //! followed by a rule names its columns by that row's cells: a Match in a later row's cell gets
 //! a `column` Segment, whose Section is the table.
-use super::{Item, Line, MAX_DEPTH, Named, Open, line_at, trim};
+use super::{Item, Items, Line, MAX_DEPTH, Named, Open, line_at, trim};
 use std::ops::Range;
 
 /// The text of a block marker, `#+BEGIN_` or `#+END_`, compared without case: what follows it.
@@ -35,8 +35,8 @@ fn rule(src: &[u8], row: &Range<usize>) -> bool {
     src[row.clone()].starts_with(b"|-")
 }
 
-pub(crate) fn scan(src: &[u8]) -> Vec<Item> {
-    let mut items: Vec<Item> = Vec::new();
+pub(crate) fn scan(src: &[u8]) -> Items {
+    let mut items = Items::default();
     let mut open = Open::default();
     let mut document = false;
     let mut pos = 0;

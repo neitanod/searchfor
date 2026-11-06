@@ -3066,10 +3066,13 @@ fn m6_dense() {
     let file = big.path().join("dense.m6");
     let file = file.to_str().unwrap();
     eprintln!("m6_dense: uptime {}", uptime());
+    // Every family is measured before the verdict on preparations, so a failure lists them all.
+    let mut heavy = Vec::new();
     for format in [
         "asciidoc", "ini", "nginx", "make", "sql", "diff", "mbox", "whatsapp", "har",
     ] {
-        let src = m6_dense_bytes(format, 50 << 20);
+        let size = 50 << 20;
+        let src = m6_dense_bytes(format, size);
         std::fs::write(file, src).unwrap();
         let sample = common::run(&mut fx.s4([
             "--no-docs",
@@ -3101,6 +3104,17 @@ fn m6_dense() {
                 rd <= rp + (32 << 20),
                 "{format}/{layout}: {rd} > {rp}+32MiB"
             );
+            // A preparation holds at most 4 bytes per byte of the file, 200 MiB for these
+            // 50 MiB (the orchestrator's ceiling, 06/11/2026): blocks' 40-byte table of a
+            // Segment per 10-byte directive is the model. The once search prepares the whole
+            // file and prints one row, so its peak over the --no-trail run's, which maps the
+            // same file, is the preparation. C11 measured Make 2.23 GB, AsciiDoc 1.89 GB, INI
+            // 0.76 GB and nginx 356 MB, each with one Segment of 9 to 17 bytes.
+            if rp > r0 + 4 * size as u64 {
+                heavy.push(format!(
+                    "{format}/{layout}: once {rp} > raw {r0} + 4 x {size}"
+                ));
+            }
             if timing_enabled() && layout == "--json" {
                 assert!(
                     td.as_secs_f64() <= tp.as_secs_f64() + 6.0 * t0.as_secs_f64() + 0.1,
@@ -3114,6 +3128,11 @@ fn m6_dense() {
             );
         }
     }
+    assert!(
+        heavy.is_empty(),
+        "preparations over 4 x the file:\n{}",
+        heavy.join("\n")
+    );
 }
 
 /// Criterion 50 with four search threads: each may hold the 8 MiB of a file's output that

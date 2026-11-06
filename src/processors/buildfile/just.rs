@@ -80,7 +80,7 @@ fn key_name(src: &[u8], t: Range<usize>) -> Option<Range<usize>> {
 }
 
 pub(crate) fn scan(src: &[u8]) -> BuildIndex {
-    let mut items: BuildIndex = Vec::new();
+    let mut items = BuildIndex::default();
     // The open recipe, as an index into `items`, and where the attribute lines before the next
     // declaration start.
     let mut recipe: Option<usize> = None;
@@ -96,7 +96,7 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
                 continue;
             }
             if indented {
-                items[r].range.end = l.next;
+                items.set_end(r, l.next);
                 continue;
             }
         }

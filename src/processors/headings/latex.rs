@@ -8,7 +8,7 @@
 //! at its enclosing environment's end at the latest; an `\end` with no open environment of its
 //! name closes nothing; an environment left open runs to the end of the file. A `%` comment
 //! (not `\%`) is text. `\input` and `\include` are never followed.
-use super::{Item, MAX_DEPTH, Named, trim};
+use super::{Item, Items, MAX_DEPTH, Named, trim};
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -175,8 +175,8 @@ fn optional(src: &[u8], at: usize) -> Option<(Option<Range<usize>>, usize)> {
     Some((Some(at + 1..end - 1), end))
 }
 
-pub(crate) fn scan(src: &[u8], hidden: &[&[u8]]) -> Vec<Item> {
-    let mut items: Vec<Item> = Vec::new();
+pub(crate) fn scan(src: &[u8], hidden: &[&[u8]]) -> Items {
+    let mut items = Items::default();
     let mut frames: Vec<Frame> = Vec::new();
     // Open environments by name: an `\end` of a name none holds closes nothing.
     let mut envs: HashMap<&[u8], usize> = HashMap::new();
@@ -259,7 +259,7 @@ pub(crate) fn scan(src: &[u8], hidden: &[&[u8]]) -> Vec<Item> {
                         match f.level {
                             Some(l) if l >= level => {
                                 if let Some(x) = f.item {
-                                    items[x].range.end = at;
+                                    items.set_end(x, at);
                                     depth -= 1;
                                 }
                                 frames.pop();
@@ -359,7 +359,7 @@ pub(crate) fn scan(src: &[u8], hidden: &[&[u8]]) -> Vec<Item> {
             // The environment closes, and everything opened inside it.
             while let Some(f) = frames.pop() {
                 if let Some(x) = f.item {
-                    items[x].range.end = end;
+                    items.set_end(x, end);
                     depth -= 1;
                 }
                 if let Some(e) = f.env {

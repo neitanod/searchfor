@@ -140,7 +140,7 @@ fn modifiers(src: &[u8], mut r: Range<usize>) -> Range<usize> {
 const CONDITIONALS: [&[u8]; 4] = [b"ifeq", b"ifneq", b"ifdef", b"ifndef"];
 
 pub(crate) fn scan(src: &[u8]) -> BuildIndex {
-    let mut items: BuildIndex = Vec::new();
+    let mut items = BuildIndex::default();
     let mut prefix = b'\t';
     // The open conditionals and the open rule, as indices into `items`.
     let mut conditionals: Vec<usize> = Vec::new();
@@ -152,7 +152,7 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
             && src.get(l.first.start) == Some(&prefix)
             && l.first.end > l.first.start
         {
-            items[r].range.end = l.next;
+            items.set_end(r, l.next);
             continue;
         }
         let t = trim(src, l.first.start..l.end);
@@ -178,7 +178,7 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
         if w == b"endif"
             && let Some(c) = conditionals.pop()
         {
-            items[c].range.end = l.next;
+            items.set_end(c, l.next);
             continue;
         }
         // Any other statement ends the recipe.

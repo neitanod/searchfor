@@ -4,7 +4,7 @@
 //! a `code` Segment named by the `[source,LANG]` before it, or `listing`; a literal block,
 //! `literal`; a fence, its info string or `listing`. The other blocks hold no Segment.
 //! `include::` is never followed.
-use super::{Item, Line, Named, Open, blank, lines, trim};
+use super::{Item, Items, Line, Named, Open, blank, lines, trim};
 use std::ops::Range;
 
 /// What a delimiter line opens.
@@ -81,8 +81,8 @@ fn block_metadata(src: &[u8], l: Line) -> bool {
         || (t.len() >= 2 && t[0] == b'.' && !matches!(t[1], b'.' | b' ' | b'\t'))
 }
 
-pub(crate) fn scan(src: &[u8]) -> Vec<Item> {
-    let mut items: Vec<Item> = Vec::new();
+pub(crate) fn scan(src: &[u8]) -> Items {
+    let mut items = Items::default();
     let mut open = Open::default();
     // Whether a line other than a blank line or a `//` comment came: then `= X` is text.
     let mut content = false;
@@ -101,7 +101,7 @@ pub(crate) fn scan(src: &[u8]) -> Vec<Item> {
             };
             if closes {
                 if let Some(i) = item {
-                    items[i].range.end = l.next;
+                    items.set_end(i, l.next);
                 }
                 block = None;
             }

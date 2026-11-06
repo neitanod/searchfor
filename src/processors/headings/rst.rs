@@ -6,7 +6,7 @@
 //! indented body; a paragraph ending in `::` opens a `literal` one over the indented lines
 //! after it; any other directive is a `directive` Segment named by its type; a comment holds
 //! no Segment. A block ends at the first line indented no deeper than its opening line.
-use super::{Item, Line, MAX_DEPTH, Named, Open, blank, indent, line_at, trim};
+use super::{Item, Items, Line, MAX_DEPTH, Named, Open, blank, indent, line_at, trim};
 use std::ops::Range;
 
 /// The adornment character of a line made of one repeated punctuation character, with no
@@ -56,8 +56,8 @@ struct Block {
     opaque: bool,
 }
 
-pub(crate) fn scan(src: &[u8]) -> Vec<Item> {
-    let mut items: Vec<Item> = Vec::new();
+pub(crate) fn scan(src: &[u8]) -> Items {
+    let mut items = Items::default();
     let mut open = Open::default();
     let mut styles: Vec<(u8, bool)> = Vec::new();
     let mut blocks: Vec<Block> = Vec::new();
@@ -79,7 +79,7 @@ pub(crate) fn scan(src: &[u8]) -> Vec<Item> {
         while blocks.last().is_some_and(|b| ind <= b.indent) {
             let b = blocks.pop().unwrap();
             if let Some(i) = b.item {
-                items[i].range.end = content_end;
+                items.set_end(i, content_end);
             }
         }
         if let Some((at, p)) = literal.take()
@@ -179,7 +179,7 @@ pub(crate) fn scan(src: &[u8]) -> Vec<Item> {
     }
     while let Some(b) = blocks.pop() {
         if let Some(i) = b.item {
-            items[i].range.end = content_end;
+            items.set_end(i, content_end);
         }
     }
     open.finish(&mut items, src.len());
