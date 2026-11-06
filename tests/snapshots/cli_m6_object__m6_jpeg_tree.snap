@@ -1,0 +1,10 @@
+---
+source: tests/cli_m6_object.rs
+expression: out
+---
+m6-media.bin
+  JPEG
+    APP1 Exif
+      IFD0
+        Model
+          0x26:needle-cam 3000

@@ -1,0 +1,5 @@
+---
+source: tests/cli_m6_object.rs
+expression: out
+---
+0x26: JPEG › APP1 Exif › IFD0 › Model │ needle-cam 3000

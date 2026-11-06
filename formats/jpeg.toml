@@ -1,0 +1,11 @@
+# formats/jpeg.toml — JPEG images (M6 spec §9): `JPEG › APP1 Exif › IFD0 › Model`,
+# `JPEG › APP1 XMP › dc:title › rdf:Alt › rdf:li`, `JPEG › COM`. Told by its magic in a binary
+# file with a Match whose name decides no other Format (M6 spec §4.2).
+name      = "jpeg"
+magic     = [{ hex = "ffd8ff" }]
+processor = "object"
+
+[params]
+layout     = "jpeg"
+# Characters of a segment's, an IFD's, a tag's or an element's name before it is cut with `…`.
+name_chars = 40

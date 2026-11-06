@@ -229,6 +229,19 @@ impl<'r> Detector<'r> {
             .find(|d| d.processor == "object" && d.magic_at(head))
     }
 
+    /// The object Formats whose magic bytes start `head`, in the Registry's order: the
+    /// candidates a binary file with a Match is read as, until one's layout reads it (M6 spec
+    /// §4.2, `cafebabe` starting a fat Mach-O and a Java class). `object` is the first.
+    pub fn object_candidates<'a>(
+        &'a self,
+        head: &'a [u8],
+    ) -> impl Iterator<Item = &'r FormatDefinition> + 'a {
+        self.registry
+            .all()
+            .iter()
+            .filter(move |d| d.processor == "object" && d.magic_at(head))
+    }
+
     /// `detect` before reading the file: Some when the path alone decides (an override, an
     /// exact name, an extension, a name with an extension no Format claims, or no Format that
     /// looks at the content), None when the Format may depend on the first bytes (magic bytes

@@ -1,0 +1,5 @@
+---
+source: tests/cli_m6_object.rs
+expression: out
+---
+0x1a: TIFF › IFD0 › Model │ needle-cam 3000

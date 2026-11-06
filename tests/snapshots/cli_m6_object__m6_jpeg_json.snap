@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_object.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"m6-media.bin"}}}
+{"type":"match","data":{"path":{"text":"m6-media.bin"},"lines":{"text":"needle-cam 3000"},"line_number":1,"absolute_offset":38,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"jpeg","trail":[{"kind":"object","name":"JPEG","line":1,"end_line":1},{"kind":"section","name":"APP1 Exif","line":1,"end_line":1},{"kind":"section","name":"IFD0","line":1,"end_line":1},{"kind":"key","name":"Model","line":1,"end_line":1}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"m6-media.bin"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":56,"bytes_printed":510,"matched_lines":1,"matches":1}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":510,"bytes_searched":56,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":1,"matches":1,"searches":1,"searches_with_match":1}},"type":"summary"}

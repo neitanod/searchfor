@@ -12,7 +12,10 @@
 //! once.
 #[doc(hidden)]
 pub mod fixture;
+mod jpeg;
+pub mod layouts;
 pub mod rows;
+mod tiff;
 
 use crate::model::{Input, Name, Segment, Trail};
 use crate::trail::LineIndex;
@@ -25,10 +28,10 @@ impl super::Processor for Object {
     fn trails(
         &self,
         input: &Input,
-        _params: &toml::Table,
+        params: &toml::Table,
         anchors: &[usize],
     ) -> anyhow::Result<Vec<Trail>> {
-        let Some(map) = Map::parse(input.bytes) else {
+        let Some(map) = LayoutMap::parse(input.bytes, params) else {
             return Ok(vec![Vec::new(); anchors.len()]);
         };
         let lines = LineIndex::new(input.bytes);
@@ -38,6 +41,40 @@ impl super::Processor for Object {
     /// Section and symbol names are not searched by `--in-headings` in M4 (M4 plan, D11).
     fn names(&self, _input: &Input, _params: &toml::Table) -> anyhow::Result<Vec<Name>> {
         Ok(Vec::new())
+    }
+}
+
+/// The map of an object file: ELF, PE and Mach-O through goblin (`Map`, spec §5.7), the M6
+/// layouts through their own readers (`layouts::BinaryMap`, M6 spec §9), as the Definition's
+/// `layout` parameter says.
+pub enum LayoutMap<'a> {
+    Legacy(Map<'a>),
+    Extra(layouts::BinaryMap<'a>),
+}
+
+impl<'a> LayoutMap<'a> {
+    /// None when the Definition's reader does not read `bytes`: without `layout`, goblin's
+    /// object files; with it, that M6 layout, its names cut at `name_chars`.
+    pub fn parse(bytes: &'a [u8], params: &toml::Table) -> Option<Self> {
+        match params.get("layout").and_then(|v| v.as_str()) {
+            None => Map::parse(bytes).map(LayoutMap::Legacy),
+            Some(layout) => {
+                let chars = params
+                    .get("name_chars")
+                    .and_then(|v| v.as_integer())
+                    .and_then(|n| usize::try_from(n).ok())
+                    .unwrap_or(layouts::NAME_CHARS);
+                layouts::BinaryMap::parse_with(bytes, layout, chars).map(LayoutMap::Extra)
+            }
+        }
+    }
+
+    /// The Trail of the byte at file offset `at`.
+    pub fn trail(&self, at: usize, lines: &LineIndex) -> Trail {
+        match self {
+            LayoutMap::Legacy(m) => m.trail(at, lines),
+            LayoutMap::Extra(m) => m.trail(at, lines),
+        }
     }
 }
 

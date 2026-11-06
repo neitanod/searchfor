@@ -3,6 +3,8 @@
 //! Each writer lays out its sections in order after the headers, so a test knows where every
 //! byte lands: `Spec::offset` gives the file offset of a byte of a section.
 
+pub mod m6;
+
 /// What to write: sections (name, bytes) and symbols (name, section index, offset in it, size;
 /// only ELF writes the size, 0 meaning unknown).
 #[derive(Debug, Clone, Default)]

@@ -2907,15 +2907,26 @@ impl<'a> Ctx<'a> {
         if self.args.invert_match {
             return Ok(None);
         }
-        let def = match detector.detect(&src.path, src.head()) {
-            Some(d) if d.processor == "object" => d,
-            Some(_) => return Ok(None),
-            None => match detector.object(src.head()) {
-                Some(d) => d,
-                None => return Ok(None),
-            },
+        // An object Format the path decides (an override, a name) is the only one read; one
+        // the magic decides is the first of the candidates whose layout reads the file, in the
+        // Registry's order (M6 spec §4.2: `cafebabe` starts a fat Mach-O and a Java class).
+        // Another Format the path or the first bytes decide leaves the file to it.
+        let head = src.head();
+        let chosen = match detector.detect(&src.path, head) {
+            Some(d)
+                if d.processor == "object"
+                    && detector
+                        .detect(&src.path, &[])
+                        .is_some_and(|p| std::ptr::eq(p, d)) =>
+            {
+                processors::object::LayoutMap::parse(src.bytes(), &d.params).map(|m| (d, m))
+            }
+            Some(d) if d.processor != "object" => return Ok(None),
+            _ => detector.object_candidates(head).find_map(|d| {
+                processors::object::LayoutMap::parse(src.bytes(), &d.params).map(|m| (d, m))
+            }),
         };
-        let Some(map) = processors::object::Map::parse(src.bytes()) else {
+        let Some((def, map)) = chosen else {
             return Ok(None);
         };
         let started = Instant::now();

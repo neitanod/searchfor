@@ -1,0 +1,11 @@
+# formats/tiff.toml — TIFF images and the raw formats based on TIFF (M6 spec §9):
+# `TIFF › IFD0 › ImageDescription`. Told by its magic, as every binary Format of group E, in
+# a binary file with a Match whose name decides no other Format (M6 spec §4.2).
+name      = "tiff"
+magic     = [{ hex = "49492a00" }, { hex = "4d4d002a" }]
+processor = "object"
+
+[params]
+layout     = "tiff"
+# Characters of an IFD's or a tag's name before it is cut with `…`.
+name_chars = 40
