@@ -61,18 +61,168 @@ pub(crate) enum NameSrc {
     },
 }
 
-/// One Segment of a line syntax, as the scan found it.
+/// What `Builder::entry_mut` gives a scanner of a Segment it opened: its name, and whether it
+/// is hidden.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Entry {
-    /// The Section's bytes.
-    pub range: Range<usize>,
-    /// The bytes that name it: a Match there is outside it (M6 spec §3 rule 5).
-    pub label: Range<usize>,
-    pub line: u64,
-    pub end_line: u64,
     pub kind: Kind,
     pub hidden: bool,
     pub name: NameSrc,
+    label: Range<usize>,
+}
+
+/// One Segment of the table: 32 bytes, with no allocation of its own (criterion 50: C11
+/// measured 0.76 GB for a 50 MiB INI file of one key per 9 bytes, 130 bytes a Segment).
+#[derive(Debug, Clone)]
+struct Packed {
+    start: usize,
+    end: usize,
+    /// The label, as (offset from `start`, length).
+    label: u32,
+    label_len: u32,
+    /// A key's name as (offset from `start`, length, its `TAG_*` in the top two bits of the
+    /// length); with `TAG_RICH`, the index of its `Entry` in `Table::rich`.
+    name: u32,
+    name_len: u32,
+}
+
+const TAG_SHIFT: u32 = 30;
+const TAG_VERBATIM: u32 = 0;
+const TAG_PROPERTIES: u32 = 1;
+const TAG_RICH: u32 = 2;
+const LEN_MASK: u32 = (1 << TAG_SHIFT) - 1;
+
+/// The Segments of a scan, in file order: the 32-byte table, and the Segments it cannot hold
+/// (another kind, a component's or an entry's name, a hidden one, offsets past u32).
+#[derive(Debug, Default)]
+struct Table {
+    packed: Vec<Packed>,
+    rich: Vec<Entry>,
+}
+
+/// A name, read from the table.
+enum NameAt<'t> {
+    Verbatim(Range<usize>),
+    Properties(Range<usize>),
+    Rich(&'t NameSrc),
+}
+
+impl Table {
+    fn push(&mut self, start: usize, label: Range<usize>, kind: Kind, name: NameSrc) {
+        let rel = |r: &Range<usize>| -> Option<(u32, u32)> {
+            (r.start >= start && r.start <= r.end).then(|| {
+                Some((
+                    u32::try_from(r.start - start).ok()?,
+                    u32::try_from(r.end - r.start).ok()?,
+                ))
+            })?
+        };
+        let packed = match (&name, kind, rel(&label)) {
+            (NameSrc::Verbatim(r) | NameSrc::Properties(r), Kind::Key, Some(l)) => {
+                let tag = match name {
+                    NameSrc::Verbatim(_) => TAG_VERBATIM,
+                    _ => TAG_PROPERTIES,
+                };
+                rel(r)
+                    .filter(|n| n.1 <= LEN_MASK)
+                    .map(|n| (l, n.0, n.1 | tag << TAG_SHIFT))
+            }
+            _ => None,
+        };
+        let (label, name, name_len) = match packed {
+            Some(p) => p,
+            None => {
+                let at = u32::try_from(self.rich.len()).expect("fewer rich Segments than u32");
+                self.rich.push(Entry {
+                    kind,
+                    hidden: false,
+                    name,
+                    label: label.clone(),
+                });
+                ((0, 0), at, TAG_RICH << TAG_SHIFT)
+            }
+        };
+        self.packed.push(Packed {
+            start,
+            end: start,
+            label: label.0,
+            label_len: label.1,
+            name,
+            name_len,
+        });
+    }
+
+    fn len(&self) -> usize {
+        self.packed.len()
+    }
+
+    fn tag(&self, i: usize) -> u32 {
+        self.packed[i].name_len >> TAG_SHIFT
+    }
+
+    fn rich(&self, i: usize) -> Option<&Entry> {
+        (self.tag(i) == TAG_RICH).then(|| &self.rich[self.packed[i].name as usize])
+    }
+
+    /// The `Entry` of Segment `i`, moved to `rich` if the table held it.
+    fn rich_mut(&mut self, i: usize) -> &mut Entry {
+        if self.tag(i) != TAG_RICH {
+            let name = match self.name(i) {
+                NameAt::Verbatim(r) => NameSrc::Verbatim(r),
+                NameAt::Properties(r) => NameSrc::Properties(r),
+                NameAt::Rich(_) => unreachable!("not rich"),
+            };
+            let label = self.label(i);
+            let at = u32::try_from(self.rich.len()).expect("fewer rich Segments than u32");
+            self.rich.push(Entry {
+                kind: Kind::Key,
+                hidden: false,
+                name,
+                label,
+            });
+            let p = &mut self.packed[i];
+            p.name = at;
+            p.name_len = TAG_RICH << TAG_SHIFT;
+        }
+        let at = self.packed[i].name as usize;
+        &mut self.rich[at]
+    }
+
+    fn range(&self, i: usize) -> Range<usize> {
+        self.packed[i].start..self.packed[i].end
+    }
+
+    fn label(&self, i: usize) -> Range<usize> {
+        match self.rich(i) {
+            Some(e) => e.label.clone(),
+            None => {
+                let p = &self.packed[i];
+                let a = p.start + p.label as usize;
+                a..a + p.label_len as usize
+            }
+        }
+    }
+
+    fn kind(&self, i: usize) -> Kind {
+        self.rich(i).map_or(Kind::Key, |e| e.kind)
+    }
+
+    fn hidden(&self, i: usize) -> bool {
+        self.rich(i).is_some_and(|e| e.hidden)
+    }
+
+    fn name(&self, i: usize) -> NameAt<'_> {
+        let p = &self.packed[i];
+        let r = || {
+            let a = p.start + p.name as usize;
+            a..a + (p.name_len & LEN_MASK) as usize
+        };
+        match self.tag(i) {
+            TAG_VERBATIM => NameAt::Verbatim(r()),
+            TAG_PROPERTIES => NameAt::Properties(r()),
+            _ => NameAt::Rich(&self.rich[p.name as usize].name),
+        }
+    }
 }
 
 /// The physical lines of a Source: (start, end of the content without its LF and the CR
@@ -128,7 +278,7 @@ pub(crate) fn trim(src: &[u8], r: Range<usize>) -> Range<usize> {
 /// The Segments of a scan, opened in file order, each closed by its scanner.
 #[derive(Default)]
 pub(crate) struct Builder {
-    entries: Vec<Entry>,
+    table: Table,
     /// Indices of the open Segments, outermost first.
     open: Vec<usize>,
 }
@@ -145,16 +295,8 @@ impl Builder {
         if self.open.len() >= MAX_DEPTH {
             return None;
         }
-        let i = self.entries.len();
-        self.entries.push(Entry {
-            range: start..start,
-            label,
-            line: 0,
-            end_line: 0,
-            kind,
-            hidden: false,
-            name,
-        });
+        let i = self.table.len();
+        self.table.push(start, label, kind, name);
         self.open.push(i);
         Some(i)
     }
@@ -165,70 +307,47 @@ impl Builder {
     }
 
     pub fn entry_mut(&mut self, i: usize) -> &mut Entry {
-        &mut self.entries[i]
+        self.table.rich_mut(i)
     }
 
     /// Closes the open Segments past the first `depth` at `end`.
     pub fn close_to(&mut self, depth: usize, end: usize) {
         while self.open.len() > depth {
             let i = self.open.pop().expect("open");
-            let e = &mut self.entries[i];
-            e.range.end = end.max(e.range.start);
+            let e = &mut self.table.packed[i];
+            e.end = end.max(e.start);
         }
     }
 
-    /// The Segments, the open ones closed at the end of `src`, each within its parent, with
-    /// their lines.
-    pub fn finish(mut self, src: &[u8]) -> Vec<Entry> {
+    /// The Segments, the open ones closed at the end of `src`, each within its parent.
+    fn finish(mut self, src: &[u8]) -> Table {
         self.close_to(0, src.len());
-        let mut entries = self.entries;
+        let mut table = self.table;
+        let entries = &mut table.packed;
         // Opened in file order: a parent precedes its children. A child never ends after it.
         let mut stack: Vec<usize> = Vec::new();
         for i in 0..entries.len() {
-            let start = entries[i].range.start;
-            while stack.last().is_some_and(|&t| entries[t].range.end <= start) {
+            let start = entries[i].start;
+            while stack.last().is_some_and(|&t| entries[t].end <= start) {
                 stack.pop();
             }
             if let Some(&t) = stack.last() {
-                let end = entries[t].range.end;
+                let end = entries[t].end;
                 let e = &mut entries[i];
-                e.range.end = e.range.end.min(end).max(e.range.start);
+                e.end = e.end.min(end).max(e.start);
             }
             stack.push(i);
         }
-        fill_lines(&mut entries, src);
-        entries.shrink_to_fit();
-        entries
+        table.packed.shrink_to_fit();
+        table.rich.shrink_to_fit();
+        table
     }
 }
 
-/// The first and last line of each Entry's range, counting line breaks once per pass.
-fn fill_lines(entries: &mut [Entry], src: &[u8]) {
-    let count = |at: &mut usize, line: &mut u64, byte: usize| {
-        let to = byte.min(src.len());
-        if to > *at {
-            *line += memchr::memchr_iter(b'\n', &src[*at..to]).count() as u64;
-            *at = to;
-        }
-        *line
-    };
-    let (mut at, mut line) = (0usize, 1u64);
-    let mut ends: Vec<(usize, usize)> = Vec::with_capacity(entries.len());
-    for (i, e) in entries.iter_mut().enumerate() {
-        e.line = count(&mut at, &mut line, e.range.start);
-        ends.push((e.range.end.saturating_sub(1).max(e.range.start), i));
-    }
-    ends.sort_unstable();
-    let (mut at, mut line) = (0usize, 1u64);
-    for (byte, i) in ends {
-        entries[i].end_line = count(&mut at, &mut line, byte);
-    }
-}
-
-/// A file of a line syntax prepared once: its Entries, which both cursors and names read.
+/// A file of a line syntax prepared once: its table, which both cursors and names read.
 pub(crate) struct LinePrepared<'a> {
     src: &'a [u8],
-    entries: Vec<Entry>,
+    table: Table,
     name_chars: usize,
 }
 
@@ -238,28 +357,32 @@ impl<'a> LinePrepared<'a> {
         scan(src, &mut b);
         Self {
             src,
-            entries: b.finish(src),
+            table: b.finish(src),
             name_chars: name_chars(params),
         }
     }
 
-    /// The name of `e`, cut at `name_chars`, with its pieces.
-    fn name(&self, e: &Entry) -> (String, Pieces) {
+    /// The name of Segment `i`, cut at `name_chars`, with its pieces.
+    fn name(&self, i: usize) -> (String, Pieces) {
         let mut n = CutName::new(self.name_chars);
-        match &e.name {
-            NameSrc::Verbatim(r) => n.push_lossy(self.src, r.clone()),
-            NameSrc::Properties(r) => super::properties::push_key(self.src, r.clone(), &mut n),
-            NameSrc::Component { x, value, ordinal } => {
+        match self.table.name(i) {
+            NameAt::Verbatim(r) => n.push_lossy(self.src, r),
+            NameAt::Properties(r) => super::properties::push_key(self.src, r, &mut n),
+            NameAt::Rich(NameSrc::Verbatim(r)) => n.push_lossy(self.src, r.clone()),
+            NameAt::Rich(NameSrc::Properties(r)) => {
+                super::properties::push_key(self.src, r.clone(), &mut n)
+            }
+            NameAt::Rich(NameSrc::Component { x, value, ordinal }) => {
                 super::ical::push_component(self.src, x, value.as_ref(), *ordinal, &mut n)
             }
-            NameSrc::Entry { name, .. } => n.push_lossy(self.src, name.clone()),
+            NameAt::Rich(NameSrc::Entry { name, .. }) => n.push_lossy(self.src, name.clone()),
         }
         n.finish()
     }
 
-    /// The signature of `e`: a BibTeX entry's header, cut at twice `name_chars`.
-    fn signature(&self, e: &Entry) -> Option<String> {
-        let NameSrc::Entry { signature, .. } = &e.name else {
+    /// The signature of Segment `i`: a BibTeX entry's header, cut at twice `name_chars`.
+    fn signature(&self, i: usize) -> Option<String> {
+        let NameAt::Rich(NameSrc::Entry { signature, .. }) = self.table.name(i) else {
             return None;
         };
         let mut n = CutName::new(self.name_chars.saturating_mul(2));
@@ -267,49 +390,43 @@ impl<'a> LinePrepared<'a> {
         Some(n.finish().0)
     }
 
-    fn segment(&self, e: &Entry) -> Segment {
+    fn segment(&self, i: usize, name: String, line: u64, end_line: u64) -> Segment {
         Segment {
-            kind: e.kind.as_str().into(),
-            name: self.name(e).0,
-            line: e.line,
-            end_line: e.end_line,
+            kind: self.table.kind(i).as_str().into(),
+            name,
+            line,
+            end_line,
             level: None,
-            signature: self.signature(e),
+            signature: self.signature(i),
         }
     }
 
     /// The model's Outline (M6 plan, Task 2.1): every Segment (`None`), or those that hold
-    /// one of the `anchors`, sorted.
+    /// one of the `anchors`, sorted. `Outline::build` counts their lines.
     pub fn outline(&self, anchors: Option<&[usize]>) -> Outline {
-        let keep = |e: &Entry| match anchors {
+        let t = &self.table;
+        let keep = |i: usize| match anchors {
             None => true,
             Some(a) => {
-                let k = a.partition_point(|&x| x < e.range.start);
-                a.get(k).is_some_and(|&x| x < e.range.end)
+                let r = t.range(i);
+                let k = a.partition_point(|&x| x < r.start);
+                a.get(k).is_some_and(|&x| x < r.end)
             }
         };
-        let segments = self
-            .entries
-            .iter()
-            .filter(|e| keep(e))
-            .map(|e| {
-                let (name, pieces) = self.name(e);
-                let anchor = pieces.first().map_or(e.label.start, |p| p.1.start);
+        let segments = (0..t.len())
+            .filter(|&i| keep(i))
+            .map(|i| {
+                let (name, pieces) = self.name(i);
+                let label = t.label(i);
+                let anchor = pieces.first().map_or(label.start, |p| p.1.start);
                 OutlineSegment {
-                    segment: Segment {
-                        kind: e.kind.as_str().into(),
-                        name,
-                        line: e.line,
-                        end_line: e.end_line,
-                        level: None,
-                        signature: self.signature(e),
-                    },
-                    range: e.range.clone(),
-                    label: e.label.clone(),
+                    segment: self.segment(i, name, 0, 0),
+                    range: t.range(i),
+                    label,
                     name: Some(pieces),
                     name_anchor: anchor,
                     parent: None,
-                    hidden: e.hidden,
+                    hidden: t.hidden(i),
                 }
             })
             .collect();
@@ -324,9 +441,9 @@ impl Prepared for LinePrepared<'_> {
             next: 0,
             stack: Vec::new(),
             last: 0,
+            lines: (0, 1),
             indices: Vec::new(),
             shown: None,
-            cache: Vec::new(),
         })
     }
 
@@ -339,56 +456,88 @@ impl Prepared for LinePrepared<'_> {
     }
 }
 
-/// The Trails of a prepared file in file order: a stack of the Entries open at the last
-/// offset, and the Segments of the last Trail, built once each.
+/// The Trails of a prepared file in file order: a stack of the Segments open at the last
+/// offset, each built the first time a Trail holds it.
 struct LineCursor<'p> {
     p: &'p LinePrepared<'p>,
-    /// The next Entry to open.
+    /// The next Segment to open.
     next: usize,
-    /// The Entries that hold the last offset, outermost first.
-    stack: Vec<usize>,
+    /// The Segments that hold the last offset, outermost first, with their Segment once a
+    /// Trail needed it.
+    stack: Vec<(usize, Option<Segment>)>,
     last: usize,
+    /// The line of byte `.0`, counted on from the last Segment start built.
+    lines: (usize, u64),
     indices: Vec<usize>,
-    /// The last Trail given and its Entries.
+    /// The last Trail given and its Segments.
     shown: Option<(Vec<usize>, SharedTrail)>,
-    /// The Segments of the last Trail built, by Entry.
-    cache: Vec<(usize, Segment)>,
 }
 
 impl LineCursor<'_> {
     fn locate(&mut self, byte: usize) {
-        let entries = &self.p.entries;
+        let t = &self.p.table;
         if byte < self.last {
             self.next = 0;
             self.stack.clear();
         }
         self.last = byte;
-        while self.next < entries.len() && entries[self.next].range.start <= byte {
-            let start = entries[self.next].range.start;
+        while self.next < t.len() && t.packed[self.next].start <= byte {
+            let start = t.packed[self.next].start;
             while self
                 .stack
                 .last()
-                .is_some_and(|&t| entries[t].range.end <= start)
+                .is_some_and(|&(s, _)| t.packed[s].end <= start)
             {
                 self.stack.pop();
             }
-            self.stack.push(self.next);
+            self.stack.push((self.next, None));
             self.next += 1;
         }
         while self
             .stack
             .last()
-            .is_some_and(|&t| entries[t].range.end <= byte)
+            .is_some_and(|&(s, _)| t.packed[s].end <= byte)
         {
             self.stack.pop();
         }
         self.indices.clear();
-        self.indices.extend(
-            self.stack
-                .iter()
-                .copied()
-                .filter(|&i| !entries[i].hidden && !entries[i].label.contains(&byte)),
-        );
+        for &(i, _) in &self.stack {
+            if !t.hidden(i) && !t.label(i).contains(&byte) {
+                self.indices.push(i);
+            }
+        }
+    }
+
+    /// The line of `byte`, counted from the last one asked, either way.
+    fn line_of(&mut self, byte: usize) -> u64 {
+        let src = self.p.src;
+        let (at, line) = self.lines;
+        let byte = byte.min(src.len());
+        let line = if byte >= at {
+            line + memchr::memchr_iter(b'\n', &src[at..byte]).count() as u64
+        } else {
+            line - memchr::memchr_iter(b'\n', &src[byte..at]).count() as u64
+        };
+        self.lines = (byte, line);
+        line
+    }
+
+    /// The Segment at `k` in the stack, built once.
+    fn segment_at(&mut self, k: usize) -> Segment {
+        if let Some(s) = &self.stack[k].1 {
+            return s.clone();
+        }
+        let i = self.stack[k].0;
+        let r = self.p.table.range(i);
+        let src = self.p.src;
+        let line = self.line_of(r.start);
+        // `Outline::build`'s last line: the one of the Section's last byte.
+        let last = r.end.saturating_sub(1).max(r.start).min(src.len());
+        let from = r.start.min(last);
+        let end_line = line + memchr::memchr_iter(b'\n', &src[from..last]).count() as u64;
+        let s = self.p.segment(i, self.p.name(i).0, line, end_line);
+        self.stack[k].1 = Some(s.clone());
+        s
     }
 }
 
@@ -400,29 +549,29 @@ impl Cursor for LineCursor<'_> {
         {
             return Ok(t.clone());
         }
-        let mut cache = Vec::with_capacity(self.indices.len());
-        for &i in &self.indices {
-            let seg = match self.cache.iter().find(|(j, _)| *j == i) {
-                Some((_, s)) => s.clone(),
-                None => self.p.segment(&self.p.entries[i]),
-            };
-            cache.push((i, seg));
+        let mut trail = Vec::with_capacity(self.indices.len());
+        let mut k = 0;
+        for at in 0..self.indices.len() {
+            let i = self.indices[at];
+            while self.stack[k].0 != i {
+                k += 1;
+            }
+            trail.push(self.segment_at(k));
         }
-        self.cache = cache;
-        let t: SharedTrail = self.cache.iter().map(|(_, s)| s.clone()).collect();
+        let t: SharedTrail = trail.into();
         self.shown = Some((self.indices.clone(), t.clone()));
         Ok(t)
     }
 
-    /// The start of the outermost shown Entry that holds the last offset: every later Trail
+    /// The start of the outermost shown Segment that holds the last offset: every later Trail
     /// ends with it, one inside it or one that starts later.
     fn open_from(&mut self) -> Option<usize> {
-        let entries = &self.p.entries;
+        let t = &self.p.table;
         Some(
             self.stack
                 .iter()
-                .find(|&&i| !entries[i].hidden)
-                .map_or(self.last, |&i| entries[i].range.start),
+                .find(|&&(i, _)| !t.hidden(i))
+                .map_or(self.last, |&(i, _)| t.packed[i].start),
         )
     }
 }
