@@ -1981,3 +1981,49 @@ fn m5b_quiet_prints_no_summary_under_the_filters() {
         assert_eq!(stderr(&o), "", "{args:?}");
     }
 }
+
+#[test]
+fn m6_ci_versions_come_from_cargo_toml() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+    let version = env!("CARGO_PKG_VERSION");
+    let written: Vec<String> = ci
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.contains(version))
+        .map(|(i, l)| format!("{}: {}", i + 1, l.trim()))
+        .collect();
+    assert!(
+        written.is_empty(),
+        "ci.yml writes the version instead of reading it: {written:#?}"
+    );
+    // One place reads it, and every check uses what it read.
+    assert_eq!(
+        ci.matches("tomllib.load(open('Cargo.toml', 'rb'))['package']['version']")
+            .count(),
+        1
+    );
+    for read in [
+        "assert os.environ['VERSION'] in text",
+        "rc, stable = plan(f'v{version}-rc.1'), plan(f'v{version}')",
+        "assert v == f\"s4 {os.environ['VERSION']}\", v",
+        "tgz = copy / f\"searchfor-{os.environ['VERSION']}.tgz\"",
+        "releases/download/v{os.environ['VERSION']}/",
+        "ls -l \"target/package/searchfor-$VERSION.crate\"",
+    ] {
+        assert!(ci.contains(read), "missing: {read}");
+    }
+    assert_eq!(
+        ci.matches("== want").count(),
+        3,
+        "the three installer version checks"
+    );
+    // The no-publish rule: the one command that runs `cargo publish` is a dry run.
+    let publish: Vec<&str> = ci
+        .lines()
+        .map(|l| l.trim().trim_start_matches("$PRIO "))
+        .filter(|l| l.starts_with("cargo publish"))
+        .collect();
+    assert_eq!(publish.len(), 1, "{publish:?}");
+    assert!(publish[0].contains("--dry-run"), "{}", publish[0]);
+}
