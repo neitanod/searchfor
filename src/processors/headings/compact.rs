@@ -783,13 +783,21 @@ mod tests {
     fn the_table_and_the_side_records_give_back_every_field() {
         let src = b"== A\nbody\n=== B\n|x|\n";
         let mut ix = Index::default();
-        let mut a = spec("heading", 0..src.len(), SpecName::Source(&[3..4]));
+        let mut a = spec(
+            "heading",
+            0..src.len(),
+            SpecName::Source(std::slice::from_ref(&(3..4))),
+        );
         a.anchor = 3;
         a.label = 0..5;
         a.level = Some(1);
         a.signature = Some(0..4);
         ix.push(a);
-        let mut b = spec("heading", 10..src.len(), SpecName::Source(&[14..15]));
+        let mut b = spec(
+            "heading",
+            10..src.len(),
+            SpecName::Source(std::slice::from_ref(&(14..15))),
+        );
         b.anchor = 14;
         b.label = 10..16;
         b.signature = Some(14..15);
