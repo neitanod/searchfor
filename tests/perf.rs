@@ -3647,3 +3647,21 @@ fn m6_dense_expand_single_section() {
         }
     }
 }
+
+/// M6 plan Task 11.3: the evaluator of scripts/bench-m6.sh decides its gates as specified (the
+/// same `decide` and `verdict` its measurements call). It checks the evaluator, not timings.
+#[test]
+fn m6_benchmark_gate_selftest() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out = Command::new("bash")
+        .arg(root.join("scripts/bench-m6.sh"))
+        .arg("--self-test")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, b"M6 cost gates: PASS\n");
+}
