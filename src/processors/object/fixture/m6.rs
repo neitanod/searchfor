@@ -10,7 +10,7 @@ pub fn tiff(text: &[u8]) -> Vec<u8> {
     b.extend(0x0110u16.to_le_bytes()); // Model, ASCII
     b.extend(2u16.to_le_bytes());
     b.extend(((text.len() + 1) as u32).to_le_bytes());
-    if text.len() + 1 <= 4 {
+    if text.len() < 4 {
         let mut value = [0; 4];
         value[..text.len()].copy_from_slice(text);
         b.extend(value);
@@ -59,7 +59,10 @@ fn png_chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
 pub fn png(text: &[u8]) -> Vec<u8> {
     let mut b = b"\x89PNG\r\n\x1a\n".to_vec();
     b.extend(png_chunk(b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]));
-    b.extend(png_chunk(b"tEXt", &[b"Comment\0".as_slice(), text].concat()));
+    b.extend(png_chunk(
+        b"tEXt",
+        &[b"Comment\0".as_slice(), text].concat(),
+    ));
     b.extend(png_chunk(b"IEND", b""));
     b
 }
@@ -71,7 +74,7 @@ pub fn webp(text: &[u8]) -> Vec<u8> {
     body.extend(b"EXIF");
     body.extend((data.len() as u32).to_le_bytes());
     body.extend(data);
-    if body.len() % 2 != 0 {
+    if !body.len().is_multiple_of(2) {
         body.push(0);
     }
     let mut b = b"RIFF".to_vec();

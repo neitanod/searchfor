@@ -24,7 +24,7 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
     if !(2..=4).contains(&major) || *bytes.get(4)? == 0xff {
         return None;
     }
-    let flags = bytes[5];
+    let flags = *bytes.get(5)?;
     let size = syncsafe(bytes, 6)?;
     let footer = if major == 4 && flags & 0x10 != 0 {
         10

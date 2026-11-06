@@ -26,8 +26,11 @@ struct Member {
     bytes: Range<usize>,
     name: u16,
     descriptor: u16,
-    attributes: Vec<(u16, Range<usize>)>,
+    attributes: Attributes,
 }
+
+/// The attributes of a member or the class: the index of each one's name, and its contents.
+type Attributes = Vec<(u16, Range<usize>)>;
 
 /// Who a constant-pool entry belongs to.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -60,11 +63,7 @@ fn members(bytes: &[u8], mut at: usize, all: &Range<usize>) -> Option<(Vec<Membe
 }
 
 /// The attributes at `at`: (name index and contents of each, the byte after them).
-fn attributes(
-    bytes: &[u8],
-    mut at: usize,
-    all: &Range<usize>,
-) -> Option<(Vec<(u16, Range<usize>)>, usize)> {
+fn attributes(bytes: &[u8], mut at: usize, all: &Range<usize>) -> Option<(Attributes, usize)> {
     let count = u16_at(bytes, at, false)? as usize;
     at += 2;
     let mut out = Vec::with_capacity(count.min((all.end - at) / 6));
@@ -131,8 +130,18 @@ fn instruction(code: &[u8], pc: usize) -> Option<usize> {
     let op = *code.get(pc)?;
     let n = match op {
         0x10 | 0x12 | 0x15..=0x19 | 0x36..=0x3a | 0xa9 | 0xbc => 2,
-        0x11 | 0x13 | 0x14 | 0x84 | 0x99..=0xa8 | 0xb2..=0xb8 | 0xbb | 0xbd | 0xc0 | 0xc1
-        | 0xc6 | 0xc7 => 3,
+        0x11
+        | 0x13
+        | 0x14
+        | 0x84
+        | 0x99..=0xa8
+        | 0xb2..=0xb8
+        | 0xbb
+        | 0xbd
+        | 0xc0
+        | 0xc1
+        | 0xc6
+        | 0xc7 => 3,
         0xc5 => 4,
         0xb9 | 0xba | 0xc8 | 0xc9 => 5,
         0xc4 => {
@@ -163,8 +172,18 @@ fn instruction(code: &[u8], pc: usize) -> Option<usize> {
             };
             at.checked_add(entries.checked_mul(4)?)? - pc
         }
-        0x00..=0x0f | 0x1a..=0x35 | 0x3b..=0x83 | 0x85..=0x98 | 0xac..=0xb1 | 0xbe | 0xbf
-        | 0xc2 | 0xc3 | 0xca | 0xfe | 0xff => 1,
+        0x00..=0x0f
+        | 0x1a..=0x35
+        | 0x3b..=0x83
+        | 0x85..=0x98
+        | 0xac..=0xb1
+        | 0xbe
+        | 0xbf
+        | 0xc2
+        | 0xc3
+        | 0xca
+        | 0xfe
+        | 0xff => 1,
         _ => return None,
     };
     (pc.checked_add(n)? <= code.len()).then_some(n)
@@ -299,9 +318,7 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
     let image = b.node(None, "object", version(major, minor).into(), all.clone());
     let class = b.node(Some(image), "class", class_name, body..bytes.len());
     b.node(Some(class), "section", "constant pool".into(), pool_bytes);
-    let label = |k: u16| {
-        utf8(k).map_or(Cow::Borrowed("?"), |r| modified_utf8(&bytes[r]))
-    };
+    let label = |k: u16| utf8(k).map_or(Cow::Borrowed("?"), |r| modified_utf8(&bytes[r]));
     let field_nodes: Vec<usize> = fields
         .iter()
         .map(|f| b.node(Some(class), "field", label(f.name), f.bytes.clone()))

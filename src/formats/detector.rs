@@ -1227,7 +1227,10 @@ mod tests {
                 .map(|d| d.name.as_str())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(names(b"\xca\xfe\xba\xbe\0\0\0\x3d"), ["macho", "java-class"]);
+        assert_eq!(
+            names(b"\xca\xfe\xba\xbe\0\0\0\x3d"),
+            ["macho", "java-class"]
+        );
         assert_eq!(det.object(b"\xca\xfe\xba\xbe").unwrap().name, "macho");
         for (head, name) in [
             (&b"\xff\xd8\xff\xe1"[..], "jpeg"),

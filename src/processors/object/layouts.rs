@@ -63,8 +63,9 @@ impl<'a> Builder<'a> {
         Self {
             bytes,
             name_chars,
-            nodes: Vec::new(),
-            owners: Vec::new(),
+            // Room for a small file's nodes without growing.
+            nodes: Vec::with_capacity(16),
+            owners: Vec::with_capacity(16),
         }
     }
 
