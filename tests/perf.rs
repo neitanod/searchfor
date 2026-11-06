@@ -2989,3 +2989,679 @@ fn uptime() -> String {
         .trim()
         .to_owned()
 }
+
+// M6 (plan Chunk 11, Task 11.2): the dense, sparse and first-unit ceilings of the M6 text
+// Processors (M6 spec §11, criteria 50, 52 and 53).
+
+/// A disk directory for the 50 MiB and 1 GiB files, never `/tmp`: on a tmpfs
+/// `/tmp` they sit in RAM beside the RSS being measured, and a small one fails
+/// with ENOSPC. `SEARCHFOR_PERF_DIR`, else `CARGO_TARGET_DIR`, else `target/`.
+#[cfg(target_os = "linux")]
+fn m6_perf_dir() -> tempfile::TempDir {
+    let base = std::env::var_os("SEARCHFOR_PERF_DIR")
+        .or_else(|| std::env::var_os("CARGO_TARGET_DIR"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("target"));
+    std::fs::create_dir_all(&base).unwrap();
+    tempfile::tempdir_in(base).unwrap()
+}
+
+/// `size` bytes of `format` where every unit holds `needle`, and the head `ONCE_M6`: the
+/// nine families of criterion 50, one per new Processor family.
+#[cfg(target_os = "linux")]
+fn m6_dense_bytes(format: &str, size: usize) -> Vec<u8> {
+    let (head, unit, tail) = match format {
+        "asciidoc" => ("= ONCE_M6\n", "== needle\nneedle\n", ""),
+        "ini" => ("[ONCE_M6]\n", "k=needle\n", ""),
+        "nginx" => ("http { # ONCE_M6\n", "k needle;\n", "}\n"),
+        "make" => ("# ONCE_M6\n", "k := needle\n", ""),
+        "sql" => (
+            "-- ONCE_M6\nINSERT INTO t(a) VALUES\n",
+            "('needle'),\n",
+            "('needle');\n",
+        ),
+        "diff" => (
+            "diff --git a/ONCE_M6 b/ONCE_M6\n--- a/ONCE_M6\n+++ b/ONCE_M6\n@@ -0,0 +1,99999999 @@\n",
+            "+needle\n",
+            "",
+        ),
+        "mbox" => ("From a x\nSubject: ONCE_M6\n\n", "needle\n", ""),
+        "whatsapp" => (
+            "31/12/23, 21:41 - ONCE_M6: needle\n",
+            "31/12/23, 21:42 - Ana: needle\n",
+            "",
+        ),
+        "har" => (
+            "{\"log\":{\"comment\":\"ONCE_M6\",\"entries\":[\n",
+            "{\"request\":{\"method\":\"GET\",\"url\":\"http://x\"},\"x\":\"needle\"},\n",
+            "{\"request\":{\"method\":\"GET\",\"url\":\"http://x\"},\"x\":\"needle\"}]}}\n",
+        ),
+        _ => unreachable!(),
+    };
+    m6_fill(head, unit, tail, size)
+}
+
+/// `head`, as many `unit`s as fit, spaces, then `tail`: exactly `size` bytes.
+#[cfg(target_os = "linux")]
+fn m6_fill(head: &str, unit: &str, tail: &str, size: usize) -> Vec<u8> {
+    let mut b = Vec::with_capacity(size);
+    b.extend(head.as_bytes());
+    while b.len() + unit.len() + tail.len() <= size {
+        b.extend(unit.as_bytes());
+    }
+    let pad = size - b.len() - tail.len();
+    b.extend(std::iter::repeat_n(b' ', pad));
+    b.extend(tail.as_bytes());
+    assert_eq!(b.len(), size);
+    b
+}
+
+#[test]
+#[ignore = "M6 50 MiB dense RSS; selected explicitly on Linux"]
+#[cfg(target_os = "linux")]
+fn m6_dense() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let big = m6_perf_dir();
+    let file = big.path().join("dense.m6");
+    let file = file.to_str().unwrap();
+    eprintln!("m6_dense: uptime {}", uptime());
+    for format in [
+        "asciidoc", "ini", "nginx", "make", "sql", "diff", "mbox", "whatsapp", "har",
+    ] {
+        let src = m6_dense_bytes(format, 50 << 20);
+        std::fs::write(file, src).unwrap();
+        let sample = common::run(&mut fx.s4([
+            "--no-docs",
+            "--json",
+            "--format",
+            format,
+            "-m3",
+            "needle",
+            file,
+        ]));
+        assert_eq!(common::code(&sample), 0);
+        assert!(
+            common::stdout(&sample)
+                .lines()
+                .filter_map(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                .any(|v| v["type"] == "match"
+                    && !v["data"]["trail"].as_array().unwrap().is_empty()),
+            "{format}: no structured Match"
+        );
+        for layout in ["--flat", "--json"] {
+            let base = ["--no-docs", layout, "--format", format, "-j1"];
+            let dense = [base.as_slice(), &["needle|^", file]].concat();
+            let once = [base.as_slice(), &["ONCE_M6", file]].concat();
+            let raw = [base.as_slice(), &["--no-trail", "needle|^", file]].concat();
+            let (td, rd) = measure_drained(&sfor_bin(), &fx, &dense, 0).unwrap();
+            let (tp, rp) = measure_drained(&sfor_bin(), &fx, &once, 0).unwrap();
+            let (t0, r0) = measure_drained(&sfor_bin(), &fx, &raw, 0).unwrap();
+            assert!(
+                rd <= rp + (32 << 20),
+                "{format}/{layout}: {rd} > {rp}+32MiB"
+            );
+            if timing_enabled() && layout == "--json" {
+                assert!(
+                    td.as_secs_f64() <= tp.as_secs_f64() + 6.0 * t0.as_secs_f64() + 0.1,
+                    "{format}/{layout}: dense {td:?}, once {tp:?}, raw {t0:?}"
+                );
+            }
+            let over = (td.as_secs_f64() - tp.as_secs_f64()) / t0.as_secs_f64();
+            eprintln!(
+                "m6 {format}/{layout}: dense={td:?}/{rd} once={tp:?}/{rp} raw={t0:?}/{r0} \
+                 (dense - once) / raw = {over:.1}"
+            );
+        }
+    }
+}
+
+/// Criterion 50 with four search threads: each may hold the 8 MiB of a file's output that
+/// sends it to a spool file (M5b spec §6.3), so the allowance is 32 MiB plus that per thread,
+/// as `m5b_dense_parallel_output_is_bounded`: four copies of one file, for four families. (Four
+/// families at once measure their preparations' overlap, not their output: one Match ends the
+/// small ones' early, a dense search keeps them all alive; 546 MB against 413 MB measured.)
+#[test]
+#[ignore = "M6 multi-worker dense RSS; selected explicitly on Linux"]
+#[cfg(target_os = "linux")]
+fn m6_dense_parallel() {
+    use searchfor::output::spool::FILE_SPOOL_THRESHOLD;
+    let _alone = alone();
+    let fx = Fixture::new();
+    let big = m6_perf_dir();
+    eprintln!("m6_dense_parallel: uptime {}", uptime());
+    for format in ["nginx", "sql", "mbox", "har"] {
+        let dir = big.path().join(format);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("0.m6"), m6_dense_bytes(format, 50 << 20)).unwrap();
+        for n in 1..4 {
+            std::fs::hard_link(dir.join("0.m6"), dir.join(format!("{n}.m6"))).unwrap();
+        }
+        let dir = dir.to_str().unwrap();
+        let threads = 4;
+        let j = format!("-j{threads}");
+        let dense = [
+            "--no-docs",
+            "--json",
+            "--format",
+            format,
+            &j,
+            "needle|^",
+            dir,
+        ];
+        let once = [
+            "--no-docs",
+            "--json",
+            "--format",
+            format,
+            &j,
+            "ONCE_M6",
+            dir,
+        ];
+        let (td, rd) = measure_drained(&sfor_bin(), &fx, &dense, 0).unwrap();
+        let (tp, rp) = measure_drained(&sfor_bin(), &fx, &once, 0).unwrap();
+        let allowance = (32 << 20) + threads * FILE_SPOOL_THRESHOLD as u64;
+        eprintln!("m6 parallel {format}: dense={td:?}/{rd} once={tp:?}/{rp} allowance={allowance}");
+        assert!(
+            rd <= rp + allowance,
+            "{format}: parallel dense={rd} once={rp} allowance={allowance}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+/// The other M6 text Formats at 50 MB with three Matches (criterion 53): the reused markup
+/// (Vue, Svelte, Blade, Telegram's HTML), the views other than HAR (Jupyter, Telegram) and the
+/// syntaxes the nine families of `m6_dense_bytes` do not stand for.
+#[cfg(target_os = "linux")]
+fn m6_supplemental_bytes(format: &str, size: usize) -> Vec<u8> {
+    let (head, unit, tail) = match format {
+        "rst" => (
+            "Title\n=====\n\n",
+            "Section\n-------\n\nneedle text\n\n",
+            "",
+        ),
+        "org" => ("* ONCE_M6\n", "** Item\nneedle\n", ""),
+        "latex" => (
+            "\\documentclass{article}\n\\begin{document}\n",
+            "\\section{S}\nneedle\n",
+            "\\end{document}\n",
+        ),
+        "jupyter" => (
+            "{\"cells\":[\n{\"cell_type\":\"markdown\",\"source\":[\"# H\\n\"]},\n",
+            "{\"cell_type\":\"code\",\"source\":[\"needle\\n\"]},\n",
+            "{\"cell_type\":\"code\",\"source\":[\"x\\n\"]}],\"nbformat\":4}\n",
+        ),
+        "systemd" => (
+            "[Unit]\nDescription=x\n",
+            "[Service]\nExecStart=needle\n",
+            "",
+        ),
+        "properties" => ("# ONCE_M6\n", "a.b.c=needle\n", ""),
+        "env" => ("# ONCE_M6\n", "KEY=needle\n", ""),
+        "ssh-config" => ("# ONCE_M6\n", "Host h\n  User needle\n", ""),
+        "apache" => (
+            "# ONCE_M6\n",
+            "<VirtualHost *:80>\n  ServerName needle\n</VirtualHost>\n",
+            "",
+        ),
+        "hcl" => (
+            "# ONCE_M6\n",
+            "resource \"a\" \"b\" {\n  x = \"needle\"\n}\n",
+            "",
+        ),
+        "dockerfile" => ("FROM a AS b\n", "RUN echo needle\n", ""),
+        "just" => ("# ONCE_M6\n", "r:\n    echo needle\n", ""),
+        "graphql" => ("# ONCE_M6\n", "type T {\n  needle: String\n}\n", ""),
+        "protobuf" => (
+            "syntax = \"proto3\";\n",
+            "message M {\n  string needle = 1;\n}\n",
+            "",
+        ),
+        "vue" => (
+            "<template>\n<div>\n",
+            "<p>needle</p>\n",
+            "</div>\n</template>\n",
+        ),
+        "svelte" => ("<div>\n", "{#if x}<p>needle</p>{/if}\n", "</div>\n"),
+        "blade" => ("<div>\n", "@if($x)\n<p>needle</p>\n@endif\n", "</div>\n"),
+        "eml" => (
+            "Subject: ONCE_M6\nContent-Type: text/plain\n\n",
+            "needle\n",
+            "",
+        ),
+        "icalendar" => (
+            "BEGIN:VCALENDAR\n",
+            "BEGIN:VEVENT\nSUMMARY:needle\nEND:VEVENT\n",
+            "END:VCALENDAR\n",
+        ),
+        "vcard" => ("", "BEGIN:VCARD\nFN:A\nNOTE:needle\nEND:VCARD\n", ""),
+        "bibtex" => ("% ONCE_M6\n", "@article{k,\n  title = {needle},\n}\n", ""),
+        "telegram" => (
+            "{\"name\":\"Ana\",\"messages\":[\n",
+            "{\"date\":\"d\",\"from\":\"A\",\"text\":\"needle\"},\n",
+            "{\"date\":\"d\",\"from\":\"A\",\"text\":\"x\"}]}\n",
+        ),
+        "telegram-html" => (
+            "<html><body><div class='page_wrap'><div class='history'>\n",
+            "<div class='message default' id='m1'>\n\
+             <div class='pull_right date details' title='31.01.2024 10:04:12'>t</div>\n\
+             <div class='from_name'>Ana</div>\n<div class='text'>needle</div>\n</div>\n",
+            "</div></div></body></html>\n",
+        ),
+        _ => unreachable!(),
+    };
+    m6_fill(head, unit, tail, size)
+}
+
+/// The nine families of criterion 50 and the supplemental Formats.
+#[cfg(target_os = "linux")]
+const M6_SPARSE: &[&str] = &[
+    "asciidoc",
+    "ini",
+    "nginx",
+    "make",
+    "sql",
+    "diff",
+    "mbox",
+    "whatsapp",
+    "har",
+    "rst",
+    "org",
+    "latex",
+    "jupyter",
+    "systemd",
+    "properties",
+    "env",
+    "ssh-config",
+    "apache",
+    "hcl",
+    "dockerfile",
+    "just",
+    "graphql",
+    "protobuf",
+    "vue",
+    "svelte",
+    "blade",
+    "eml",
+    "icalendar",
+    "vcard",
+    "bibtex",
+    "telegram",
+    "telegram-html",
+];
+
+#[test]
+#[ignore = "M6 50 MB sparse processor rate; local timing"]
+#[cfg(target_os = "linux")]
+fn m6_sparse() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let rg = rg_bin().unwrap();
+    let big = m6_perf_dir();
+    let file = big.path().join("sparse.m6");
+    let file = file.to_str().unwrap();
+    eprintln!("m6_sparse: uptime {}", uptime());
+    // Every Format is measured before the verdict, so a failure lists them all.
+    let mut slow = Vec::new();
+    for &format in M6_SPARSE {
+        let mut src = if M6_SPARSE[..9].contains(&format) {
+            m6_dense_bytes(format, 50_000_000)
+        } else {
+            m6_supplemental_bytes(format, 50_000_000)
+        };
+        // Exactly three original needle occurrences become unique patterns;
+        // every other byte, including structure and ordinary needles, is kept.
+        let positions: Vec<_> = memchr::memmem::find_iter(&src, b"needle").collect();
+        for &at in [
+            positions[0],
+            positions[positions.len() / 2],
+            *positions.last().unwrap(),
+        ]
+        .iter()
+        {
+            src[at..at + 6].copy_from_slice(b"M6HIT!");
+        }
+        std::fs::write(file, src).unwrap();
+        // The three Matches are structured, of this Format, not a Plain fallback.
+        let out =
+            common::run(&mut fx.s4(["--no-docs", "--json", "--format", format, "M6HIT!", file]));
+        assert_eq!(common::code(&out), 0, "{format}");
+        let rows: Vec<serde_json::Value> = common::stdout(&out)
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v["type"] == "match")
+            .map(|v| v["data"].clone())
+            .collect();
+        assert_eq!(rows.len(), 3, "{format}");
+        let trails: Vec<String> = rows
+            .iter()
+            .map(|r| {
+                assert_eq!(r["format"], format);
+                let t = r["trail"].as_array().unwrap();
+                assert!(!t.is_empty(), "{format}: a Match without a Trail");
+                t.iter()
+                    .map(|s| s["name"].as_str().unwrap())
+                    .collect::<Vec<_>>()
+                    .join(" › ")
+            })
+            .collect();
+        // sql's third Match is in its final tuple: a row of the one INSERT, as the others.
+        if format == "sql" {
+            for t in &trails {
+                assert!(t.starts_with("INSERT INTO t › row "), "{t}");
+                assert!(t.ends_with(" › a"), "{t}");
+            }
+        }
+        let (ts, _) = measure_drained(
+            &sfor_bin(),
+            &fx,
+            &["--no-docs", "--flat", "--format", format, "M6HIT!", file],
+            0,
+        )
+        .unwrap();
+        let (tr, _) = measure_drained(&rg, &fx, &["M6HIT!", file], 0).unwrap();
+        eprintln!("m6 sparse {format}: s4={ts:?} rg={tr:?} trails={trails:?}");
+        if ts > tr + Duration::from_secs(1) {
+            slow.push(format!("{format}: s4 {ts:?}, rg {tr:?}"));
+        }
+    }
+    eprintln!("m6 sparse over rg + 1 s: {slow:?}");
+    if timing_enabled() {
+        assert!(slow.is_empty(), "over rg + 1 s:\n{}", slow.join("\n"));
+    }
+}
+
+#[test]
+#[ignore = "M6 first unit of 1 GiB files; local time and Linux RSS"]
+#[cfg(target_os = "linux")]
+fn m6_first_unit() {
+    use std::io::Write;
+    let _alone = alone();
+    let fx = Fixture::new();
+    let rg = rg_bin().unwrap();
+    let big = m6_perf_dir();
+    let file = big.path().join("large.m6");
+    let file = file.to_str().unwrap();
+    eprintln!("m6_first_unit: uptime {}", uptime());
+    for (format, first, rest, trail) in [
+        (
+            "sql",
+            "INSERT INTO t(a) VALUES ('needle');\n",
+            "INSERT INTO t(a) VALUES ('plain');\n",
+            "INSERT INTO t › row 1 › a",
+        ),
+        (
+            "mbox",
+            "From a x\nSubject: First\n\nneedle\n\n",
+            "From b x\nSubject: Later\n\nplain\n\n",
+            "First › body",
+        ),
+        // Every later line is one day, 02/01/24, of a gigabyte: the first day ends where it
+        // starts, read as lookahead only.
+        (
+            "whatsapp",
+            "01/01/24, 10:00 - Ana: needle\n",
+            "02/01/24, 10:00 - Bob: plain\n",
+            "01/01/24 › 10:00 Ana",
+        ),
+    ] {
+        let mut f = std::fs::File::create(file).unwrap();
+        f.write_all(first.as_bytes()).unwrap();
+        let unit = rest.repeat(32768);
+        let mut left = (1usize << 30) - first.len();
+        while left > 0 {
+            let n = left.min(unit.len());
+            f.write_all(&unit.as_bytes()[..n]).unwrap();
+            left -= n;
+        }
+        drop(f);
+        // Structured, naming the first unit: no Plain fallback earns the time.
+        let out =
+            common::run(&mut fx.s4(["--no-docs", "--json", "--format", format, "needle", file]));
+        assert_eq!(common::code(&out), 0, "{format}");
+        let rows: Vec<serde_json::Value> = common::stdout(&out)
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v["type"] == "match")
+            .collect();
+        assert_eq!(rows.len(), 1, "{format}");
+        let names: Vec<&str> = rows[0]["data"]["trail"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names.join(" › "), trail, "{format}");
+        let (ts, rs) = measure_drained(
+            &sfor_bin(),
+            &fx,
+            &["--no-docs", "--flat", "--format", format, "needle", file],
+            0,
+        )
+        .unwrap();
+        let (tr, rr) = measure_drained(&rg, &fx, &["needle", file], 0).unwrap();
+        eprintln!("m6 first unit {format}: s4={ts:?}/{rs} rg={tr:?}/{rr}");
+        assert!(rs <= rr + (64 << 20), "{format}: RSS {rs}/{rr}");
+        if timing_enabled() {
+            assert!(
+                ts <= tr + Duration::from_millis(500),
+                "{format}: {ts:?}/{tr:?}"
+            );
+        }
+        std::fs::remove_file(file).unwrap();
+    }
+}
+
+#[test]
+#[ignore = "M6 50 MB HTML page of scripts; local timing"]
+#[cfg(target_os = "linux")]
+fn m6_html_scripts_cost() {
+    // Spec §11 «Scripts in HTML», #53: Matches inside three scripts parse those
+    // three only; Matches outside every script parse none.
+    let _alone = alone();
+    let fx = Fixture::new();
+    let rg = rg_bin().unwrap();
+    let big = m6_perf_dir();
+    let file = big.path().join("scripts.html");
+    let file = file.to_str().unwrap();
+    // 66 KB scripts of short lines, under both caps, about 50 MB in all.
+    let body = "function f() { return 'plain'; }\n".repeat(2000);
+    let script = format!("<script>\n{body}</script>\n<p>text</p>\n");
+    let count = 50_000_000 / script.len();
+    eprintln!("m6_html_scripts_cost: uptime {}", uptime());
+    for (case, inside) in [("inside", true), ("outside", false)] {
+        let mut page = String::from("<html><body>\n");
+        for i in 0..count {
+            let hit = [0, count / 2, count - 1].contains(&i);
+            if hit && inside {
+                page.push_str(&script.replacen("'plain'", "'M6HIT!'", 1));
+            } else if hit {
+                page.push_str(&script.replacen("<p>text</p>", "<p>M6HIT!</p>", 1));
+            } else {
+                page.push_str(&script);
+            }
+        }
+        page.push_str("</body></html>\n");
+        std::fs::write(file, &page).unwrap();
+        let out =
+            common::run(&mut fx.s4(["--no-docs", "--json", "--format", "html", "M6HIT!", file]));
+        assert_eq!(common::code(&out), 0);
+        let rows: Vec<serde_json::Value> = common::stdout(&out)
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v["type"] == "match")
+            .collect();
+        assert_eq!(rows.len(), 3, "{case}");
+        for r in &rows {
+            let last = r["data"]["trail"].as_array().unwrap().last().unwrap()["name"]
+                .as_str()
+                .unwrap();
+            assert_eq!(last == "f", inside, "{case}: {last}");
+        }
+        let (ts, _) = measure_drained(
+            &sfor_bin(),
+            &fx,
+            &["--no-docs", "--flat", "--format", "html", "M6HIT!", file],
+            0,
+        )
+        .unwrap();
+        let (tr, _) = measure_drained(&rg, &fx, &["M6HIT!", file], 0).unwrap();
+        eprintln!("m6 html scripts/{case}: s4={ts:?} rg={tr:?}");
+        if timing_enabled() {
+            assert!(ts <= tr + Duration::from_secs(1), "{case}: {ts:?}/{tr:?}");
+        }
+    }
+}
+
+/// `--expand` over a dense file of one Section, for each new Processor of M6 (C8 reported a
+/// 1 MiB Markdown and diff file of one Section taking more than 300 s, not reproduced since):
+/// a 1 MiB file where every line matches and one Section holds them all prints that Section
+/// once, in bounded time. A Section waiting to print holds its Matches, so its memory grows
+/// with them: about 190 MB for this megabyte's 150 000 Matches in Markdown, with M5b's s4 as
+/// with M6's (measured 06/11/2026); each new Processor stays within 1.5 × Markdown's + 32 MiB.
+#[test]
+#[ignore = "M6 --expand over one dense Section; local timing and Linux RSS"]
+#[cfg(target_os = "linux")]
+fn m6_dense_expand_single_section() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let big = m6_perf_dir();
+    let file = big.path().join("section.m6");
+    let file = file.to_str().unwrap();
+    eprintln!("m6_dense_expand_single_section: uptime {}", uptime());
+    // Markdown's, v1's Processor, first: the reference of the others' memory.
+    let mut reference = std::collections::HashMap::new();
+    for (processor, format, head, unit, tail) in [
+        ("markdown", "markdown", "# ONCE_M6\n", "needle\n", ""),
+        ("headings", "asciidoc", "= ONCE_M6\n", "needle\n", ""),
+        ("blocks", "nginx", "http { # ONCE_M6\n", "# needle\n", "}\n"),
+        ("buildfile", "make", "t: # ONCE_M6\n", "\techo needle\n", ""),
+        (
+            "mail",
+            "mbox",
+            "From a x\nSubject: ONCE_M6\n\n",
+            "needle\n",
+            "",
+        ),
+        (
+            "chat",
+            "whatsapp",
+            "01/01/24, 10:00 - Ana: ONCE_M6\n",
+            "needle\n",
+            "",
+        ),
+        (
+            "sql",
+            "sql",
+            "INSERT INTO t(a) VALUES ('ONCE_M6\n",
+            "needle\n",
+            "');\n",
+        ),
+        (
+            "diff",
+            "diff",
+            "diff --git a/ONCE_M6 b/ONCE_M6\n--- a/ONCE_M6\n+++ b/ONCE_M6\n@@ -0,0 +1,99999999 @@\n",
+            "+needle\n",
+            "",
+        ),
+    ] {
+        // One Section, on a small copy: every Match's has the same lines, and it holds them
+        // all. (With --json each row carries its Section's text, so a dense megabyte would
+        // print gigabytes; the one-line and tree layouts print the Section once.)
+        let small = m6_fill(head, unit, tail, 64 << 10);
+        let lines = small
+            .split(|&b| b == b'\n')
+            .filter(|l| memchr::memmem::find(l, b"needle").is_some())
+            .count();
+        std::fs::write(file, small).unwrap();
+        let out = common::run(&mut fx.s4([
+            "--no-docs",
+            "--json",
+            "--expand",
+            "--format",
+            format,
+            "needle",
+            file,
+        ]));
+        assert_eq!(common::code(&out), 0, "{format}");
+        let sections: std::collections::BTreeSet<(u64, u64)> = common::stdout(&out)
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v["type"] == "match")
+            .map(|v| {
+                let s = &v["data"]["section"];
+                (
+                    s["start_line"].as_u64().unwrap(),
+                    s["end_line"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(sections.len(), 1, "{processor}: {sections:?}");
+        let (start, end) = *sections.first().unwrap();
+        assert!(
+            end - start + 1 >= lines as u64,
+            "{processor}: {start}-{end}"
+        );
+        std::fs::write(file, m6_fill(head, unit, tail, 1 << 20)).unwrap();
+        for layout in ["--flat", "--tree"] {
+            let expand = [
+                "--no-docs",
+                layout,
+                "--expand",
+                "--format",
+                format,
+                "-j1",
+                "needle",
+                file,
+            ];
+            let rows = [
+                "--no-docs",
+                layout,
+                "--format",
+                format,
+                "-j1",
+                "needle",
+                file,
+            ];
+            let (te, re) = measure_drained(&sfor_bin(), &fx, &expand, 0).unwrap();
+            let (tr, rr) = measure_drained(&sfor_bin(), &fx, &rows, 0).unwrap();
+            eprintln!("m6 expand {processor}/{layout}: --expand={te:?}/{re} rows={tr:?}/{rr}");
+            let markdown = *reference.entry(layout).or_insert(re);
+            // Per Match, within half again Markdown's (sql's is the most, 1.24 ×, measured).
+            assert!(
+                re <= markdown * 3 / 2 + (32 << 20),
+                "{processor}/{layout}: {re} > 1.5 × Markdown's {markdown} + 32MiB"
+            );
+            // Far past a megabyte's work, and far short of the 300 s reported.
+            assert!(
+                te <= Duration::from_secs(30),
+                "{processor}/{layout}: {te:?}"
+            );
+            if timing_enabled() {
+                assert!(
+                    te <= tr * 6 + Duration::from_secs(1),
+                    "{processor}/{layout}: {te:?}/{tr:?}"
+                );
+            }
+        }
+    }
+}
+
+/// M6 plan Task 11.3: the evaluator of scripts/bench-m6.sh decides its gates as specified (the
+/// same `decide` and `verdict` its measurements call). It checks the evaluator, not timings.
+#[test]
+fn m6_benchmark_gate_selftest() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out = Command::new("bash")
+        .arg(root.join("scripts/bench-m6.sh"))
+        .arg("--self-test")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, b"M6 cost gates: PASS\n");
+}
