@@ -8,8 +8,8 @@ Processor**: s4 le manda la ruta de un archivo y las posiciones de los resultado
 programa contesta con el Trail de cada resultado. Esta guía muestra cómo escribir uno, en este
 orden:
 
-1. [El ejemplo completo](#el-ejemplo-completo-archivos-ini-primero-con---pre-después-con-un-helper):
-   un Formato INI, primero con `--pre` y después como Helper Processor, para mostrar cuándo
+1. [El ejemplo completo](#el-ejemplo-completo-archivos-de-gettext-primero-con---pre-después-con-un-helper):
+   un Formato de gettext, primero con `--pre` y después como Helper Processor, para mostrar cuándo
    conviene cada uno.
 2. [La Definición de Formato](#la-definición-de-formato): los campos que nombran el programa.
 3. [El protocolo v1](#el-protocolo-v1-mensaje-por-mensaje), mensaje por mensaje.
@@ -25,17 +25,18 @@ guía la sigue. Cada salida de abajo es lo que s4 imprime sobre los archivos de
 [`docs/examples/`](examples), y `tests/guide.rs` corre los dos ejemplos y comprueba su salida
 en Linux, macOS y Windows.
 
-## El ejemplo completo: archivos INI, primero con `--pre`, después con un helper
+## El ejemplo completo: archivos de gettext, primero con `--pre`, después con un helper
 
-El ejemplo busca en este archivo, [`docs/examples/sample.ini`](examples/sample.ini). Los
-comandos del ejemplo se corren desde `docs/examples/`, donde está el archivo:
+El ejemplo busca en este catálogo de gettext, [`docs/examples/sample.po`](examples/sample.po).
+Los comandos del ejemplo se corren desde `docs/examples/`, donde está el archivo:
 
-```ini
-[server]
-host = needle.example
+```po
+msgctxt "menu"
+msgid "Open"
+msgstr "needle"
 ```
 
-s4 no tiene un Formato INI, así que por defecto imprime el resultado como **Plain**, con el
+s4 no tiene un Formato de gettext, así que por defecto imprime el resultado como **Plain**, con el
 Trail vacío. Hay dos herramientas para cambiar eso, y resuelven problemas distintos.
 
 ### `--pre`: convertir el archivo en texto
@@ -45,22 +46,22 @@ archivo en el stdin, y busca en lo que el comando escribe en lugar del archivo. 
 cuando el archivo no es texto en el que se pueda buscar (un formato binario, comprimido o
 codificado) y un programa puede convertirlo en texto.
 
-[`ini-pre.py`](examples/ini-pre.py) escribe sólo los valores de un archivo INI, uno por
+[`po-pre.py`](examples/po-pre.py) escribe sólo las traducciones de un catálogo, una por
 línea:
 
 ```
-$ s4 --no-docs --no-trail --pre ./ini-pre.py needle sample.ini
-needle.example
+$ s4 --no-docs --no-trail --pre ./po-pre.py needle sample.po
+needle
 ```
 
-La salida es la que rg imprime con el mismo `--pre`. La sección y la clave desaparecieron: el
+La salida es la que rg imprime con el mismo `--pre`. El contexto y el texto original desaparecieron: el
 texto convertido no tiene estructura, así que no tiene un Trail para dar. `--pre` elige **en
 qué** se busca.
 
 **Cómo correr un comando `--pre` en Python en cada sistema:**
 
 - **Linux y macOS.** `--pre` corre un programa, y un script es un programa cuando empieza con
-  una línea shebang y tiene el bit de ejecución. `ini-pre.py` empieza con
+  una línea shebang y tiene el bit de ejecución. `po-pre.py` empieza con
   `#!/usr/bin/env python3` y está commiteado como ejecutable, así que el comando de arriba
   funciona tal cual. Así escriben sus scripts de `--pre` los que ya usan rg.
 - **Windows.** Windows no lee las líneas shebang, así que `--pre` tiene que nombrar un
@@ -72,15 +73,15 @@ qué** se busca.
   `PATH`, nunca en el directorio actual.
 
   ```
-  > rustc pre-launcher.rs -o ini-pre-launcher.exe
+  > rustc pre-launcher.rs -o po-pre-launcher.exe
   > $env:SEARCHFOR_EXAMPLE_PYTHON = "python"
-  > $env:SEARCHFOR_EXAMPLE_CONVERTER = "$PWD\ini-pre.py"
-  > s4 --no-docs --no-trail --pre "$PWD\ini-pre-launcher.exe" needle sample.ini
-  needle.example
+  > $env:SEARCHFOR_EXAMPLE_CONVERTER = "$PWD\po-pre.py"
+  > s4 --no-docs --no-trail --pre "$PWD\po-pre-launcher.exe" needle sample.po
+  needle
   ```
 
   Esos comandos son de PowerShell. El launcher también funciona en Linux y macOS: desde la raíz
-  del repositorio, `rustc docs/examples/pre-launcher.rs -o ini-pre-launcher` lo compila, y las
+  del repositorio, `rustc docs/examples/pre-launcher.rs -o po-pre-launcher` lo compila, y las
   dos variables nombran el intérprete y el script como arriba. El test de esta guía compila el
   launcher y corre esta búsqueda con él en cada sistema.
 
@@ -90,22 +91,25 @@ Un Helper Processor deja la búsqueda como está: s4 busca en los bytes del prop
 pregunta al helper sólo dónde está cada resultado. Un Helper Processor sirve cuando el archivo
 ya es texto y lo que falta es su estructura, el **Trail**.
 
-[`ini-helper.py`](examples/ini-helper.py) lee un archivo INI y contesta con sus secciones y sus
-claves. Su Definición de Formato es [`ini.toml`](examples/ini.toml):
+[`po-helper.py`](examples/po-helper.py) lee un catálogo y contesta con el contexto y la
+entrada de cada traducción, cada uno nombrado por su texto original. Su Definición de Formato
+es [`po.toml`](examples/po.toml):
 
 ```toml
-name       = "ini-guide"
-extensions = ["ini"]
+name       = "po-guide"
+extensions = ["po"]
 processor  = "external"
 
 [params]
-command    = ["python3", "/absolute/path/to/docs/examples/ini-helper.py"]
+command    = ["python3", "/absolute/path/to/docs/examples/po-helper.py"]
 mode       = "oneshot"
 timeout_ms = 5000
 ```
 
-Copiá `ini.toml` al directorio de formatos y escribí en `command` la ruta absoluta de
-`ini-helper.py`. El directorio de formatos es `searchfor/formats/` dentro del directorio de
+Los dos scripts leen el subconjunto de una línea de PO que usa `sample.po`, cada palabra clave
+con su string en la misma línea; un helper de producción tiene que leer además los strings de
+varias líneas, las formas plurales y los comentarios de PO. Copiá `po.toml` al directorio de
+formatos y escribí en `command` la ruta absoluta de `po-helper.py`. El directorio de formatos es `searchfor/formats/` dentro del directorio de
 configuración del usuario:
 
 | Sistema | Directorio de formatos |
@@ -119,25 +123,34 @@ configuración del usuario:
 búsqueda da el Trail:
 
 ```
-$ s4 --flat needle sample.ini
-2: server › host │ host = needle.example
+$ s4 --flat needle sample.po
+3: menu › Open │ msgstr "needle"
 ```
 
-`server › host` es el Trail: la sección `server`, y dentro de ella la clave `host`. En la
-salida de árbol, la de por defecto en una terminal:
+`menu › Open` es el Trail: el contexto `menu`, y dentro de él la entrada cuyo texto original es
+`Open`. El helper los da como dos Segmentos, así que el separador del Trail nunca queda dentro
+de un nombre. En la salida de árbol, la de por defecto en una terminal:
 
 ```
-$ s4 --tree needle sample.ini
-sample.ini
-  server
-    host
-      2:host = needle.example
+$ s4 --tree needle sample.po
+sample.po
+  context menu
+    Open
+      3:msgstr "needle"
 ```
 
 y `--json` lleva el mismo Trail como datos, con el nombre del Formato:
 
 ```json
-{"type":"match","data":{"path":{"text":"sample.ini"},"lines":{"text":"host = needle.example\n"},"line_number":2,"absolute_offset":9,"submatches":[{"match":{"text":"needle"},"start":7,"end":13}],"format":"ini-guide","trail":[{"kind":"section","name":"server","line":1,"end_line":2},{"kind":"key","name":"host","line":2,"end_line":2}],"fragment":null}}
+{"type":"match","data":{"path":{"text":"sample.po"},"lines":{"text":"msgstr \"needle\"\n"},"line_number":3,"absolute_offset":28,"submatches":[{"match":{"text":"needle"},"start":8,"end":14}],"format":"po-guide","trail":[{"kind":"context","name":"menu","line":1,"end_line":3},{"kind":"entry","name":"Open","line":2,"end_line":3}],"fragment":null}}
+```
+
+El helper también contesta `names`, así que `--in-headings` encuentra una entrada por su texto
+original, con el Trail del contexto que la contiene, y nunca una palabra clave como `msgstr`:
+
+```
+$ s4 --flat --in-headings Open sample.po
+2: menu │ msgid "Open"
 ```
 
 ### Cuál de los dos usar
@@ -149,8 +162,8 @@ y `--json` lleva el mismo Trail como datos, con el nombre del Formato:
 | Las dos cosas: un archivo binario con estructura | `--pre` para el texto, y un Helper Processor para el Formato que dice el nombre del archivo: s4 le manda al helper el texto convertido en un archivo temporal |
 
 Los dos se pueden combinar: con `--pre`, el Helper Processor recibe el texto convertido, así
-que `ini-helper.py` detrás de `--pre ini-pre.py` no encuentra secciones e imprime el resultado
-con el Trail vacío (`1: needle.example`).
+que `po-helper.py` detrás de `--pre po-pre.py` no encuentra entradas e imprime el resultado con
+el Trail vacío (`1: needle`).
 
 ## La Definición de Formato
 
@@ -160,7 +173,8 @@ usa estos campos:
 | Campo | Obligatorio | Qué es |
 |---|---|---|
 | `name` | sí | El nombre del Formato: `--format <name>` lo elige, y los avisos y `--json` lo muestran. Una Definición del usuario con el nombre de un Formato incorporado lo reemplaza |
-| `extensions` | no | Extensiones de archivo sin el punto, como `["ini"]` |
+| `extensions` | no | Extensiones de archivo sin el punto, como `["po"]`; una entrada con un punto (`blade.php`) es una extensión compuesta, que gana sobre la última extensión sola |
+| `paths` | no | Globs, como `["**/.ssh/config", "Dockerfile.*"]`: uno sin `/` se compara con el nombre del archivo, uno con `/` con la ruta entera |
 | `names` | no | Nombres exactos de archivo, como `["Dockerfile"]` |
 | `shebangs` | no | Intérpretes nombrados en una primera línea `#!`, que se lee sólo en un archivo sin extensión |
 | `magic` | no | Bytes del principio, como `[{ offset = 0, hex = "7f454c46" }]`, que se leen sólo en un archivo sin extensión |
@@ -169,7 +183,7 @@ usa estos campos:
 | `params.mode` | no | `"pool"` (el default), `"concurrent"` u `"oneshot"`; ver [los tres modos](#los-tres-modos) |
 | `params.timeout_ms` | no | Lo más que s4 espera cada respuesta, en milisegundos, contado desde que s4 encola el pedido; un entero positivo, 5000 si falta |
 
-Una Definición sin `extensions`, `names`, `shebangs` ni `magic` se aplica sólo a los archivos
+Una Definición sin `extensions`, `paths`, `names`, `shebangs` ni `magic` se aplica sólo a los archivos
 de `--format <name>`. Cada clave de `[params]`, también las que s4 no usa, le llega al helper
 en `hello`, así que un helper puede tomar sus propias opciones de la Definición.
 `s4 --list-formats` muestra si la Definición se cargó, y una inválida da un aviso que nombra el
@@ -183,14 +197,14 @@ ignoran los campos que no conocen. Cada pedido tiene un `id`, y su respuesta lle
 `id`. Cada línea que el helper escribe en su stderr se muestra como un aviso,
 `s4: <format>: <line>`, salvo que el usuario haya pasado `--no-messages`.
 
-Esta es la conversación de `s4 --flat needle sample.ini` con `ini-helper.py`, grabada en Linux
+Esta es la conversación de `s4 --flat needle sample.po` con `po-helper.py`, grabada en Linux
 (los `params` de `hello` son los de la Definición, acortados acá):
 
 ```
-s4 → {"op":"hello","id":0,"protocol":1,"format":"ini-guide","params":{"command":[…],"mode":"oneshot"},"threads":1}
-s4 → {"op":"trails","id":1,"path":"/home/me/sample.ini","matches":[{"line":2,"byte":16}]}
-   ← {"id":0,"protocol":1,"name":"ini-helper.py","version":"1.0.0"}
-   ← {"id":1,"trails":[[{"kind":"section","name":"server","line":1,"end_line":2},{"kind":"key","name":"host","line":2,"end_line":2}]]}
+s4 → {"op":"hello","id":0,"protocol":1,"format":"po-guide","params":{"command":[…],"mode":"oneshot"},"threads":1}
+s4 → {"op":"trails","id":1,"path":"/home/me/sample.po","matches":[{"line":3,"byte":36}]}
+   ← {"id": 0, "protocol": 1}
+   ← {"id": 1, "trails": [[{"kind": "context", "name": "menu", "line": 1, "end_line": 3}, {"kind": "entry", "name": "Open", "line": 2, "end_line": 3}]]}
 ```
 
 ### `hello`
@@ -198,15 +212,16 @@ s4 → {"op":"trails","id":1,"path":"/home/me/sample.ini","matches":[{"line":2,"
 La primera línea que recibe cada proceso:
 
 ```json
-{"id":0,"op":"hello","protocol":1,"format":"ini-guide","params":{…},"threads":1}
+{"id":0,"op":"hello","protocol":1,"format":"po-guide","params":{…},"threads":1}
 ```
 
 `params` es la tabla `[params]` de la Definición y `threads` es la mayor cantidad de pedidos
 que s4 va a tener en curso con este proceso (1 en `pool` y en `oneshot`). Contestá con el
-protocolo que hablás y, si querés, con tu nombre y tu versión:
+protocolo que hablás y, si querés, con tu nombre y tu versión (`po-helper.py` manda sólo el
+protocolo):
 
 ```json
-{"id":0,"protocol":1,"name":"ini-helper.py","version":"1.0.0"}
+{"id":0,"protocol":1,"name":"po-helper.py","version":"1.0.0"}
 ```
 
 Si el helper contesta otro número de protocolo o un `error`, no contesta dentro de
@@ -218,14 +233,14 @@ corrida, con un aviso, e imprime los archivos del Formato como Plain.
 El Trail de cada resultado de un archivo:
 
 ```json
-{"id":1,"op":"trails","path":"/home/me/sample.ini","matches":[{"line":2,"byte":16}]}
+{"id":1,"op":"trails","path":"/home/me/sample.po","matches":[{"line":3,"byte":36}]}
 ```
 
 `line` es la línea del resultado, contando desde 1, y `byte` su posición absoluta en bytes en
 el archivo de `path`. Contestá con un Trail por resultado, en el orden de `matches`:
 
 ```json
-{"id":1,"trails":[[{"kind":"section","name":"server","line":1,"end_line":2},{"kind":"key","name":"host","line":2,"end_line":2}]]}
+{"id":1,"trails":[[{"kind":"context","name":"menu","line":1,"end_line":3},{"kind":"entry","name":"Open","line":2,"end_line":3}]]}
 ```
 
 Un Trail es una lista de **Segmentos**, del más externo al más interno. Un Segmento es el
@@ -235,7 +250,7 @@ Sección), y los opcionales `level` y `signature`. Una lista vacía es un result
 **Contá bytes, no caracteres.** `byte` cuenta los bytes del archivo. Leé el archivo como bytes
 y calculá cada posición sobre ellos; en Python, `open(path, "rb")`, nunca un `str`
 decodificado, cuyos índices cuentan caracteres y se corren en cuanto una línea tiene una `é` o
-un BOM. `ini-helper.py` decodifica un nombre sólo para mostrarlo.
+un BOM. `po-helper.py` decodifica un nombre sólo para mostrarlo.
 
 ### `names`
 
@@ -243,17 +258,17 @@ Cada nombre de Segmento de un archivo, para `--in-headings`, que busca el patró
 en lugar de en las líneas:
 
 ```json
-{"id":8,"op":"names","path":"/home/me/sample.ini"}
+{"id":8,"op":"names","path":"/home/me/sample.po"}
 ```
 
 ```json
-{"id":8,"names":[{"text":"server","pieces":[[0,6,1,7]],"anchor":1,"trail":[{"kind":"section","name":"server","line":1,"end_line":2}]},{"text":"host","pieces":[[0,4,9,13]],"anchor":9,"trail":[{"kind":"section","name":"server","line":1,"end_line":2},{"kind":"key","name":"host","line":2,"end_line":2}]}]}
+{"id":8,"names":[{"text":"menu","pieces":[[0,4,9,13]],"anchor":9,"trail":[{"kind":"context","name":"menu","line":1,"end_line":3}]},{"text":"Open","pieces":[[0,4,22,26]],"anchor":22,"trail":[{"kind":"context","name":"menu","line":1,"end_line":3},{"kind":"entry","name":"Open","line":2,"end_line":3}]}]}
 ```
 
 - `text` es el nombre como se muestra.
 - `pieces` dice de dónde viene cada pedazo de `text`, como rangos de bytes `[text_start,
   text_end, src_start, src_end]`. Los largos son iguales cuando el nombre se copia tal cual
-  (`server` son los bytes 0–6 del texto y los bytes 1–7 del archivo), y distintos cuando el
+  (`menu` son los bytes 0–4 del texto y los bytes 9–13 del archivo, entre sus comillas), y distintos cuando el
   helper lo decodificó (una entidad como `&lt;` es 1 byte de texto sobre 4 del archivo). Un
   nombre repartido en dos líneas tiene un pedazo por línea.
 - `anchor` es el byte donde cae un resultado vacío (`^`, `$`) cuando ningún pedazo lo
@@ -263,11 +278,11 @@ en lugar de en las líneas:
 ### Errores
 
 ```json
-{"id":9,"error":"ValueError: unknown op 'unknown'"}
+{"id":9,"error":"unknown operation"}
 ```
 
 Una respuesta `error` hace fallar sólo ese pedido, y el proceso sigue con el siguiente.
-`ini-helper.py` contesta un `error` a una operación que no conoce y a un archivo que no puede
+`po-helper.py` contesta un `error` a una operación que no conoce y a un archivo que no puede
 leer.
 
 ## Los tres modos
@@ -280,8 +295,8 @@ leer.
 | `concurrent` | Un solo proceso recibe hasta la cantidad de threads de la búsqueda en pedidos sin esperar las respuestas (`threads` en `hello` dice cuántos), y puede contestarlos en cualquier orden: s4 empareja cada respuesta con su pedido por el `id` | Un helper caro de arrancar (una Gramática grande, una JVM) que puede trabajar en varios archivos a la vez |
 | `oneshot` | Un proceso por pedido: s4 escribe `hello` y el pedido, cierra el stdin, y lee las dos respuestas | Scripts chicos: el script puede leer todo su stdin antes de escribir algo. Cada archivo paga el arranque de un proceso |
 
-`ini-helper.py` es un helper `oneshot`: lee su stdin hasta el EOF y recién entonces contesta
-cada pedido. Un helper `pool`, en cambio, tiene que contestar cada línea a medida que la lee y
+La guía corre `po-helper.py` como helper `oneshot`, así que s4 ya escribió `hello` y el pedido
+y cerró el stdin antes de que el helper conteste. Un helper `pool`, en cambio, tiene que contestar cada línea a medida que la lee y
 vaciar su stdout (flush) después de cada respuesta; s4 manda el pedido siguiente recién después
 de la respuesta.
 
@@ -289,8 +304,8 @@ En modo `concurrent`, las respuestas de un helper que atiende pedidos en paralel
 en otro orden que los pedidos, como en este esquema:
 
 ```
-s4 → {"id":1,"op":"trails","path":"a.ini","matches":[…]}
-s4 → {"id":2,"op":"trails","path":"b.ini","matches":[…]}
+s4 → {"id":1,"op":"trails","path":"a.po","matches":[…]}
+s4 → {"id":2,"op":"trails","path":"b.po","matches":[…]}
    ← {"id":2,"trails":[…]}
    ← {"id":1,"trails":[…]}
 ```
@@ -312,14 +327,14 @@ inglés como los imprime; cada uno sigue al caso que informa:
 
 | Caso | Aviso | Qué pasa después |
 |---|---|---|
-| El pedido recibe una respuesta `error` | `s4: sample.ini: ini-guide: no parser for this file` | El archivo se imprime como Plain; el proceso sigue. No cuenta como falla |
-| Ninguna respuesta dentro de `timeout_ms` | `s4: sample.ini: ini-guide: did not answer within 500 ms` | s4 mata el proceso, y eso hace fallar los otros pedidos que tenía en curso |
-| El helper termina con pedidos en curso | `s4: sample.ini: ini-guide: the helper exited` | El pedido siguiente arranca un proceso nuevo |
-| El helper escribe una línea que no es JSON, o que no tiene `id` | `s4: sample.ini: ini-guide: the helper wrote a line that is not JSON (expected value at line 1 column 1)` | s4 mata el proceso, y falla cada pedido que tenía en curso |
-| Tres fallas en una corrida (crashes, timeouts, líneas sin JSON o sin `id`) | `s4: ini-guide: the helper failed 3 times; its files print without Trails for the rest of this run` | La Definición queda desactivada por la corrida |
-| Falla `hello` (otro protocolo, `error`, sin respuesta, el proceso termina) | `s4: ini-guide: did not answer hello within 300 ms; its files print without Trails for the rest of this run` | La Definición queda desactivada por la corrida |
-| El comando no puede arrancar | ``s4: ini-guide: cannot start `no-such-python3 x.py`: No such file or directory (os error 2); its files print without Trails for the rest of this run`` | La Definición queda desactivada por la corrida |
-| El helper escribe en su stderr | `s4: ini-guide: <the line>` | Nada más; `--no-messages` lo silencia |
+| El pedido recibe una respuesta `error` | `s4: sample.po: po-guide: no parser for this file` | El archivo se imprime como Plain; el proceso sigue. No cuenta como falla |
+| Ninguna respuesta dentro de `timeout_ms` | `s4: sample.po: po-guide: did not answer within 500 ms` | s4 mata el proceso, y eso hace fallar los otros pedidos que tenía en curso |
+| El helper termina con pedidos en curso | `s4: sample.po: po-guide: the helper exited` | El pedido siguiente arranca un proceso nuevo |
+| El helper escribe una línea que no es JSON, o que no tiene `id` | `s4: sample.po: po-guide: the helper wrote a line that is not JSON (expected value at line 1 column 1)` | s4 mata el proceso, y falla cada pedido que tenía en curso |
+| Tres fallas en una corrida (crashes, timeouts, líneas sin JSON o sin `id`) | `s4: po-guide: the helper failed 3 times; its files print without Trails for the rest of this run` | La Definición queda desactivada por la corrida |
+| Falla `hello` (otro protocolo, `error`, sin respuesta, el proceso termina) | `s4: po-guide: did not answer hello within 300 ms; its files print without Trails for the rest of this run` | La Definición queda desactivada por la corrida |
+| El comando no puede arrancar | ``s4: po-guide: cannot start `no-such-python3 x.py`: No such file or directory (os error 2); its files print without Trails for the rest of this run`` | La Definición queda desactivada por la corrida |
+| El helper escribe en su stderr | `s4: po-guide: <the line>` | Nada más; `--no-messages` lo silencia |
 
 Cómo cuenta s4 las fallas:
 
@@ -367,27 +382,27 @@ borralos antes de contestar.
    intercambio `oneshot` del ejemplo, con `names` y una operación desconocida:
 
    ```
-   $ printf '%s\n' '{"id":0,"op":"hello","protocol":1,"format":"ini-guide","params":{},"threads":1}' \
-       '{"id":8,"op":"names","path":"sample.ini"}' '{"id":9,"op":"unknown"}' \
-       | python3 ini-helper.py
-   {"id":0,"protocol":1,"name":"ini-helper.py","version":"1.0.0"}
-   {"id":8,"names":[{"text":"server","pieces":[[0,6,1,7]],"anchor":1,"trail":[{"kind":"section","name":"server","line":1,"end_line":2}]},{"text":"host","pieces":[[0,4,9,13]],"anchor":9,"trail":[{"kind":"section","name":"server","line":1,"end_line":2},{"kind":"key","name":"host","line":2,"end_line":2}]}]}
-   {"id":9,"error":"ValueError: unknown op 'unknown'"}
+   $ printf '%s\n' '{"id":0,"op":"hello","protocol":1,"format":"po-guide","params":{},"threads":1}' \
+       '{"id":8,"op":"names","path":"sample.po"}' '{"id":9,"op":"unknown"}' \
+       | python3 po-helper.py
+   {"id": 0, "protocol": 1}
+   {"id": 8, "names": [{"text": "menu", "pieces": [[0, 4, 9, 13]], "anchor": 9, "trail": [{"kind": "context", "name": "menu", "line": 1, "end_line": 3}]}, {"text": "Open", "pieces": [[0, 4, 22, 26]], "anchor": 22, "trail": [{"kind": "context", "name": "menu", "line": 1, "end_line": 3}, {"kind": "entry", "name": "Open", "line": 2, "end_line": 3}]}]}
+   {"id": 9, "error": "unknown operation"}
    ```
 
 2. **Comprobá que s4 carga la Definición.** `s4 --list-formats` la lista con su origen:
 
    ```
-   $ s4 --list-formats | grep ini-guide
-   ini-guide    user (/home/me/.config/searchfor/formats/ini-guide.toml) ini
+   $ s4 --list-formats | grep po-guide
+   po-guide     user (/home/me/.config/searchfor/formats/po.toml) po
    ```
 
 3. **Corrélo a través de s4.** `--format <name>` le aplica el Formato a cada archivo que
    nombrás, sea cual sea su extensión, así que podés probar el helper sobre cualquier archivo:
 
    ```
-   $ s4 --flat --format ini-guide needle sample.ini
-   2: server › host │ host = needle.example
+   $ s4 --flat --format po-guide needle sample.po
+   3: menu › Open │ msgstr "needle"
    ```
 
    `--json` muestra los campos de cada Segmento como los mandó el helper, y un aviso en stderr
@@ -395,4 +410,5 @@ borralos antes de contestar.
 
 4. **Corré el test de la guía.** `cargo test --test guide` corre los dos ejemplos de esta guía
    (la búsqueda con `--pre` a través del launcher compilado, y el Helper Processor a través de
-   s4) y el intercambio del paso 1. Donde falta Python 3 imprime que los salteó.
+   s4) y el intercambio del paso 1. `m6_po_guide_runs` necesita Python 3 y falla sin él, así que el CI corre la guía en
+   cada sistema.

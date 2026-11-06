@@ -443,6 +443,41 @@ variable nothing is read (M5a plan, D3).
 
 `-P` searches with the PCRE2 that s4 is built with (10.43, in its release binaries), which
 `--pcre2-version` prints; an rg built against the system's PCRE2 prints that one's.
+
+## Trails that changed since 1.0
+
+1.1 changes the Trails of one existing Format: HTML. A Match inside a page's `<script>` gets
+the Trail of the script's own code below the `script` element, where 1.0 stopped at the
+element (M6 spec §8.3, Sebastián's answer B to Open question 2). Over this page, a Match in
+the function `onClick`:
+
+```html
+<html><head>
+<script>
+function onClick() {
+  return 'needle';
+}
+</script>
+```
+
+```sh
+s4 --flat needle page.html   # 1.0: 4: head › script[1] │   return 'needle';
+s4 --flat needle page.html   # 1.1: 4: head › script[1] › onClick │   return 'needle';
+```
+
+Three limits keep 1.0's Trail, `head › script[1]`:
+
+- **The type.** A script with no `type`, a JavaScript type (`text/javascript` and its
+  aliases) or `module` is read with the JavaScript Grammar (TypeScript or TSX by its `lang`),
+  and `application/ld+json` with JSON's key paths (`head › script[3] › offers › price`).
+  Any other type, as `text/x-template`, keeps the element's Trail.
+- **The size.** An inline script over 1 MiB (a framework's state, a bundle) is not read.
+- **Minified code.** A script with a line over 1 000 bytes is not read: its names say
+  nothing, and its parse is the costly part of a page.
+
+Only the Trail layouts and `--json`'s `trail` change. `--no-trail` prints rg's output as in 1.0,
+the bytes searched and the Matches are the same, and no flag row changes. A user Definition
+that copies `html.toml` with `scripts = false` gives 1.0's Trails back.
 ";
 
 #[cfg(test)]
@@ -668,6 +703,33 @@ mod tests {
                  coloured printer compares the whole line"
             )
         );
+    }
+
+    /// M6 spec §8.3 and §14, plan D24: HTML's script Trails are the one change to an existing
+    /// Format's output since 1.0, stated with its 1.0 and 1.1 lines and its three limits.
+    #[test]
+    fn m6_trails_changed_since_1_0_are_known() {
+        let md = render_markdown();
+        let heading = "\n## Trails that changed since 1.0\n";
+        let start = md.find(heading).expect(heading);
+        assert!(
+            !md[start + heading.len()..].contains("\n## "),
+            "the last section"
+        );
+        let section = md[start..].split_whitespace().collect::<Vec<_>>().join(" ");
+        for text in [
+            "4: head › script[1] │ return 'needle';",
+            "4: head › script[1] › onClick │ return 'needle';",
+            "application/ld+json",
+            "text/x-template",
+            "1 MiB",
+            "1 000 bytes",
+            "`--no-trail`",
+            "no flag row changes",
+            "scripts = false",
+        ] {
+            assert!(section.contains(text), "{text}");
+        }
     }
 
     #[test]

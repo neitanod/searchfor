@@ -71,7 +71,8 @@ _Avoid_: breadcrumb, path, context, scope
 **Segment**:
 One step of a **Trail**: a heading, a function, a key, an element of HTML or XML, a row or column
 of a CSV file, a subtitle cue, the image, section or symbol of an object file, or a chapter, page,
-sheet, cell, slide, table, row or column of a document read by an **Extractor**.
+sheet, cell, slide, table, row or column of a document read by an **Extractor**, or
+a statement, block, directive, hunk, message part, cell or field of the M6 Formats.
 _Avoid_: crumb, node, level
 
 **Section**:

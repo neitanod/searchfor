@@ -28,12 +28,12 @@ fn m5b_external_processor_guide_examples_run_as_documented() {
     };
     let fx = Fixture::new();
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/examples");
-    std::fs::copy(examples.join("sample.ini"), fx.file("sample.ini")).unwrap();
-    let script = examples.join("ini-helper.py");
+    std::fs::copy(examples.join("sample.po"), fx.file("sample.po")).unwrap();
+    let script = examples.join("po-helper.py");
     let command = vec![py.clone(), script.to_string_lossy().into_owned()];
     let mut def = toml::Table::new();
-    def.insert("name".into(), "ini-guide".into());
-    def.insert("extensions".into(), toml::Value::Array(vec!["ini".into()]));
+    def.insert("name".into(), "po-guide".into());
+    def.insert("extensions".into(), toml::Value::Array(vec!["po".into()]));
     def.insert("processor".into(), "external".into());
     let mut params = toml::Table::new();
     params.insert(
@@ -43,22 +43,22 @@ fn m5b_external_processor_guide_examples_run_as_documented() {
     params.insert("mode".into(), "oneshot".into());
     def.insert("params".into(), toml::Value::Table(params));
     std::fs::write(
-        fx.formats.path().join("ini-guide.toml"),
+        fx.formats.path().join("po-guide.toml"),
         toml::to_string(&def).unwrap(),
     )
     .unwrap();
-    let out = run(&mut fx.s4(["--flat", "--format", "ini-guide", "needle", "sample.ini"]));
+    let out = run(&mut fx.s4(["--flat", "--format", "po-guide", "needle", "sample.po"]));
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert_eq!(stderr(&out), "");
-    assert_eq!(stdout(&out), "2: server › host │ host = needle.example\n");
+    assert_eq!(stdout(&out), "3: menu › Open │ msgstr \"needle\"\n");
     let pre = Command::new(&py)
-        .arg(examples.join("ini-pre.py"))
-        .arg(fx.file("sample.ini"))
+        .arg(examples.join("po-pre.py"))
+        .arg(fx.file("sample.po"))
         .output()
         .unwrap();
     assert!(pre.status.success());
-    assert_eq!(pre.stdout, b"needle.example\n");
-    let launcher = fx.file(&format!("ini-pre-launcher{}", std::env::consts::EXE_SUFFIX));
+    assert_eq!(pre.stdout, b"needle\n");
+    let launcher = fx.file(&format!("po-pre-launcher{}", std::env::consts::EXE_SUFFIX));
     let compiled = Command::new("rustc")
         .arg("--edition=2024")
         .arg(examples.join("pre-launcher.rs"))
@@ -70,16 +70,22 @@ fn m5b_external_processor_guide_examples_run_as_documented() {
     let converted = run(fx
         .s4(["--no-docs", "--no-trail", "--pre"])
         .arg(&launcher)
-        .args(["needle", "sample.ini"])
+        .args(["needle", "sample.po"])
         .env("SEARCHFOR_EXAMPLE_PYTHON", &py)
-        .env("SEARCHFOR_EXAMPLE_CONVERTER", examples.join("ini-pre.py")));
+        .env("SEARCHFOR_EXAMPLE_CONVERTER", examples.join("po-pre.py")));
     assert_eq!(code(&converted), 0, "{}", stderr(&converted));
-    assert_eq!(stdout(&converted), "needle.example\n");
+    assert_eq!(stdout(&converted), "needle\n");
     assert_eq!(stderr(&converted), "");
-    let doc =
-        std::fs::read_to_string(examples.parent().unwrap().join("external-processors.md")).unwrap();
-    assert!(doc.contains("2: server › host │ host = needle.example"));
-    assert!(doc.contains("needle.example"));
+    for guide in ["external-processors.md", "external-processors.es.md"] {
+        let doc = std::fs::read_to_string(examples.parent().unwrap().join(guide)).unwrap();
+        assert!(
+            doc.contains("3: menu › Open │ msgstr \"needle\""),
+            "{guide}"
+        );
+        assert!(doc.contains("2: menu │ msgid \"Open\""), "{guide}");
+        assert!(doc.contains("sample.po"), "{guide}");
+        assert!(!doc.contains("sample.ini"), "{guide}");
+    }
 }
 
 #[test]
@@ -91,15 +97,15 @@ fn m5b_guide_names_and_errors_keep_request_ids() {
     };
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/examples");
     let mut c = Command::new(py)
-        .arg(root.join("ini-helper.py"))
+        .arg(root.join("po-helper.py"))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let mut input = c.stdin.take().unwrap();
     for v in [
-        serde_json::json!({"id":0,"op":"hello","protocol":1,"format":"ini-guide","params":{},"threads":1}),
-        serde_json::json!({"id":8,"op":"names","path":root.join("sample.ini")}),
+        serde_json::json!({"id":0,"op":"hello","protocol":1,"format":"po-guide","params":{},"threads":1}),
+        serde_json::json!({"id":8,"op":"names","path":root.join("sample.po")}),
         serde_json::json!({"id":9,"op":"unknown"}),
     ] {
         writeln!(input, "{v}").unwrap();
@@ -121,7 +127,7 @@ fn m5b_guide_names_and_errors_keep_request_ids() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|n| n["text"] == "host")
+            .any(|n| n["text"] == "Open")
     );
     assert_eq!(replies[2]["id"], 9);
     assert!(replies[2]["error"].is_string());
@@ -159,4 +165,153 @@ fn m5b_distribution_docs_and_spec_cover_the_v1_contract() {
             "{number}"
         );
     }
+}
+
+#[test]
+fn m6_po_guide_runs() {
+    let Some(py) = python() else {
+        panic!("Python 3 required for M6 guide acceptance")
+    };
+    let fx = Fixture::new();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/examples");
+    std::fs::copy(root.join("sample.po"), fx.file("sample.po")).unwrap();
+    let plain = run(&mut fx.s4(["--no-docs", "--json", "needle", "sample.po"]));
+    assert_eq!(code(&plain), 0);
+    for line in stdout(&plain).lines() {
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        if value["type"] == "match" {
+            assert!(value["data"]["format"].is_null());
+        }
+    }
+    let def = toml::toml! {
+        name="po-guide"
+        extensions=["po"]
+        processor="external"
+        [params]
+        mode="oneshot"
+    };
+    let mut def = def;
+    def.get_mut("params")
+        .unwrap()
+        .as_table_mut()
+        .unwrap()
+        .insert(
+            "command".into(),
+            toml::Value::Array(vec![
+                py.clone().into(),
+                root.join("po-helper.py")
+                    .to_string_lossy()
+                    .into_owned()
+                    .into(),
+            ]),
+        );
+    std::fs::write(
+        fx.formats.path().join("po.toml"),
+        toml::to_string(&def).unwrap(),
+    )
+    .unwrap();
+    let described = run(&mut fx.s4(["--flat", "needle", "sample.po"]));
+    assert_eq!(code(&described), 0, "{}", stderr(&described));
+    assert_eq!(stdout(&described), "3: menu › Open │ msgstr \"needle\"\n");
+    // `names` maps each name to its value between the quotes: --in-headings finds
+    // the entry's name, with its parent's Trail, and never the keyword.
+    let named = run(&mut fx.s4(["--flat", "--in-headings", "Open", "sample.po"]));
+    assert_eq!(code(&named), 0, "{}", stderr(&named));
+    assert_eq!(stdout(&named), "2: menu │ msgid \"Open\"\n");
+    let keyword = run(&mut fx.s4(["--flat", "--in-headings", "msgstr", "sample.po"]));
+    assert_eq!(code(&keyword), 1, "{}", stdout(&keyword));
+    let pre = Command::new(&py)
+        .arg(root.join("po-pre.py"))
+        .arg(fx.file("sample.po"))
+        .output()
+        .unwrap();
+    assert!(pre.status.success());
+    assert_eq!(pre.stdout, b"needle\n");
+    let launcher = fx.file(&format!("po-pre-launcher{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        Command::new("rustc")
+            .arg("--edition=2024")
+            .arg(root.join("pre-launcher.rs"))
+            .arg("-o")
+            .arg(&launcher)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let converted = run(fx
+        .s4(["--no-docs", "--no-trail", "--pre"])
+        .arg(launcher)
+        .args(["needle", "sample.po"])
+        .env("SEARCHFOR_EXAMPLE_PYTHON", &py)
+        .env("SEARCHFOR_EXAMPLE_CONVERTER", root.join("po-pre.py")));
+    assert_eq!(code(&converted), 0);
+    assert_eq!(stdout(&converted), "needle\n");
+}
+
+/// Criterion 55 (M6 spec §14): every built-in Format, by the name `--format` takes, in both
+/// READMEs' table and both Format references; the skill names the M6 Formats; HTML's script
+/// Trails, the one change since 1.0, are stated wherever HTML's Trails are.
+#[test]
+fn m6_docs_name_every_format() {
+    use searchfor::{formats::Registry, processors::Processors};
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let (registry, warnings) = Registry::load(None, &Processors::known);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let read = |file: &str| std::fs::read_to_string(root.join(file)).unwrap();
+    for file in [
+        "README.md",
+        "README.es.md",
+        "docs/formats.md",
+        "docs/formats.es.md",
+    ] {
+        let doc = read(file);
+        for def in registry.all() {
+            assert!(
+                doc.contains(&format!("`{}`", def.name)),
+                "{file}: {}",
+                def.name
+            );
+        }
+        assert!(doc.contains("head › script[1] › onClick"), "{file}");
+        assert!(
+            doc.contains("docs/rg-compat.md") || doc.contains("rg-compat.md"),
+            "{file}"
+        );
+    }
+    for file in ["README.md", "README.es.md"] {
+        let doc = read(file);
+        assert!(doc.contains("docs/formats.md"), "{file}");
+        assert!(doc.contains("https://searchfor.ip1.cc/"), "{file}");
+        assert!(doc.lines().count() < 1200, "{file}");
+    }
+    let skill = read("skills/searchfor/SKILL.md");
+    let description = skill
+        .lines()
+        .find(|l| l.starts_with("description:"))
+        .unwrap();
+    for word in [
+        "AsciiDoc",
+        "INI",
+        "nginx",
+        "Dockerfile",
+        "SQL",
+        "diff",
+        "Vue",
+        "EXIF",
+        "mbox",
+        "WhatsApp",
+    ] {
+        assert!(description.contains(word), "skill description: {word}");
+    }
+    for example in [
+        "http › server example.com › location /api › proxy_pass",
+        "INSERT INTO users › row 2 › email",
+        "src/app.rs › +120 fn describe(",
+    ] {
+        assert!(skill.contains(example), "skill: {example}");
+    }
+    let context = read("CONTEXT.md");
+    assert!(context.contains(
+        "a statement, block, directive, hunk, message part, cell or field of the M6 Formats"
+    ));
 }

@@ -317,6 +317,14 @@ jobs:
         with:
           python-version: '3.12'
 
+      # The one place the checks below take the version from: Cargo.toml's.
+      - name: Version from Cargo.toml
+        run: |
+          python3 - >> "$GITHUB_ENV" <<'PY'
+          import tomllib
+          print('VERSION=' + tomllib.load(open('Cargo.toml', 'rb'))['package']['version'])
+          PY
+
       - uses: actions/cache@v4
         with:
           path: |
@@ -354,7 +362,7 @@ jobs:
       - name: Cache the npm package's dependency
         run: npm cache add detect-libc@2.1.2
 
-      # dist's plan: five targets, four installers, version 1.0.0, and only s4 (plan Task 11.1).
+      # dist's plan: five targets, four installers, the Cargo.toml version, and only s4 (plan Task 11.1).
       - name: dist plan (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -362,7 +370,7 @@ jobs:
           plan="$RUNNER_TEMP/dist-plan.json"
           "$DIST" plan --output-format=json > "$plan"
           python3 - "$plan" <<'PY'
-          import json, sys
+          import json, os, sys
           p = json.load(open(sys.argv[1], encoding='utf-8'))
           strings = []
           def walk(x):
@@ -382,7 +390,7 @@ jobs:
               assert any(installer in s.lower() for s in strings), installer
           assert not any('searchfor-example-helper' in s for s in strings)
           assert not any('searchfor-grammar-' in s for s in strings)
-          assert '1.0.0' in text
+          assert os.environ['VERSION'] in text
           # Stricter than the names: one app, and each archive holds s4 and the four documents.
           assert [r['app_name'] for r in p['releases']] == ['searchfor'], p['releases']
           installers = sorted(a['name'] for a in p['artifacts'].values() if a['kind'] == 'installer')
@@ -422,7 +430,7 @@ jobs:
               wf.write_text(committed, encoding='utf-8')
           # GitHub evaluates a dollar sign and two braces together, even in this script.
           ex = '$' '{{'
-          # A release candidate tag (v1.0.0-rc.1) of version 1.0.0 is a pre-release of that
+          # A release candidate tag (v<version>-rc.1) of the Cargo.toml version is a pre-release of that
           # version: dist plans it only with --force-tag, which the stable tag goes without.
           force = "contains(github.ref_name, '-') && ' --force-tag' || ''"
           patches = [
@@ -485,7 +493,8 @@ jobs:
               out = subprocess.run([dist, 'plan', '--output-format=json', f'--tag={tag}', *flags],
                                    check=True, capture_output=True, text=True).stdout
               return json.loads(out)
-          rc, stable = plan('v1.0.0-rc.1'), plan('v1.0.0')
+          version = os.environ['VERSION']
+          rc, stable = plan(f'v{version}-rc.1'), plan(f'v{version}')
           assert rc['announcement_is_prerelease'] is True and rc['publish_prereleases'] is False
           assert stable['announcement_is_prerelease'] is False
           print(f'release.yml: dist generate + {len(patches)} patches; tags, secrets, permissions, guards: PASS')
@@ -529,7 +538,7 @@ jobs:
           exes = [p for p in files if p.name in ('s4', 's4.exe')]
           assert len(exes) == 1
           v = subprocess.check_output([str(exes[0]), '--version'], text=True).strip()
-          assert v == 's4 1.0.0', v
+          assert v == f"s4 {os.environ['VERSION']}", v
           assert not any('grammar' in p.name or 'example-helper' in p.name for p in files)
           print('native archive smoke: PASS')
           PY
@@ -662,7 +671,7 @@ jobs:
       # destination unreachable (dead proxies), but for npm's registry, read only for the npm
       # package's dependency (npm --offline missed it in the cache on Windows): the shell
       # script (Unix), the npm package (every system; the .cmd shim on Windows) and the Homebrew
-      # formula (macOS). Each must print s4 1.0.0, fetch exactly the archive, and fail on a
+      # formula (macOS). Each must print s4 and the Cargo.toml version, fetch exactly the archive, and fail on a
       # damaged archive (plan Task 11.3, Step 3). dist 0.33.0's shell script checks the SHA-256;
       # its npm package does not, so for npm the damage is in the archive's own integrity data.
       - name: Local installers
@@ -710,6 +719,7 @@ jobs:
               out = run([exe, '--version'], capture_output=True, text=True)
               assert out.returncode == 0, out
               return out.stdout.strip()
+          want = f"s4 {os.environ['VERSION']}"
           def served(kind):
               got = list(requests); requests.clear()
               assert got == [f'/{kind}/{archive}'], got
@@ -723,7 +733,7 @@ jobs:
                   served(kind)
                   if kind == 'good':
                       assert r.returncode == 0, r
-                      assert version(home / '.cargo' / 'bin' / 's4') == 's4 1.0.0'
+                      assert version(home / '.cargo' / 'bin' / 's4') == want
                   else:
                       assert r.returncode != 0, 'the shell installer accepted a corrupt archive'
               print('shell installer: PASS')
@@ -742,7 +752,7 @@ jobs:
               meta['artifactDownloadUrls'] = [f'{base}/{kind}']
               (copy / 'package.json').write_text(json.dumps(meta, indent=2), encoding='utf-8')
               assert run([npm, 'pack', '--ignore-scripts'], cwd=copy).returncode == 0
-              tgz = copy / 'searchfor-1.0.0.tgz'
+              tgz = copy / f"searchfor-{os.environ['VERSION']}.tgz"
               assert tgz.is_file(), list(copy.iterdir())
               prefix = tmp / f'npm-{kind}'
               registry = '127.0.0.1,registry.npmjs.org'
@@ -752,14 +762,14 @@ jobs:
               served(kind)
               shim = prefix / 'node_modules' / '.bin' / ('s4.cmd' if windows else 's4')
               assert r.returncode == 0, r
-              assert version(shim) == 's4 1.0.0'
+              assert version(shim) == want
           print('npm package: PASS')
 
           if mac:
               # The generated formula stays as dist wrote it for the release; this copy, outside
               # the repository, points at the job's archive.
               formula = (distrib / 'searchfor.rb').read_text(encoding='utf-8')
-              release = 'https://github.com/neitanod/searchfor/releases/download/v1.0.0/'
+              release = f"https://github.com/neitanod/searchfor/releases/download/v{os.environ['VERSION']}/"
               assert release + archive in formula
               (tmp / 'searchfor.rb').write_text(formula.replace(release, f'file://{good}/'), encoding='utf-8')
               r = run(['brew', 'install', '--formula', './searchfor.rb'], cwd=tmp)
@@ -771,7 +781,7 @@ jobs:
                   shutil.copy(tmp / 'searchfor.rb', Path(tap) / 'Formula' / 'searchfor.rb')
                   run(['brew', 'install', '--formula', 'searchfor/smoke/searchfor'], check=True)
               brew = run(['brew', '--prefix'], check=True, capture_output=True, text=True).stdout.strip()
-              assert version(Path(brew) / 'bin' / 's4') == 's4 1.0.0'
+              assert version(Path(brew) / 'bin' / 's4') == want
               run(['brew', 'uninstall', '--formula', 'searchfor'], check=True)
               print('Homebrew formula: PASS')
           server.shutdown()
@@ -794,4 +804,4 @@ jobs:
           if grep -q '^tests/' "$RUNNER_TEMP/crate-files.txt"; then echo "::error::the crate carries tests/"; exit 1; fi
           $PRIO cargo package --locked --offline --allow-dirty -p searchfor
           $PRIO cargo publish --dry-run --locked --allow-dirty --no-verify -p searchfor
-          ls -l target/package/searchfor-1.0.0.crate
+          ls -l "target/package/searchfor-$VERSION.crate"

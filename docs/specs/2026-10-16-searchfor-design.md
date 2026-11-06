@@ -41,7 +41,7 @@ contract. That combination is the product.
 
 | Area | What ships | Grill |
 |---|---|---|
-| Formats | Markdown, YAML, JSON, TOML, code via tree-sitter, HTML, XML, CSV and TSV, subtitles (SubRip, WebVTT), ELF/PE/Mach-O; by default, PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite, which `--no-docs` turns off (§3, M4) | #1, 8380, 8390, 8395, 8750 |
+| Formats | Markdown, YAML, JSON, TOML, code via tree-sitter, HTML, XML, CSV and TSV, subtitles (SubRip, WebVTT), ELF/PE/Mach-O; by default, PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB and SQLite, which `--no-docs` turns off (§3, M4). From 1.1 (M6), the forty Formats of [the M6 design](2026-11-04-searchfor-m6-design.md): AsciiDoc, reStructuredText, Org-mode, LaTeX, Jupyter; INI, systemd, `.properties`, `.env`, SSH, nginx, Apache, HCL, Dockerfile, Makefile, justfile; SQL, diffs, Vue, Svelte, Blade, GraphQL, Protobuf, HAR; JPEG, PNG, WebP, TIFF, ID3, MP4, WebAssembly, Java classes; mail, mbox, iCalendar, vCard, BibTeX, WhatsApp, Telegram (JSON and HTML); and the scripts of HTML pages | #1, 8380, 8390, 8395, 8750, Q49 |
 | Engine | ripgrep's crates in-process ([ADR 0001](../adr/0001-embed-ripgrep-engine-as-library.md)) | #2 |
 | Flags | Every flag of ripgrep 14.1.1, plus searchfor's own flags; ripgrep's `--pre` and `-z` from M4 (§5.9), the rest in M5a (§8) | #3, 8375, 8395 |
 | Structural search | `--within`, `--expand`, `--in-headings` | #4 |
@@ -138,18 +138,27 @@ paths ─▶ walker (ignore crate: .gitignore, -g, -t, --hidden…)
 
 ### 4.1 Detector (#5)
 
-Signals, in order; the first one that decides wins:
+Signals, in order; the first one that decides wins (signals 3, 4 and 6 from 1.1,
+[M6 design](2026-11-04-searchfor-m6-design.md) §4.1):
 
 1. `--format <name>` given on the command line (applies to every file; repeatable as
    `--format '*.conf=toml'` to map a glob).
 2. Exact file name (`Dockerfile`, `Makefile`, `.bashrc`, `Cargo.lock`).
-3. Extension.
-4. Leading magic bytes (`%PDF-`, `SQLite format 3\0`, the `mimetype` of OpenDocument and EPUB
+3. Compound extension: an entry of `extensions` with a dot (`blade.php`) matches the last two
+   extensions, without case, and wins over the last one alone (`cart.blade.php` is Blade,
+   `cart.php` PHP).
+4. A glob of `paths` whose last component writes a literal extension
+   (`**/ChatExport_*/result.json`), which wins over the Definition claiming that extension.
+5. Extension.
+6. Every other glob of `paths`, which leaves the extension open (`**/.ssh/config`,
+   `Dockerfile.*`, `.env.*`), after the extension: `Makefile.toml` stays TOML.
+7. Leading magic bytes (`%PDF-`, `SQLite format 3\0`, the `mimetype` of OpenDocument and EPUB
    files at byte 30 for the documents, M4 plan; `<?xml` for XML, M3 plan; ELF,
-   `MZ`/PE and Mach-O for object files, below).
-5. Shebang on the first line (`#!/usr/bin/env bash` → bash).
+   `MZ`/PE and Mach-O for object files, below; from 1.1 the image, audio, WebAssembly and Java
+   class layouts and mbox's `From `, tried in Registry order until one reads the file).
+8. Shebang on the first line (`#!/usr/bin/env bash` → bash).
 
-Magic bytes and shebangs (signals 4 and 5) are read only for a file whose name has no extension
+Magic bytes and shebangs (signals 7 and 8) are read only for a file whose name has no extension
 (M2 plan). A file with an extension no Definition claims (`.txt`, `.c`) is decided Plain by its
 path alone, so it keeps ripgrep's printing path even though the code Definitions declare
 shebangs.
@@ -203,6 +212,11 @@ kinds = { namespace_definition = "namespace", class_declaration = "class", inter
   the built-ins.
 - `s4 --list-formats` prints every Format with its origin (built-in, user, overridden).
 - An invalid user Definition is a warning naming the file and the field; the rest still load.
+- From 1.1 (M6 design §4.1), `paths` lists globs in `globset`'s syntax: one without a `/` is
+  matched against the file name, one with a `/` against the whole path, with `/` on every
+  system; and an entry of `extensions` with a dot is a compound extension. The Detector sorts
+  each glob once into signal 4 or 6 of §4.1, and finds signal 4's globs through the extension it
+  already looks up, so a file whose extension no glob writes pays nothing more.
 
 ### 4.3 Processors
 
@@ -223,6 +237,19 @@ it by speaking protocol v1 (§4.4).
 | `object` | ELF, PE, Mach-O (§5.7) | goblin 0.10, and rustc-demangle for Rust symbol names (M4 plan, D3) |
 | `docs` | PDF, Word/ODT, Excel/ODS, PowerPoint/ODP, EPUB, SQLite, unless `--no-docs` (§5.8). Not a Processor that runs on a file: the Definition names the Extractor (`extractor` in `[params]`), which builds the text and its Outline before the search | lopdf 0.45 for PDF; the zip crate and an XML reader of our own for the zip-based formats; a SQLite reader of our own (M4 plan, D12, D13, D15) |
 | `external` | anything | a Helper Processor named in the Definition (§4.4) |
+| `headings` (1.1) | AsciiDoc, reStructuredText, Org-mode, LaTeX (the Definition's `syntax`) | a line scanner of our own, with Markdown's Segment kinds (M6 design §6) |
+| `blocks` (1.1) | nginx, Apache, HCL, GraphQL, Protobuf (`syntax`) | a block scanner of our own (M6 design §7.6–§7.8, §8.6–§8.7) |
+| `buildfile` (1.1) | Dockerfile, Makefile, justfile (`syntax`) | a line scanner of our own, with continuations and recipes (M6 design §7.9–§7.11) |
+| `sql` (1.1) | SQL scripts and dumps | a statement scanner of our own, indexing statements only (M6 design §8.1) |
+| `diff` (1.1) | unified and combined diffs, `git log -p`, `git format-patch` | a line scanner of our own (M6 design §8.2) |
+| `mail` (1.1) | `.eml`, mbox (`syntax`) | an RFC 5322 and MIME reader of our own (M6 design §10.1) |
+| `chat` (1.1) | WhatsApp text exports | a line scanner of our own (M6 design §10.4) |
+
+From 1.1, `keypath` also reads the syntaxes `ini`, `properties`, `env`, `ssh`, `ical` and
+`bibtex`, and a JSON `view` (`jupyter`, `har`, `telegram`); `markup` gains `scripts` (with
+`script_max_bytes` and `script_max_line`), `templates` (`svelte`, `blade`) and `view`
+(`telegram`); `object` gains a `layout` parameter for JPEG, PNG, WebP, TIFF, ID3, MP4,
+WebAssembly and Java classes (M6 design §5.1). No Grammar is added (M6 design §5.2).
 
 `keypath` uses native parsers instead of tree-sitter (M2 research, 2026-10-16): tree-sitter-yaml
 turns any file over 32 768 lines into one error node (its scanner counts rows in an `int16_t`),
@@ -360,6 +387,9 @@ The thresholds below are M2 plan decisions.
   Match needs Trails; a run in which no such file matches prints none.
 
 ## 5. Trails
+
+The Trails of the forty Formats 1.1 adds, and of the scripts of HTML pages, are in
+[the M6 design](2026-11-04-searchfor-m6-design.md) (§6–§10); this section keeps the v1 Formats'.
 
 A Segment has `kind`, `name`, `line` and `end_line` (the lines of its Section), `level` for
 headings, and an optional `signature` that tree output may show.
@@ -1415,7 +1445,8 @@ Amended by M5b ([M5b design §8](2026-10-20-searchfor-m5b-design.md#8-releases))
     output, and as the decoded name in `--json`.
 22. The release binary (`target/release/s4`, Linux x86-64, the profile of `Cargo.toml`) weighs
     at most 23 MB (8612; 20 MB until then, M3 plan). M4's weighs 19.3 MB and M5a's 21.0 MB (M5a
-    plan, D22).
+    plan, D22). M6's, 1.1.0 stripped, weighs 20 446 768 bytes (M6 plan Task 12.4, measured on
+    06/11/2026 with `strip --strip-all`).
 23. By default, a Match in each document Format gets the Trail of §5.8: `1 Intro › 1.1 Scope`
     and `2 Costs › table 1 › row 2 › Price` in Word and OpenDocument text, `Budget › A3` in Excel
     and OpenDocument spreadsheets, `slide 1 › notes` in PowerPoint and OpenDocument
@@ -1530,3 +1561,41 @@ Amended by M5b ([M5b design §8](2026-10-20-searchfor-m5b-design.md#8-releases))
     and give their documented output (`tests/guide.rs`).
 42. **The M5a leftovers (M5b).** The three findings of the M5b design's §3 have their tests
     (`tests/cli_m5.rs`).
+
+43. **Detection (M6).** Every row of the M6 design's §4.2 detects its Format: compound
+    extensions (`cart.blade.php` Blade, `cart.php` PHP), `paths` on the four systems, signal 4
+    for Telegram's folders, WhatsApp's `*WhatsApp*.txt`, `Makefile.toml` TOML, a `.conf`
+    outside the paths Plain, `cafebabe` as a Java class or a fat Mach-O
+    (`tests/cli_m6_detector.rs`, `tests/rg_compat_m6.rs`).
+44. **Every M6 Format** has a fixture and tree, one-line and JSON snapshots, and
+    `s4 --no-docs --no-trail` and `--json --no-trail` equal rg 14.1.1 over every M6 fixture
+    (`tests/cli_m6_*.rs`, `tests/rg_compat_m6.rs`).
+45. **Broken input (M6).** Each Format's broken fixture keeps the Trails before its error,
+    gives an empty Trail after it, prints no warning and exits as rg; `--in-headings` finds no
+    word s4 adds to a name.
+46. **Binaries (M6).** A walked JPEG, MP3 or `.class` without `--binary` prints what rg prints;
+    named, its rows carry the M6 design's §9 Trails; `-v`, `-c`, `--no-trail` print rg's.
+47. **Components and HTML scripts (M6).** `script › addItem` in Vue, Svelte's and Blade's
+    blocks; in HTML, function Trails in scripts with no type and `module`, key Trails in
+    JSON-LD, and `text/x-template`, over 1 MiB or a line over 1 000 bytes keep `script`; every
+    v1 HTML snapshot unchanged.
+48. **Fuzz (M6).** Every new Processor and layout over mutated fixtures: no panic, each case
+    within 2 s, every Segment inside the file (`tests/fuzz_m6.rs`, `tests/cli_m6_object.rs`).
+49. **Per-file cost (M6).** `scripts/bench-m6.sh` holds the M6 design's criterion 49.
+50. **Dense files (M6).** Criterion 37's bound over a 50 MiB file of each new Processor family
+    (`tests/perf.rs`).
+51. **Detection cost (M6).** Over 100 000 unclaimed names, s4 with the M6 Definitions ≤ 1.02 ×
+    M5b's s4.
+52. **Large files (M6).** A 1 GiB SQL dump, mbox and WhatsApp export with one Match in its first
+    unit: rg's time plus 0.5 s and rg's peak RSS plus 64 MiB.
+53. **Fifty-megabyte files (M6).** Criterion 13's rule for each new text Processor family and a
+    page of scripts.
+54. **Binary size (M6).** Criterion 22 holds and M6's size is recorded there.
+55. **Docs (M6).** `docs/formats.md` and `docs/formats.es.md` describe every Format; both
+    READMEs list every Format; the guide's worked example runs with `.po` files
+    (`tests/guide.rs`); the skill names the M6 Formats; `docs/rg-compat.md` records HTML's
+    script Trails as the one Trail changed since 1.0.
+56. **Version 1.1.0 (M6).** `s4 --version` prints `s4 1.1.0`, the `package` job of CI reads the
+    version from Cargo.toml, and criterion 34 holds with the M6 tests on the four systems.
+
+The full text of criteria 43–56 is the M6 design's §16, which wins where they differ.
