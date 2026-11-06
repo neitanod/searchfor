@@ -144,24 +144,30 @@ impl Part {
     }
 }
 
-/// One Segment of the index: 40 bytes, with no allocation of its own.
-#[derive(Debug, Clone)]
+/// One Segment of the index: 36 bytes, with no allocation of its own, aligned to 4 so no
+/// padding follows its last fields (criterion 50: a 50 MiB nginx file of one directive per 10
+/// bytes held 40 bytes and a 16-byte name piece a directive, 294 MB, C11 06/11/2026).
+#[derive(Debug, Clone, Copy)]
+#[repr(C, packed(4))]
 pub(crate) struct Entry {
     /// The Section's bytes, `start..end`; `end` is `usize::MAX` while the Segment is open.
     start: usize,
     end: usize,
     /// The bytes that name it, as (offset from `start`, length): a Match there is outside it.
     label: (u32, u32),
-    /// Its name's pieces: `nparts` of `BlockIndex::parts` from `parts`.
+    /// Its name's pieces: `nparts` of `BlockIndex::parts` from `parts`; `LABEL` when its name
+    /// is its label, one Source piece, which keeps no piece.
     parts: u32,
-    nparts: u16,
     parent: u32,
+    nparts: u16,
     kind: Kind,
     /// Takes part in containment, never shows in a Trail (a key that holds a list).
     hidden: bool,
 }
 
 const NONE: u32 = u32::MAX;
+/// `Entry::parts` of a name that is the Segment's label.
+const LABEL: u32 = u32::MAX;
 
 impl Entry {
     #[cfg(test)]
@@ -170,12 +176,25 @@ impl Entry {
     }
 
     fn label(&self) -> Range<usize> {
-        let s = self.start + self.label.0 as usize;
-        s..s + self.label.1 as usize
+        let (start, label) = (self.start, self.label);
+        let s = start + label.0 as usize;
+        s..s + label.1 as usize
     }
 
     fn parent(&self) -> Option<usize> {
-        (self.parent != NONE).then_some(self.parent as usize)
+        let parent = self.parent;
+        (parent != NONE).then_some(parent as usize)
+    }
+
+    /// The name's pieces in `parts`, the label's one when the name is the label.
+    fn pieces<'p>(&self, parts: &'p [Part], one: &'p mut [Part; 1]) -> &'p [Part] {
+        let (first, n) = (self.parts, self.nparts as usize);
+        if first == LABEL {
+            *one = [Part::src(self.label())];
+            &one[..]
+        } else {
+            &parts[first as usize..first as usize + n]
+        }
     }
 }
 
@@ -217,7 +236,8 @@ impl BlockIndex {
     /// The name of Segment `id`, cut at `name_chars`, with its pieces.
     fn name(&self, src: &[u8], id: usize, name_chars: usize) -> (String, crate::text::Pieces) {
         let e = &self.entries[id];
-        let parts = &self.parts[e.parts as usize..e.parts as usize + e.nparts as usize];
+        let mut one = [Part::Index(0)];
+        let parts = e.pieces(&self.parts, &mut one);
         let late = self.late_of(id).iter().map(|l| Part::Src {
             start: l.start,
             len: l.len,
@@ -252,8 +272,9 @@ impl BlockIndex {
     /// The first Source byte of Segment `id`'s name, where an empty hit in it lands.
     fn name_anchor(&self, id: usize) -> usize {
         let e = &self.entries[id];
-        match self.parts.get(e.parts as usize) {
-            Some(Part::Src { start, .. }) if e.nparts > 0 => *start,
+        let mut one = [Part::Index(0)];
+        match e.pieces(&self.parts, &mut one).first() {
+            Some(Part::Src { start, .. }) => *start,
             _ => e.start,
         }
     }
@@ -300,9 +321,20 @@ impl Builder {
             "Segments come in file order"
         );
         let id = self.ix.entries.len() as u32;
-        let first = self.ix.parts.len() as u32;
         let take = parts.len().min(self.max_parts);
-        self.ix.parts.extend_from_slice(&parts[..take]);
+        // A name that is its label keeps no piece: nginx's directives, most keys.
+        let first = if take == 1
+            && !label.is_empty()
+            && label.start >= start
+            && label.start - start <= u32::MAX as usize
+            && parts[0] == Part::src(label.clone())
+        {
+            LABEL
+        } else {
+            let first = self.ix.parts.len() as u32;
+            self.ix.parts.extend_from_slice(&parts[..take]);
+            first
+        };
         let label = if label.is_empty() {
             (0, 0)
         } else {
@@ -789,6 +821,11 @@ pub(crate) fn is_space(b: u8) -> bool {
 pub(crate) mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn an_entry_is_36_bytes() {
+        assert_eq!(std::mem::size_of::<Entry>(), 36);
+    }
 
     pub(crate) fn params(syntax: &str) -> toml::Table {
         toml::from_str(&format!("syntax = '{syntax}'\nname_chars = 40")).unwrap()
