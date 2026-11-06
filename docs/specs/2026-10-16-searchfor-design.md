@@ -1445,7 +1445,8 @@ Amended by M5b ([M5b design §8](2026-10-20-searchfor-m5b-design.md#8-releases))
     output, and as the decoded name in `--json`.
 22. The release binary (`target/release/s4`, Linux x86-64, the profile of `Cargo.toml`) weighs
     at most 23 MB (8612; 20 MB until then, M3 plan). M4's weighs 19.3 MB and M5a's 21.0 MB (M5a
-    plan, D22).
+    plan, D22). M6's, 1.1.0 stripped, weighs 20 446 768 bytes (M6 plan Task 12.4, measured on
+    06/11/2026 with `strip --strip-all`).
 23. By default, a Match in each document Format gets the Trail of §5.8: `1 Intro › 1.1 Scope`
     and `2 Costs › table 1 › row 2 › Price` in Word and OpenDocument text, `Budget › A3` in Excel
     and OpenDocument spreadsheets, `slide 1 › notes` in PowerPoint and OpenDocument

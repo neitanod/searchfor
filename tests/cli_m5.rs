@@ -1648,13 +1648,15 @@ fn m5_25_a_closed_stdout_ends_the_actions_quietly() {
     }
 }
 
-/// Code review r1, Codex #6 and Fable #2: the version is the milestone's. M5b is v1.0 (M5b
-/// spec §11), the version every release package prints.
+/// Code review r1, Codex #6 and Fable #2: the version is the milestone's. M6 is 1.1 (M6 spec
+/// criterion 56), the version every release package prints.
 #[test]
-fn m5_26_the_version_is_1_0() {
+fn m6_the_version_is_1_1() {
     let fx = Fixture::new();
-    let v = ok(&fx, &["--version"]);
-    assert_eq!(v.trim_end(), "s4 1.0.0", "{v}");
+    let out = run(&mut fx.s4(["--version"]));
+    assert_eq!(code(&out), 0);
+    assert_eq!(stdout(&out), "s4 1.1.0\n");
+    assert!(out.stderr.is_empty());
 }
 
 /// Code review r3, Codex #4: every diagnostic of a search or an action is written without a
