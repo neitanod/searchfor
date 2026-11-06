@@ -12,8 +12,10 @@
 //! once.
 #[doc(hidden)]
 pub mod fixture;
+mod id3;
 mod jpeg;
 pub mod layouts;
+mod mp4;
 mod png;
 pub mod rows;
 mod tiff;

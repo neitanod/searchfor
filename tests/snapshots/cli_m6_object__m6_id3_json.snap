@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_object.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"m6-media.bin"}}}
+{"type":"match","data":{"path":{"text":"m6-media.bin"},"lines":{"text":"needle song"},"line_number":1,"absolute_offset":21,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"id3","trail":[{"kind":"object","name":"ID3v2.4","line":1,"end_line":1},{"kind":"section","name":"TIT2","line":1,"end_line":1}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"m6-media.bin"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":32,"bytes_printed":396,"matched_lines":1,"matches":1}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":396,"bytes_searched":32,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":1,"matches":1,"searches":1,"searches_with_match":1}},"type":"summary"}

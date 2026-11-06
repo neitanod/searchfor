@@ -233,6 +233,8 @@ impl<'a> BinaryMap<'a> {
             "jpeg" => super::jpeg::layout(&mut b)?,
             "png" => super::png::layout(&mut b)?,
             "webp" => super::webp::layout(&mut b)?,
+            "id3" => super::id3::layout(&mut b)?,
+            "mp4" => super::mp4::layout(&mut b)?,
             _ => return None,
         }
         Some(b.finish())

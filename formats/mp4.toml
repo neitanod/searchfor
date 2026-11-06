@@ -1,0 +1,11 @@
+# formats/mp4.toml — MP4 and the ISO base media family: M4A, QuickTime `.mov`, 3GP, HEIF and
+# AVIF (M6 spec §9): `MP4 M4A › moov › udta › meta › ilst › ©nam`. Told by `ftyp` at offset 4
+# in a binary file with a Match whose name decides no other Format (M6 spec §4.2).
+name      = "mp4"
+magic     = [{ hex = "66747970", offset = 4 }]
+processor = "object"
+
+[params]
+layout     = "mp4"
+# Characters of a box's name before it is cut with `…`.
+name_chars = 40

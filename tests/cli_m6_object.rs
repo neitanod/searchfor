@@ -81,3 +81,36 @@ fn m6_png_webp_xmp() {
     let out = run(&mut fx.s4(["--no-docs", "--json", "needle", "bad-xmp.bin"]));
     assert_eq!(names(&rows(&out)[0]), "JPEG › APP1 XMP");
 }
+
+#[test]
+fn m6_id3_mp4() {
+    binary_case("id3", &binary::id3(b"needle song"), "ID3v2.4 › TIT2");
+    binary_case(
+        "mp4",
+        &binary::mp4(b"needle"),
+        "MP4 M4A › moov › udta › meta › ilst › ©nam",
+    );
+    let fx = Fixture::new();
+    let mut bytes = binary::id3(b"song");
+    let mut tag = vec![0; 128];
+    tag[..3].copy_from_slice(b"TAG");
+    tag[3..9].copy_from_slice(b"needle");
+    bytes.extend(tag);
+    std::fs::write(fx.file("v1.bin"), bytes).unwrap();
+    let out = run(&mut fx.s4(["--no-docs", "--json", "needle", "v1.bin"]));
+    assert_eq!(names(&rows(&out)[0]), "ID3v1 › title");
+    std::fs::write(
+        fx.file("only-v1.bin"),
+        [b"audio".as_slice(), &[0; 10], b"TAGneedle"].concat(),
+    )
+    .unwrap();
+    let plain = run(&mut fx.s4(["--no-docs", "--json", "needle", "only-v1.bin"]));
+    for row in stdout(&plain)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+    {
+        if row["type"] == "match" {
+            assert!(row["data"]["format"].is_null());
+        }
+    }
+}

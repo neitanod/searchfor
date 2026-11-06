@@ -1,0 +1,5 @@
+---
+source: tests/cli_m6_object.rs
+expression: out
+---
+0x15: ID3v2.4 › TIT2 │ needle song

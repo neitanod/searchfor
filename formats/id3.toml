@@ -1,0 +1,12 @@
+# formats/id3.toml — ID3 tags at the start of an MP3 (M6 spec §9): `ID3v2.4 › TIT2`,
+# `ID3v1 › title` for the 128-byte tag at the end. Told by its magic in a binary file with a
+# Match whose name decides no other Format (M6 spec §4.2); an MP3 with only an ID3v1 tag has no
+# magic at its start and is not detected.
+name      = "id3"
+magic     = [{ hex = "494433" }]
+processor = "object"
+
+[params]
+layout     = "id3"
+# Characters of a frame's name (its id and a TXXX or WXXX description) before it is cut with `…`.
+name_chars = 40

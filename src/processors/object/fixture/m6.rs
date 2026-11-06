@@ -89,3 +89,46 @@ pub fn jpeg_xmp(packet: &[u8]) -> Vec<u8> {
     b.extend([0xff, 0xd9]);
     b
 }
+
+fn syncsafe(n: usize) -> [u8; 4] {
+    [
+        ((n >> 21) & 127) as u8,
+        ((n >> 14) & 127) as u8,
+        ((n >> 7) & 127) as u8,
+        (n & 127) as u8,
+    ]
+}
+
+/// An ID3v2.4 tag with one TIT2 frame (UTF-8) holding `text`, and no audio.
+pub fn id3(text: &[u8]) -> Vec<u8> {
+    let mut frame = b"TIT2".to_vec();
+    frame.extend(syncsafe(text.len() + 1));
+    frame.extend([0, 0, 3]);
+    frame.extend(text);
+    let mut b = b"ID3\x04\0\0".to_vec();
+    b.extend(syncsafe(frame.len()));
+    b.extend(frame);
+    b
+}
+
+fn box_bytes(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+    let mut b = ((data.len() + 8) as u32).to_be_bytes().to_vec();
+    b.extend(kind);
+    b.extend(data);
+    b
+}
+
+/// An M4A whose `©nam` item holds `text`: `ftyp`, then `moov › udta › meta › ilst › ©nam ›
+/// data`, and no media.
+pub fn mp4(text: &[u8]) -> Vec<u8> {
+    let data = box_bytes(b"data", &[&[0, 0, 0, 1, 0, 0, 0, 0][..], text].concat());
+    let item = box_bytes(&[0xa9, b'n', b'a', b'm'], &data);
+    let ilst = box_bytes(b"ilst", &item);
+    let meta = box_bytes(b"meta", &[&[0, 0, 0, 0][..], &ilst].concat());
+    let udta = box_bytes(b"udta", &meta);
+    [
+        box_bytes(b"ftyp", b"M4A \0\0\0\0M4A "),
+        box_bytes(b"moov", &udta),
+    ]
+    .concat()
+}

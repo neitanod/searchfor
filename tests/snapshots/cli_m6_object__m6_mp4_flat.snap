@@ -1,0 +1,5 @@
+---
+source: tests/cli_m6_object.rs
+expression: out
+---
+0x50: MP4 M4A › moov › udta › meta › ilst › ©nam │ needle

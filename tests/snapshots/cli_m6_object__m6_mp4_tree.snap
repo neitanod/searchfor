@@ -1,0 +1,12 @@
+---
+source: tests/cli_m6_object.rs
+expression: out
+---
+m6-media.bin
+  MP4 M4A
+    moov
+      udta
+        meta
+          ilst
+            ©nam
+              0x50:needle
