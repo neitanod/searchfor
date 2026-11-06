@@ -86,4 +86,6 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("diff.toml", include_str!("../../formats/diff.toml")),
     ("jpeg.toml", include_str!("../../formats/jpeg.toml")),
     ("tiff.toml", include_str!("../../formats/tiff.toml")),
+    ("png.toml", include_str!("../../formats/png.toml")),
+    ("webp.toml", include_str!("../../formats/webp.toml")),
 ];

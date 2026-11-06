@@ -14,8 +14,11 @@
 pub mod fixture;
 mod jpeg;
 pub mod layouts;
+mod png;
 pub mod rows;
 mod tiff;
+mod webp;
+mod xmp;
 
 use crate::model::{Input, Name, Segment, Trail};
 use crate::trail::LineIndex;

@@ -89,6 +89,8 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
         let node = b.node(Some(image), "section", name, seg.start..end);
         if m == 0xe1 && payload.starts_with(EXIF) {
             super::tiff::read(b, data.start + EXIF.len()..data.end, node);
+        } else if m == 0xe1 && payload.starts_with(XMP) {
+            super::xmp::read(b, data.start + XMP.len()..data.end, node);
         }
     }
     Some(())

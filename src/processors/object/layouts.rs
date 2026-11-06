@@ -111,6 +111,11 @@ impl<'a> Builder<'a> {
         self.nodes.len() - 1
     }
 
+    /// The Section of `node` covers `span` (clamped to the file).
+    pub fn set_span(&mut self, node: usize, span: Range<usize>) {
+        let span = self.clamp(span);
+        self.nodes[node].span = span;
+    }
 
     /// `node` owns `range` too (clamped to the file), above what owned it before.
     pub fn own(&mut self, node: usize, range: Range<usize>) {
@@ -226,6 +231,8 @@ impl<'a> BinaryMap<'a> {
         match layout {
             "tiff" => super::tiff::layout(&mut b)?,
             "jpeg" => super::jpeg::layout(&mut b)?,
+            "png" => super::png::layout(&mut b)?,
+            "webp" => super::webp::layout(&mut b)?,
             _ => return None,
         }
         Some(b.finish())

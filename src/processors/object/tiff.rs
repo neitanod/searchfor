@@ -96,7 +96,10 @@ pub(super) fn read(b: &mut Builder, packet: Range<usize>, parent: usize) -> Opti
                     .checked_add(off as usize)
                     .and_then(|v| sub(&packet, v, size))
             {
-                b.own(key, value);
+                b.own(key, value.clone());
+                if tag == 0x02bc && matches!(kind, Ifd::Main(_)) {
+                    super::xmp::read(b, value, key);
+                }
             }
             let pointer = match (kind, tag) {
                 (Ifd::Main(_), 0x8769) => Some(Ifd::Exif),

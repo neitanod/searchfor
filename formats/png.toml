@@ -1,0 +1,11 @@
+# formats/png.toml — PNG images (M6 spec §9): `PNG › tEXt Comment`,
+# `PNG › iTXt XML:com.adobe.xmp › …`, `PNG › eXIf › IFD0 › Artist`. Told by its magic in a
+# binary file with a Match whose name decides no other Format (M6 spec §4.2).
+name      = "png"
+magic     = [{ hex = "89504e470d0a1a0a" }]
+processor = "object"
+
+[params]
+layout     = "png"
+# Characters of a chunk's, an IFD's, a tag's or an element's name before it is cut with `…`.
+name_chars = 40

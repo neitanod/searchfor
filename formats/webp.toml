@@ -1,0 +1,11 @@
+# formats/webp.toml — WebP images (M6 spec §9): `WebP › EXIF › IFD0 › Artist`, `WebP › XMP › …`.
+# Told by `WEBP` at offset 8 in a binary file with a Match whose name decides no other Format
+# (M6 spec §4.2).
+name      = "webp"
+magic     = [{ hex = "57454250", offset = 8 }]
+processor = "object"
+
+[params]
+layout     = "webp"
+# Characters of a chunk's, an IFD's, a tag's or an element's name before it is cut with `…`.
+name_chars = 40

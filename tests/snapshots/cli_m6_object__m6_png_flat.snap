@@ -1,0 +1,5 @@
+---
+source: tests/cli_m6_object.rs
+expression: out
+---
+0x31: PNG › tEXt Comment │ needle]P

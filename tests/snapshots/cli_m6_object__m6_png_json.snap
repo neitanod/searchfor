@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_object.rs
+expression: out
+---
+{"type":"begin","data":{"path":{"text":"m6-media.bin"}}}
+{"type":"match","data":{"path":{"text":"m6-media.bin"},"lines":{"text":"needle]P"},"line_number":3,"absolute_offset":49,"submatches":[{"match":{"text":"needle"},"start":0,"end":6}],"format":"png","trail":[{"kind":"object","name":"PNG","line":1,"end_line":3},{"kind":"section","name":"tEXt Comment","line":3,"end_line":3}],"fragment":null}}
+{"type":"end","data":{"path":{"text":"m6-media.bin"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0,"human":"0s"},"searches":1,"searches_with_match":1,"bytes_searched":71,"bytes_printed":397,"matched_lines":1,"matches":1}}}
+{"data":{"elapsed_total":{"secs":0,"nanos":0,"human":"0s"},"stats":{"bytes_printed":397,"bytes_searched":71,"elapsed":{"secs":0,"nanos":0,"human":"0s"},"matched_lines":1,"matches":1,"searches":1,"searches_with_match":1}},"type":"summary"}

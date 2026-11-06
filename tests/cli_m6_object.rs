@@ -62,3 +62,22 @@ fn m6_tiff_jpeg() {
         "JPEG › APP1 Exif › IFD0 › Model",
     );
 }
+
+#[test]
+fn m6_png_webp_xmp() {
+    binary_case("png", &binary::png(b"needle"), "PNG › tEXt Comment");
+    binary_case("webp", &binary::webp(b"needle"), "WebP › EXIF › IFD0 › Model");
+    let xmp = b"<x:xmpmeta><rdf:RDF><rdf:Description><dc:title><rdf:Alt><rdf:li>needle</rdf:li></rdf:Alt></dc:title></rdf:Description></rdf:RDF></x:xmpmeta>";
+    let fx = Fixture::new();
+    let data = binary::jpeg_xmp(xmp);
+    std::fs::write(fx.file("xmp.bin"), data).unwrap();
+    let out = run(&mut fx.s4(["--no-docs", "--json", "needle", "xmp.bin"]));
+    assert_eq!(
+        names(&rows(&out)[0]),
+        "JPEG › APP1 XMP › dc:title › rdf:Alt › rdf:li"
+    );
+    let broken = binary::jpeg_xmp(b"<rdf:Description><dc:title>ok</wrong>needle");
+    std::fs::write(fx.file("bad-xmp.bin"), broken).unwrap();
+    let out = run(&mut fx.s4(["--no-docs", "--json", "needle", "bad-xmp.bin"]));
+    assert_eq!(names(&rows(&out)[0]), "JPEG › APP1 XMP");
+}

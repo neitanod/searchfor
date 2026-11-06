@@ -34,3 +34,58 @@ pub fn jpeg(text: &[u8]) -> Vec<u8> {
     b.extend([0xff, 0xd9]);
     b
 }
+
+/// The CRC-32 of PNG's chunks (ISO 3309, the reflected 0xedb88320 polynomial).
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &b in bytes {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ if crc & 1 != 0 { 0xedb88320 } else { 0 };
+        }
+    }
+    !crc
+}
+
+fn png_chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+    let mut b = (data.len() as u32).to_be_bytes().to_vec();
+    b.extend(kind);
+    b.extend(data);
+    b.extend(crc32(&b[4..]).to_be_bytes());
+    b
+}
+
+/// A 1×1 PNG header, a `tEXt` chunk `Comment` holding `text`, and IEND, without image data.
+pub fn png(text: &[u8]) -> Vec<u8> {
+    let mut b = b"\x89PNG\r\n\x1a\n".to_vec();
+    b.extend(png_chunk(b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]));
+    b.extend(png_chunk(b"tEXt", &[b"Comment\0".as_slice(), text].concat()));
+    b.extend(png_chunk(b"IEND", b""));
+    b
+}
+
+/// A RIFF WebP with one `EXIF` chunk, the `tiff` of `text`.
+pub fn webp(text: &[u8]) -> Vec<u8> {
+    let data = tiff(text);
+    let mut body = b"WEBP".to_vec();
+    body.extend(b"EXIF");
+    body.extend((data.len() as u32).to_le_bytes());
+    body.extend(data);
+    if body.len() % 2 != 0 {
+        body.push(0);
+    }
+    let mut b = b"RIFF".to_vec();
+    b.extend((body.len() as u32).to_le_bytes());
+    b.extend(body);
+    b
+}
+
+/// A JPEG with one APP1 XMP segment holding `packet`.
+pub fn jpeg_xmp(packet: &[u8]) -> Vec<u8> {
+    let data = [b"http://ns.adobe.com/xap/1.0/\0".as_slice(), packet].concat();
+    let mut b = vec![0xff, 0xd8, 0xff, 0xe1];
+    b.extend(((data.len() + 2) as u16).to_be_bytes());
+    b.extend(data);
+    b.extend([0xff, 0xd9]);
+    b
+}

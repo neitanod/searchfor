@@ -1,0 +1,8 @@
+---
+source: tests/cli_m6_object.rs
+expression: out
+---
+m6-media.bin
+  PNG
+    tEXt Comment
+      0x31:needle]P
