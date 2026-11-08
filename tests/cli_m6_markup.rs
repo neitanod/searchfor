@@ -572,3 +572,46 @@ fn m6_broken_fixtures() {
     }
     assert_eq!(count, owned.len());
 }
+
+/// Code review M6 r1, Fable #1: a script whose Outline nests two Segments, then another
+/// script with a Match. The cursor took the indices of the first script's Segments for
+/// elements' `seq`s: a panic, or the first script's Segment copied in place of `script[2]`.
+#[test]
+fn m6_two_scripts_after_nested_segments() {
+    let fx = Fixture::new();
+    let class_then_fn: &[u8] =
+        b"<script>\nclass A { m() { return \"needle\"; } }\n</script>\n<script>\nfunction C() { return needle; }\n</script>\n";
+    let setup_then_default: &[u8] = b"<script setup lang=\"ts\">\nconst o = { a() { return \"needle\"; } };\nfunction f() { function g() { return \"needle\"; } }\n</script>\n<script lang=\"ts\">\nexport default { name: \"x\", methods: { h() { return \"needle\"; } } };\n</script>\n";
+    for (format, file, src, expected) in [
+        (
+            "html",
+            "p4.html",
+            class_then_fn,
+            &["script[1] › A › m", "script[2] › C"][..],
+        ),
+        (
+            "vue",
+            "p4.vue",
+            class_then_fn,
+            &["script[1] › A › m", "script[2] › C"][..],
+        ),
+        (
+            "vue",
+            "p10.vue",
+            setup_then_default,
+            &["script[1] › a", "script[1] › f › g", "script[2] › h"][..],
+        ),
+    ] {
+        put(&fx, file, src);
+        assert_eq!(
+            paths(&matches(&output(&fx, format, file, "needle", &["--json"]))),
+            expected,
+            "{file}"
+        );
+        for flag in ["--flat", "--tree"] {
+            let out = output(&fx, format, file, "needle", &[flag]);
+            assert_eq!(code(&out), 0, "{file} {flag}: {}", stderr(&out));
+            assert!(out.stderr.is_empty(), "{file} {flag}: {}", stderr(&out));
+        }
+    }
+}
