@@ -400,3 +400,17 @@ fn m6_encoding_and_lone_cr() {
     assert_eq!(paths(&rows), lf);
     assert_eq!(rows[0]["line_number"], 1);
 }
+
+/// Codex r1 #1: 300 000 nested variable references, which recursed once each, overflowed the
+/// stack; the walk is iterative, and the rule after them is still read.
+#[test]
+fn m6_make_deep_references() {
+    let fx = Fixture::new();
+    let n = 300_000;
+    let src = format!("{}x{}:\n\techo needle\n", "$(".repeat(n), ")".repeat(n));
+    put(&fx, "deep-references.mk", src.as_bytes());
+    let out = output(&fx, "make", "deep-references.mk", "needle", &["--json"]);
+    let rows = matches(&out);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["trail"][0]["kind"], "target");
+}

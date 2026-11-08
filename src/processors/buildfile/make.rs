@@ -53,29 +53,47 @@ fn word(src: &[u8], r: Range<usize>) -> (&[u8], Range<usize>) {
     (&src[r.start..i], trim(src, i..r.end))
 }
 
+/// The closer of a reference's opening bracket.
+fn closer(open: u8) -> Option<u8> {
+    match open {
+        b'(' => Some(b')'),
+        b'{' => Some(b'}'),
+        _ => None,
+    }
+}
+
 /// Where a variable reference `$(…)` or `${…}` that starts at `i` ends, nested references
-/// included; `$$` and `$x` are two bytes.
+/// included; `$$` and `$x` are two bytes. The walk keeps a stack of the open references, so
+/// any nesting fits (Codex r1 #1: 300 000 levels overflowed a recursive one).
 fn reference_end(src: &[u8], i: usize, end: usize) -> usize {
-    let close = match src.get(i + 1) {
-        Some(b'(') => b')',
-        Some(b'{') => b'}',
-        _ => return (i + 2).min(end),
+    let Some(close) = src.get(i + 1).copied().and_then(closer) else {
+        return (i + 2).min(end);
     };
-    let open = src[i + 1];
-    let mut depth = 0usize;
+    // Each open reference: its opening bracket, and how many of them are open inside it.
+    let mut open: Vec<(u8, u32)> = vec![(src[i + 1], 0)];
+    let mut close = close;
     let mut j = i + 1;
     while j < end {
         let b = src[j];
-        if b == b'$' && matches!(src.get(j + 1), Some(b'(' | b'{')) {
-            j = reference_end(src, j, end);
+        if b == b'$'
+            && let Some(c) = src.get(j + 1).copied().and_then(closer)
+        {
+            open.push((src[j + 1], 0));
+            close = c;
+            j += 1;
             continue;
         }
-        if b == open {
-            depth += 1;
+        let (bracket, depth) = open.last_mut().expect("a reference is open");
+        if b == *bracket {
+            *depth += 1;
         } else if b == close {
-            depth -= 1;
-            if depth == 0 {
-                return j + 1;
+            *depth -= 1;
+            if *depth == 0 {
+                open.pop();
+                match open.last() {
+                    None => return j + 1,
+                    Some(&(o, _)) => close = closer(o).expect("an opening bracket"),
+                }
             }
         }
         j += 1;
@@ -276,6 +294,12 @@ mod tests {
             [("key", "A".into()), ("target", "all".into())]
         );
         assert_eq!(names(b"x$(a:b): c\n"), [("target", "x$(a:b)".into())]);
+        assert_eq!(
+            names(b"x$(a ${b:c} (d:e) $(f $$:)):g\n"),
+            [("target", "x$(a ${b:c} (d:e) $(f $$:))".into())]
+        );
+        // An unclosed reference runs to the end of its line.
+        assert_eq!(names(b"x$(a ${b:c}: d\n"), []);
         assert_eq!(names(b"# a: b\nA = 1 # x: y\n"), [("key", "A".into())]);
     }
 
