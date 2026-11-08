@@ -118,6 +118,14 @@ impl Registry {
     /// `list`, with `  (unavailable)` after each Definition `available` rejects (spec §7).
     pub fn list_with(&self, available: &dyn Fn(&FormatDefinition) -> bool) -> String {
         let mut out = String::new();
+        // The name column fits the longest name, at least the 12 it always had.
+        let width = self
+            .defs
+            .iter()
+            .map(|d| d.name.len())
+            .max()
+            .unwrap_or(0)
+            .max(12);
         for d in &self.defs {
             let origin = match &d.origin {
                 Origin::BuiltIn => "built-in".to_string(),
@@ -125,11 +133,27 @@ impl Registry {
                 Origin::User(p) => format!("user ({})", p.display()),
                 Origin::Overridden(p) => format!("overridden ({})", p.display()),
             };
+            // What detects the Format: its extensions, else its names and paths, else its
+            // magic bytes (review r1, Fable #51).
+            let signals = if !d.extensions.is_empty() {
+                d.extensions.join(",")
+            } else if !d.names.is_empty() || !d.paths.is_empty() {
+                d.names
+                    .iter()
+                    .chain(&d.paths)
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            } else if !d.magic.is_empty() {
+                "magic bytes".to_string()
+            } else {
+                String::new()
+            };
             out.push_str(&format!(
-                "{:<12} {:<40} {}{}\n",
+                "{:<width$} {:<40} {}{}\n",
                 d.name,
                 origin,
-                d.extensions.join(","),
+                signals,
                 if available(d) { "" } else { "  (unavailable)" }
             ));
         }
@@ -209,6 +233,34 @@ fn resolve(p: &Path) -> std::io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review r1, Fable #51: the name column fits the longest name (`telegram-html`), and a
+    /// Definition without extensions shows the names and paths that detect it.
+    #[test]
+    fn the_list_aligns_and_names_every_signal() {
+        let empty = tempfile::tempdir().unwrap();
+        let (r, _) = Registry::load(Some(empty.path()), &|_| true);
+        let list = r.list();
+        let column = |name: &str| {
+            let line = list
+                .lines()
+                .find(|l| l.starts_with(&format!("{name} ")))
+                .unwrap_or_else(|| panic!("{name}: {list}"));
+            (line.find("built-in").unwrap(), line.to_string())
+        };
+        let (at, _) = column("markdown");
+        for name in ["telegram-html", "telegram", "whatsapp", "nginx", "elf"] {
+            assert_eq!(column(name).0, at, "{list}");
+        }
+        assert!(
+            column("telegram")
+                .1
+                .ends_with("**/ChatExport_*/result.json,**/DataExport_*/result.json")
+        );
+        assert!(column("whatsapp").1.ends_with("_chat.txt,*WhatsApp*.txt"));
+        assert!(column("elf").1.ends_with("magic bytes"));
+        assert!(column("markdown").1.contains(" md,"));
+    }
 
     /// Code review r7, Codex #3: a `*.toml` in the user directory may claim any name as a
     /// document; nothing else does, an installed Grammar neither (Fable M4 code r8 #3).
