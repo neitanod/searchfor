@@ -60,8 +60,11 @@ fn scan(src: &[u8], b: &mut Builder) {
                 None => break,
             }
         }
-        b.open(start, key.clone(), Kind::Key, NameSrc::Properties(key));
-        b.close_to(0, next);
+        // An empty key (`=value`) names nothing: its lines have an empty Trail, as INI's.
+        if !key.is_empty() {
+            b.open(start, key.clone(), Kind::Key, NameSrc::Properties(key));
+            b.close_to(0, next);
+        }
     }
 }
 
@@ -168,6 +171,15 @@ mod tests {
         assert_eq!(key(b"bad\\uQQQQ").0, "bad\\uQQQQ");
         assert_eq!(key(b"\\uD83D\\uDE00\\uD83D!").0, "😀\u{FFFD}!");
         assert_eq!(key(b"a\\tb\\").0, "a\tb");
+    }
+
+    #[test]
+    fn a_line_without_a_key_opens_no_segment() {
+        // `=value` has an empty key: no Segment named "", as INI (code round 1, Fable #41);
+        // its continuation lines are still its value.
+        let src = b"=needle\nk=needle\n=a\\\n x=needle\n";
+        assert_eq!(needles(src, "properties"), vec![vec![], vec!["k"], vec![]]);
+        cursor_is_model("properties", src);
     }
 
     #[test]

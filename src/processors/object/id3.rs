@@ -13,7 +13,9 @@ fn syncsafe(b: &[u8], at: usize) -> Option<usize> {
         .try_fold(0usize, |n, &x| (x < 0x80).then_some(n << 7 | x as usize))
 }
 
-/// None when the file does not start with an ID3v2 tag that fits in it.
+/// None when the file does not start with an ID3v2 header. A tag that declares more bytes
+/// than the file holds (a download cut short, a footer flag without its footer) reads up to
+/// the file's end, keeping the frames that fit (M6 spec §3 rule 3).
 pub(super) fn layout(b: &mut Builder) -> Option<()> {
     let bytes = b.bytes;
     let all = 0..bytes.len();
@@ -31,8 +33,9 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
     } else {
         0
     };
-    let tag = sub(&all, 0, 10 + size + footer)?;
-    let frames = 10..10 + size;
+    sub(&all, 0, 10)?;
+    let tag = 0..(10 + size + footer).min(bytes.len());
+    let frames = 10..(10 + size).min(bytes.len());
     let image = b.node(None, "object", format!("ID3v2.{major}").into(), tag.clone());
     let mut at = 10;
     // v2.2's bit 6 is compression, of the whole tag: its frames are not read.
@@ -68,7 +71,10 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
             3 => u32_at(bytes, at + 4, false).map(|n| n as usize),
             _ => syncsafe(bytes, at + 4),
         };
-        let Some(frame) = len.and_then(|n| sub(&frames, at, header + n)) else {
+        let Some(frame) = len
+            .and_then(|n| n.checked_add(header))
+            .and_then(|n| sub(&frames, at, n))
+        else {
             break;
         };
         let format = if major == 2 {

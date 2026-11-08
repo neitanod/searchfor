@@ -1,7 +1,7 @@
 //! iCalendar (RFC 5545) and vCard (RFC 6350), which share the content-line syntax (M6 spec
 //! §10.2). `BEGIN:X` … `END:X` is a `component` Segment named `X` and the value of its
 //! SUMMARY, FN or TZID, wherever in the component that property comes, or else `X[N]` among
-//! its siblings of that `X`. A single VCALENDAR around the whole file is hidden. A property is a
+//! its siblings of that `X` when there are two or more, `X` alone otherwise. A single VCALENDAR around the whole file is hidden. A property is a
 //! `key` Segment named without its parameters, over its folded lines. An `END` closes the
 //! innermost open component of its name and those inside it; an `END` with none open is text;
 //! components open at the end close there.
@@ -37,6 +37,8 @@ struct Open {
     named: bool,
     /// How many children of each `X` it has opened so far.
     children: Option<HashMap<Vec<u8>, u32>>,
+    /// Its place among the components opened, which its children's ordinals are counted by.
+    serial: u64,
 }
 
 /// A content line: its name, and where its value starts. None for any other line.
@@ -72,6 +74,11 @@ fn scan(src: &[u8], b: &mut Builder) {
     let mut open_x: HashMap<Vec<u8>, u32> = HashMap::new();
     let mut top: HashMap<Vec<u8>, u32> = HashMap::new();
     let mut tops: Vec<usize> = Vec::new();
+    // Each component's Segment, its parent's serial (`u64::MAX` at the top) and its `X`: one
+    // alone of its kind among its siblings takes no ordinal, which only the end of the scan
+    // knows.
+    let mut kinds: Vec<(usize, u64, Vec<u8>)> = Vec::new();
+    let mut serial = 0u64;
     let mut lines = Lines::new(src).peekable();
     while let Some((start, end, mut next)) = lines.next() {
         // The folded lines that continue this one.
@@ -85,11 +92,19 @@ fn scan(src: &[u8], b: &mut Builder) {
                 break;
             }
         }
-        let Some((name, value)) = content(src, start..end) else {
+        // Parameters may fold before the `:`.
+        let Some((name, value)) = content(src, start..last_end) else {
             continue;
         };
         let word = &src[name.clone()];
-        let x = lines::trim(src, value..end);
+        let value_end = if value <= end {
+            end
+        } else {
+            Lines::starting(src, value)
+                .next()
+                .map_or(last_end, |(_, e, _)| e.min(last_end))
+        };
+        let x = lines::trim(src, value..value_end);
         if word.eq_ignore_ascii_case(b"BEGIN") && !x.is_empty() {
             let key = upper(src, x.clone());
             let depth = b.depth();
@@ -117,12 +132,18 @@ fn scan(src: &[u8], b: &mut Builder) {
                 }
             }
             *open_x.entry(key.clone()).or_insert(0) += 1;
+            if let Some(i) = entry {
+                let parent = stack.last().map_or(u64::MAX, |p| p.serial);
+                kinds.push((i, parent, key.clone()));
+            }
+            serial += 1;
             stack.push(Open {
                 x: key,
                 entry,
                 depth,
                 named: false,
                 children: None,
+                serial,
             });
             continue;
         }
@@ -157,6 +178,17 @@ fn scan(src: &[u8], b: &mut Builder) {
             }
         }
     }
+    let mut count: HashMap<(u64, &[u8]), u32> = HashMap::new();
+    for (_, parent, x) in &kinds {
+        *count.entry((*parent, x.as_slice())).or_insert(0) += 1;
+    }
+    for (i, parent, x) in &kinds {
+        if count[&(*parent, x.as_slice())] == 1
+            && let NameSrc::Component { ordinal, .. } = &mut b.entry_mut(*i).name
+        {
+            *ordinal = 0;
+        }
+    }
     // A single VCALENDAR around the whole file is hidden, as HTML's `body`.
     if let [only] = tops[..]
         && only != usize::MAX
@@ -171,8 +203,9 @@ fn scan(src: &[u8], b: &mut Builder) {
 }
 
 /// The name of a component into `n`: `X`, then one space and the value `value` unfolded, one
-/// piece per physical line, or else `[ordinal]`. The space and the ordinal are added words:
-/// they map to no Source byte (M6 spec §3 rule 4).
+/// piece per physical line, or else `[ordinal]`, which 0 leaves out (a component alone of its
+/// kind among its siblings). The space and the ordinal are added words: they map to no Source
+/// byte (M6 spec §3 rule 4).
 pub(super) fn push_component(
     src: &[u8],
     x: &Range<usize>,
@@ -182,7 +215,9 @@ pub(super) fn push_component(
 ) {
     n.push_lossy(src, x.clone());
     let Some(v) = value else {
-        n.push_str(&format!("[{ordinal}]"));
+        if ordinal > 0 {
+            n.push_str(&format!("[{ordinal}]"));
+        }
         return;
     };
     n.push_str(" ");
@@ -213,13 +248,56 @@ mod tests {
             needles(src, "ical"),
             vec![
                 vec!["VEVENT Lunch with friends", "DTSTART"],
-                vec!["VEVENT Lunch with friends", "VALARM[1]", "X"]
+                vec!["VEVENT Lunch with friends", "VALARM", "X"]
             ]
         );
         // Two top-level calendars are both shown; a stray END is text.
         let src =
             b"BEGIN:VCALENDAR\nEND:X\nA:needle\nEND:VCALENDAR\nBEGIN:VCALENDAR\nEND:VCALENDAR\n";
         assert_eq!(needles(src, "ical"), vec![vec!["VCALENDAR[1]", "A"]]);
+    }
+
+    #[test]
+    fn a_match_in_the_naming_value_stays_inside() {
+        // The label is the BEGIN line: a Match in SUMMARY or FN is inside the component,
+        // under its key (orchestrator's decision 1 on code round 1); one in BEGIN is not, and
+        // one in END is.
+        let src =
+            b"BEGIN:VEVENT\nSUMMARY:needle sync\nEND:VEVENT\nBEGIN:needle\nFN:x\nEND:needle\n";
+        assert_eq!(
+            needles(src, "ical"),
+            vec![
+                vec!["VEVENT needle sync", "SUMMARY"],
+                vec![],
+                vec!["needle x"]
+            ]
+        );
+        cursor_is_model("ical", src);
+    }
+
+    #[test]
+    fn an_ordinal_only_among_two_or_more_of_a_kind() {
+        // A component alone of its kind among its siblings is named `X`, as markup's elements
+        // (code round 1, Fable #42); two or more of a kind are `X[N]`.
+        let src = b"BEGIN:VCALENDAR\nBEGIN:VEVENT\nBEGIN:VALARM\nX:needle\nEND:VALARM\nEND:VEVENT\nBEGIN:VTODO\nX:needle\nEND:VTODO\nBEGIN:VTODO\nX:needle\nEND:VTODO\nEND:VCALENDAR\n";
+        assert_eq!(
+            needles(src, "ical"),
+            vec![
+                vec!["VEVENT", "VALARM", "X"],
+                vec!["VTODO[1]", "X"],
+                vec!["VTODO[2]", "X"]
+            ]
+        );
+        cursor_is_model("ical", src);
+    }
+
+    #[test]
+    fn parameters_folded_before_the_colon() {
+        // A property whose parameters fold before its `:` is a key (Fable #43), and so is a
+        // BEGIN or a SUMMARY folded the same way.
+        let src = b"BEGIN:VEVENT\nDTSTART;TZID=Europe/\n Madrid:needle\nSUMMARY;LANGUAGE=\n en:Team\nEND:VEVENT\n";
+        assert_eq!(needles(src, "ical"), vec![vec!["VEVENT Team", "DTSTART"]]);
+        cursor_is_model("ical", src);
     }
 
     #[test]

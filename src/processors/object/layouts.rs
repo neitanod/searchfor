@@ -408,6 +408,93 @@ mod own_names {
     }
 
     #[test]
+    fn xmp_wrappers_read_in_linear_time() {
+        // Wrappers open inside wrappers cost one step each (code round 1, Fable #5): 576 KB of
+        // `<rdf:RDF>` took about 10 s in a debug build when each start tag walked them all.
+        let mut packet = b"<rdf:RDF>".repeat(64 << 10);
+        packet.extend(b"<dc:title>needle</dc:title>");
+        let png = m6::png_xmp(&packet);
+        let t = std::time::Instant::now();
+        assert_eq!(
+            trail(&png, "png", b"needle"),
+            ["PNG", "iTXt XML:com.adobe.xmp", "dc:title"]
+        );
+        let took = t.elapsed();
+        assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+    }
+
+    #[test]
+    fn a_tiff_reads_a_shared_xmp_packet_once() {
+        // 3000 entries naming one packet of 1000 elements read it once (code round 1, Codex
+        // #3): the nodes are the entries' and one packet's, and a Match in it keeps the path.
+        let mut packet = b"<x:xmpmeta><rdf:RDF><rdf:Description>".to_vec();
+        packet.extend(b"<tag>x</tag>".repeat(999));
+        packet.extend(b"<tag>needle</tag></rdf:Description></rdf:RDF></x:xmpmeta>");
+        let tiff = m6::tiff_shared_xmp(3000, &packet);
+        let m = BinaryMap::parse(&tiff, "tiff").unwrap();
+        assert!(m.nodes().len() < 5000, "{} nodes", m.nodes().len());
+        assert_eq!(
+            trail(&tiff, "tiff", b"needle"),
+            ["TIFF", "IFD0", "XMP", "tag"]
+        );
+    }
+
+    #[test]
+    fn a_java_member_name_comes_before_the_ldc_that_loads_it() {
+        // The method `needle` loads the string `needle`, one shared Utf8 entry: a Match in it
+        // is in the method's own name, with the class's Trail (orchestrator's decision 2 on
+        // code round 1, Codex #10, Fable #59).
+        let mut class = m6::class(b"needle");
+        let header = [0, 9, 0, 5, 0, 6];
+        let at = class.windows(6).position(|w| w == header).unwrap();
+        class[at + 3] = 8;
+        assert_eq!(
+            trail(&class, "class", b"needle"),
+            ["Java 17", "com.example.Cart"]
+        );
+        // The class's Section holds its constant pool's (Fable #60).
+        let m = BinaryMap::parse(&class, "class").unwrap();
+        let span = |kind: &str| {
+            m.nodes()
+                .iter()
+                .find(|n| n.kind == kind)
+                .unwrap()
+                .span
+                .clone()
+        };
+        let (outer, pool) = (span("class"), span("section"));
+        assert!(
+            outer.start <= pool.start && pool.end <= outer.end,
+            "{outer:?} {pool:?}"
+        );
+        // Unshared, the string is the method's.
+        assert_eq!(
+            trail(&m6::class(b"needle"), "class", b"needle"),
+            ["Java 17", "com.example.Cart", "addItem"]
+        );
+    }
+
+    #[test]
+    fn an_id3_tag_cut_short_keeps_the_frames_that_fit() {
+        // A tag that declares more than the file holds reads up to the file's end (code round
+        // 1, Fable #34), as §3 rule 3 keeps the Trails before a failure.
+        let mut tag = m6::id3(b"needle");
+        tag[9] += 100;
+        assert_eq!(trail(&tag, "id3", b"needle"), ["ID3v2.4", "TIT2"]);
+        // A frame or chunk length at u32::MAX overflows no 32-bit `usize` (Fable #35).
+        let mut frame = m6::id3(b"needle");
+        frame[10 + 4..10 + 8].copy_from_slice(&[0x7f; 4]);
+        assert!(BinaryMap::parse(&frame, "id3").is_some());
+        let mut v3 = m6::id3(b"needle");
+        v3[3] = 3;
+        v3[10 + 4..10 + 8].copy_from_slice(&[0xff; 4]);
+        assert!(BinaryMap::parse(&v3, "id3").is_some());
+        let mut webp = m6::webp(b"needle");
+        webp[16..20].copy_from_slice(&[0xff; 4]);
+        assert!(BinaryMap::parse(&webp, "webp").is_none());
+    }
+
+    #[test]
     fn names_written_in_the_file_are_outside_what_they_name() {
         assert_eq!(trail(&m6::png(b"x"), "png", b"Comment"), ["PNG"]);
         assert_eq!(trail(&m6::png(b"x"), "png", b"tEXt"), ["PNG"]);
@@ -424,6 +511,17 @@ mod own_names {
         assert_eq!(
             trail(&xmp, "jpeg", b"/dc:title"),
             ["JPEG", "APP1 XMP", "dc:title"]
+        );
+        // A custom section's name is its own (code round 1, Fable #36): §9's exception is
+        // only for exports and imports.
+        let mut custom = m6::wasm(b"x");
+        custom.extend([0, 13, 6]);
+        custom.extend(b"needle");
+        custom.extend(b"payload");
+        assert_eq!(trail(&custom, "wasm", b"needle"), ["WebAssembly"]);
+        assert_eq!(
+            trail(&custom, "wasm", b"payload"),
+            ["WebAssembly", "custom needle"]
         );
         // §9's own example: an export is the Segment of its name.
         assert_eq!(

@@ -2,10 +2,12 @@
 //! `entry` Segment named by its key, with the signature `@article{knuth1984,`; each field is a
 //! `key` Segment over its value, in braces (nesting), quotes or bare, `#` concatenations
 //! included. `@string` and `@preamble` are named as written. `@comment` and the text between
-//! entries have an empty Trail. An entry whose braces never close ends at the next `@` at a
-//! line's start, keeping the Trails before it. Braces nest on a counter, never on the call
-//! stack.
+//! entries have an empty Trail. An entry without a key (its first item is a field) is named
+//! by its type. An entry whose braces never close ends at the next `@` at a line's start,
+//! keeping the Trails before it; one that closes keeps such an `@` as text of its values.
+//! Braces nest on a counter, never on the call stack.
 use super::lines::{self, Builder, Kind, NameSrc};
+use std::collections::HashMap;
 use std::ops::Range;
 
 pub(crate) fn prepare<'a>(
@@ -23,12 +25,15 @@ pub(crate) fn outline(
     lines::outline(src, params, anchors, scan)
 }
 
-/// The reading of one entry, which ends at its closing delimiter or at an `@` that starts a
-/// line (`Cut`).
+/// The reading of one entry, which ends at its closing delimiter or, when its braces never
+/// close, at an `@` that starts a line (`Cut`).
 struct Reader<'s> {
+    /// The file, up to the entry's closing delimiter when it has one.
     src: &'s [u8],
     at: usize,
     close: u8,
+    /// Whether a line-start `@` cuts the entry: only when it never closes.
+    cut: bool,
 }
 
 /// Where an unclosed entry ends: the start of the line whose first character is `@`.
@@ -43,7 +48,7 @@ impl Reader<'_> {
     fn bump(&mut self) -> Result<(), Cut> {
         let c = self.src[self.at];
         self.at += 1;
-        if c == b'\n' {
+        if c == b'\n' && self.cut {
             let mut i = self.at;
             while i < self.src.len() && matches!(self.src[i], b' ' | b'\t' | b'\r') {
                 i += 1;
@@ -189,7 +194,69 @@ impl Reader<'_> {
     }
 }
 
+/// Where each group that may open an entry (`@word{` or `@word(`) closes, by the offset of
+/// its `{` or `(`: the `}` that balances its braces, or the first `)` outside braces after it.
+/// Absent when it never closes. One pass over the file, with a stack of the groups open.
+fn closings(src: &[u8]) -> HashMap<usize, usize> {
+    let mut out = HashMap::new();
+    // (offset of the delimiter, brace depth outside it, closing byte).
+    let mut open: Vec<(usize, usize, u8)> = Vec::new();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < src.len() {
+        match src[i] {
+            b'@' => {
+                let mut t = i + 1;
+                while t < src.len()
+                    && (src[t].is_ascii_alphanumeric() || matches!(src[t], b'_' | b'-'))
+                {
+                    t += 1;
+                }
+                let mut o = t;
+                while o < src.len() && matches!(src[o], b' ' | b'\t') {
+                    o += 1;
+                }
+                if t > i + 1 && matches!(src.get(o), Some(b'{' | b'(')) {
+                    let close = if src[o] == b'{' { b'}' } else { b')' };
+                    open.push((o, depth, close));
+                    if close == b'}' {
+                        depth += 1;
+                    }
+                    i = o + 1;
+                    continue;
+                }
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                // A group in parentheses opened inside the braces that end here never closes.
+                while open.last().is_some_and(|&(_, d, c)| c == b')' && d > depth) {
+                    open.pop();
+                }
+                if let Some(&(o, d, b'}')) = open.last()
+                    && d == depth
+                {
+                    out.insert(o, i);
+                    open.pop();
+                }
+            }
+            b')' => {
+                if let Some(&(o, d, b')')) = open.last()
+                    && depth <= d
+                {
+                    out.insert(o, i);
+                    open.pop();
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}
+
 fn scan(src: &[u8], b: &mut Builder) {
+    let closings = closings(src);
     let mut at = 0;
     while let Some(i) = memchr::memchr(b'@', &src[at..]) {
         let start = at + i;
@@ -207,16 +274,18 @@ fn scan(src: &[u8], b: &mut Builder) {
         }
         let close = if src[open] == b'{' { b'}' } else { b')' };
         let kind = &src[at..t];
+        let closed = closings.get(&open).copied();
         let mut r = Reader {
-            src,
+            src: closed.map_or(src, |c| &src[..c + 1]),
             at: open + 1,
             close,
+            cut: closed.is_none(),
         };
         if kind.eq_ignore_ascii_case(b"comment") {
-            // Outside structure: skipped as a braced group.
+            // Outside structure: skipped as a group in braces or parentheses.
             r.at = open;
             // Cut or not, the reading goes on where the group ended.
-            let _ = r.braces();
+            let _ = r.braces_or_parens();
             at = r.at.max(open + 1);
             continue;
         }
@@ -234,8 +303,13 @@ fn scan(src: &[u8], b: &mut Builder) {
                 k += 1;
             }
             let key = lines::trim(src, key_start..k);
-            let sig_end = if src.get(k) == Some(&b',') { k + 1 } else { k };
-            (key, start..sig_end, sig_end)
+            if memchr::memchr(b'=', &src[key.clone()]).is_some() {
+                // No key: the first item is a field. The entry is named by its type.
+                (start..t, start..open + 1, open + 1)
+            } else {
+                let sig_end = if src.get(k) == Some(&b',') { k + 1 } else { k };
+                (key, start..sig_end, sig_end)
+            }
         };
         b.open(
             start,
@@ -310,6 +384,32 @@ mod tests {
             needles(src, "bibtex"),
             vec![vec!["a", "title"], vec!["b", "title"], vec![]]
         );
+    }
+
+    #[test]
+    fn an_at_inside_balanced_braces_cuts_nothing() {
+        // The cut is for an entry whose braces never close (code round 1, Fable #38): a
+        // well-formed entry keeps a line-start `@` in a value. A `}` inside quotes still ends
+        // an entry where its braces balance, so the next entry is not swallowed.
+        let src = b"@article{a,\n note = {Follow\n  @user on X},\n title = {needle}\n}\n@a{k, t = \"x}\n@b{k2, t = {needle}}\n";
+        assert_eq!(
+            needles(src, "bibtex"),
+            vec![vec!["a", "title"], vec!["k2", "t"]]
+        );
+        cursor_is_model("bibtex", src);
+    }
+
+    #[test]
+    fn a_comment_in_parentheses_and_an_entry_without_a_key() {
+        // `@comment(…)` ends at its `)` (Fable #39); an entry whose first item holds `=` has
+        // no key and is named by its type (Fable #40).
+        let src =
+            b"@comment(no braces) @misc{k, a = {needle}}\n@article{title = {needle}, b = 1}\n";
+        assert_eq!(
+            needles(src, "bibtex"),
+            vec![vec!["k", "a"], vec!["@article", "title"]]
+        );
+        cursor_is_model("bibtex", src);
     }
 
     #[test]

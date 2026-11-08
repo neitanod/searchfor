@@ -14,9 +14,9 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
     let mut chunks = Vec::new();
     let mut at = 12;
     while let Some(len) = u32_at(bytes, at + 4, true) {
-        let Some(chunk) = at
+        let Some(chunk) = (len as usize)
             .checked_add(8)
-            .and_then(|_| sub(&body, at, 8 + len as usize))
+            .and_then(|n| sub(&body, at, n))
         else {
             break;
         };

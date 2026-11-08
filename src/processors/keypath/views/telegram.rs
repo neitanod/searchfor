@@ -36,7 +36,8 @@ pub(super) fn node(
     }
 }
 
-/// A chat, named by its `name`, whose bytes are its label.
+/// A chat, named by its `name`. Its label is empty, as a message's: a Match in the name stays
+/// inside the chat, under `name`.
 pub(super) fn chat(src: &[u8], value: usize, base: Segment, name_chars: usize) -> Option<Built> {
     let v = find(src, value, &[&["name"]])[0].clone()?;
     let text = text_of(src, &v)?;
@@ -49,7 +50,7 @@ pub(super) fn chat(src: &[u8], value: usize, base: Segment, name_chars: usize) -
             name: text,
             ..base
         },
-        label: v,
+        label: value..value,
         pieces: Some(pieces),
     })
 }
@@ -112,6 +113,16 @@ mod tests {
         let account = br#"{"about":"needle","chats":{"about":"x","list":[{"name":"W","messages":[{"date":"d","text":"needle"}]},{"messages":[]}]}}"#;
         assert_eq!(needles(account, "telegram"), ["about", "W › d › text"]);
         every_byte(account, "telegram");
+        // A Match in the values that name a chat or a message stays inside it, under its own
+        // key (orchestrator's decision 1 on code round 1).
+        let names = br#"{"name":"needle","messages":[{"date":"d","from":"needle","text":"x"}]}"#;
+        assert_eq!(
+            needles(names, "telegram"),
+            ["needle › name", "needle › d needle › from"]
+        );
+        every_byte(names, "telegram");
+        let account = br#"{"chats":{"list":[{"name":"needle","messages":[]}]}}"#;
+        assert_eq!(needles(account, "telegram"), ["needle › name"]);
         // Neither shape: keypath's Trails.
         assert_eq!(needles(br#"{"name":"needle"}"#, "telegram"), ["name"]);
     }

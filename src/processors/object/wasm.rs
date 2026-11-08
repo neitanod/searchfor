@@ -120,6 +120,10 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
             _ => format!("section {id}").into(),
         };
         let node = b.node(Some(image), "section", label, start..end);
+        // A Match in a custom section's own name is outside it (M6 spec §3 rule 5).
+        if let Some((n, _)) = &custom {
+            b.own(image, n.clone());
+        }
         if !matches!(id, 2 | 7 | 10 | 11) {
             continue;
         }

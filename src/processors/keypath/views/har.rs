@@ -104,8 +104,8 @@ fn scheme(url: &str) -> usize {
     }
 }
 
-/// An element named by its `key` (`title`, `name`), after `word` if any; the value's bytes
-/// are its label.
+/// An element named by its `key` (`title`, `name`), after `word` if any. Its label is empty,
+/// as an entry's: a Match in that value stays inside it, under the key.
 fn named(
     src: &[u8],
     value: usize,
@@ -129,7 +129,7 @@ fn named(
             name: text,
             ..base
         },
-        label: v,
+        label: value..value,
         pieces: Some(pieces),
     })
 }
@@ -137,6 +137,7 @@ fn named(
 #[cfg(test)]
 mod tests {
     use super::super::tests::{every_byte, needles};
+    use crate::processors::Processor;
 
     #[test]
     fn late_names_missing_fields_and_other_shapes() {
@@ -158,6 +159,41 @@ mod tests {
             ]
         );
         every_byte(src, "har");
+        // A Match in a value that names a Segment stays inside it, under its own key
+        // (orchestrator's decision 1 on code round 1): an entry's URL, a header's name, a
+        // page's title.
+        let names = br#"{"log":{"entries":[{"request":{"method":"GET","url":"http://h/needle",
+"headers":[{"name":"needle","value":"v"}]}}],"pages":[{"title":"needle"}]}}"#;
+        assert_eq!(
+            needles(names, "har"),
+            [
+                "GET h/needle › request › url",
+                "GET h/needle › request › header needle › name",
+                "needle › title",
+            ]
+        );
+        every_byte(names, "har");
+        // Matches that share their Trail copy no Segment (Fable #32): with a 4 MB URL in the
+        // entry's signature, 16000 Matches in one value cost what one does.
+        let url = "u".repeat(4 << 20);
+        let many = format!(
+            r#"{{"log":{{"entries":[{{"request":{{"method":"GET","url":"{url}"}},"x":"{}"}}]}}}}"#,
+            "needle ".repeat(16_000)
+        );
+        let src = many.as_bytes();
+        let anchors: Vec<usize> = memchr::memmem::find_iter(src, b"needle").collect();
+        let params = super::super::tests::params("har");
+        let prepared = crate::processors::keypath::Keypath
+            .prepare(super::super::tests::input(src), &params)
+            .unwrap();
+        let mut cursor = prepared.cursor();
+        cursor.trail_at(anchors[0]).unwrap();
+        let t = std::time::Instant::now();
+        for &a in &anchors {
+            assert_eq!(cursor.trail_at(a).unwrap().len(), 2);
+        }
+        let took = t.elapsed();
+        assert!(took < std::time::Duration::from_millis(500), "{took:?}");
         // Not HAR: keypath's Trails.
         assert_eq!(needles(br#"{"log":["needle"]}"#, "har"), ["log[0]"]);
     }

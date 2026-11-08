@@ -6,6 +6,7 @@
 use super::{Built, Ctx, NameBuf, Node, Probe, Role, find, text_of};
 use crate::model::Segment;
 use crate::processors::keypath::json::{self, Met, Step};
+use crate::text::Pieces;
 use crate::trail::{Outline, OutlineSegment};
 use std::ops::Range;
 
@@ -64,10 +65,14 @@ pub(super) fn node(
 /// A heading line of a Markdown cell.
 struct Heading {
     level: usize,
-    /// The line, from its first byte to its end, in the JSON string.
+    /// The line, from its first byte to its end, in the Source.
     line: Range<usize>,
-    /// Its title's bytes, and whether they have escapes.
-    title: Range<usize>,
+    /// Its title, decoded and cut, with its pieces.
+    name: (String, Pieces),
+    /// Where its title starts in the Source: an empty title's anchor.
+    title_at: usize,
+    /// The whole line, decoded and cut at twice `name_chars`.
+    signature: String,
 }
 
 /// The Outline of the headings of the Markdown cells of `cells`, the array at `at` (M6 plan,
@@ -79,7 +84,7 @@ pub(super) fn headings(src: &[u8], at: usize, name_chars: usize) -> Outline {
     let mut strings: Vec<Range<usize>> = Vec::new();
     let flush = |markdown: &mut bool, strings: &mut Vec<Range<usize>>, out: &mut Vec<Heading>| {
         if *markdown {
-            scan(src, strings, out);
+            scan(src, strings, name_chars, out);
         }
         *markdown = false;
         strings.clear();
@@ -104,146 +109,161 @@ pub(super) fn headings(src: &[u8], at: usize, name_chars: usize) -> Outline {
     .unwrap_or(src.len());
     flush(&mut markdown, &mut strings, &mut found);
     let mut segments = Vec::with_capacity(found.len());
-    for (i, h) in found.iter().enumerate() {
-        let until = found[i + 1..]
+    let starts: Vec<(usize, usize)> = found.iter().map(|h| (h.level, h.line.start)).collect();
+    for (i, h) in found.into_iter().enumerate() {
+        let until = starts[i + 1..]
             .iter()
-            .find(|n| n.level <= h.level)
-            .map_or(end, |n| n.line.start);
-        let escaped = memchr::memchr(b'\\', &src[h.title.clone()]).is_some();
-        let mut name = NameBuf::default();
-        name.source(&json::decode(src, h.title.clone(), escaped), 0);
-        let (name, pieces) = name.finish(name_chars);
-        let line_escaped = memchr::memchr(b'\\', &src[h.line.clone()]).is_some();
-        let mut sig = NameBuf::default();
-        sig.source(&json::decode(src, h.line.clone(), line_escaped), 0);
+            .find(|n| n.0 <= h.level)
+            .map_or(end, |n| n.1);
+        let (name, pieces) = h.name;
         let mut s = OutlineSegment::new("heading", name, h.line.start..until, h.line.clone());
         s.segment.level = Some(h.level);
-        s.segment.signature = Some(sig.finish(name_chars.saturating_mul(2)).0);
-        s.name_anchor = pieces.first().map_or(h.title.start, |p| p.1.start);
+        s.segment.signature = Some(h.signature);
+        s.name_anchor = pieces.first().map_or(h.title_at, |p| p.1.start);
         s.name = Some(pieces);
         segments.push(s);
     }
     Outline::build(segments, src)
 }
 
-/// The headings of a Markdown cell's source strings (their contents, raw): a line is a
-/// decoded line of the source, the strings joined; a heading is `#` to `######` after at most
-/// three spaces, then a space, a tab or the line's end, outside fenced code.
-fn scan(src: &[u8], strings: &[Range<usize>], out: &mut Vec<Heading>) {
-    let mut fence = false;
-    // Whether the next string starts a line: the one before ended with a line break.
-    let mut line_start = true;
+/// The headings of a Markdown cell's source strings (their contents, raw), read over the
+/// strings decoded and joined (code round 1, Codex #7): a line ends at a decoded line break,
+/// a `\r` before it dropped; a heading is `#` to `######` after at most three spaces, then a
+/// blank or the line's end, outside fenced code.
+fn scan(src: &[u8], strings: &[Range<usize>], name_chars: usize, out: &mut Vec<Heading>) {
+    let mut text = String::new();
+    let mut pieces: Pieces = Vec::new();
     for s in strings {
-        let (mut i, mut from) = (s.start, s.start);
-        while i < s.end {
-            // A decoded line break: `\n` or `\u000a`.
-            let next = match (src[i], src.get(i + 1)) {
-                (b'\\', Some(b'n')) => Some(i + 2),
-                (b'\\', Some(b'u'))
-                    if src
-                        .get(i + 2..i + 6)
-                        .is_some_and(|h| h.eq_ignore_ascii_case(b"000a")) =>
-                {
-                    Some(i + 6)
-                }
-                _ => None,
-            };
-            let Some(next) = next else {
-                i += if src[i] == b'\\' { 2 } else { 1 };
-                continue;
-            };
-            let mut end = i;
-            // A `\r` before the line break is no text of the line.
-            if end >= from + 2 && &src[end - 2..end] == b"\\r" {
-                end -= 2;
-            }
-            if line_start {
-                line(src, from..end, &mut fence, out);
-            }
-            line_start = true;
-            (i, from) = (next, next);
+        let (t, p) = json::decode_split(src, s.clone());
+        let base = text.len();
+        text.push_str(&t);
+        pieces.extend(
+            p.into_iter()
+                .map(|(t, s)| (t.start + base..t.end + base, s)),
+        );
+    }
+    let cell = Decoded {
+        text: &text,
+        pieces: &pieces,
+        at: strings.first().map_or(0, |s| s.start),
+        name_chars,
+    };
+    let bytes = text.as_bytes();
+    let mut fence = false;
+    let mut from = 0;
+    while from < bytes.len() {
+        let nl = memchr::memchr(b'\n', &bytes[from..]).map(|i| from + i);
+        let mut end = nl.unwrap_or(bytes.len());
+        if end > from && bytes[end - 1] == b'\r' {
+            end -= 1;
         }
-        // What follows the last line break: a line the next string may continue.
-        if from < s.end {
-            if line_start {
-                line(src, from..s.end, &mut fence, out);
-            }
-            line_start = false;
-        }
+        cell.line(from..end, &mut fence, out);
+        from = nl.map_or(bytes.len(), |i| i + 1);
     }
 }
 
-/// One decoded line, raw at `r`: a heading, or a code fence that opens or closes.
-fn line(src: &[u8], r: Range<usize>, fence: &mut bool, out: &mut Vec<Heading>) {
-    let raw = &src[r.clone()];
-    let indent = raw.iter().take_while(|&&b| b == b' ').count();
-    if indent > 3 {
-        return;
-    }
-    let body = &raw[indent..];
-    if body.starts_with(b"```") || body.starts_with(b"~~~") {
-        *fence = !*fence;
-        return;
-    }
-    if *fence {
-        return;
-    }
-    let level = body.iter().take_while(|&&b| b == b'#').count();
-    if !(1..=6).contains(&level) {
-        return;
-    }
-    let after = &body[level..];
-    let gap = if after.is_empty() {
-        0
-    } else if after[0] == b' ' {
-        1
-    } else if after.starts_with(b"\\t") {
-        2
-    } else {
-        return;
-    };
-    let mut s = r.start + indent + level + gap;
-    let mut e = r.end;
-    let blank = |b: &[u8], at: usize| -> usize {
-        if b.get(at) == Some(&b' ') {
-            1
-        } else if b.get(at..at + 2) == Some(b"\\t") {
-            2
-        } else {
-            0
+/// A cell's source decoded: its text, and where each piece of it is in the Source.
+struct Decoded<'t> {
+    text: &'t str,
+    pieces: &'t Pieces,
+    /// The Source offset of a text with no piece.
+    at: usize,
+    name_chars: usize,
+}
+
+impl Decoded<'_> {
+    /// The Source offset of text byte `p`: where the piece that holds it starts, or where the
+    /// one before it ends. The pieces are in text order, so each lookup is a binary search.
+    fn source_at(&self, p: usize) -> usize {
+        let i = self.pieces.partition_point(|(t, _)| t.end <= p);
+        match self.pieces.get(i) {
+            Some((t, s)) if t.start <= p && t.len() == s.len() => s.start + (p - t.start),
+            Some((t, s)) if t.start <= p => s.start,
+            _ => i.checked_sub(1).map_or(self.at, |j| self.pieces[j].1.end),
         }
-    };
-    loop {
-        let n = blank(src, s);
-        if n == 0 || s + n > e {
-            break;
-        }
-        s += n;
     }
-    // Trailing blanks, then a closing run of `#` after a blank.
-    let trim_end = |e: &mut usize| {
-        while *e > s {
-            if src[*e - 1] == b' ' {
-                *e -= 1;
-            } else if *e >= s + 2 && &src[*e - 2..*e] == b"\\t" {
-                *e -= 2;
-            } else {
+
+    /// The Source offset just past text byte `p - 1`.
+    fn source_end(&self, p: usize) -> usize {
+        let i = self.pieces.partition_point(|(t, _)| t.end < p);
+        match self.pieces.get(i) {
+            Some((t, s)) if t.start < p && t.len() == s.len() => s.start + (p - t.start),
+            Some((t, s)) if t.start < p => s.end,
+            _ => self.source_at(p),
+        }
+    }
+
+    /// The text `r` and its pieces, cut at `max` characters. `r` ends at characters'
+    /// boundaries, so a decoded piece is either in it or out.
+    fn slice(&self, r: Range<usize>, max: usize) -> (String, Pieces) {
+        let first = self.pieces.partition_point(|(t, _)| t.end <= r.start);
+        let mut pieces = Vec::new();
+        for (t, s) in &self.pieces[first..] {
+            if t.start >= r.end {
                 break;
             }
+            let (from, to) = (t.start.max(r.start), t.end.min(r.end));
+            let s = if t.len() == s.len() {
+                s.start + (from - t.start)..s.start + (to - t.start)
+            } else {
+                s.clone()
+            };
+            pieces.push((from - r.start..to - r.start, s));
         }
-    };
-    trim_end(&mut e);
-    let mut k = e;
-    while k > s && src[k - 1] == b'#' {
-        k -= 1;
+        let mut name = NameBuf::default();
+        name.source(&(self.text[r].to_string(), pieces), 0);
+        name.finish(max)
     }
-    if k < e && (k == s || src[k - 1] == b' ') {
-        e = k;
-        trim_end(&mut e);
+
+    /// One decoded line `r` of the text: a heading, or a code fence that opens or closes.
+    fn line(&self, r: Range<usize>, fence: &mut bool, out: &mut Vec<Heading>) {
+        let b = self.text.as_bytes();
+        let raw = &b[r.clone()];
+        let indent = raw.iter().take_while(|&&c| c == b' ').count();
+        if indent > 3 {
+            return;
+        }
+        let body = &raw[indent..];
+        if body.starts_with(b"```") || body.starts_with(b"~~~") {
+            *fence = !*fence;
+            return;
+        }
+        if *fence {
+            return;
+        }
+        let level = body.iter().take_while(|&&c| c == b'#').count();
+        if !(1..=6).contains(&level) {
+            return;
+        }
+        let blank = |c: u8| c == b' ' || c == b'\t';
+        if body.get(level).is_some_and(|&c| !blank(c)) {
+            return;
+        }
+        let mut s = r.start + indent + level;
+        let mut e = r.end;
+        while s < e && blank(b[s]) {
+            s += 1;
+        }
+        while e > s && blank(b[e - 1]) {
+            e -= 1;
+        }
+        // A closing run of `#` after a blank, or the whole title.
+        let mut k = e;
+        while k > s && b[k - 1] == b'#' {
+            k -= 1;
+        }
+        if k < e && (k == s || blank(b[k - 1])) {
+            e = k;
+            while e > s && blank(b[e - 1]) {
+                e -= 1;
+            }
+        }
+        out.push(Heading {
+            level,
+            line: self.source_at(r.start)..self.source_end(r.end),
+            name: self.slice(s..e, self.name_chars),
+            title_at: self.source_at(s),
+            signature: self.slice(r, self.name_chars.saturating_mul(2)).0,
+        });
     }
-    out.push(Heading {
-        level,
-        line: r,
-        title: s..e,
-    });
 }

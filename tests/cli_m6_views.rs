@@ -451,3 +451,114 @@ fn m6_encoding_and_lone_cr() {
     assert_eq!(paths(&rows), lf);
     assert_eq!(rows[0]["line_number"], 1);
 }
+
+/// A Match in the values that name a HAR entry, page or header, or a Telegram chat, stays
+/// inside that Segment, under its real key (orchestrator's decision 1 on code round 1).
+#[test]
+fn m6_view_name_values_stay_inside() {
+    let fx = Fixture::new();
+    let har = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/code-c/m6.har"),
+    )
+    .unwrap();
+    put(&fx, "names.har", &har);
+    for (pattern, want) in [
+        (
+            "Authorization",
+            "GET api.example.com/v1/users › request › header Authorization › name",
+        ),
+        ("Login", "Login › title"),
+        (
+            "api\\.example",
+            "GET api.example.com/v1/users › request › url",
+        ),
+    ] {
+        let rows = matches(&output(&fx, "har", "names.har", pattern, &["--json"]));
+        assert_eq!(paths(&rows), [want], "{pattern}");
+    }
+    put(
+        &fx,
+        "account",
+        br#"{"chats":{"list":[{"name":"Work","messages":[{"text":"x","from":"Ana","date":"2024"}]}]}}"#,
+    );
+    let rows = matches(&output(&fx, "telegram", "account", "Work", &["--json"]));
+    assert_eq!(paths(&rows), ["Work › name"]);
+    let rows = matches(&output(&fx, "telegram", "account", "Ana", &["--json"]));
+    assert_eq!(paths(&rows), ["Work › 2024 Ana › from"]);
+}
+
+/// The root chat of a chat export is a Name, found by `--in-headings` though no message's
+/// `from` holds it (code round 1, Codex #8, Fable #11).
+#[test]
+fn m6_telegram_root_chat_is_a_name() {
+    let fx = Fixture::new();
+    put(
+        &fx,
+        "result.json",
+        br#"{"name":"Work","messages":[{"text":"needle","from":"Ana","date":"2024"}]}"#,
+    );
+    let rows = matches(&output(
+        &fx,
+        "telegram",
+        "result.json",
+        "Work",
+        &["--json", "--in-headings"],
+    ));
+    assert_eq!(paths(&rows), ["Work"]);
+    put(&fx, "empty.json", br#"{"name":"needle","messages":[]}"#);
+    let rows = matches(&output(
+        &fx,
+        "telegram",
+        "empty.json",
+        "needle",
+        &["--json", "--in-headings"],
+    ));
+    assert_eq!(rows.len(), 1);
+    let rows = matches(&output(
+        &fx,
+        "telegram",
+        "result.json",
+        "needle",
+        &["--json", "--within", "Work"],
+    ));
+    assert_eq!(paths(&rows), ["Work › 2024 Ana › text"]);
+}
+
+/// Jupyter's headings are read over the source strings decoded and joined: an escaped `#`
+/// and a heading split over two strings (code round 1, Codex #7).
+#[test]
+fn m6_jupyter_headings_decoded() {
+    let fx = Fixture::new();
+    put(
+        &fx,
+        "nb.ipynb",
+        br###"{"cells":[
+{"cell_type":"markdown","source":["# Heading\n","## Long"," title\n"]},
+{"cell_type":"code","source":["needle"]}
+]}"###,
+    );
+    let rows = matches(&output(
+        &fx,
+        "jupyter",
+        "nb.ipynb",
+        "needle",
+        &["--json", "--within", "Heading"],
+    ));
+    assert_eq!(paths(&rows), ["Heading › Long title › cell 2"]);
+    let rows = matches(&output(
+        &fx,
+        "jupyter",
+        "nb.ipynb",
+        "^Long title$",
+        &["--json", "--in-headings"],
+    ));
+    assert_eq!(paths(&rows), ["Heading"]);
+    let rows = matches(&output(
+        &fx,
+        "jupyter",
+        "nb.ipynb",
+        "Heading",
+        &["--json", "--in-headings"],
+    ));
+    assert_eq!(rows.len(), 1);
+}

@@ -379,6 +379,18 @@ impl Prepared for ViewPrepared<'_> {
     fn names(&self) -> anyhow::Result<Vec<Name>> {
         let mut out = names_of(&self.headings);
         let mut c = self.view_cursor();
+        // A chat export's root chat is no member of keypath's: its Name comes first.
+        if let Some(chat) = c.chat(self.start).cloned()
+            && let Some(pieces) = chat.pieces
+        {
+            out.push(Name {
+                text: chat.seg.name.clone(),
+                anchor: pieces.first().map_or(chat.label.start, |p| p.1.start),
+                pieces,
+                trail: vec![chat.seg],
+                labels: vec![chat.label],
+            });
+        }
         let mut found: Vec<(u64, usize)> = Vec::new();
         json::members(self.src, &mut |id, start| found.push((id, start)));
         for (id, start) in found {
@@ -453,7 +465,7 @@ impl ViewCursor<'_> {
 
     /// The chat a chat export's first value is, if it holds `at` (M6 spec §10.5): no member of
     /// keypath's, so its end is where the walk finds that value closing.
-    fn chat(&mut self, at: usize) -> Option<Built> {
+    fn chat(&mut self, at: usize) -> Option<&Built> {
         if self.p.root != Ctx::Chat || at < self.p.start {
             return None;
         }
@@ -475,7 +487,7 @@ impl ViewCursor<'_> {
             self.chat = Some((built, end));
         }
         let (built, end) = self.chat.as_ref().expect("made above");
-        if at < *end { built.clone() } else { None }
+        if at < *end { built.as_ref() } else { None }
     }
 
     /// Whether a heading's own text holds `at`: its parents' Trail, and nothing under it.
@@ -485,24 +497,29 @@ impl ViewCursor<'_> {
         i > 0 && h[i - 1].label.contains(&at)
     }
 
-    /// The view's Segment of link `k`, if it names one, made once.
-    fn built(&mut self, k: usize) -> Option<Built> {
+    /// The view's Segment of link `k`, if it names one, made once and lent: Matches that share
+    /// it copy none of it (code round 1, Fable #32).
+    fn built(&mut self, k: usize) -> Option<&Built> {
         let Role::Node(node) = self.links[k].role else {
             return None;
         };
-        let o = self.open[self.links[k].open].clone();
-        if let Some((_, b)) = self.nodes.iter().find(|(id, _)| *id == o.id) {
-            return b.clone();
-        }
-        let base = self.json.plain(&o);
-        let b = self.p.node(node, o.value, base);
-        self.nodes.push((o.id, b.clone()));
-        b
+        let id = self.open[self.links[k].open].id;
+        let i = match self.nodes.iter().position(|(n, _)| *n == id) {
+            Some(i) => i,
+            None => {
+                let o = self.open[self.links[k].open].clone();
+                let base = self.json.plain(&o);
+                let b = self.p.node(node, o.value, base);
+                self.nodes.push((id, b));
+                self.nodes.len() - 1
+            }
+        };
+        self.nodes[i].1.as_ref()
     }
 
-    /// The Segments of the Trail of `at`, as links: (link, label) of each shown one, before the
-    /// first whose label holds `at`.
-    fn shown(&mut self, at: usize) -> Vec<(usize, Option<Built>)> {
+    /// The Segments of the Trail of `at`, as links: (link, whether the view names it) of each
+    /// shown one, before the first whose label holds `at`.
+    fn shown(&mut self, at: usize) -> Vec<(usize, bool)> {
         let mut out = Vec::new();
         if self.on_heading(at) || self.chat(at).is_some_and(|c| c.label.contains(&at)) {
             return out;
@@ -513,14 +530,11 @@ impl ViewCursor<'_> {
             let entry = match self.links[k].role {
                 Role::Hidden => continue,
                 Role::Plain if array => continue,
-                Role::Plain | Role::Shown => (k, None, label),
-                Role::Node(_) => match self.built(k) {
-                    Some(b) => {
-                        let label = b.label.clone();
-                        (k, Some(b), label)
-                    }
+                Role::Plain | Role::Shown => (k, false, label),
+                Role::Node(_) => match self.built(k).map(|b| b.label.clone()) {
+                    Some(label) => (k, true, label),
                     None if array => continue,
-                    None => (k, None, label),
+                    None => (k, false, label),
                 },
             };
             if entry.2.contains(&at) {
@@ -539,8 +553,8 @@ impl ViewCursor<'_> {
         let mut trail = Vec::new();
         let mut labels = Vec::new();
         if let Some(c) = self.chat(start) {
-            trail.push(c.seg);
-            labels.push(c.label);
+            trail.push(c.seg.clone());
+            labels.push(c.label.clone());
         }
         for &h in &self.hix {
             trail.push(self.p.headings.segments[h].segment.clone());
@@ -563,7 +577,7 @@ impl ViewCursor<'_> {
                 let (_, pieces) = json::decode(self.p.src, r, e);
                 (self.json.plain(&o), o.label.clone(), pieces)
             }
-            Role::Node(_) => match self.built(k) {
+            Role::Node(_) => match self.built(k).cloned() {
                 Some(b) => (b.seg, b.label, b.pieces?),
                 None => {
                     let (r, e) = o.key.clone()?;
@@ -584,15 +598,13 @@ impl ViewCursor<'_> {
         })
     }
 
-    /// The Segment of link `k` and its label.
-    fn segment(&mut self, k: usize, built: Option<Built>) -> (Segment, Range<usize>) {
-        match built {
-            Some(b) => (b.seg, b.label),
-            None => {
-                let o = self.open[self.links[k].open].clone();
-                (self.json.plain(&o), o.label)
-            }
+    /// The Segment of link `k` and its label: the view's when `named`.
+    fn segment(&mut self, k: usize, named: bool) -> (Segment, Range<usize>) {
+        if named && let Some(b) = self.built(k) {
+            return (b.seg.clone(), b.label.clone());
         }
+        let o = self.open[self.links[k].open].clone();
+        (self.json.plain(&o), o.label)
     }
 }
 
@@ -600,11 +612,13 @@ impl Cursor for ViewCursor<'_> {
     fn trail_at(&mut self, at: usize) -> anyhow::Result<SharedTrail> {
         self.links(at);
         let shown = self.shown(at);
-        let chat = self.chat(at);
+        let chat = self.chat(at).map(|c| !c.label.contains(&at));
         self.in_chat = chat.is_some();
-        let chat = chat.filter(|c| !c.label.contains(&at));
+        let chat = chat == Some(true);
         self.ids.clear();
-        self.ids.extend(chat.as_ref().map(|_| CHAT));
+        if chat {
+            self.ids.push(CHAT);
+        }
         self.ids
             .extend(self.hix.iter().map(|&h| HEADING | h as u64));
         self.ids
@@ -614,7 +628,10 @@ impl Cursor for ViewCursor<'_> {
         {
             return Ok(t.clone());
         }
-        let mut trail: Vec<Segment> = chat.map(|c| c.seg).into_iter().collect();
+        let mut trail: Vec<Segment> = Vec::new();
+        if chat && let Some(c) = self.chat(at) {
+            trail.push(c.seg.clone());
+        }
         trail.extend(
             self.hix
                 .iter()
@@ -649,7 +666,7 @@ mod tests {
         ::toml::from_str(&format!("syntax = 'json'\nview = '{view}'")).unwrap()
     }
 
-    fn input(src: &[u8]) -> Input<'_> {
+    pub(super) fn input(src: &[u8]) -> Input<'_> {
         Input {
             bytes: src,
             path: Path::new("x"),
@@ -690,6 +707,44 @@ mod tests {
                 String::from_utf8_lossy(src)
             );
         }
+    }
+
+    #[test]
+    fn jupyter_headings_read_the_decoded_source() {
+        // An escaped `#`, a heading split over two strings, and `\u000d` before a line
+        // break (code round 1, Codex #7, Fable #63).
+        let src = br####"{"cells":[
+{"cell_type":"markdown","source":["\u0023 Esc\u0061ped\n","## Long"," heading\n","### Cr\u000d\n"]},
+{"cell_type":"code","source":["needle"]}
+]}"####;
+        assert_eq!(
+            needles(src, "jupyter"),
+            ["Escaped › Long heading › Cr › cell 2"]
+        );
+        every_byte(src, "jupyter");
+        let names = Keypath.names(&input(src), &params("jupyter")).unwrap();
+        let texts: Vec<&str> = names
+            .iter()
+            .filter(|n| n.trail.last().is_some_and(|s| s.kind == "heading"))
+            .map(|n| n.text.as_str())
+            .collect();
+        assert_eq!(texts, ["Escaped", "Long heading", "Cr"]);
+        // Each name's pieces are Source bytes that decode to its text.
+        let long = names.iter().find(|n| n.text == "Long heading").unwrap();
+        let from: Vec<&[u8]> = long.pieces.iter().map(|p| &src[p.1.clone()]).collect();
+        assert_eq!(from, [&b"Long"[..], b" heading"]);
+        let esc = names.iter().find(|n| n.text == "Escaped").unwrap();
+        assert_eq!(
+            &src[esc.pieces[0].1.start..esc.pieces.last().unwrap().1.end],
+            br"Esc\u0061ped"
+        );
+        // A Match in a heading's text has its parents' Trail.
+        let at = long.pieces[1].1.start + 1;
+        let trail = &Keypath
+            .trails(&input(src), &params("jupyter"), &[at])
+            .unwrap()[0];
+        let t: Vec<&str> = trail.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(t, ["Escaped"]);
     }
 
     #[test]

@@ -47,6 +47,11 @@ pub(super) fn read(b: &mut Builder, packet: Range<usize>, parent: usize) -> Opti
     let (le, ifd0) = header(bytes, &packet)?;
     let base = packet.start;
     let mut budget = packet.len() / 12 + 1;
+    // The XMP packets read, and how many more bytes of XMP may be: at most the packet's own
+    // size in all, so entries that name one packet, or overlapping ones, read it once
+    // (code round 1, Codex #3).
+    let mut xmp_read = std::collections::HashSet::new();
+    let mut xmp_budget = packet.len();
     let mut visited = std::collections::HashSet::new();
     let mut queue = vec![(ifd0 as usize, Ifd::Main(0), parent)];
     let mut first = true;
@@ -96,9 +101,17 @@ pub(super) fn read(b: &mut Builder, packet: Range<usize>, parent: usize) -> Opti
                     .checked_add(off as usize)
                     .and_then(|v| sub(&packet, v, size))
             {
-                b.own(key, value.clone());
                 if tag == 0x02bc && matches!(kind, Ifd::Main(_)) {
-                    super::xmp::read(b, value, key);
+                    // A packet already read keeps the Trails of its first entry.
+                    if xmp_read.insert(value.clone()) {
+                        b.own(key, value.clone());
+                        if value.len() <= xmp_budget {
+                            xmp_budget -= value.len();
+                            super::xmp::read(b, value, key);
+                        }
+                    }
+                } else {
+                    b.own(key, value.clone());
                 }
             }
             let pointer = match (kind, tag) {

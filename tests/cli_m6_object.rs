@@ -285,6 +285,32 @@ fn m6_binary_mutations() {
             }
             cases.push((layout, format!("{n}"), b));
         }
+        // 0x00 every 7 bytes, and seeded random bytes (code round 1, Fable #37): a zero length
+        // or count, and values no pass above writes.
+        for n in 0..4 {
+            let mut b = seed.clone();
+            for x in b.iter_mut().skip(n).step_by(7) {
+                *x = 0;
+            }
+            cases.push((layout, format!("zero {n}"), b));
+        }
+        let mut state = 0x9e37_79b9_7f4a_7c15u64 ^ seed.len() as u64;
+        let mut next = || {
+            // xorshift64: reproducible without a crate.
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for n in 0..8 {
+            let mut b = seed.clone();
+            for _ in 0..b.len().div_ceil(16) {
+                let r = next();
+                let at = (r >> 8) as usize % b.len();
+                b[at] = r as u8;
+            }
+            cases.push((layout, format!("random {n}"), b));
+        }
         let bombs: Vec<_> = BOMBS.iter().filter(|(l, ..)| *l == layout).collect();
         assert!(!bombs.is_empty(), "{layout} has no bomb");
         for (i, (_, at, bytes)) in bombs.into_iter().enumerate() {

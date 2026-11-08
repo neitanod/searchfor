@@ -234,7 +234,6 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
         at = entry.end;
     }
     let pool_bytes = 10..at;
-    let body = at;
     let this = u16_at(bytes, at + 2, false)?;
     let interfaces = u16_at(bytes, at + 6, false)? as usize;
     at = sub(&all, at + 8, 2 * interfaces)?.end;
@@ -254,7 +253,10 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
         .map_or(Cow::Borrowed("class"), |r| {
             Cow::Owned(modified_utf8(&bytes[r]).replace('/', "."))
         });
-    // Who each constant belongs to, the first that claims it in the order of the spec.
+    // Who each constant belongs to, the first that claims it in the order of the spec. A
+    // member's own name comes first, before a string `ldc` loads from the same Utf8 entry
+    // (orchestrator's decision 2 on code round 1, Codex #10): a Match in it has the class's
+    // Trail (rule 5).
     let mut owner = vec![Owner::Pool; pool.len()];
     let claim = |k: usize, o: Owner, owner: &mut Vec<Owner>| {
         if let Some(slot) = owner.get_mut(k)
@@ -263,6 +265,9 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
             *slot = o;
         }
     };
+    for member in fields.iter().chain(&methods) {
+        claim(member.name as usize, Owner::Class, &mut owner);
+    }
     let code_name = |k: u16| utf8(k).is_some_and(|r| &bytes[r] == b"Code");
     for (m, method) in methods.iter().enumerate() {
         for (_, attr) in method.attributes.iter().filter(|(n, _)| code_name(*n)) {
@@ -302,9 +307,6 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
             }
         }
     }
-    for member in fields.iter().chain(&methods) {
-        claim(member.name as usize, Owner::Class, &mut owner);
-    }
     if let Some(e) = pool.get(this as usize).filter(|e| e.tag == 7) {
         claim(e.index as usize, Owner::Class, &mut owner);
     }
@@ -316,7 +318,13 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
     }
 
     let image = b.node(None, "object", version(major, minor).into(), all.clone());
-    let class = b.node(Some(image), "class", class_name, body..bytes.len());
+    // The class's Section holds its constant pool's, which owns the pool's bytes it leaves.
+    let class = b.node(
+        Some(image),
+        "class",
+        class_name,
+        pool_bytes.start..bytes.len(),
+    );
     b.node(Some(class), "section", "constant pool".into(), pool_bytes);
     let label = |k: u16| utf8(k).map_or(Cow::Borrowed("?"), |r| modified_utf8(&bytes[r]));
     let field_nodes: Vec<usize> = fields

@@ -247,7 +247,7 @@ impl<'a> Map<'a> {
 /// not a valid fat file's (Codex M4 code r5 #1, as xnu's `mach_fat.c` checks them): more than
 /// `MAX_ARCHES`, one over the arch table, or one over another. Otherwise every arch is parsed
 /// once, and they hold at most the file's bytes together. A slice that ends past the file is
-/// skipped, as before.
+/// skipped, as before, and a file with no slice that reads is None.
 fn fat<'a>(f: &goblin::mach::MultiArch<'a>, bytes: &'a [u8]) -> Option<Vec<Image<'a>>> {
     if f.narches > MAX_ARCHES {
         return None;
@@ -285,7 +285,9 @@ fn fat<'a>(f: &goblin::mach::MultiArch<'a>, bytes: &'a [u8]) -> Option<Vec<Image
             v.push(img);
         }
     }
-    Some(v)
+    // With no slice that reads, the file is no fat Mach-O: `cafebabe` may start a Java class
+    // (code round 1, Fable #33).
+    (!v.is_empty()).then_some(v)
 }
 
 /// Whether the long names of a PE's sections (`/4`: at offset 4 of the COFF string table),
@@ -1115,6 +1117,16 @@ mod tests {
             ),
             ("over the table", one(&[(x86, 0x1000, n), (arm, 20, 100)])),
             ("4096 repeated", one(&vec![(x86, 0x1000, n); 4096])),
+            // No slice reads: a Java class may be what `cafebabe` starts (code round 1,
+            // Fable #33).
+            (
+                "its one slice ends past the file",
+                one(&[(x86, 0x1000, n + 0x1000)]),
+            ),
+            (
+                "its one slice starts past the file",
+                one(&[(x86, 0x9000, n)]),
+            ),
         ] {
             assert_eq!(Map::parse(&f), None, "{why}");
         }
