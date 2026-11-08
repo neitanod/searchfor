@@ -120,6 +120,11 @@ fn separator(src: &[u8], r: Range<usize>) -> Option<Separator> {
                 continue;
             }
             b'#' => return None,
+            // A drive letter, `C:/` or `C:\`, is part of its word (Fable r1 #54).
+            b':' if i > r.start
+                && src[i - 1].is_ascii_alphabetic()
+                && (i - 1 == r.start || matches!(src[i - 2], b' ' | b'\t'))
+                && matches!(src.get(i + 1), Some(b'/' | b'\\')) => {}
             b':' => {
                 let rest = &src[i..r.end];
                 for op in [&b":::="[..], b"::=", b":="] {
@@ -317,6 +322,20 @@ mod tests {
         // An unclosed reference runs to the end of its line.
         assert_eq!(names(b"x$(a ${b:c}: d\n"), []);
         assert_eq!(names(b"# a: b\nA = 1 # x: y\n"), [("key", "A".into())]);
+    }
+
+    /// Fable r1 #54: a drive letter (`C:/`, `C:\`) is part of its target, as GNU make reads
+    /// it on Windows; a one-letter target before `: /x` with a blank is still a rule.
+    #[test]
+    fn drive_letters_are_part_of_their_targets() {
+        assert_eq!(
+            names(b"C:/out/needle.exe: src/needle.c\na D:\\x: y\nc: /x\n"),
+            [
+                ("target", "C:/out/needle.exe".into()),
+                ("target", "a D:\\x".into()),
+                ("target", "c".into())
+            ]
+        );
     }
 
     #[test]
