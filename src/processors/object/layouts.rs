@@ -475,6 +475,26 @@ mod own_names {
     }
 
     #[test]
+    fn an_id3_tag_cut_short_keeps_the_frames_that_fit() {
+        // A tag that declares more than the file holds reads up to the file's end (code round
+        // 1, Fable #34), as §3 rule 3 keeps the Trails before a failure.
+        let mut tag = m6::id3(b"needle");
+        tag[9] += 100;
+        assert_eq!(trail(&tag, "id3", b"needle"), ["ID3v2.4", "TIT2"]);
+        // A frame or chunk length at u32::MAX overflows no 32-bit `usize` (Fable #35).
+        let mut frame = m6::id3(b"needle");
+        frame[10 + 4..10 + 8].copy_from_slice(&[0x7f; 4]);
+        assert!(BinaryMap::parse(&frame, "id3").is_some());
+        let mut v3 = m6::id3(b"needle");
+        v3[3] = 3;
+        v3[10 + 4..10 + 8].copy_from_slice(&[0xff; 4]);
+        assert!(BinaryMap::parse(&v3, "id3").is_some());
+        let mut webp = m6::webp(b"needle");
+        webp[16..20].copy_from_slice(&[0xff; 4]);
+        assert!(BinaryMap::parse(&webp, "webp").is_none());
+    }
+
+    #[test]
     fn names_written_in_the_file_are_outside_what_they_name() {
         assert_eq!(trail(&m6::png(b"x"), "png", b"Comment"), ["PNG"]);
         assert_eq!(trail(&m6::png(b"x"), "png", b"tEXt"), ["PNG"]);
@@ -491,6 +511,17 @@ mod own_names {
         assert_eq!(
             trail(&xmp, "jpeg", b"/dc:title"),
             ["JPEG", "APP1 XMP", "dc:title"]
+        );
+        // A custom section's name is its own (code round 1, Fable #36): §9's exception is
+        // only for exports and imports.
+        let mut custom = m6::wasm(b"x");
+        custom.extend([0, 13, 6]);
+        custom.extend(b"needle");
+        custom.extend(b"payload");
+        assert_eq!(trail(&custom, "wasm", b"needle"), ["WebAssembly"]);
+        assert_eq!(
+            trail(&custom, "wasm", b"payload"),
+            ["WebAssembly", "custom needle"]
         );
         // §9's own example: an export is the Segment of its name.
         assert_eq!(
