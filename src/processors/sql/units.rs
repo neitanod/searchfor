@@ -21,6 +21,8 @@ pub(super) struct Units<'s> {
     sql_end: usize,
     /// A backslash escapes in strings (`lex::backslash_escapes`).
     esc: bool,
+    /// The last `line_break`: where it looked from, and the `\n` it found.
+    next_break: Option<(usize, Option<usize>)>,
 }
 
 impl<'s> Units<'s> {
@@ -33,7 +35,23 @@ impl<'s> Units<'s> {
             broken: false,
             sql_end: 0,
             esc: lex::backslash_escapes(src),
+            next_break: None,
         }
+    }
+
+    /// The first `\n` at or after `from`. The last answer holds while `from` stays between
+    /// where it looked from and what it found, so the `COPY` statements of one long line, or of
+    /// a file of lone CRs (M6 spec §3, point 7), look at its bytes once, not once each.
+    fn line_break(&mut self, from: usize) -> Option<usize> {
+        if let Some((looked, found)) = self.next_break
+            && looked <= from
+            && found.is_none_or(|f| from <= f)
+        {
+            return found;
+        }
+        let found = memchr::memchr(b'\n', &self.src[from..]).map(|k| from + k);
+        self.next_break = Some((from, found));
+        found
     }
 
     /// Whether a backslash escapes in this Source's strings.
@@ -162,7 +180,7 @@ impl<'s> Units<'s> {
         if !is_copy_from_stdin(src, start, end, self.esc) {
             return end;
         }
-        let Some(nl) = memchr::memchr(b'\n', &src[end..]).map(|k| end + k) else {
+        let Some(nl) = self.line_break(end) else {
             return end;
         };
         let mut line = nl + 1;

@@ -56,6 +56,7 @@ merge. The owner is the chunk of the M5b plan that owns the file.
 | `a_failing_pre_command_names_itself_and_its_stderr` | `src/preprocess.rs` | windows | a `--pre` script for `sh`, made executable with POSIX permissions | C8 |
 | `closing_a_command_read_in_part_gives_its_failure` | `src/preprocess.rs` | windows | a `--pre` script for `sh`, made executable with POSIX permissions | C8 |
 | `the_real_ls_binary_parses` | `src/processors/object/mod.rs` | macos-arm64, macos-x86_64, windows | the system's own glibc ELF, `/bin/ls` | C10 |
+| `m6_one_whatsapp_day_of_two_million_messages` | `tests/chat_day_memory.rs` | macos-arm64, macos-x86_64, windows | the peak RSS of the child s4 from `getrusage(RUSAGE_CHILDREN)`, in KiB as Linux reports it (macOS reports bytes, Windows has no `getrusage`; the whole file) | orchestrator |
 | `t34_a_path_that_cannot_be_read_twice_is_read_as_stdin` | `tests/cli.rs` | windows | `/dev/stdin` (`-` is tested everywhere) | C4 |
 | `t35_max_count_on_an_open_fifo_stops_at_the_limit` | `tests/cli.rs` | windows | FIFOs in the file system (`mkfifo`) | C4 |
 | `m4_12_docs_reads_streams_once` | `tests/cli_m4.rs` | windows | FIFOs, `/dev/stdin`, `/dev/fd/0` | C5 |

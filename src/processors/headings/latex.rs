@@ -65,6 +65,16 @@ fn line_end(src: &[u8], at: usize) -> usize {
     }
 }
 
+/// Where the signature that starts at `at` ends: its line's end, looked for no further than
+/// `compact::signature` decodes, so that in a file without `\n` (a lone CR ends no line, M6
+/// spec §3, point 7) each command does not look for it to the end of the file.
+fn signature_end(src: &[u8], at: usize) -> usize {
+    let to = src
+        .len()
+        .min(at.saturating_add(super::compact::SIGNATURE_BYTES));
+    line_end(&src[..to], at)
+}
+
 /// `r` without spaces, tabs and carriage returns around it.
 fn trim_cr(src: &[u8], r: Range<usize>) -> Range<usize> {
     let mut r = trim(src, r);
@@ -284,8 +294,12 @@ fn scan_counted(src: &[u8], hidden: &[&[u8]]) -> (Items, usize) {
                 && !delim.is_ascii_alphabetic()
                 && !matches!(delim, b' ' | b'\n' | b'\r')
             {
-                let end = line_end(src, d + 1);
-                if let Some(k) = memchr::memchr(delim, &src[d + 1..end]) {
+                // The delimiter or the line's end, whichever comes first: a line's end looked
+                // for first was the end of a file without `\n`, for each `\verb`.
+                let rest = &src[d + 1..];
+                if let Some(k) = memchr::memchr2(delim, b'\n', rest)
+                    && rest[k] == delim
+                {
                     i = d + 2 + k;
                 }
             }
@@ -358,7 +372,7 @@ fn scan_counted(src: &[u8], hidden: &[&[u8]]) -> (Items, usize) {
                     );
                     it.anchor = anchor;
                     it.level = Some(level);
-                    it.signature = Some(at..line_end(src, at));
+                    it.signature = Some(at..signature_end(src, at));
                     items.push(it);
                     depth += 1;
                     frames.push(Frame {
@@ -402,7 +416,7 @@ fn scan_counted(src: &[u8], hidden: &[&[u8]]) -> (Items, usize) {
                     let mut it =
                         Item::new("code", at..close, at..end, Named::Source(vec![n.clone()]));
                     it.anchor = n.start;
-                    it.signature = Some(at..line_end(src, at));
+                    it.signature = Some(at..signature_end(src, at));
                     items.push(it);
                 }
                 i = close;
@@ -426,7 +440,7 @@ fn scan_counted(src: &[u8], hidden: &[&[u8]]) -> (Items, usize) {
                     Named::source_or(vec![name.clone()], "environment"),
                 );
                 it.anchor = name.start;
-                it.signature = Some(at..line_end(src, at));
+                it.signature = Some(at..signature_end(src, at));
                 it.hidden = hidden.contains(&env);
                 items.push(it);
                 depth += 1;
@@ -570,5 +584,47 @@ mod tests {
         assert_eq!(t.len(), super::MAX_DEPTH);
         let after = format!("{deep}\\section{{T}}\nlast-needle\n");
         assert_eq!(trail(after.as_bytes(), &p, "last-needle"), ["T"]);
+    }
+
+    /// Found by tests/fuzz_m6.rs's CR mutation: with no `\n` in the file (a lone CR ends no
+    /// line, M6 spec §3, point 7) each heading's, environment's and listing's signature and
+    /// each `\verb` looked for their line's end at the end of the file. The same commands with
+    /// CR or LF take about the same time; 256 KiB with CR took 30 times longer.
+    #[test]
+    fn commands_with_no_line_break_after_them_scan_in_linear_time() {
+        use crate::processors::blocks::tests::fastest;
+        for unit in [
+            "\\section{S} needle",
+            "\\begin{x} needle",
+            "\\begin{verbatim} needle \\end{verbatim}",
+            "\\verb|x| needle",
+        ] {
+            let lf = format!("{unit}\n").repeat((256 << 10) / (unit.len() + 1));
+            let cr = lf.replace('\n', "\r");
+            let t_lf = fastest(|| drop(super::scan(lf.as_bytes(), &[])));
+            let t_cr = fastest(|| drop(super::scan(cr.as_bytes(), &[])));
+            assert!(
+                t_cr < t_lf * 4 + std::time::Duration::from_millis(20),
+                "{unit}: CR {t_cr:?}, LF {t_lf:?}"
+            );
+        }
+    }
+
+    /// A signature line longer than what `compact::signature` decodes keeps its text when its
+    /// end is looked for that far only.
+    #[test]
+    fn a_long_signature_line_keeps_its_text() {
+        use crate::processors::Processor;
+        let p = params("latex");
+        let lf = format!("\\section{{S}} {}\nneedle\n", "a".repeat(5000));
+        let cr = lf.replace('\n', "\r");
+        for src in [lf, cr] {
+            let at = src.find("needle").unwrap();
+            let input = super::super::tests::input(src.as_bytes(), "x");
+            let t = super::super::Headings.trails(&input, &p, &[at]).unwrap();
+            let want = format!("\\section{{S}} {}", "a".repeat(188));
+            assert_eq!(t[0][0].signature.as_deref(), Some(want.as_str()));
+            cursor_equals_model(src.as_bytes(), &p);
+        }
     }
 }

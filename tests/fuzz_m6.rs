@@ -1,10 +1,10 @@
 //! M6 (plan Chunk 11, Task 11.1): every text Format of M6 through its native cursor, compared
 //! at every byte with its Processor's model, and over mutated fixtures (cut, a byte flipped,
-//! repeated, garbage inserted), each case supervised in a child process for 2 s. The JSON views
-//! (Jupyter, HAR, Telegram) build their model on the same cursor they stream with, so they are
-//! also compared with an independent reading of the JSON (`oracle`); blocks, sql, mail, chat,
-//! headings and markup, whose model is their cursor too, read generated inputs whose Trails
-//! the generator knows (`models`). `SEARCHFOR_FUZZ_SEED`,
+//! repeated, garbage inserted, CR line ends), each case supervised in a child process for 2 s.
+//! The JSON views (Jupyter, HAR, Telegram) build their model on the same cursor they stream
+//! with, so they are also compared with an independent reading of the JSON (`oracle`); blocks,
+//! sql, mail, chat, headings and markup, whose model is their cursor too, read generated
+//! inputs whose Trails the generator knows (`models`). `SEARCHFOR_FUZZ_SEED`,
 //! `SEARCHFOR_FUZZ_N` and `SEARCHFOR_FUZZ_SECONDS` work as in tests/fuzz_m5.rs; a failing case
 //! is saved under `SEARCHFOR_FUZZ_ARTIFACT_DIR` with its exact bytes, and replays through
 //! `m6_mutation_child` with `SEARCHFOR_M6_FUZZ_CASE` and `SEARCHFOR_M6_FUZZ_FORMAT`.
@@ -248,6 +248,15 @@ fn m6_mutation_child() {
     }
 }
 
+/// `m6_mutations`'s operations: cut, a byte flipped, repeated, garbage inserted, and every
+/// line break a lone CR.
+const OPERATIONS: usize = 5;
+
+/// The bytes of the one-line input the CR operation builds in the product (1 MiB). In a debug
+/// build on this machine s4 read the GraphQL one in 21 s with the scan to the end of the file
+/// of Fable #2, and in 0.46 s without it.
+const ONE_LINE: usize = 1 << 20;
+
 #[test]
 fn m6_mutations() {
     let fx = common::Fixture::new();
@@ -258,9 +267,9 @@ fn m6_mutations() {
     let budget = common::fuzz_budget(cases.len() * n);
     let flight = common::FuzzInFlight::new("m6_mutations");
     // First the Format × operation product, before any deadline is checked, so every Format
-    // meets all four operations; after it the RNG picks them.
-    let product = cases.len() * 4;
-    let mut seen = vec![[false; 4]; cases.len()];
+    // meets all five operations; after it the RNG picks them.
+    let product = cases.len() * OPERATIONS;
+    let mut seen = vec![[false; OPERATIONS]; cases.len()];
     let mut completed = 0;
     while completed < product || budget.permits(completed) {
         let target = completed % cases.len();
@@ -271,11 +280,12 @@ fn m6_mutations() {
         let op = if completed < product {
             completed / cases.len()
         } else {
-            ((rng >> 32) as usize) % 4
+            ((rng >> 32) as usize) % OPERATIONS
         };
         seen[target][op] = true;
         let mut b = src.clone();
         let at = (rng as usize) % (b.len() + 1);
+        let mut anchor = None;
         match op {
             0 => b.truncate(at),
             1 => {
@@ -287,13 +297,48 @@ fn m6_mutations() {
                 let part = b[..at].to_vec();
                 b.extend(part);
             }
-            _ => {
+            3 => {
                 b.splice(at..at, b"\0\xff}\n".iter().copied());
+            }
+            _ => {
+                // Review r1, Fable #2: every `\n` a lone `\r`, which is no line break (M6 spec
+                // §3, point 7), so the file is one line. The fixtures alone are too small to
+                // show a scan to the line's end for each member, which grows with the square
+                // of the line, so in the product each line of the fixture is first repeated
+                // in place until the file passes `ONE_LINE`, and the case is read at one
+                // offset. In place, because a line comment now runs to the end of the file:
+                // the fixture repeated whole would be one comment after its first.
+                if completed < product && !b.is_empty() {
+                    let k = ONE_LINE.div_ceil(b.len());
+                    b = b
+                        .split_inclusive(|&x| x == b'\n')
+                        .flat_map(|l| l.repeat(k))
+                        .collect();
+                    anchor = Some(at);
+                }
+                for x in b.iter_mut().filter(|x| **x == b'\n') {
+                    *x = b'\r';
+                }
             }
         }
         std::fs::write(fx.file("mutated"), &b).unwrap();
         flight.at(|| format!("seed={seed} case={completed} rng={rng} format={name}"));
-        supervised(&fx, "m6_mutations", seed, n, completed, name, &b, None);
+        // The one-line case's s4 run prints rg's lines, not `--json`: a Vue template whose
+        // lines are repeated in place nests 256 elements deep, and each of its thousands of
+        // Matches on the line carries that Trail, gigabytes of JSON a debug build cannot
+        // write within the limit. The Trails are still computed for the lines printed.
+        let json = anchor.is_none();
+        supervised(
+            &fx,
+            "m6_mutations",
+            seed,
+            n,
+            completed,
+            name,
+            &b,
+            anchor,
+            json,
+        );
         completed += 1;
     }
     assert!(completed >= product);
@@ -308,8 +353,8 @@ fn m6_mutations() {
 
 /// Runs the case `b`, already written to the fixture's `mutated`, in a child within `limit()`
 /// (at every byte, or at `anchor` alone, a deep input, whose s4 runs also get `--in-headings`),
-/// then s4 over it within `limit()`. The case is saved before it runs and removed when both
-/// pass, so a crash leaves its exact bytes behind.
+/// then s4 over it within `limit()`, with `--json` when `json`. The case is saved before it
+/// runs and removed when both pass, so a crash leaves its exact bytes behind.
 #[allow(clippy::too_many_arguments)]
 fn supervised(
     fx: &common::Fixture,
@@ -320,6 +365,7 @@ fn supervised(
     name: &str,
     b: &[u8],
     anchor: Option<usize>,
+    json: bool,
 ) {
     let argv = [std::ffi::OsStr::new(name)];
     let saved = common::save_fuzz_case(&common::FuzzCase {
@@ -350,10 +396,12 @@ fn supervised(
     );
     // SEARCHFOR_M6_AUTO=1: also without `--format`, at the fixture's own path, so the
     // Detector picks the Format from the name as for the fixture.
-    let mut runs: Vec<(Vec<&str>, String)> = vec![(
-        vec!["--no-docs", "--json", "--format", name],
-        "mutated".into(),
-    )];
+    let first = if json {
+        vec!["--no-docs", "--json", "--format", name]
+    } else {
+        vec!["--no-docs", "--format", name]
+    };
+    let mut runs: Vec<(Vec<&str>, String)> = vec![(first, "mutated".into())];
     if anchor.is_some() {
         runs.push((
             vec!["--no-docs", "--json", "--in-headings", "--format", name],
@@ -411,6 +459,8 @@ fn m6_depth_and_names() {
         ("blade", "@if($x)\n", "@endif\n"),
         ("latex", "\\begin{x}\n", "\\end{x}\n"),
         ("icalendar", "BEGIN:X\n", "END:X\n"),
+        // Review r1, Fable #12: make's conditionals, which kept every level open.
+        ("make", "ifeq (a,b)\n", "\nendif"),
     ]
     .into_iter()
     .enumerate()
@@ -428,8 +478,25 @@ fn m6_depth_and_names() {
             format,
             src.as_bytes(),
             Some(at),
+            true,
         );
     }
+    // Review r1, Codex #1: 300 000 nested make references overflowed the stack of a walk that
+    // recursed once for each; the rule after them still opens.
+    let n = 300_000;
+    let src = format!("{}x{}:\n\techo needle\n", "$(".repeat(n), ")".repeat(n));
+    std::fs::write(fx.file("mutated"), &src).unwrap();
+    supervised(
+        &fx,
+        "m6_depth_and_names",
+        0,
+        1,
+        9,
+        "make",
+        src.as_bytes(),
+        src.find("needle"),
+        true,
+    );
     for (name, params, src) in targets() {
         let p = processor(&name);
         let input = Input {

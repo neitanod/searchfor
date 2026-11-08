@@ -113,7 +113,7 @@ como `overridden`.
 | BibTeX | `bibtex` | `.bib` | entradas por clave, campos |
 | WhatsApp | `whatsapp` | `_chat.txt`, `*WhatsApp*.txt` | días, mensajes por hora y remitente |
 | Telegram JSON | `telegram` | `**/ChatExport_*/result.json`, `**/DataExport_*/result.json` | chats, mensajes por fecha y remitente, claves |
-| Telegram HTML | `telegram-html` | `**/ChatExport_*/messages*.html` | mensajes por fecha y remitente |
+| Telegram HTML | `telegram-html` | `**/ChatExport_*/messages*.html`, `**/DataExport_*/chats/*/messages*.html` | mensajes por fecha y remitente |
 
 Los Formatos de código los parsean Grammars de tree-sitter compiladas dentro de `s4`; YAML,
 JSON y TOML, parsers nativos; HTML, XML, CSV, TSV, los subtítulos y todos los Formatos que suma
@@ -937,8 +937,9 @@ $ s4 --format 'chats/*.txt=whatsapp' needle chats/ana.txt
 ### Telegram
 
 Telegram Desktop exporta un chat a una carpeta `ChatExport_<fecha>` (una cuenta entera a
-`DataExport_<fecha>`), como `result.json` o `messages.html`, `messages2.html`… Esos nombres son
-de Telegram sólo dentro de una carpeta así; en cualquier otro lado siguen siendo JSON y HTML.
+`DataExport_<fecha>`, con las páginas HTML de cada chat en `chats/<chat>/`), como `result.json`
+o `messages.html`, `messages2.html`… Esos nombres son de Telegram sólo dentro de una carpeta
+así; en cualquier otro lado siguen siendo JSON y HTML.
 
 ```
 $ s4 needle chat/ChatExport_m6/result.json --flat
