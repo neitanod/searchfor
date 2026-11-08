@@ -832,7 +832,9 @@ streams comprimidos de una clase quedan invisibles para la búsqueda, como lo so
   `tag 0x9c9b`.
 - **XMP** es XML: su paquete sigue con la ruta de elementos debajo de `rdf:Description`.
 - Los frames **ID3** se nombran por su id; `TXXX` y `WXXX` suman su descripción. Un MP3 con sólo
-  una etiqueta ID3v1 no tiene magic al principio y no se detecta.
+  una etiqueta ID3v1 no tiene magic al principio y no se detecta. Una etiqueta que declara más de
+  lo que tiene el archivo termina antes de los últimos 128 bytes cuando empiezan con `TAG`, que se
+  leen como ID3v1, también cuando ese `TAG` es el texto de un frame que un archivo cortado dejó ahí.
 - Las cajas **MP4** se recorren a través de las cajas contenedoras, y `mdat` no contiene nada.
 - Las secciones de **WebAssembly** se nombran por su id, una función por la sección `name` o
   `func[N]`, y un segmento de datos `data[N]`.

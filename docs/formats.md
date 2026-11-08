@@ -799,7 +799,9 @@ and the compressed streams of a class stay invisible to the search, as they are 
   are sections, and a tag is named from the standard table (`Model`, `Artist`), or `tag 0x9c9b`.
 - **XMP** is XML: its packet continues with the element path below `rdf:Description`.
 - **ID3** frames are named by their id; `TXXX` and `WXXX` add their description. An MP3 with only
-  an ID3v1 tag has no magic at its start and is not detected.
+  an ID3v1 tag has no magic at its start and is not detected. A tag that declares more than the
+  file holds stops before the last 128 bytes when they start with `TAG`, read as ID3v1, also when
+  that `TAG` is a frame's text that a cut file left there.
 - **MP4** boxes are walked through the container boxes, and `mdat` holds nothing.
 - **WebAssembly** sections are named by their id, a function by the `name` section or
   `func[N]`, and a data segment `data[N]`.
