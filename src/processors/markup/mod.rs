@@ -778,7 +778,12 @@ impl<'a> Walk<'_, '_, 'a> {
                 None if !empty && telegram::has_class(self.src, &tag, name.end, b"message") => {
                     message = true;
                     let joined = telegram::has_class(self.src, &tag, name.end, b"joined");
-                    self.message = Some((telegram::MsgName::default(), joined));
+                    let service = telegram::has_class(self.src, &tag, name.end, b"service");
+                    let m = telegram::MsgName {
+                        service,
+                        ..telegram::MsgName::default()
+                    };
+                    self.message = Some((m, joined));
                 }
                 None => {}
             }
@@ -2135,7 +2140,8 @@ mod tests {
             .into_iter()
             .map(|n| n.text)
             .collect();
-        assert_eq!(names, ["", "1.1 & 2 Ana", "Ana", "Bo"]);
+        // A service message is `service`, a word s4 adds (code review M6 r1, Fable #26).
+        assert_eq!(names, ["service", "1.1 & 2 Ana", "Ana", "Bo"]);
     }
 
     /// M6 Task 7.1: the markup cursor's `open_from` is the start of the outermost shown

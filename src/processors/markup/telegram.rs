@@ -48,6 +48,9 @@ pub(crate) struct MsgName {
     pub date: Option<Range<usize>>,
     pub sender: Option<Range<usize>>,
     pub inherited: Option<Range<usize>>,
+    /// A message of class `service` (a date separator, «X joined the group»): with no date
+    /// and no sender it is named `service`, a word s4 adds (code review M6 r1, Fable #26).
+    pub service: bool,
 }
 
 /// The text after `from` up to the next tag, without the white space around it.
@@ -132,7 +135,8 @@ fn push_text(n: &mut CutName, src: &[u8], r: Range<usize>, pieces: bool) {
 }
 
 /// A message's name, `31.01.2024 10:04:12 Ana`, cut at `name_chars`, with the pieces of the
-/// date and of its own sender (an inherited sender maps to nothing: spec §3, point 4).
+/// date and of its own sender (an inherited sender maps to nothing: spec §3, point 4); a
+/// service message without either is `service`, which maps to nothing either.
 pub(crate) fn project(src: &[u8], name_chars: usize, m: &MsgName) -> (String, Pieces) {
     let mut n = CutName::new(name_chars);
     if let Some(d) = &m.date {
@@ -148,6 +152,8 @@ pub(crate) fn project(src: &[u8], name_chars: usize, m: &MsgName) -> (String, Pi
             n.push_str(" ");
         }
         push_text(&mut n, src, r.clone(), own);
+    } else if m.date.is_none() && m.service {
+        n.push_str("service");
     }
     n.finish()
 }

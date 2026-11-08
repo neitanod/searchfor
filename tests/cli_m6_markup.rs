@@ -615,3 +615,37 @@ fn m6_two_scripts_after_nested_segments() {
         }
     }
 }
+
+/// Code review M6 r1, Fable #26: a service message (a date separator, «Bo joined the group»)
+/// has no date title and no sender; it is named `service`, a word s4 adds, which no search
+/// finds, and the joined message after it keeps the sender before it.
+#[test]
+fn m6_telegram_service_messages() {
+    let fx = Fixture::new();
+    let src = b"<div class='history'>\n<div class='message service' id='message-1'><div class='body details'>31 January 2024 needle</div></div>\n<div class='message default' id='message1'>\n<div class='date details' title='31.01.2024 10:04:12'>10:04</div>\n<div class='from_name'>Ana</div>\n<div class='text'>needle</div>\n</div>\n<div class='message service' id='message3'><div class='body details'>Bo joined the group needle</div></div>\n<div class='message default joined' id='message4'>\n<div class='date details' title='31.01.2024 10:06:00'>10:06</div>\n<div class='text'>needle</div>\n</div>\n</div>\n";
+    put(&fx, "chat/ChatExport_s/messages.html", src);
+    let file = "chat/ChatExport_s/messages.html";
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "telegram-html",
+            file,
+            "needle",
+            &["--json"]
+        ))),
+        [
+            "service",
+            "31.01.2024 10:04:12 Ana",
+            "service",
+            "31.01.2024 10:06:00 Ana"
+        ]
+    );
+    let absent = output(
+        &fx,
+        "telegram-html",
+        file,
+        "^service$",
+        &["--json", "--in-headings"],
+    );
+    assert_eq!(code(&absent), 1, "{}", stdout(&absent));
+}
