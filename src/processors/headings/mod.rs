@@ -11,7 +11,7 @@ pub mod org;
 pub mod rst;
 
 use super::{Capability, Cursor, Prepared, Processor};
-use crate::model::{Input, Name, Trail};
+use crate::model::{Input, Name, SharedTrail, Trail};
 use crate::trail::{Outline, TrailCursor, names_of};
 use compact::{Index, IndexCursor, Spec, SpecName};
 use std::ops::Range;
@@ -60,6 +60,18 @@ pub(crate) enum Named {
     Word(&'static str),
     /// A word and a number the scanner adds, `column 3`: no search finds it either.
     Ordinal(&'static str, usize),
+}
+
+impl Named {
+    /// Source pieces, or `word` when they hold no byte: an empty name shows the Segment's kind
+    /// (code review M6 r1, Fable #56).
+    pub fn source_or(pieces: Vec<Range<usize>>, word: &'static str) -> Self {
+        if pieces.iter().all(|r| r.is_empty()) {
+            Named::Word(word)
+        } else {
+            Named::Source(pieces)
+        }
+    }
 }
 
 /// One Segment as a scanner finds it: Source ranges only, kept as `Items` keeps it.
@@ -282,13 +294,21 @@ fn scan(src: &[u8], syntax: Syntax, params: &toml::Table) -> Index {
     items.finish()
 }
 
-fn index_of(src: &[u8], params: &toml::Table) -> anyhow::Result<Index> {
+/// The cursor's index, and Org's tables with a header, whose cells it leaves out: the cursor
+/// names their columns (code review M6 r1, Fable #3).
+fn index_of(src: &[u8], params: &toml::Table) -> anyhow::Result<(Index, Vec<org::Table>)> {
     let syntax = syntax(params)?;
-    Ok(scan(src, syntax, params))
+    if syntax == Syntax::Org {
+        let (items, tables) = org::scan_tables(src);
+        return Ok((items.finish(), tables));
+    }
+    Ok((scan(src, syntax, params), Vec::new()))
 }
 
+/// The model's Outline: every Segment as an Item, Org's columns included.
 fn outline_of(src: &[u8], params: &toml::Table) -> anyhow::Result<Outline> {
-    Ok(index_of(src, params)?.outline(src, name_chars(params)))
+    let syntax = syntax(params)?;
+    Ok(scan(src, syntax, params).outline(src, name_chars(params)))
 }
 
 impl Processor for Headings {
@@ -317,9 +337,11 @@ impl Processor for Headings {
         input: Input<'a>,
         params: &'a toml::Table,
     ) -> anyhow::Result<Box<dyn Prepared + 'a>> {
+        let (index, tables) = index_of(input.bytes, params)?;
         Ok(Box::new(HeadingPrepared {
             src: input.bytes,
-            index: index_of(input.bytes, params)?,
+            index,
+            tables,
             name_chars: name_chars(params),
         }))
     }
@@ -337,12 +359,25 @@ impl Processor for Headings {
 pub struct HeadingPrepared<'a> {
     src: &'a [u8],
     index: Index,
+    /// Org's tables with a header, in file order; their cells are not in `index`.
+    tables: Vec<org::Table>,
     name_chars: usize,
 }
 
 impl Prepared for HeadingPrepared<'_> {
     fn cursor(&self) -> Box<dyn Cursor + '_> {
-        Box::new(IndexCursor::new(self.src, &self.index, self.name_chars))
+        let inner = IndexCursor::new(self.src, &self.index, self.name_chars);
+        if self.tables.is_empty() {
+            return Box::new(inner);
+        }
+        Box::new(TableCursor {
+            inner,
+            src: self.src,
+            tables: &self.tables,
+            name_chars: self.name_chars,
+            last: None,
+            cell: None,
+        })
     }
 
     fn names(&self) -> anyhow::Result<Vec<Name>> {
@@ -354,14 +389,71 @@ impl Prepared for HeadingPrepared<'_> {
     }
 }
 
+/// The index's cursor, and the `column` of an Org table's cell at the end of a Trail whose
+/// offset falls in one: the column the model's Items give, built when a Match asks for it.
+struct TableCursor<'p> {
+    inner: IndexCursor<'p>,
+    src: &'p [u8],
+    tables: &'p [org::Table],
+    name_chars: usize,
+    /// The last Trail given with a column, and the index's Trail it extends.
+    last: Option<(SharedTrail, SharedTrail)>,
+    /// The start of the cell that holds the last offset, if one does.
+    cell: Option<usize>,
+}
+
+impl Cursor for TableCursor<'_> {
+    fn trail_at(&mut self, byte: usize) -> anyhow::Result<SharedTrail> {
+        let t = self.inner.trail_at(byte)?;
+        self.cell = None;
+        let k = self.tables.partition_point(|tb| tb.body.start <= byte);
+        let Some(table) = k.checked_sub(1).map(|k| &self.tables[k]) else {
+            return Ok(t);
+        };
+        if byte >= table.body.end {
+            return Ok(t);
+        }
+        let Some((column, cell)) = table.column_at(self.src, byte, self.name_chars) else {
+            return Ok(t);
+        };
+        self.cell = Some(cell);
+        if let Some((inner, out)) = &self.last
+            && std::rc::Rc::ptr_eq(inner, &t)
+            && out.last() == Some(&column)
+        {
+            return Ok(out.clone());
+        }
+        let mut trail = Vec::with_capacity(t.len() + 1);
+        trail.extend(t.iter().cloned());
+        trail.push(column);
+        let out: SharedTrail = std::rc::Rc::from(trail);
+        self.last = Some((t, out.clone()));
+        Ok(out)
+    }
+
+    /// The index's answer, or the cell's start when the column is the outermost Segment that
+    /// holds the offset.
+    fn open_from(&mut self) -> Option<usize> {
+        let o = self.inner.open_from()?;
+        Some(self.cell.map_or(o, |c| o.min(c)))
+    }
+
+    fn open_from_with(
+        &mut self,
+        first: &mut dyn FnMut(Range<usize>) -> Option<usize>,
+    ) -> Option<usize> {
+        let o = self.inner.open_from_with(first)?;
+        Some(self.cell.map_or(o, |c| o.min(c)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::SharedTrail;
     use std::path::Path;
     use std::rc::Rc;
 
-    fn input<'a>(bytes: &'a [u8], format: &'a str) -> Input<'a> {
+    pub(crate) fn input<'a>(bytes: &'a [u8], format: &'a str) -> Input<'a> {
         Input {
             bytes,
             path: Path::new("x"),

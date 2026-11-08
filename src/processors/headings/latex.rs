@@ -7,7 +7,8 @@
 //! command. The Definition's hidden environments hold Segments without showing. A heading ends
 //! at its enclosing environment's end at the latest; an `\end` with no open environment of its
 //! name closes nothing; an environment left open runs to the end of the file. A `%` comment
-//! (not `\%`) is text. `\input` and `\include` are never followed.
+//! (not `\%`) is text, and so is the body of a macro definition. `\input` and `\include` are
+//! never followed.
 use super::{Item, Items, MAX_DEPTH, Named, trim};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -49,6 +50,9 @@ struct Frame {
     level: Option<usize>,
     /// An environment's name.
     env: Option<Range<usize>>,
+    /// Environments of that name the frame stands for: past `MAX_DEPTH`, where they hold no
+    /// Segment, a run of one name is one frame (code review M6 r1, Fable #14). 1 otherwise.
+    count: usize,
 }
 
 /// Where the line holding `at` ends, without its `\r\n` or `\n`.
@@ -123,6 +127,66 @@ fn group(src: &[u8], at: usize, open: u8, close: u8) -> Option<(Vec<Range<usize>
     None
 }
 
+/// Commands that define a macro or an environment: their bodies are text.
+const DEFINITIONS: [&[u8]; 9] = [
+    b"newcommand",
+    b"renewcommand",
+    b"providecommand",
+    b"newenvironment",
+    b"renewenvironment",
+    b"def",
+    b"gdef",
+    b"edef",
+    b"xdef",
+];
+
+/// Where a definition whose command `cmd` ends at `at` ends, past its body (both bodies of an
+/// environment): what it defines is text there, never a heading or an environment (code review
+/// M6 r1, Fable #25; spec §6.4 makes macros that expand to sectioning commands text). None
+/// when it is not written as one, or a part does not close within `GROUP_MAX` bytes: then the
+/// walk reads on after the command, as it read before.
+fn definition_end(src: &[u8], cmd: &[u8], at: usize) -> Option<usize> {
+    let mut j = at;
+    if src.get(j) == Some(&b'*') {
+        j += 1;
+    }
+    j = skip_blanks(src, j);
+    let bodies = if matches!(cmd, b"def" | b"gdef" | b"edef" | b"xdef") {
+        // `\def\name#1#2{…}`: the name, its parameter text up to the body's brace.
+        if src.get(j) != Some(&b'\\') {
+            return None;
+        }
+        let to = src.len().min(j.saturating_add(GROUP_MAX));
+        j += memchr::memchr(b'{', &src[j..to])?;
+        1
+    } else {
+        // `{\name}` or `\name` (`{name}` for an environment), `[n]`, `[default]`, the body.
+        if src.get(j) == Some(&b'{') {
+            j = group(src, j, b'{', b'}')?.1;
+        } else if src.get(j) == Some(&b'\\') {
+            j += 1 + src[j + 1..]
+                .iter()
+                .take_while(|b| b.is_ascii_alphabetic())
+                .count()
+                .max(1);
+        } else {
+            return None;
+        }
+        for _ in 0..2 {
+            j = optional(src, skip_blanks(src, j))?.1;
+        }
+        if cmd.ends_with(b"environment") { 2 } else { 1 }
+    };
+    for _ in 0..bodies {
+        j = skip_blanks(src, j);
+        if src.get(j) != Some(&b'{') {
+            return None;
+        }
+        j = group(src, j, b'{', b'}')?.1;
+    }
+    Some(j)
+}
+
 /// The text of a one-line `{name}` at `at`, with no nesting: (name, end past `}`).
 fn simple(src: &[u8], at: usize) -> Option<(Range<usize>, usize)> {
     if src.get(at) != Some(&b'{') {
@@ -176,6 +240,12 @@ fn optional(src: &[u8], at: usize) -> Option<(Option<Range<usize>>, usize)> {
 }
 
 pub(crate) fn scan(src: &[u8], hidden: &[&[u8]]) -> Items {
+    scan_counted(src, hidden).0
+}
+
+/// `scan`, and the most frames its walk held.
+fn scan_counted(src: &[u8], hidden: &[&[u8]]) -> (Items, usize) {
+    let mut peak = 0;
     let mut items = Items::default();
     let mut frames: Vec<Frame> = Vec::new();
     // Open environments by name: an `\end` of a name none holds closes nothing.
@@ -185,6 +255,7 @@ pub(crate) fn scan(src: &[u8], hidden: &[&[u8]]) -> Items {
     let mut document = false;
     let mut i = 0;
     while let Some(k) = memchr::memchr2(b'\\', b'%', &src[i..]) {
+        peak = peak.max(frames.len());
         let at = i + k;
         if src[at] == b'%' {
             i = memchr::memchr(b'\n', &src[at..]).map_or(src.len(), |k| at + k);
@@ -218,6 +289,12 @@ pub(crate) fn scan(src: &[u8], hidden: &[&[u8]]) -> Items {
                     i = d + 2 + k;
                 }
             }
+            continue;
+        }
+        if DEFINITIONS.contains(&cmd)
+            && let Some(end) = definition_end(src, cmd, name_end)
+        {
+            i = end;
             continue;
         }
         let section = SECTIONS.iter().position(|s| *s == cmd);
@@ -267,20 +344,28 @@ pub(crate) fn scan(src: &[u8], hidden: &[&[u8]]) -> Items {
                             _ => break,
                         }
                     }
-                    let item = (depth < MAX_DEPTH).then(|| {
-                        let mut it =
-                            Item::new("heading", at..src.len(), at..end, Named::Source(pieces));
-                        it.anchor = anchor;
-                        it.level = Some(level);
-                        it.signature = Some(at..line_end(src, at));
-                        items.push(it);
-                        depth += 1;
-                        items.len() - 1
-                    });
+                    if depth >= MAX_DEPTH {
+                        // A heading past the depth opens no Segment, and its frame would
+                        // change no later close: headings close only while the frames on top
+                        // are headings of their level or deeper.
+                        continue;
+                    }
+                    let mut it = Item::new(
+                        "heading",
+                        at..src.len(),
+                        at..end,
+                        Named::source_or(pieces, "heading"),
+                    );
+                    it.anchor = anchor;
+                    it.level = Some(level);
+                    it.signature = Some(at..line_end(src, at));
+                    items.push(it);
+                    depth += 1;
                     frames.push(Frame {
-                        item,
+                        item: Some(items.len() - 1),
                         level: Some(level),
                         env: None,
+                        count: 1,
                     });
                 }
             }
@@ -324,12 +409,21 @@ pub(crate) fn scan(src: &[u8], hidden: &[&[u8]]) -> Items {
                 continue;
             }
             i = end;
+            *envs.entry(env).or_default() += 1;
+            if depth >= MAX_DEPTH
+                && let Some(top) = frames.last_mut()
+                && top.item.is_none()
+                && top.env.as_ref().is_some_and(|e| &src[e.clone()] == env)
+            {
+                top.count += 1;
+                continue;
+            }
             let item = (depth < MAX_DEPTH).then(|| {
                 let mut it = Item::new(
                     "environment",
                     at..src.len(),
                     at..end,
-                    Named::Source(vec![name.clone()]),
+                    Named::source_or(vec![name.clone()], "environment"),
                 );
                 it.anchor = name.start;
                 it.signature = Some(at..line_end(src, at));
@@ -338,11 +432,11 @@ pub(crate) fn scan(src: &[u8], hidden: &[&[u8]]) -> Items {
                 depth += 1;
                 items.len() - 1
             });
-            *envs.entry(env).or_default() += 1;
             frames.push(Frame {
                 item,
                 level: None,
                 env: Some(name),
+                count: 1,
             });
             continue;
         }
@@ -357,24 +451,34 @@ pub(crate) fn scan(src: &[u8], hidden: &[&[u8]]) -> Items {
                 continue;
             }
             // The environment closes, and everything opened inside it.
-            while let Some(f) = frames.pop() {
+            while let Some(f) = frames.last_mut() {
+                let same = f.env.as_ref().is_some_and(|e| &src[e.clone()] == env);
+                if same && f.count > 1 {
+                    // The innermost of a run past the depth.
+                    f.count -= 1;
+                    if let Some(n) = envs.get_mut(env) {
+                        *n -= 1;
+                    }
+                    break;
+                }
+                let f = frames.pop().unwrap();
                 if let Some(x) = f.item {
                     items.set_end(x, end);
                     depth -= 1;
                 }
                 if let Some(e) = f.env {
-                    let e = &src[e];
-                    if let Some(n) = envs.get_mut(e) {
-                        *n -= 1;
+                    if let Some(n) = envs.get_mut(&src[e]) {
+                        *n -= f.count;
                     }
-                    if e == env {
+                    if same {
                         break;
                     }
                 }
             }
         }
     }
-    items
+    peak = peak.max(frames.len());
+    (items, peak)
 }
 
 #[cfg(test)]
@@ -401,6 +505,54 @@ mod tests {
         assert_eq!(trail(src, &p, "m-needle"), ["S", "lstlisting"]);
         assert_eq!(trail(src, &p, "r-needle"), ["S", "rust"]);
         assert_eq!(trail(src, &p, "v-needle"), ["S"]);
+        cursor_equals_model(src, &p);
+    }
+
+    /// Code review M6 r1, Fable #14: past `MAX_DEPTH`, environments that hold no Segment
+    /// keep one frame per run of a name, and headings none, so unclosed `\begin{x}` lines
+    /// cost the walk no memory each; their `\end`s close what they closed before.
+    #[test]
+    fn environments_past_the_depth_cost_a_frame_per_run() {
+        let p = params("latex");
+        let mut src = "\\begin{a}\n".repeat(super::MAX_DEPTH);
+        src.push_str(&"\\begin{x}\n\\section{s}\n".repeat(20_000));
+        src.push_str("\\begin{y}\n\\begin{x}\nneedle-in\n");
+        src.push_str(&"\\end{x}\n".repeat(20_001));
+        src.push_str("\\end{a}\nneedle-out\n\\end{a}\n\\section{T}\nneedle-t\n");
+        let (_, frames) = super::scan_counted(src.as_bytes(), &[]);
+        assert!(frames <= super::MAX_DEPTH + 3, "{frames} frames");
+        let t = trail(src.as_bytes(), &p, "needle-in");
+        assert_eq!(t.len(), super::MAX_DEPTH);
+        // The `\end{x}`s close the run and `y` inside it; one `\end{a}` the innermost `a`.
+        let t = trail(src.as_bytes(), &p, "needle-out");
+        assert_eq!(t.len(), super::MAX_DEPTH - 1);
+        let t = trail(src.as_bytes(), &p, "needle-t");
+        assert_eq!(t.len(), super::MAX_DEPTH - 1);
+        assert_eq!(t.last().unwrap(), "T");
+    }
+
+    /// Code review M6 r1, Fable #25: the body of a macro definition is text, so a sectioning
+    /// command or a `\\begin` in it opens nothing (`\\newcommand`, `\\renewcommand`,
+    /// `\\providecommand`, `\\newenvironment`, `\\def` and its kin).
+    #[test]
+    fn a_macro_definition_is_text() {
+        let p = params("latex");
+        let src = b"\\newcommand{\\mysec}[1]{\\section{#1}}\n\\renewcommand*\\other[2][x]{\\chapter{#2}}\n\\def\\d#1#2{\\section{#1}\\begin{figure}}\n\\newenvironment{box}[1]{\\begin{center}\\section{#1}}{\\end{center}}\nneedle-top\n\\section{Real}\nneedle-a\n\\mysec{Fake}\nneedle-b\n\\providecommand{\\p}{\\section{P}}\nneedle-c\n";
+        assert_eq!(trail(src, &p, "needle-top"), Vec::<String>::new());
+        assert_eq!(trail(src, &p, "needle-a"), ["Real"]);
+        assert_eq!(trail(src, &p, "needle-b"), ["Real"]);
+        assert_eq!(trail(src, &p, "needle-c"), ["Real"]);
+        cursor_equals_model(src, &p);
+    }
+
+    /// Code review M6 r1, Fable #56: an environment or a heading with an empty name is named
+    /// by its kind, a word s4 adds.
+    #[test]
+    fn an_empty_name_is_named_by_its_kind() {
+        let p = params("latex");
+        let src = b"\\section{A}\n\\begin{}\nneedle-a\n\\end{}\n\\subsection{ }\nneedle-b\n";
+        assert_eq!(trail(src, &p, "needle-a"), ["A", "environment"]);
+        assert_eq!(trail(src, &p, "needle-b"), ["A", "heading"]);
         cursor_equals_model(src, &p);
     }
 

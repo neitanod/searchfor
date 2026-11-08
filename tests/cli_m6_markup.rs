@@ -572,3 +572,102 @@ fn m6_broken_fixtures() {
     }
     assert_eq!(count, owned.len());
 }
+
+/// Code review M6 r1, Fable #1: a script whose Outline nests two Segments, then another
+/// script with a Match. The cursor took the indices of the first script's Segments for
+/// elements' `seq`s: a panic, or the first script's Segment copied in place of `script[2]`.
+#[test]
+fn m6_two_scripts_after_nested_segments() {
+    let fx = Fixture::new();
+    let class_then_fn: &[u8] =
+        b"<script>\nclass A { m() { return \"needle\"; } }\n</script>\n<script>\nfunction C() { return needle; }\n</script>\n";
+    let setup_then_default: &[u8] = b"<script setup lang=\"ts\">\nconst o = { a() { return \"needle\"; } };\nfunction f() { function g() { return \"needle\"; } }\n</script>\n<script lang=\"ts\">\nexport default { name: \"x\", methods: { h() { return \"needle\"; } } };\n</script>\n";
+    for (format, file, src, expected) in [
+        (
+            "html",
+            "p4.html",
+            class_then_fn,
+            &["script[1] › A › m", "script[2] › C"][..],
+        ),
+        (
+            "vue",
+            "p4.vue",
+            class_then_fn,
+            &["script[1] › A › m", "script[2] › C"][..],
+        ),
+        (
+            "vue",
+            "p10.vue",
+            setup_then_default,
+            &["script[1] › a", "script[1] › f › g", "script[2] › h"][..],
+        ),
+    ] {
+        put(&fx, file, src);
+        assert_eq!(
+            paths(&matches(&output(&fx, format, file, "needle", &["--json"]))),
+            expected,
+            "{file}"
+        );
+        for flag in ["--flat", "--tree"] {
+            let out = output(&fx, format, file, "needle", &[flag]);
+            assert_eq!(code(&out), 0, "{file} {flag}: {}", stderr(&out));
+            assert!(out.stderr.is_empty(), "{file} {flag}: {}", stderr(&out));
+        }
+    }
+}
+
+/// Code review M6 r1, Fable #26: a service message (a date separator, «Bo joined the group»)
+/// has no date title and no sender; it is named `service`, a word s4 adds, which no search
+/// finds, and the joined message after it keeps the sender before it.
+#[test]
+fn m6_telegram_service_messages() {
+    let fx = Fixture::new();
+    let src = b"<div class='history'>\n<div class='message service' id='message-1'><div class='body details'>31 January 2024 needle</div></div>\n<div class='message default' id='message1'>\n<div class='date details' title='31.01.2024 10:04:12'>10:04</div>\n<div class='from_name'>Ana</div>\n<div class='text'>needle</div>\n</div>\n<div class='message service' id='message3'><div class='body details'>Bo joined the group needle</div></div>\n<div class='message default joined' id='message4'>\n<div class='date details' title='31.01.2024 10:06:00'>10:06</div>\n<div class='text'>needle</div>\n</div>\n</div>\n";
+    put(&fx, "chat/ChatExport_s/messages.html", src);
+    let file = "chat/ChatExport_s/messages.html";
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "telegram-html",
+            file,
+            "needle",
+            &["--json"]
+        ))),
+        [
+            "service",
+            "31.01.2024 10:04:12 Ana",
+            "service",
+            "31.01.2024 10:06:00 Ana"
+        ]
+    );
+    let absent = output(
+        &fx,
+        "telegram-html",
+        file,
+        "^service$",
+        &["--json", "--in-headings"],
+    );
+    assert_eq!(code(&absent), 1, "{}", stdout(&absent));
+}
+
+/// Code review M6 r1, Fable #58: a Blade directive inside a `class` attribute is no class of
+/// the element's name; the classes around it are.
+#[test]
+fn m6_blade_directives_in_a_class_are_no_classes() {
+    let fx = Fixture::new();
+    put(
+        &fx,
+        "classes.blade.php",
+        b"<div class=\"@if($x == 1) a @endif b\">needle</div>\n<p class=\"@class(['c' => $y]) d\">needle</p>\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "blade",
+            "classes.blade.php",
+            "needle",
+            &["--json"]
+        ))),
+        ["div.a.b", "p.d"]
+    );
+}

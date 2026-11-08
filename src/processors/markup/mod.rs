@@ -462,6 +462,7 @@ fn element_name(
             n.push_str("#");
             n.push_lossy(src, id);
         }
+        let blade = p.templates == Some(TemplateSyntax::Blade);
         if !n.full()
             && let Some(cls) = scan::attribute(src, tag, name.end, b"class", false)
         {
@@ -471,6 +472,13 @@ fn element_name(
                     i += 1;
                 }
                 let s = i;
+                if blade && src.get(s) == Some(&b'@') {
+                    // A Blade directive, `@if($x == 1)` or `@endif`, is no class (code review
+                    // M6 r1, Fable #58): past its word and its balanced arguments, to the
+                    // white space after them.
+                    i = directive_end(src, s, cls.end);
+                    continue;
+                }
                 while i < cls.end && !src[i].is_ascii_whitespace() {
                     i += 1;
                 }
@@ -483,6 +491,36 @@ fn element_name(
     }
     let (text, pieces) = n.finish();
     (text, pieces, has_id)
+}
+
+/// Where a Blade directive written at `at` in an attribute value that ends at `end` ends: past
+/// its word, its arguments' balanced parentheses, and the bytes up to the next white space.
+fn directive_end(src: &[u8], at: usize, end: usize) -> usize {
+    let mut i = at + 1;
+    while i < end && (src[i].is_ascii_alphanumeric() || src[i] == b'_') {
+        i += 1;
+    }
+    if i < end && src[i] == b'(' {
+        let mut depth = 0usize;
+        while i < end {
+            match src[i] {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        i += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+    while i < end && !src[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
 }
 
 /// The name of a template block, its opener as written cut at `name_chars` (M6 spec §8.4).
@@ -778,7 +816,12 @@ impl<'a> Walk<'_, '_, 'a> {
                 None if !empty && telegram::has_class(self.src, &tag, name.end, b"message") => {
                     message = true;
                     let joined = telegram::has_class(self.src, &tag, name.end, b"joined");
-                    self.message = Some((telegram::MsgName::default(), joined));
+                    let service = telegram::has_class(self.src, &tag, name.end, b"service");
+                    let m = telegram::MsgName {
+                        service,
+                        ..telegram::MsgName::default()
+                    };
+                    self.message = Some((m, joined));
                 }
                 None => {}
             }
@@ -1392,11 +1435,15 @@ impl Cursor for MarkupCursor<'_> {
         }
         let mut trail = Vec::with_capacity(ks.len() + inner.len());
         for (i, &k) in ks.iter().enumerate() {
-            // A Segment of the last Trail is the same element: its Segment is copied.
-            let known = self
-                .last
-                .as_ref()
-                .and_then(|(s, t)| s.iter().position(|&q| q == seqs[i]).map(|j| t[j].clone()));
+            // A Segment of the last Trail is the same element: its Segment is copied. Only the
+            // elements' `seq`s are looked at, those before the separator: the script's indices
+            // after it are another space of numbers (code review M6 r1, Fable #1).
+            let known = self.last.as_ref().and_then(|(s, t)| {
+                s.iter()
+                    .take_while(|&&q| q != NO_SEQ)
+                    .position(|&q| q == seqs[i])
+                    .map(|j| t[j].clone())
+            });
             trail.push(match known {
                 Some(seg) => seg,
                 None => self.segment(k),
@@ -1840,6 +1887,29 @@ mod tests {
     }
 
     /// `every_byte` with these `[params]`.
+    /// Each pair of bytes `a`, `b` asked of one cursor in that order, so a Trail follows one
+    /// that shares no element with it, either way.
+    fn every_pair_with(src: &[u8], params: &toml::Table) {
+        let syntax = params["syntax"].as_str().unwrap();
+        let input = Input {
+            bytes: src,
+            path: Path::new("x"),
+            format: syntax,
+            disk: None,
+        };
+        let anchors: Vec<usize> = (0..src.len()).collect();
+        let expected = Markup.trails(&input, params, &anchors).unwrap();
+        let prepared = Markup.prepare(input, params).unwrap();
+        for a in 0..src.len() {
+            for (b, t) in expected.iter().enumerate() {
+                let mut c = prepared.cursor();
+                c.trail_at(a).unwrap();
+                let got = c.trail_at(b).unwrap();
+                assert_eq!(got.as_ref(), t.as_slice(), "byte {b} after {a} of {syntax}");
+            }
+        }
+    }
+
     fn every_byte_with(src: &[u8], params: &toml::Table) {
         let syntax = params["syntax"].as_str().unwrap();
         let input = Input {
@@ -1963,6 +2033,16 @@ mod tests {
             b"<script>function f() {}</script><script>x</script>",
             &params,
         );
+        // Code review M6 r1, Fable #1: a script with two nested Segments and then another
+        // script, whose Segment indices are no element's `seq`; the Trail of one byte right
+        // after the Trail of any other.
+        for src in [
+            &b"<script>\nclass A { m() { return 1; } }\n</script>\n<script>\nfunction C() { return 2; }\n</script>\n"[..],
+            b"<div><script>\nfunction f() { function g() { 1 } }\n</script></div>\n<p><script>\nconst k = { h() { 2 } };\nfunction j() { 3 }\n</script></p>\n",
+        ] {
+            every_byte_with(src, &params);
+            every_pair_with(src, &params);
+        }
         let at = memchr::memmem::find(SCRIPTS, b"'x'").unwrap();
         let input = Input {
             bytes: SCRIPTS,
@@ -2094,7 +2174,8 @@ mod tests {
             .into_iter()
             .map(|n| n.text)
             .collect();
-        assert_eq!(names, ["", "1.1 & 2 Ana", "Ana", "Bo"]);
+        // A service message is `service`, a word s4 adds (code review M6 r1, Fable #26).
+        assert_eq!(names, ["service", "1.1 & 2 Ana", "Ana", "Bo"]);
     }
 
     /// M6 Task 7.1: the markup cursor's `open_from` is the start of the outermost shown
