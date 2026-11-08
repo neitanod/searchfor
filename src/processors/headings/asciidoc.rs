@@ -70,6 +70,28 @@ fn underline(src: &[u8], text: Line, l: Line) -> bool {
     u.len().abs_diff(chars) <= 1
 }
 
+/// Whether the line is an attribute entry, `:name: value`, `:!name:` or `:name!:`, which may
+/// stand above the document title (code review M6 r1, Fable #24; Asciidoctor's header, from
+/// memory: the change only lets more files have a title).
+fn attribute_entry(src: &[u8], l: Line) -> bool {
+    let t = &src[l.start..l.end];
+    let Some(rest) = t.strip_prefix(b":") else {
+        return false;
+    };
+    let rest = rest.strip_prefix(b"!").unwrap_or(rest);
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    if !rest.first().is_some_and(|&b| word(b)) {
+        return false;
+    }
+    let n = rest.iter().take_while(|&&b| word(b) || b == b'-').count();
+    let rest = &rest[n..];
+    let rest = rest.strip_prefix(b"!").unwrap_or(rest);
+    let Some(value) = rest.strip_prefix(b":") else {
+        return false;
+    };
+    value.first().is_none_or(|b| matches!(b, b' ' | b'\t'))
+}
+
 /// A heading line: (markers, name range). The markers are one run of `=` or `#`, six at most,
 /// followed by a space and some text.
 fn heading(src: &[u8], l: Line) -> Option<(usize, Range<usize>)> {
@@ -244,7 +266,7 @@ pub(crate) fn scan(src: &[u8]) -> Items {
             open.push(&mut items, it, level, usize::from(document));
             continue;
         }
-        if !comment {
+        if !comment && !attribute_entry(src, l) {
             content = true;
             text = Some(l);
         }
@@ -338,6 +360,19 @@ mod tests {
         assert_eq!(t[2].line, 3, "the block starts at its [source] line");
         assert_eq!(t[2].signature.as_deref(), Some("[source,rust]"));
         cursor_equals_model(src, &p);
+    }
+
+    /// Code review M6 r1, Fable #24: attribute entries above the title (`:toc:`,
+    /// `:author: X`, `:!sectnums:`) leave `= Doc` the document title; any other line before
+    /// it still makes it text.
+    #[test]
+    fn attribute_entries_before_the_title_leave_it_the_title() {
+        let p = params("asciidoc");
+        let src = b":toc:\n:author: X\n:!sectnums:\n:tip-caption!:\n= Doc\n== A\nneedle-a\n";
+        assert_eq!(trail(src, &p, "needle-a"), ["Doc", "A"]);
+        cursor_equals_model(src, &p);
+        let src = b":toc:\n:not an entry\n= Doc\n== A\nneedle-a\n";
+        assert_eq!(trail(src, &p, "needle-a"), ["A"]);
     }
 
     #[test]
