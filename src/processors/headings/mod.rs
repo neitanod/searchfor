@@ -62,6 +62,18 @@ pub(crate) enum Named {
     Ordinal(&'static str, usize),
 }
 
+impl Named {
+    /// Source pieces, or `word` when they hold no byte: an empty name shows the Segment's kind
+    /// (code review M6 r1, Fable #56).
+    pub fn source_or(pieces: Vec<Range<usize>>, word: &'static str) -> Self {
+        if pieces.iter().all(|r| r.is_empty()) {
+            Named::Word(word)
+        } else {
+            Named::Source(pieces)
+        }
+    }
+}
+
 /// One Segment as a scanner finds it: Source ranges only, kept as `Items` keeps it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Item {

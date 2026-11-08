@@ -182,7 +182,7 @@ fn scan_with(src: &[u8], per_cell: bool) -> (Items, Vec<Table>) {
                 "heading",
                 l.start..src.len(),
                 l.start..l.next,
-                Named::Source(vec![name.clone()]),
+                Named::source_or(vec![name.clone()], "heading"),
             );
             it.anchor = name.start;
             it.level = Some(level);
@@ -290,6 +290,16 @@ mod tests {
         assert_eq!(ix.len(), 2, "the two headings alone");
         assert_eq!(trail(&src, &p, "needle"), ["T", "b"]);
         cursor_equals_model(&src, &p);
+    }
+
+    /// Code review M6 r1, Fable #56: a heading of stars and spaces alone is named `heading`,
+    /// a word s4 adds, so its Trail shows what it is.
+    #[test]
+    fn an_empty_heading_is_named_heading() {
+        let p = params("org");
+        let src = b"* A\n*   \nneedle\n";
+        assert_eq!(trail(src, &p, "needle"), ["heading"]);
+        cursor_equals_model(src, &p);
     }
 
     #[test]

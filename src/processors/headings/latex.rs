@@ -350,8 +350,12 @@ fn scan_counted(src: &[u8], hidden: &[&[u8]]) -> (Items, usize) {
                         // are headings of their level or deeper.
                         continue;
                     }
-                    let mut it =
-                        Item::new("heading", at..src.len(), at..end, Named::Source(pieces));
+                    let mut it = Item::new(
+                        "heading",
+                        at..src.len(),
+                        at..end,
+                        Named::source_or(pieces, "heading"),
+                    );
                     it.anchor = anchor;
                     it.level = Some(level);
                     it.signature = Some(at..line_end(src, at));
@@ -419,7 +423,7 @@ fn scan_counted(src: &[u8], hidden: &[&[u8]]) -> (Items, usize) {
                     "environment",
                     at..src.len(),
                     at..end,
-                    Named::Source(vec![name.clone()]),
+                    Named::source_or(vec![name.clone()], "environment"),
                 );
                 it.anchor = name.start;
                 it.signature = Some(at..line_end(src, at));
@@ -538,6 +542,17 @@ mod tests {
         assert_eq!(trail(src, &p, "needle-a"), ["Real"]);
         assert_eq!(trail(src, &p, "needle-b"), ["Real"]);
         assert_eq!(trail(src, &p, "needle-c"), ["Real"]);
+        cursor_equals_model(src, &p);
+    }
+
+    /// Code review M6 r1, Fable #56: an environment or a heading with an empty name is named
+    /// by its kind, a word s4 adds.
+    #[test]
+    fn an_empty_name_is_named_by_its_kind() {
+        let p = params("latex");
+        let src = b"\\section{A}\n\\begin{}\nneedle-a\n\\end{}\n\\subsection{ }\nneedle-b\n";
+        assert_eq!(trail(src, &p, "needle-a"), ["A", "environment"]);
+        assert_eq!(trail(src, &p, "needle-b"), ["A", "heading"]);
         cursor_equals_model(src, &p);
     }
 
