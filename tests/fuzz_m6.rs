@@ -1564,9 +1564,10 @@ mod oracle {
 /// Review r1, Fable #29 and #30: `m6_cursor_model` compares a cursor with `Processor::trails`,
 /// which for blocks, sql, mail, chat, headings and markup runs that same cursor. Here each of
 /// those Processors reads generated inputs whose Trails the generator knows, because it wrote
-/// them: one simple model per Processor (nginx for blocks, Org for headings, a Vue template
-/// for markup, mbox for mail, WhatsApp for chat), sharing no code with s4. Both
-/// `Processor::trails` and the native cursor must give the model's Trail at every Match.
+/// them: one simple model per Processor (Org for headings, a Vue template for markup, mbox
+/// for mail, WhatsApp for chat) and one per syntax of blocks (nginx, Apache, HCL, GraphQL and
+/// Protobuf, code round 2, Fable #9), sharing no code with s4. Both `Processor::trails` and
+/// the native cursor must give the model's Trail at every Match.
 #[test]
 fn m6_generated_models() {
     let seed = common::fuzz_seed(0x6_2026_1108);
@@ -1633,8 +1634,12 @@ mod models {
     type Generated = (String, Vec<(usize, String)>);
     type Generator = fn(&mut Rng) -> Generated;
 
-    pub const GENERATORS: [(&str, Generator); 6] = [
+    pub const GENERATORS: [(&str, Generator); 10] = [
         ("nginx", nginx),
+        ("apache", apache),
+        ("hcl", hcl),
+        ("graphql", graphql),
+        ("protobuf", protobuf),
         ("org", org),
         ("vue", vue),
         ("sql", sql),
@@ -1673,6 +1678,299 @@ mod models {
         }
         let mut out = (String::new(), Vec::new());
         items(r, &mut Vec::new(), &mut out, &mut 0);
+        out
+    }
+
+    /// Apache sections `<Tag aN>` … `</Tag>` nested up to four deep, their closing tag in any
+    /// case, comment lines, and directives `KN v needle`, some continued by `\` on the next
+    /// line: a Match is in its directive, inside every section open around it, each named by
+    /// its tag's text as written.
+    fn apache(r: &mut Rng) -> Generated {
+        const TAGS: [&str; 3] = ["Directory", "Location", "IfModule"];
+        fn items(r: &mut Rng, path: &mut Vec<String>, out: &mut Generated, n: &mut usize) {
+            for _ in 0..=r.below(4) {
+                *n += 1;
+                let indent = "  ".repeat(path.len());
+                match r.below(5) {
+                    0 if path.len() < 4 => {
+                        let tag = TAGS[r.below(TAGS.len())];
+                        let name = format!("{tag} a{n}");
+                        out.0 += &format!("{indent}<{name}>\n");
+                        path.push(name);
+                        items(r, path, out, n);
+                        path.pop();
+                        let close = match r.below(3) {
+                            0 => tag.to_ascii_lowercase(),
+                            1 => tag.to_ascii_uppercase(),
+                            _ => tag.to_string(),
+                        };
+                        out.0 += &format!("{indent}</{close}>\n");
+                    }
+                    1 => out.0 += &format!("{indent}# comment {n}\n"),
+                    _ => {
+                        let key = format!("K{n}");
+                        out.0 += &format!("{indent}{key} v ");
+                        if r.below(3) == 0 {
+                            out.0 += &format!("\\\n{indent}  ");
+                        }
+                        path.push(key);
+                        out.1.push((out.0.len(), trail(path)));
+                        path.pop();
+                        out.0 += "needle\n";
+                    }
+                }
+            }
+        }
+        let mut out = (String::new(), Vec::new());
+        items(r, &mut Vec::new(), &mut out, &mut 0);
+        out
+    }
+
+    /// HCL blocks `type "l1" l2 {` nested up to three deep and attributes whose values are
+    /// strings (some with a `${…}` that holds a quoted `}`), objects, lists, heredocs and
+    /// numbers with an end-of-line comment: a Match is in its attribute, its object keys
+    /// and list elements (`k[1]`, 0-based) included, inside every block open around it, each
+    /// named by its type and labels without quotes.
+    fn hcl(r: &mut Rng) -> Generated {
+        fn value(r: &mut Rng, path: &mut Vec<String>, out: &mut Generated, depth: usize) {
+            match r.below(if depth < 3 { 3 } else { 1 }) {
+                0 => {
+                    out.0 += "\"";
+                    if r.below(2) == 0 {
+                        out.0 += "${x[\"}\"]} ";
+                    }
+                    out.1.push((out.0.len(), trail(path)));
+                    out.0 += "needle\"";
+                }
+                1 => {
+                    out.0 += "{ ";
+                    let n = 1 + r.below(2);
+                    for j in 0..n {
+                        let key = format!("o{j}");
+                        out.0 += &format!("{key} = ");
+                        path.push(key);
+                        value(r, path, out, depth + 1);
+                        path.pop();
+                        out.0 += if j + 1 < n { ", " } else { " " };
+                    }
+                    out.0 += "}";
+                }
+                _ => {
+                    out.0 += "[";
+                    let n = 1 + r.below(3);
+                    for j in 0..n {
+                        let last = path.pop().expect("a list has a key");
+                        path.push(format!("{last}[{j}]"));
+                        value(r, path, out, depth + 1);
+                        path.pop();
+                        path.push(last);
+                        if j + 1 < n {
+                            out.0 += ", ";
+                        }
+                    }
+                    out.0 += "]";
+                }
+            }
+        }
+        fn items(r: &mut Rng, path: &mut Vec<String>, out: &mut Generated, n: &mut usize) {
+            for _ in 0..=r.below(4) {
+                *n += 1;
+                let indent = "  ".repeat(path.len());
+                match r.below(6) {
+                    0 if path.len() < 3 => {
+                        let mut name = format!("t{n}");
+                        out.0 += &format!("{indent}{name}");
+                        for l in 0..r.below(3) {
+                            if r.below(2) == 0 {
+                                out.0 += &format!(" \"l{l}\"");
+                            } else {
+                                out.0 += &format!(" l{l}");
+                            }
+                            name += &format!(" l{l}");
+                        }
+                        out.0 += " {\n";
+                        path.push(name);
+                        items(r, path, out, n);
+                        path.pop();
+                        out.0 += &format!("{indent}}}\n");
+                    }
+                    1 => out.0 += &format!("{indent}# comment {n}\n{indent}/* {n} */\n"),
+                    k => {
+                        let key = format!("k{n}");
+                        out.0 += &format!("{indent}{key} = ");
+                        path.push(key);
+                        match k {
+                            2 => {
+                                out.0 += "<<-EOT\n";
+                                out.1.push((out.0.len(), trail(path)));
+                                out.0 += &format!("needle\n{indent}  EOT\n");
+                            }
+                            3 => {
+                                out.0 += "1 // ";
+                                out.1.push((out.0.len(), trail(path)));
+                                out.0 += "needle\n";
+                            }
+                            _ => {
+                                value(r, path, out, 0);
+                                out.0 += "\n";
+                            }
+                        }
+                        path.pop();
+                    }
+                }
+            }
+        }
+        let mut out = (String::new(), Vec::new());
+        items(r, &mut Vec::new(), &mut out, &mut 0);
+        out
+    }
+
+    /// GraphQL types whose fields, some with arguments, end in a `# needle` comment, and
+    /// operations (named, or anonymous `{ … }`, named `query`) whose selection sets nest up to
+    /// four deep, through fields with arguments or an alias: a Match is in the type's field,
+    /// or in every field with a selection set open around it, each named by its alias or
+    /// name.
+    fn graphql(r: &mut Rng) -> Generated {
+        fn selection(r: &mut Rng, path: &mut Vec<String>, out: &mut Generated, n: &mut usize) {
+            for _ in 0..=r.below(3) {
+                *n += 1;
+                let indent = "  ".repeat(path.len());
+                if path.len() < 5 && r.below(2) == 0 {
+                    let name = match r.below(3) {
+                        0 => {
+                            out.0 += &format!("{indent}a{n}: f{n} {{\n");
+                            format!("a{n}")
+                        }
+                        1 => {
+                            out.0 += &format!("{indent}f{n}(x: 1, y: \"}}\") {{\n");
+                            format!("f{n}")
+                        }
+                        _ => {
+                            out.0 += &format!("{indent}f{n} {{\n");
+                            format!("f{n}")
+                        }
+                    };
+                    path.push(name);
+                    selection(r, path, out, n);
+                    path.pop();
+                    out.0 += &format!("{indent}}}\n");
+                } else {
+                    out.0 += &format!("{indent}f{n} # ");
+                    out.1.push((out.0.len(), trail(path)));
+                    out.0 += "needle\n";
+                }
+            }
+        }
+        let mut out = (String::new(), Vec::new());
+        let mut n = 0;
+        for _ in 0..=r.below(3) {
+            n += 1;
+            match r.below(3) {
+                0 => {
+                    let name = format!("T{n}");
+                    out.0 += &format!("type {name} {{\n");
+                    for _ in 0..=r.below(3) {
+                        n += 1;
+                        let field = format!("f{n}");
+                        if r.below(2) == 0 {
+                            out.0 += &format!("  {field}(a: Int = 1): [String!]! # ");
+                        } else {
+                            out.0 += &format!("  {field}: String # ");
+                        }
+                        out.1.push((out.0.len(), trail(&[name.clone(), field])));
+                        out.0 += "needle\n";
+                    }
+                    out.0 += "}\n";
+                }
+                1 => {
+                    let name = format!("Q{n}");
+                    out.0 += &format!("query {name}($v: Int) {{\n");
+                    selection(r, &mut vec![name], &mut out, &mut n);
+                    out.0 += "}\n";
+                }
+                _ => {
+                    out.0 += "{\n";
+                    selection(r, &mut vec!["query".to_string()], &mut out, &mut n);
+                    out.0 += "}\n";
+                }
+            }
+        }
+        out
+    }
+
+    /// Protobuf messages nested up to three deep, with fields, `oneof`s and enums whose
+    /// values hold the Match in an option, and services whose `rpc`s hold it in an `option`
+    /// statement; `syntax`, `package` and comments around them: a Match is in its field or
+    /// enum value, or in its `rpc`, inside every message, `oneof`, enum or service open around
+    /// it, each named by its name.
+    fn protobuf(r: &mut Rng) -> Generated {
+        fn field(path: &mut Vec<String>, out: &mut Generated, n: usize, indent: &str) {
+            let name = format!("f{n}");
+            out.0 += &format!("{indent}repeated string {name} = {n} [json_name = \"");
+            path.push(name);
+            out.1.push((out.0.len(), trail(path)));
+            path.pop();
+            out.0 += "needle\"];\n";
+        }
+        fn message(r: &mut Rng, path: &mut Vec<String>, out: &mut Generated, n: &mut usize) {
+            *n += 1;
+            let indent = "  ".repeat(path.len());
+            let name = format!("M{n}");
+            out.0 += &format!("{indent}message {name} {{\n");
+            path.push(name);
+            let inner = "  ".repeat(path.len());
+            for _ in 0..=r.below(4) {
+                *n += 1;
+                match r.below(5) {
+                    0 if path.len() < 3 => message(r, path, out, n),
+                    1 => {
+                        let name = format!("O{n}");
+                        out.0 += &format!("{inner}oneof {name} {{\n");
+                        path.push(name);
+                        *n += 1;
+                        field(path, out, *n, &format!("{inner}  "));
+                        path.pop();
+                        out.0 += &format!("{inner}}}\n");
+                    }
+                    2 => {
+                        let name = format!("E{n}");
+                        out.0 += &format!("{inner}enum {name} {{\n");
+                        *n += 1;
+                        let value = format!("V{n}");
+                        out.0 += &format!("{inner}  {value} = 0 [(o) = \"");
+                        path.push(name);
+                        path.push(value);
+                        out.1.push((out.0.len(), trail(path)));
+                        path.pop();
+                        path.pop();
+                        out.0 += &format!("needle\"];\n{inner}}}\n");
+                    }
+                    3 => out.0 += &format!("{inner}// comment {n}\n{inner}/* {n} */\n"),
+                    _ => field(path, out, *n, &inner),
+                }
+            }
+            path.pop();
+            out.0 += &format!("{indent}}}\n");
+        }
+        let mut out = (
+            String::from("syntax = \"proto3\";\npackage p.q;\n"),
+            Vec::new(),
+        );
+        let mut n = 0;
+        for _ in 0..=r.below(3) {
+            if r.below(3) == 0 {
+                n += 1;
+                let name = format!("S{n}");
+                out.0 += &format!("service {name} {{\n");
+                n += 1;
+                let rpc = format!("R{n}");
+                out.0 += &format!("  rpc {rpc} (A) returns (stream B) {{\n    option (o) = \"");
+                out.1.push((out.0.len(), trail(&[name, rpc])));
+                out.0 += "needle\";\n  }\n  rpc X (A) returns (B);\n}\n";
+            } else {
+                message(r, &mut Vec::new(), &mut out, &mut n);
+            }
+        }
         out
     }
 
