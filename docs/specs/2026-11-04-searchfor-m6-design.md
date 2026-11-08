@@ -94,6 +94,14 @@ inherits; the sections of each Format only add to them.
 5. **A Match in a Segment's own name is outside that Segment**, as a Match on a heading line
    (spec §5.1) or a key's text (spec §5.2): it gets the Trail of the Segment's parent. The few
    exceptions say so (cues, spec §5.6, keep theirs; the M6 exceptions are listed per Format).
+   One exception holds across Formats: a Segment whose name is assembled from values read
+   elsewhere in its unit (a HAR entry, page, header, cookie, `queryString` or param, §8.8; a
+   Telegram chat and message, §10.5; an iCalendar or vCard component's `SUMMARY`, `FN` or
+   `TZID`, §10.2) has as its label only what opens it as written: nothing for a JSON object,
+   the `BEGIN:X` line for a component. A Match in one of those values stays inside the
+   Segment, under its key: `GET api.example.com/v1/users › request › url`,
+   `Work › 2024 Ana › from`, `VEVENT Team sync › SUMMARY`. The server name nginx and Apache
+   append to a block's name follows the same rule (§7.6, §7.7).
 6. **Sections.** Every Segment has a Section (its first and last line), which `--expand` prints
    and `--json --expand` carries (spec §6.4). For the binary Formats, `--expand` prints the rows
    themselves, as for object files (spec §5.7, M4 plan D8).
@@ -128,6 +136,7 @@ to whether the glob writes the file's extension or leaves it open. The order bec
    When it matches, it wins over the Definition that claims that extension:
    `ChatExport_2024/result.json` is `telegram` and `ChatExport_2024/messages.html` is
    `telegram-html`, while a `result.json` or `messages.html` anywhere else stays JSON or HTML.
+   The extension a glob writes is compared without case, as signal 5 compares it.
 5. Extension (unchanged).
 6. **Path glob that leaves the extension open (new):** every other glob of `paths`, whose last
    component has no dot (`**/.ssh/config`, `**/nginx/sites-enabled/*`) or has a wildcard after
@@ -212,7 +221,7 @@ runs the glob. Criterion 51 measures it, with `.json`, `.html` and `.txt` files 
 | `bibtex` | | `bib` | | |
 | `whatsapp` | `_chat.txt` | | `*WhatsApp*.txt` | |
 | `telegram` | | | `**/ChatExport_*/result.json`, `**/DataExport_*/result.json` | |
-| `telegram-html` | | | `**/ChatExport_*/messages*.html` | |
+| `telegram-html` | | | `**/ChatExport_*/messages*.html`, `**/DataExport_*/chats/*/messages*.html` | |
 
 Notes on the table, each a decision with its reason:
 
@@ -343,16 +352,20 @@ an unclosed Markdown fence does.
 
 - **Headings.** `= Title` at the top is the document title (`document`); `==` to `======` are
   levels 1 to 5, and the Markdown-style `#` forms Asciidoctor accepts are read the same. A
-  heading needs a space after its markers. The two-line (setext) titles of AsciiDoc's legacy
-  syntax are text.
+  heading needs a space after its markers. Attribute entries (`:toc: left`) above `= Title`
+  leave it the document title. The two-line (setext) titles of AsciiDoc's legacy syntax are
+  text, and so is a two-line title's underline (one repeated `=`, `-`, `~`, `^` or `+` within
+  one character of the title's length), which opens no block.
 - **Blocks.** A delimited block (`----` listing, `....` literal, `////` comment, `++++`
   passthrough, `****`, `====`, `____`, and Markdown-style ```` ``` ```` fences) runs to the same
-  delimiter. A listing preceded by `[source,LANG]` is a `code` Segment named `LANG`; without it,
-  `listing`; a literal block, `literal`; a fence, its info string or `listing`. The others hold
-  text and no Segment.
+  delimiter; a fence of three or more backticks closes at a run of backticks as long or longer.
+  `[source,LANG]` names a listing, a literal block, and a fence without an info string: each is
+  then a `code` Segment named `LANG`. Without it a listing is `listing`, a literal block
+  `literal`, and a fence its info string or `listing`. A table (`|===`, `,===`, `:===`, `!===`)
+  is a block whose lines are text. The others hold text and no Segment.
 - **Example.** `guide.adoc:9: Deploy guide › Install › Linux › bash │ apt install needle-pkg`
-- **Limits.** Tables (`|===`) give no `column` Segment in M6: their header row is optional and
-  told by layout, and a wrong header names every Match wrongly. `include::` is not followed.
+- **Limits.** Tables give no `column` Segment in M6: their header row is optional and told by
+  layout, and a wrong header names every Match wrongly. `include::` is not followed.
 
 ### 6.2 reStructuredText
 
@@ -373,7 +386,8 @@ an unclosed Markdown fence does.
 
 - **Headings.** `*` to any depth followed by a space; the level is the number of stars. The name
   is the heading's text after the stars, its TODO keyword, priority and tags kept as written, so
-  `--in-headings` finds them. `#+TITLE:` is the document title.
+  `--in-headings` finds them. A heading of stars alone is named `heading`. `#+TITLE:` is the
+  document title.
 - **Blocks.** `#+BEGIN_SRC LANG` … `#+END_SRC` (without case) is a `code` Segment named `LANG`
   (`src` when absent); `#+BEGIN_EXAMPLE` is `example`. Other blocks hold no Segment.
 - **Tables.** A table whose first row is followed by a rule (`|---+---|`) names its columns by
@@ -394,10 +408,13 @@ an unclosed Markdown fence does.
   Definition's `hidden_environments` (default `document`, `itemize`, `enumerate`,
   `description`) are hidden, as HTML's `body` (spec §5.4): their contents keep the Trail of
   what holds them. A heading inside an open environment ends at that environment's end at the
-  latest. An `\end` with no open environment of its name closes nothing.
+  latest. An `\end` with no open environment of its name closes nothing. An environment or a
+  heading with an empty name (`\begin{}`, `\subsection{ }`) is named by its kind,
+  `environment` or `heading`.
 - **Example.** `paper.tex:41: A Study of Needles › Methods › Sampling › figure │ \caption{needle distribution}`
 - **Limits.** `\input` and `\include` are not followed; macros that expand to sectioning
-  commands are text.
+  commands are text, and so is the body of a macro or environment definition (`\newcommand`,
+  `\newenvironment`, `\def` and their variants), whose commands open nothing.
 
 ### 6.5 Jupyter notebooks
 
@@ -407,7 +424,9 @@ the JSON scanner reads it and the view reshapes its Outline:
 - The Markdown cells' headings (`#` to `######` at the start of a source line, decoded from the
   JSON strings) become `heading` Segments with their level, each over the cells up to the next
   heading of the same or a higher level, so the Trail of a code cell starts with the headings
-  above it, as in the notebook a person reads.
+  above it, as in the notebook a person reads. The headings are read over the source strings
+  decoded and joined: a line may span two strings, and a `\r` before a line break, however
+  escaped, is no text of it.
 - Each element of `cells` is a `cell` Segment named `cell N`, 1-based, its signature
   `cell N (code)` or `(markdown)`, `(raw)`. An element of `outputs` is an `output` Segment named
   `output N`, signature with its `output_type`. The keys `cells`, `source`, `outputs`, `data`
@@ -452,7 +471,8 @@ syntax is `ini`, whose `\` continuation is systemd's.
 `\` at a line's end continues the value; `#` and `!` start comments. The key is decoded
 (`\:`, `\=`, `\ `, `\uXXXX`) and is one Segment: `spring.datasource.url` keeps its dots, as the
 format has no hierarchy and a dotted parent would have no Section of its own when its keys are
-apart. `app.properties:4: spring.datasource.url │ spring.datasource.url=jdbc:needle://db`
+apart. A line whose key is empty (`=value`) opens no Segment.
+`app.properties:4: spring.datasource.url │ spring.datasource.url=jdbc:needle://db`
 
 ### 7.4 `.env`
 
@@ -475,8 +495,10 @@ first `Host` are at the top. `Include` is not followed.
 - **Segments.** A block is a `block` Segment named by its directive and arguments as written
   (`location ~ \.php$`, `upstream backend`, `if ($host = x)`). A `server` block is named
   `server` plus its first `server_name` value when it has one, read from the whole block
-  (preparation reads the file once, §11), since the bare word `server` tells nothing. A
-  directive is a `key` Segment named by its name, over its lines up to its `;`.
+  (preparation reads the file once, §11), since the bare word `server` tells nothing. That
+  `server_name` value is read later in the block and is no label (rule 5's exception, §3): a
+  Match in it keeps the whole Trail (`http › server example.com › server_name`). A directive
+  is a `key` Segment named by its name, over its lines up to its `;`.
 - **Lexing.** `#` comments; `'…'` and `"…"` strings with `\` escapes (nginx requires a regex
   holding `{`, `}` or `;` to be quoted, so braces outside strings are structure).
 - **Example.** `nginx.conf:42: http › server example.com › location /api › proxy_pass │       proxy_pass http://needle:8080;`
@@ -486,9 +508,12 @@ first `Host` are at the top. `Include` is not followed.
 ### 7.7 Apache
 
 `blocks`, `syntax = "apache"`. `<Name args>` … `</Name>` sections, compared without case, nest;
-a directive is one line, `\` continuing it. A section is a `block` Segment named `Name args`
-(`VirtualHost *:443`, `Directory /var/www`), a `VirtualHost` with its first `ServerName`
-appended; a directive is a `key` Segment. `#` comments.
+a directive is one line, `\` continuing it. A section is a `block` Segment named by its tag's
+text as written, `Name args` (`VirtualHost *:443`, `Directory /var/www`), a `VirtualHost` with
+its first `ServerName` appended; as nginx's `server_name` (§7.6), that value is no label, and a
+Match in it keeps the whole Trail
+(`IfModule mod_ssl.c › VirtualHost *:443 example.com › ServerName`). A directive is a `key`
+Segment. `#` comments.
 `site.conf:9: VirtualHost *:443 example.com › Directory /var/www › Require │     Require ip 10.0.0.0/8 # needle`
 A closing tag that matches no open section is ignored; an unclosed section ends at the end of
 the file.
@@ -500,7 +525,9 @@ the file.
 - **Segments.** A block (`resource "aws_instance" "web" {`) is a `block` Segment named by its
   type and labels without quotes, joined by spaces (`resource aws_instance web`): Terraform's
   `aws_instance.web` addressing is one tool's convention, and the same rule reads Packer and
-  Nomad. An attribute (`ami = "…"`) is a `key` Segment; an object value (`tags = { … }`) gives
+  Nomad. An attribute (`ami = "…"`) is a `key` Segment whose Section runs to the end of its
+  last line, an end-of-line comment included; a line starting with `=` or `:` has no key.
+  An object value (`tags = { … }`) gives
   keys inside it, and a list element `[N]`, 0-based, named after its key as in keypath
   (`ingress[1]`, spec §5.2).
 - **Lexing.** `#`, `//` and `/* */` comments; strings with `${ … }` interpolations and
@@ -519,7 +546,9 @@ the file.
   (`RUN`), over its continuation lines and its heredocs (`RUN <<EOF` … `EOF`). `ARG` before the
   first `FROM` is at the top.
 - **Lexing.** The escape character is `\`, or the one a `# escape=` directive sets on the first
-  lines; comment lines inside a continuation are skipped, as Docker skips them.
+  lines; comment lines inside a continuation are skipped, as Docker skips them. A heredoc opens
+  at a word of the line, split at blanks outside quotes and escapes, that starts with `<<`; a
+  `<<` inside a quoted word or another word is text.
 - **Example.** `Dockerfile:12: build › RUN │     needle-build --release`
 
 ### 7.10 Makefile
@@ -529,8 +558,12 @@ the file.
 - **Segments.** A rule (`build test: deps`, `%.o: %.c`, static patterns, `::`) is a `target`
   Segment named by its targets as written, signature its rule line, over its recipe: the lines
   that follow starting with a tab (or `.RECIPEPREFIX`), with comments and blank lines among
-  them. A variable (`=`, `:=`, `::=`, `?=`, `+=`, `!=`, with `override` or `export`) is a `key`
-  Segment over its `\` continuations; `define NAME` … `endef` is a `key` named `NAME`.
+  them. The rule's label is its targets: its prerequisites are inside the `target`, as a
+  function's parameters are inside its function, so a Match in `deps` of `build test: deps` has
+  the Trail `build test`. A drive letter (`C:/`, `C:\`) is part of its target. A variable (`=`,
+  `:=`, `::=`, `?=`, `+=`, `!=`, with `override` or `export`) is a `key` Segment over its `\`
+  continuations; `define NAME` … `endef` is a `key` named `NAME`, and `define` nests: the key
+  ends at the matching `endef`.
   `ifeq`, `ifneq`, `ifdef`, `ifndef` … `endif` is a `conditional` Segment named by its line
   as written, its `else` branches inside it.
 - **Lexing.** `$(…)` and `${…}` are skipped when looking for a rule's `:`, so
@@ -541,8 +574,10 @@ the file.
 ### 7.11 justfile
 
 `buildfile`, `syntax = "just"`. A recipe (`name params: deps`, with `[attributes]` and `@`
-before it) is a `recipe` Segment named `name`, signature its line, over its indented body; a
-variable or `alias` is a `key`. `just`'s comments above a recipe are its documentation and lie
+before it) is a `recipe` Segment named `name`, signature its line, over its indented body. A
+recipe's label is its name and `@`; its attributes, parameters and dependencies are inside it,
+so a Match in `needle-dep` of `build +args: needle-dep` has the Trail `build`. A variable or
+`alias` is a `key`. `just`'s comments above a recipe are its documentation and lie
 outside it. `justfile:7: deploy │     rsync -a build/ host:/srv/needle/`
 
 ## 8. Group C · Next to the code
@@ -556,7 +591,11 @@ dumps (§5.2).
 - **Statements.** A statement ends at a `;` outside strings (`'…'` with `''`), quoted
   identifiers (`"…"`, `` `…` ``, `[…]`), PostgreSQL dollar quotes (`$tag$ … $tag$`) and comments
   (`--`, `#` in MySQL's style, `/* */`); at a `GO` line (SQL Server's batch separator); and at
-  the delimiter a `DELIMITER` line sets (mysqldump's procedure bodies). Each statement is a
+  the delimiter a `DELIMITER` line sets (mysqldump's procedure bodies). A `#` starts a comment
+  only before white space or a line's end, or first on its line (SQL Server's `#tmp` is a
+  name). MySQL's conditional comments `/*!NNNNN … */` are SQL. A backslash escapes in `'…'`
+  unless the file's head says PostgreSQL (`standard_conforming_strings = on`, or pg_dump's
+  banner), where only `E'…'` has escapes. Each statement is a
   `statement` Segment named by its leading keywords and object, identifiers without quotes:
   `CREATE TABLE users`, `CREATE OR REPLACE VIEW active_users`, `INSERT INTO users`,
   `ALTER TABLE users`, `UPDATE users`, `DELETE FROM users`, `CREATE FUNCTION total`,
@@ -567,6 +606,8 @@ dumps (§5.2).
   within the statement), and a Match inside a value gets a `column` Segment named from the
   statement's column list, else from the columns of the same table's `CREATE TABLE` earlier in
   the file (mysqldump writes it before its `INSERT`s, without a column list), else `column K`.
+  A value's `column` Segment spans its row's lines, as a CSV cell's does.
+  `OVERRIDING SYSTEM VALUE` or `OVERRIDING USER VALUE` before `VALUES` is skipped.
   PostgreSQL's `COPY t (cols) FROM stdin;` reads its data lines up to `\.` the same way, one
   `row` per line, tab-separated. This gives a dump the Trail of the SQLite Extractor
   (`users › row 12 › email`, spec §5.8).
@@ -589,13 +630,17 @@ The `diff` Processor reads unified diffs (`diff -u`, `git diff`), combined diffs
 
 - **Segments.** A commit (`commit <sha>` of `git log`, `From <sha> …` of a patch mail) is a
   `commit` Segment named by the short hash and the subject (`[PATCH n/m]` removed), signature
-  its first line, up to the next commit. A file (`diff --git`, or `---`/`+++` pairs) is a `file`
-  Segment named by its new path without `b/`, or the old one when the new is `/dev/null`;
-  a rename's signature is `old → new`. A hunk (`@@ -a,b +c,d @@ context`) is a `hunk` Segment
-  named `+c` and its context text (`+120 fn describe(`), `-a` for a deleted file, signature its
-  header line.
-- **Rule 5 here.** A Match in the `diff --git`, `---` and `+++` lines has the Trail above the
-  file; a Match in a hunk header is in the file Segment.
+  its first line, up to the next commit. A `From ` line opens a commit only with the whole sha
+  (40 or 64 digits). A file (`diff --git`, or `---`/`+++` pairs) is a `file` Segment named by
+  its new path without `b/`, or the old one when the new is `/dev/null`; a rename's signature
+  is `old → new`. Inside a hunk whose counts are not done, a `---`/`+++` pair is a file's
+  header only when a hunk header follows it. A hunk (`@@ -a,b +c,d @@ context`) is a `hunk`
+  Segment named `+c` and its context text (`+120 fn describe(`), `-a` for a deleted file,
+  signature its header line. A `\` line right after a hunk (`\ No newline at end of file`)
+  belongs to it.
+- **Rule 5 here.** A file's own name runs from `diff --git` over its extended header lines
+  (`index`, modes, renames, copies, similarity) to `+++`: a Match in those lines has the Trail
+  above the file. A Match in a hunk header is in the file Segment.
 - **Example.** `fix.patch:23: src/app.rs › +120 fn describe( │ +    let needle = 1;` and in a
   series: `series.patch:40: 3f2a9c1 Fix the needle crash › src/app.rs › +120 fn describe( │ …`
 - **Stdin.** `git diff | s4 --format diff needle` gives the Trails of a diff with no name; the
@@ -645,7 +690,8 @@ bundle), and the cap bounds what one Match makes s4 parse.
 (`{#if …}`, `{#each …}`, `{#await …}`, `{#key …}`, `{#snippet …}`) open a `block` Segment named
 by their opening tag without braces (`#each items as item`), and `{/if}` and the others close the
 innermost open block of their name and every element inside it, as an HTML end tag closes
-(spec §5.4); `{:else}` and `{:then}` stay inside. A closer with no open block is text.
+(spec §5.4); `{:else}` and `{:then}` stay inside. A closer with no open block is text, and so
+is an opener whose expression does not close within 4 KiB.
 `Cart.svelte:14: ul › #each items as item › li │   <li>{item.needle}</li>`
 
 ### 8.5 Blade templates
@@ -656,7 +702,10 @@ innermost open block of their name and every element inside it, as an HTML end t
 named by the directive and its argument as written (`@foreach($items as $item)`), up to its
 `@end…` (`@show`, `@stop` and `@overwrite` close a `@section`), with the closing rule of Svelte's
 blocks; `@section` with two arguments is inline and opens nothing. `{{-- … --}}` is a comment and
-`@verbatim` holds text. PHP inside `@php` is text (scripts apply to `<script>` alone).
+`@verbatim` holds text. PHP inside `@php` is text (scripts apply to `<script>` alone). An
+opener whose expression does not close within 4 KiB (`@if(` with no `)`) is text, as in
+Svelte. A Blade directive in a `class` attribute is no class of the element's name:
+`<div class="@if($x == 1) a @endif b">` is `div.a.b`.
 `cart.blade.php:8: @section('content') › div.cart › @foreach($items as $item) › li │ …`
 
 **HTML's output changes from v1.0 in its scripts only** (Open question 2, answered B):
@@ -694,7 +743,10 @@ and the response status; `pages` elements are named by their `title`. The elemen
 (`header Authorization`) instead of their index. Every other key is keypath's.
 `session.har:812: GET api.example.com/v1/users › response › content › text │       "text": "{\"needle\":1}",`
 The values a name needs may come after the Match in the file; the view reads them during the
-preparation (§11).
+preparation (§11). These names are rule 5's exception (§3): an entry, a page and an element of
+those arrays have no label, and a Match in the URL, `title` or `name` value that names them
+stays inside, under its key: `GET api.example.com/v1/users › request › url`,
+`GET api.example.com/v1/users › request › header Authorization › name`, `Login › title`.
 
 ## 9. Group E · Data and binaries
 
@@ -731,9 +783,11 @@ Details, each a decision:
 - **XMP** is XML: inside its packet, the Trail continues with the element path `markup`'s XML
   rules give (spec §5.4), below `rdf:Description` (whose ancestors every packet repeats):
   `JPEG › APP1 XMP › dc:title › rdf:Alt › rdf:li`. A packet that is not well-formed keeps the
-  `XMP` Segment for the Matches after the error.
+  `XMP` Segment for the Matches after the error. Entries that name one XMP packet read it once,
+  with the first entry's Trail; the XMP read inside a TIFF adds up to at most its size.
 - **ID3** frames are named by their four-character id; `TXXX` and `WXXX` add their description,
-  `COMM` stays `COMM`. ID3v2.2's three-character ids read the same. An MP3 with only an ID3v1
+  `COMM` stays `COMM`. ID3v2.2's three-character ids read the same. An ID3v2 tag that declares
+  more than the file holds reads up to the file's end. An MP3 with only an ID3v1
   tag has no magic at its start and is not detected. A text frame in UTF-16 is
   found only by a pattern rg finds in UTF-16, which is rg's behaviour (§2, Out).
 - **MP4** box types are four bytes shown as Latin-1 (`©nam`); the box tree is walked through
@@ -748,11 +802,13 @@ Details, each a decision:
   `data[N]`.
 - **Java classes.** The image is named `Java N` from the class version (`major − 44` from 49 on,
   `Java 1.x` below, `Java class M.m` when unknown); the `class` Segment names the class in
-  dotted form. A Match in a constant-pool string is assigned to the method that loads it
-  (`ldc`, `ldc_w` in its `Code`, found by walking each method's bytecode with the JVM's
-  instruction lengths), else to the field or method it names, else to `constant pool`
-  (`section`). A Match in a method's own name has the class's Trail (rule 5). The constant pool
-  stores modified UTF-8, which rg searches as bytes.
+  dotted form. A constant that names a field or method is that member's name first: a Match in
+  it has the class's Trail (rule 5), even when an `ldc` loads the same Utf8 entry. Any other
+  constant-pool string is assigned to the method that loads it (`ldc`, `ldc_w` in its `Code`,
+  found by walking each method's bytecode with the JVM's instruction lengths), else to the
+  field whose constant value it is, else to the field or method it describes, else to
+  `constant pool` (`section`). The constant pool stores modified UTF-8, which rg searches as
+  bytes.
 - **Fat Mach-O against Java** (`cafebabe`): §4.2.
 
 ## 10. Group F · Everyday
@@ -760,7 +816,9 @@ Details, each a decision:
 ### 10.1 Mail
 
 The `mail` Processor reads one RFC 5322 message (`.eml`) or an mbox (messages each starting at a
-`From ` line at the start of the file or after a blank line; mboxo and mboxrd alike).
+`From ` line at the start of the file or after a blank line; mboxo and mboxrd alike). In an
+mbox, a `From ` line opens a message only when a header field follows it. An `.eml` skips a
+first `From ` line that is no field (Thunderbird's `From - …`).
 
 - **Segments.** In an mbox, a message is a `message` Segment named by its decoded `Subject`
   (`(no subject)` without one), signature `From · Date · Subject`; an `.eml` file is one message
@@ -788,11 +846,14 @@ content-line syntax.
 
 - **Model.** `BEGIN:X` … `END:X` is a `component` Segment named `X` and its `SUMMARY` (events,
   to-dos, journals), `FN` (cards) or `TZID` (time zones) when it has one (`VEVENT Team sync`,
-  `VCARD Ana Pérez`), else `X[N]` among its siblings of that kind; the value may come after the
-  Match (§11). A single `VCALENDAR` around the whole file is hidden, as HTML's `body`. A property
-  is a `key` Segment named by its name without parameters (`DTSTART` of
-  `DTSTART;TZID=Europe/Madrid:…`), over its folded lines (a line starting with a space or tab
-  continues the one before).
+  `VCARD Ana Pérez`), else `X[N]` among its siblings of that kind when there are two or more,
+  `X` alone otherwise; the value may come after the Match (§11). These names are rule 5's
+  exception (§3): a component's label is its `BEGIN:X` line alone, and a Match in its
+  `SUMMARY`, `FN` or `TZID` stays inside, under that key (`VEVENT Team sync › SUMMARY`). A
+  single `VCALENDAR` around the whole file is hidden, as HTML's `body`. A property is a `key`
+  Segment named by its name without parameters (`DTSTART` of `DTSTART;TZID=Europe/Madrid:…`),
+  over its folded lines (a line starting with a space or tab continues the one before); its
+  parameters may fold before its `:`.
 - **Example.** `team.ics:14: VEVENT Team sync › DESCRIPTION │ DESCRIPTION:Bring the needle`;
   `contacts.vcf:22: VCARD Ana Pérez › EMAIL │ EMAIL;TYPE=work:ana@needle.example`
 - **Failure.** An `END` closes the innermost open component of its name and those inside it; an
@@ -801,19 +862,25 @@ content-line syntax.
 ### 10.3 BibTeX
 
 `keypath`, `syntax = "bibtex"`. An entry (`@article{knuth1984, …}` or with parentheses) is an
-`entry` Segment named by its key, signature `@article{knuth1984,`; each field is a `key`
-Segment, its value in braces (nesting), quotes or bare, `#` concatenations included.
-`@string` and `@preamble` entries are named `@string` and `@preamble`; `@comment` and the text
-between entries are text with an empty Trail (BibTeX ignores it).
+`entry` Segment named by its key, signature `@article{knuth1984,`; an entry without a key (its
+first item is a field) is named by its type (`@article`). Each field is a `key` Segment, its
+value in braces (nesting), quotes or bare, `#` concatenations included. `@string` and
+`@preamble` entries are named `@string` and `@preamble`; `@comment` and the text between
+entries are text with an empty Trail (BibTeX ignores it), and `@comment` ends at its closing
+brace or parenthesis.
 `refs.bib:5: knuth1984 › title │   title = {Literate needle programming},`
-An entry whose braces never close ends at the next `@` at a line's start.
+An entry whose braces never close ends at the next `@` at a line's start; in one that closes,
+such an `@` is text of its value.
 
 ### 10.4 WhatsApp
 
 The `chat` Processor reads WhatsApp's text export: a message starts at a line that begins with
 a date and a time in one of the export's forms — Android's `31/12/23, 21:41 - ` and
 `12/31/23, 9:41 PM - `, iOS's `[31/12/23, 21:41:05] `, with the U+200E and U+202F characters
-newer exports put in them — and runs over the lines up to the next such line.
+newer exports put in them — and runs over the lines up to the next such line. The forms also
+take 12-hour times written `a. m.`/`p. m.` (`31/12/23, 9:41 p. m. - `, its spaces plain,
+U+202F or U+00A0) and dates separated by `.` or `-` (`31.12.23`). A U+200E before the sender
+is left out of its name.
 
 - **Segments.** Consecutive messages of one date form a `day` Segment named by the date as
   written (`31/12/23`: the export does not say whether it is day-first, so s4 does not reorder
@@ -842,10 +909,15 @@ Telegram Desktop exports a chat as JSON (`result.json`) or HTML (`messages.html`
   `messages` is a `message` Segment named by its `date` as written and its `from`
   (`2024-01-31T10:04:12 Ana`); the arrays `text` and `text_entities` keep their keys and hide
   their indexes. `result.json:5521: Ana › 2024-01-31T10:04:12 Ana › text │       "text": "needle",`
+  These names are rule 5's exception (§3): a chat and a message have no label, and a Match in
+  the `name`, `date` or `from` that names them stays inside, under its key (`Work › name`,
+  `Work › 2024 Ana › from`).
 - **HTML**: `markup`, `syntax = "html"`, `view = "telegram"`. Each `div.message` is a `message`
   Segment named by the `title` of its date element and its sender's name; a message without a
-  sender name (Telegram's `joined` messages) takes the sender of the one before. The page's
-  wrapper elements are hidden. `messages.html:880: 31.01.2024 10:04:12 Ana │ <div class="text">needle</div>`
+  sender name (Telegram's `joined` messages) takes the sender of the one before. A service
+  message (a date separator, «X joined the group»), with no date title and no sender, is named
+  `service`, a word s4 adds. The page's wrapper elements are hidden.
+  `messages.html:880: 31.01.2024 10:04:12 Ana │ <div class="text">needle</div>`
   The view depends on the class names of Telegram's export template: when they are absent the
   file keeps the HTML Trails of spec §5.4, so a change on Telegram's side costs the decoration,
   never the Match.
