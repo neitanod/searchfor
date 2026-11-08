@@ -517,6 +517,7 @@ impl PathIndex {
     }
 
     fn add(&mut self, definition: usize, pattern: &str) {
+        let pattern = &*GlobShape::of(pattern).lowered_extension(pattern);
         let shape = GlobShape::of(pattern);
         let id = self.rules.len();
         self.rules.push(PathRule {
@@ -718,6 +719,20 @@ impl<'g> GlobShape<'g> {
                 .then(|| all.iter().map(|e| e.to_ascii_lowercase()).collect());
         }
         literal(after).then(|| vec![after.to_ascii_lowercase()])
+    }
+
+    /// `pattern`, this glob, with the extension it writes in lower case: signal 4 compares an
+    /// extension in any case (review r1, Fable #50), and asks the glob about a path with its
+    /// extension lowered, so a glob that writes `*.CONF` matches `app.CONF` and `app.conf`
+    /// (code round 2, Codex #8). The rest of the glob keeps its case.
+    fn lowered_extension<'p>(&self, pattern: &'p str) -> std::borrow::Cow<'p, str> {
+        match self.extensions() {
+            Some(_) if pattern.bytes().any(|b| b.is_ascii_uppercase()) => {
+                let (head, ext) = pattern.rsplit_once('.').unwrap_or((pattern, ""));
+                std::borrow::Cow::Owned(format!("{head}.{}", ext.to_ascii_lowercase()))
+            }
+            _ => std::borrow::Cow::Borrowed(pattern),
+        }
     }
 
     /// The longest literal run of the last component (before a written extension), as a
@@ -1138,7 +1153,18 @@ mod tests {
             "noext",
         ];
         for pattern in patterns {
-            let glob = path_glob(pattern).unwrap();
+            // The glob compares the extension it writes in any case (code round 2, Codex #8):
+            // it is asked with that extension lowered, about a path with its own lowered.
+            let lowered = pattern
+                .rsplit_once('.')
+                .map_or(pattern.to_string(), |(h, e)| {
+                    if GlobShape::of(pattern).extensions().is_some() {
+                        format!("{h}.{}", e.to_ascii_lowercase())
+                    } else {
+                        pattern.to_string()
+                    }
+                });
+            let glob = path_glob(&lowered).unwrap();
             let matcher = glob.compile_matcher();
             let mut index = PathIndex::default();
             index.add(0, pattern);
@@ -1164,6 +1190,31 @@ mod tests {
                 let got = index.before_extension(&at).or(index.after_extension(&at));
                 assert_eq!(got.is_some(), want, "{pattern} on {path}");
             }
+        }
+    }
+
+    /// Code round 2, Codex #8: a glob that writes its extension in upper case compares it in
+    /// any case too, on both sides: `*.CONF` matches `app.CONF`, `app.conf` and `app.Conf`.
+    /// The rest of the name keeps its case.
+    #[test]
+    fn a_glob_with_its_extension_in_upper_case_matches_it_in_any_case() {
+        for (pattern, path, want) in [
+            ("*.CONF", "app.CONF", true),
+            ("*.CONF", "app.conf", true),
+            ("*.CONF", "x/app.Conf", true),
+            ("App.CONF", "App.conf", true),
+            ("App.CONF", "app.conf", false),
+            ("**/x.d/*.{a,B}", "a/x.d/f.b", true),
+            ("**/x.d/*.{a,B}", "a/x.d/f.B", true),
+            ("**/x.d/*.{a,B}", "a/x.d/f.A", true),
+            ("**/Nginx/*.CONF", "/etc/Nginx/a.conf", true),
+            ("**/Nginx/*.CONF", "/etc/nginx/a.conf", false),
+        ] {
+            let mut index = PathIndex::default();
+            index.add(0, pattern);
+            let at = At::new(Path::new(path));
+            let got = index.before_extension(&at).or(index.after_extension(&at));
+            assert_eq!(got.is_some(), want, "{pattern} on {path}");
         }
     }
 

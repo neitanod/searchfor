@@ -344,7 +344,7 @@ struct Builder<'s> {
     file: Option<File>,
     hunk: Option<Hunk>,
     /// The hunk closed last and where it ends: a `\ No newline at end of file` line right
-    /// there is its own.
+    /// there is its own, and the first such line takes it.
     closed: Option<(usize, usize)>,
 }
 
@@ -640,7 +640,8 @@ impl<'s> Builder<'s> {
                 && end == l.start
             {
                 self.segs[seg].range.end = l.next;
-                self.closed = Some((seg, l.next));
+                // A hunk has one such mark: a second is text (code round 2, Fable #17).
+                self.closed = None;
                 continue;
             }
             if let Some(sha) = commit_line(src, &l) {
@@ -1006,6 +1007,10 @@ mod tests {
         let src = b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n\
             \\ No newline at end of file\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-c\n+d\n\\ No newline at end of file\n";
         assert_eq!(trails(src, "No newline"), ["x › +1", "x › +1", "y › +1"]);
+        // One mark per hunk: a second `\` line after it is text after the hunk, as any other
+        // line there (code round 2, Fable #17).
+        let src = b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n\\ No newline at end of file\n\\ needle\nneedle\n";
+        assert_eq!(trails(src, "needle"), ["", ""]);
     }
 
     /// Review r1, Fable #66: a commit's RFC 2047 subject is decoded, as mail's are.

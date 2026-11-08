@@ -321,6 +321,19 @@ fn m6_builtin_paths_review_r1() {
     }
     assert!(selected(&d, "/etc/APP.CONF").is_none());
 }
+/// Code round 2, Codex #8: a user Definition whose glob writes its extension in upper case
+/// detects the file whatever the case of its extension; the rest of the name keeps its case.
+#[test]
+fn m6_a_glob_with_an_upper_case_extension() {
+    let (_dir, r) = registry(&[("loud", "paths=['**/loud/App*.LOUD']")]);
+    let d = Detector::new(&r, &[]).unwrap();
+    for path in ["x/loud/App.LOUD", "x/loud/App.loud", "x/loud/Appx.Loud"] {
+        assert_eq!(selected(&d, path).as_deref(), Some("loud"), "{path}");
+    }
+    for path in ["x/loud/app.loud", "x/LOUD/App.loud"] {
+        assert!(selected(&d, path).is_none(), "{path}");
+    }
+}
 /// Review r1, Fable #28, over the built-in Definitions: Telegram Desktop's export of a whole
 /// account keeps each chat's HTML pages in `DataExport_*/chats/<chat>/` (a layout written from
 /// memory, not checked against a real export: the glob only accepts more paths). Its other

@@ -48,8 +48,10 @@ struct Unit {
     message: bool,
 }
 
-/// Where the next mbox `From ` line after `from` starts: a line that begins with `From ` and
-/// follows a blank line (mboxo and mboxrd alike; a `>From ` line is text).
+/// Where the next mbox `From ` line after `from` starts: a line that begins with `From `,
+/// follows a blank line (mboxo and mboxrd alike; a `>From ` line is text) and has a header
+/// field after it. A `From ` line without one opens no message and cuts none: it is text of
+/// the unit it is in (code round 2, Codex #6 = Fable #3).
 fn next_from(src: &[u8], from: usize) -> Option<usize> {
     let finder = memchr::memmem::Finder::new(b"\nFrom ");
     let mut at = from;
@@ -58,12 +60,18 @@ fn next_from(src: &[u8], from: usize) -> Option<usize> {
         let blank = nl == 0
             || src[nl - 1] == b'\n'
             || (src[nl - 1] == b'\r' && (nl == 1 || src[nl - 2] == b'\n'));
-        if blank && nl + 1 > from {
+        if blank && nl + 1 > from && opens_message(src, nl + 1) {
             return Some(nl + 1);
         }
         at = nl + 1;
     }
     None
+}
+
+/// Whether the `From ` line at `start` has a header field on the line after it.
+fn opens_message(src: &[u8], start: usize) -> bool {
+    let second = line_at(src, start, src.len()).1;
+    is_field(&src[line_at(src, second, src.len()).0])
 }
 
 /// The units of a file in order, found as they are asked for.
@@ -100,10 +108,7 @@ impl Iterator for Units<'_> {
             let end = next_from(src, start).unwrap_or(src.len());
             // A `From ` line opens a message only when a header follows it: prose that starts
             // with «From », a README with mbox's magic, is no message (review r1, Fable #27).
-            let message = src[start..].starts_with(b"From ") && {
-                let second = line_at(src, start, end).1;
-                is_field(&src[line_at(src, second, end).0])
-            };
+            let message = src[start..].starts_with(b"From ") && opens_message(&src[..end], start);
             (end, message)
         } else {
             (src.len(), true)
@@ -580,10 +585,12 @@ mod tests {
         let src = "junk needle\n\nFrom a x\nSubject: A\n\nneedle\nFrom b\n>From needle\n\nFrom c\n\nneedle\n";
         let t = needles("mbox", src);
         assert_eq!(t[0], []);
-        assert_eq!(t[1], [("A".into(), 3, 9), ("body".into(), 6, 9)]);
+        // A `From ` line with no header after it opens no message (review r1, Fable #27) and
+        // cuts none: its lines stay in the message before it (code round 2, Codex #6 = Fable
+        // #3).
+        assert_eq!(t[1], [("A".into(), 3, 12), ("body".into(), 6, 12)]);
         assert_eq!(t[2], t[1]);
-        // A `From ` line with no header after it opens no message (review r1, Fable #27).
-        assert_eq!(t[3], []);
+        assert_eq!(t[3], t[1]);
     }
 
     /// Review r1, Fable #27: prose that starts with «From » (a README detected as mbox by
@@ -593,6 +600,12 @@ mod tests {
         assert_eq!(needles("mbox", "From the start of time, needle\n"), [[]]);
         let t = needles("mbox", "From a\nSubject: A\n\nneedle\n");
         assert_eq!(t[0], [("A".into(), 1, 4), ("body".into(), 4, 4)]);
+        // Code round 2, Codex #6 = Fable #3: the rejected `From ` line is body of the message
+        // before it, up to the next `From ` line that a header follows.
+        let src = "From alice\nSubject: Inbox\n\nbody\n\nFrom the start of time\nneedle\n\nFrom bob\nSubject: Next\n\nneedle\n";
+        let inbox = vec![("Inbox".to_string(), 1, 8), ("body".to_string(), 4, 8)];
+        let next = vec![("Next".to_string(), 9, 12), ("body".to_string(), 12, 12)];
+        assert_eq!(needles("mbox", src), [inbox, next]);
     }
 
     /// Review r1, Fable #47: Thunderbird saves an `.eml` with its mbox `From - …` line first.

@@ -30,6 +30,37 @@ fn continues(src: &[u8], r: Range<usize>) -> bool {
     src[r].iter().rev().take_while(|&&c| c == b'\\').count() % 2 == 1
 }
 
+/// Past a line break at `src[at..]` (LF or CR LF) and the blanks that start the next line;
+/// None when no line break is there.
+fn past_break(src: &[u8], at: usize) -> Option<usize> {
+    let mut i = match src.get(at..)? {
+        [b'\n', ..] => at + 1,
+        [b'\r', b'\n', ..] => at + 2,
+        _ => return None,
+    };
+    while i < src.len() && blank(src[i]) {
+        i += 1;
+    }
+    Some(i)
+}
+
+/// Whether the key `src[r]` decodes to nothing: it holds only continued line breaks, or a
+/// `\` that ends it.
+fn decodes_empty(src: &[u8], r: Range<usize>) -> bool {
+    let mut i = r.start;
+    while i < r.end {
+        if src[i] != b'\\' {
+            return false;
+        }
+        match past_break(src, i + 1) {
+            Some(n) => i = n,
+            None if i + 1 >= r.end => return true,
+            None => return false,
+        }
+    }
+    true
+}
+
 fn scan(src: &[u8], b: &mut Builder) {
     let mut lines = Lines::new(src);
     while let Some((start, end, mut next)) = lines.next() {
@@ -40,17 +71,29 @@ fn scan(src: &[u8], b: &mut Builder) {
         if k == end || matches!(src[k], b'#' | b'!') {
             continue;
         }
+        // The key, which goes on past a `\` that ends its line (code round 2, Fable #4).
+        let mut last = start..end;
         let mut i = k;
-        while i < end {
+        while i < last.end {
             match src[i] {
+                b'\\' if i + 1 == last.end => match lines.next() {
+                    Some((s, e, n)) => {
+                        last = s..e;
+                        next = n;
+                        i = s;
+                        while i < e && blank(src[i]) {
+                            i += 1;
+                        }
+                    }
+                    None => i = last.end,
+                },
                 b'\\' => i += 2,
                 b'=' | b':' => break,
                 c if blank(c) => break,
                 _ => i += 1,
             }
         }
-        let key = k..i.min(end);
-        let mut last = start..end;
+        let key = k..i.min(last.end);
         while continues(src, last.clone()) {
             match lines.next() {
                 Some((s, e, n)) => {
@@ -60,8 +103,9 @@ fn scan(src: &[u8], b: &mut Builder) {
                 None => break,
             }
         }
-        // An empty key (`=value`) names nothing: its lines have an empty Trail, as INI's.
-        if !key.is_empty() {
+        // A key that decodes to nothing (`=value`) names nothing: its lines have an empty
+        // Trail, as INI's.
+        if !decodes_empty(src, key.clone()) {
             b.open(start, key.clone(), Kind::Key, NameSrc::Properties(key));
             b.close_to(0, next);
         }
@@ -91,6 +135,12 @@ pub(super) fn push_key(src: &[u8], r: Range<usize>, n: &mut CutName) {
             continue;
         }
         n.push_lossy(src, run..i);
+        if let Some(to) = past_break(src, i + 1).filter(|&to| to <= end) {
+            // A continued line break and the blanks after it are no part of the key.
+            i = to;
+            run = i;
+            continue;
+        }
         let Some(&c) = src.get(i + 1).filter(|_| i + 1 < end) else {
             // A `\` that ends the key escapes nothing.
             run = end;
@@ -179,6 +229,23 @@ mod tests {
         // its continuation lines are still its value.
         let src = b"=needle\nk=needle\n=a\\\n x=needle\n";
         assert_eq!(needles(src, "properties"), vec![vec![], vec!["k"], vec![]]);
+        cursor_is_model("properties", src);
+    }
+
+    #[test]
+    fn a_key_goes_on_past_a_continued_line() {
+        // Code round 2, Fable #4: a `\` and line break inside a key, and the blanks that start
+        // the next line, are no part of it (java.util.Properties' rule, as recalled, not
+        // checked against the JDK: it only names more keys). A key that decodes to nothing
+        // opens no Segment.
+        let src =
+            b"\\\n  cont=needle4\nk\\\n  ey=needle5\r\nwin\\\r\n\tdows=needle6\n\\\n  =needle7\n";
+        assert_eq!(
+            needles(src, "properties"),
+            vec![vec!["cont"], vec!["key"], vec!["windows"], vec![]]
+        );
+        assert_eq!(key(b"k\\\n  ey").0, "key");
+        assert_eq!(key(b"k\\\r\n\t\x0c ey").0, "key");
         cursor_is_model("properties", src);
     }
 

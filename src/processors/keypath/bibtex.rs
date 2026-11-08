@@ -196,29 +196,29 @@ impl Reader<'_> {
 
 /// Where each group that may open an entry (`@word{` or `@word(`) closes, by the offset of
 /// its `{` or `(`: the `}` that balances its braces, or the first `)` outside braces after it.
-/// Absent when it never closes. One pass over the file, with a stack of the groups open.
+/// Absent when it never closes. A `"` among an entry's values opens a quoted value, read as
+/// [`Reader::quoted`] reads it, so a delimiter between quotes closes nothing. A quote that
+/// never closes leaves its entry open, and the pass goes on at the first line after the quote
+/// that starts with `@word{` or `@word(`; from then on every quote also ends at such a line,
+/// so the pass goes back at most once. One pass over the file, with a stack of the groups open.
 fn closings(src: &[u8]) -> HashMap<usize, usize> {
     let mut out = HashMap::new();
-    // (offset of the delimiter, brace depth outside it, closing byte).
-    let mut open: Vec<(usize, usize, u8)> = Vec::new();
+    // (offset of the delimiter, brace depth outside it, closing byte, whether its values may
+    // be quoted: neither `@comment` nor `@preamble`, read as plain groups).
+    let mut open: Vec<(usize, usize, u8, bool)> = Vec::new();
     let mut depth = 0usize;
+    // After a quote ran to the end without closing: quotes end at a line-start group.
+    let mut degraded = false;
     let mut i = 0;
     while i < src.len() {
         match src[i] {
             b'@' => {
-                let mut t = i + 1;
-                while t < src.len()
-                    && (src[t].is_ascii_alphanumeric() || matches!(src[t], b'_' | b'-'))
-                {
-                    t += 1;
-                }
-                let mut o = t;
-                while o < src.len() && matches!(src[o], b' ' | b'\t') {
-                    o += 1;
-                }
-                if t > i + 1 && matches!(src.get(o), Some(b'{' | b'(')) {
+                if let Some((t, o)) = group(src, i) {
                     let close = if src[o] == b'{' { b'}' } else { b')' };
-                    open.push((o, depth, close));
+                    let kind = &src[i + 1..t];
+                    let quotes = !kind.eq_ignore_ascii_case(b"comment")
+                        && !kind.eq_ignore_ascii_case(b"preamble");
+                    open.push((o, depth, close, quotes));
                     if close == b'}' {
                         depth += 1;
                     }
@@ -226,14 +226,36 @@ fn closings(src: &[u8]) -> HashMap<usize, usize> {
                     continue;
                 }
             }
+            b'"' if open
+                .last()
+                .is_some_and(|&(_, d, c, q)| q && depth == if c == b'}' { d + 1 } else { d }) =>
+            {
+                match quote_end(src, i, degraded) {
+                    QuoteEnd::Closed(e) => i = e,
+                    QuoteEnd::Line(l) => {
+                        // The entry never closes; the pass goes on at the line.
+                        open.pop();
+                        degraded = true;
+                        i = l;
+                        continue;
+                    }
+                    QuoteEnd::Never => {
+                        open.pop();
+                        break;
+                    }
+                }
+            }
             b'{' => depth += 1,
             b'}' => {
                 depth = depth.saturating_sub(1);
                 // A group in parentheses opened inside the braces that end here never closes.
-                while open.last().is_some_and(|&(_, d, c)| c == b')' && d > depth) {
+                while open
+                    .last()
+                    .is_some_and(|&(_, d, c, _)| c == b')' && d > depth)
+                {
                     open.pop();
                 }
-                if let Some(&(o, d, b'}')) = open.last()
+                if let Some(&(o, d, b'}', _)) = open.last()
                     && d == depth
                 {
                     out.insert(o, i);
@@ -241,7 +263,7 @@ fn closings(src: &[u8]) -> HashMap<usize, usize> {
                 }
             }
             b')' => {
-                if let Some(&(o, d, b')')) = open.last()
+                if let Some(&(o, d, b')', _)) = open.last()
                     && depth <= d
                 {
                     out.insert(o, i);
@@ -253,6 +275,58 @@ fn closings(src: &[u8]) -> HashMap<usize, usize> {
         i += 1;
     }
     out
+}
+
+/// The group an `@` at `at` opens, `@word{` or `@word(`: the end of its word and the offset of
+/// its delimiter.
+fn group(src: &[u8], at: usize) -> Option<(usize, usize)> {
+    let mut t = at + 1;
+    while t < src.len() && (src[t].is_ascii_alphanumeric() || matches!(src[t], b'_' | b'-')) {
+        t += 1;
+    }
+    let mut o = t;
+    while o < src.len() && matches!(src[o], b' ' | b'\t') {
+        o += 1;
+    }
+    (t > at + 1 && matches!(src.get(o), Some(b'{' | b'('))).then_some((t, o))
+}
+
+/// Where a quoted value whose `"` is at `at` ends, for [`closings`].
+enum QuoteEnd {
+    /// At its closing `"`.
+    Closed(usize),
+    /// Never closed: at the start of the first line after it that opens a group.
+    Line(usize),
+    /// Never closed and no such line follows.
+    Never,
+}
+
+fn quote_end(src: &[u8], at: usize, degraded: bool) -> QuoteEnd {
+    let mut depth = 0usize;
+    let mut line = None;
+    let mut i = at + 1;
+    while i < src.len() {
+        match src[i] {
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            b'"' if depth == 0 => return QuoteEnd::Closed(i),
+            b'\n' if line.is_none() => {
+                let mut s = i + 1;
+                while s < src.len() && matches!(src[s], b' ' | b'\t' | b'\r') {
+                    s += 1;
+                }
+                if src.get(s) == Some(&b'@') && group(src, s).is_some() {
+                    if degraded {
+                        return QuoteEnd::Line(s);
+                    }
+                    line = Some(s);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    line.map_or(QuoteEnd::Never, QuoteEnd::Line)
 }
 
 fn scan(src: &[u8], b: &mut Builder) {
@@ -389,12 +463,44 @@ mod tests {
     #[test]
     fn an_at_inside_balanced_braces_cuts_nothing() {
         // The cut is for an entry whose braces never close (code round 1, Fable #38): a
-        // well-formed entry keeps a line-start `@` in a value. A `}` inside quotes still ends
-        // an entry where its braces balance, so the next entry is not swallowed.
+        // well-formed entry keeps a line-start `@` in a value. A quote that never closes leaves
+        // its entry open up to the next line-start `@`, so the next entry is not swallowed.
         let src = b"@article{a,\n note = {Follow\n  @user on X},\n title = {needle}\n}\n@a{k, t = \"x}\n@b{k2, t = {needle}}\n";
         assert_eq!(
             needles(src, "bibtex"),
             vec![vec!["a", "title"], vec!["k2", "t"]]
+        );
+        cursor_is_model("bibtex", src);
+    }
+
+    #[test]
+    fn a_delimiter_inside_a_quoted_value_closes_nothing() {
+        // Code round 2, Codex #4 = Fable #5: where an entry closes follows quotes as the
+        // reading of its values does, so a `)` or `}` between quotes is text.
+        let src = b"@article(k,\n  title = \"a ) needle-one\",\n  note = {needle-two}\n)\n@article{q, title = \"a } b\", note = {needle-three}}\n@article{at, note = \"x\n@foo{y} needle-four\", t = {needle-five}}\n";
+        assert_eq!(
+            needles(src, "bibtex"),
+            vec![
+                vec!["k", "title"],
+                vec!["k", "note"],
+                vec!["q", "note"],
+                vec!["at", "note"],
+                vec!["at", "t"],
+            ]
+        );
+        cursor_is_model("bibtex", src);
+    }
+
+    #[test]
+    fn a_quote_that_never_closes_leaves_its_entry_open() {
+        // The entry with the unclosed quote ends at the next line that starts with `@`, and
+        // the entries after it keep their own closings: a line-start `@` inside one of their
+        // braced values cuts nothing.
+        let src =
+            b"@a{k, t = \"x {\n@b{k2, t = {needle}}\n@c{k3,\n note = {Follow\n  @user needle}}\n";
+        assert_eq!(
+            needles(src, "bibtex"),
+            vec![vec!["k2", "t"], vec!["k3", "note"]]
         );
         cursor_is_model("bibtex", src);
     }
