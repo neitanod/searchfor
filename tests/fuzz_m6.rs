@@ -668,6 +668,26 @@ fn m6_views_against_an_independent_json_reading() {
 ],"metadata":{"k":"needle"}}"###
             .to_vec(),
     ));
+    // Code round 1: a Match in a name's values (decision 1), and headings read decoded and
+    // joined (Codex #7, Fable #63).
+    seeds.push((
+        "har",
+        br#"{"log":{"entries":[{"request":{"method":"GET","url":"http://h/needle",
+"headers":[{"name":"needle","value":"v"}]}}],"pages":[{"title":"needle"}]}}"#
+            .to_vec(),
+    ));
+    seeds.push((
+        "telegram",
+        br#"{"name":"needle","messages":[{"date":"d","from":"needle","text":"needle"}]}"#.to_vec(),
+    ));
+    seeds.push((
+        "jupyter",
+        br####"{"cells":[
+{"cell_type":"markdown","source":["\u0023 Esc\u0061ped needle\n","## Long"," needle\n","### Cr\u000d\n"]},
+{"cell_type":"code","source":["needle"]}
+]}"####
+            .to_vec(),
+    ));
     let mut compared = std::collections::BTreeMap::new();
     for (view, src) in seeds {
         let params = &r.get(view).unwrap().params;
@@ -1072,7 +1092,9 @@ mod oracle {
     /// needs are absent (it keeps keypath's Segment then).
     fn node(role: Role, val: &Val, base: &Segment, max: usize) -> Option<(Segment, Range<usize>)> {
         let mut seg = base.clone();
-        let mut label = val.at.start..val.at.start;
+        // Empty for every Segment of a view: a Match in the values that name it is inside it,
+        // under its key (orchestrator's decision 1 on code round 1).
+        let label = val.at.start..val.at.start;
         match role {
             Role::Cell(i) | Role::Output(i) => {
                 let (kind, key) = match role {
@@ -1123,7 +1145,6 @@ mod oracle {
                     Role::Named(w) => cut(&format!("{w} {t}"), max),
                     _ => cut(t, max),
                 };
-                label = v.at.clone();
             }
             Role::Message => {
                 let date = get(val, &["date"]).and_then(text);
@@ -1165,10 +1186,11 @@ mod oracle {
             if !markdown {
                 continue;
             }
-            // Lines are decoded line breaks of the source strings in order; a line that runs
-            // to its string's end is read there, and the next string does not start a line.
-            let mut fence = false;
-            let mut line_start = true;
+            // The source strings decoded and joined (code round 1, Codex #7): a line ends at
+            // a decoded line break, a `\r` before it dropped however it is written (Fable #63).
+            let mut t = String::new();
+            let mut map: Vec<usize> = Vec::new();
+            let mut past = 0;
             for (k, _, v) in m {
                 if k != "source" {
                     continue;
@@ -1179,50 +1201,46 @@ mod oracle {
                     _ => Vec::new(),
                 };
                 for s in strings {
-                    let V::Str(t, map) = &s.v else { unreachable!() };
-                    let mut read = |from: usize, e: usize, fence: &mut bool| {
-                        if let Some((level, title)) = atx(&t[from..e], fence) {
-                            let line = map[from]..map[e];
-                            let (l, _) = lines(src, line.clone());
-                            found.push(Heading {
-                                level,
-                                line,
-                                seg: Segment {
-                                    kind: "heading".into(),
-                                    name: cut(title, max),
-                                    line: l,
-                                    end_line: l,
-                                    level: Some(level),
-                                    signature: Some(cut(&t[from..e], max.saturating_mul(2))),
-                                },
-                            });
-                        }
-                    };
-                    let mut from = 0;
-                    for (i, b) in t.bytes().enumerate() {
-                        if b != b'\n' {
-                            continue;
-                        }
-                        let mut e = i;
-                        if e > from
-                            && t.as_bytes()[e - 1] == b'\r'
-                            && src.get(map[e - 1]..map[e - 1] + 2) == Some(b"\\r")
-                        {
-                            e -= 1;
-                        }
-                        if line_start {
-                            read(from, e, &mut fence);
-                        }
-                        line_start = true;
-                        from = i + 1;
-                    }
-                    if from < t.len() {
-                        if line_start {
-                            read(from, t.len(), &mut fence);
-                        }
-                        line_start = false;
-                    }
+                    let V::Str(st, sm) = &s.v else { unreachable!() };
+                    t.push_str(st);
+                    map.extend(&sm[..st.len()]);
+                    past = sm[st.len()];
                 }
+            }
+            map.push(past);
+            let mut fence = false;
+            let mut read = |from: usize, e: usize, fence: &mut bool| {
+                if let Some((level, title)) = atx(&t[from..e], fence) {
+                    let line = map[from]..map[e];
+                    let (l, _) = lines(src, line.clone());
+                    found.push(Heading {
+                        level,
+                        line,
+                        seg: Segment {
+                            kind: "heading".into(),
+                            name: cut(title, max),
+                            line: l,
+                            end_line: l,
+                            level: Some(level),
+                            signature: Some(cut(&t[from..e], max.saturating_mul(2))),
+                        },
+                    });
+                }
+            };
+            let mut from = 0;
+            for (i, b) in t.bytes().enumerate() {
+                if b != b'\n' {
+                    continue;
+                }
+                let mut e = i;
+                if e > from && t.as_bytes()[e - 1] == b'\r' {
+                    e -= 1;
+                }
+                read(from, e, &mut fence);
+                from = i + 1;
+            }
+            if from < t.len() {
+                read(from, t.len(), &mut fence);
             }
         }
         let end = cells.at.end;
@@ -1269,7 +1287,7 @@ mod oracle {
         }
         let mut t = after.trim_matches([' ', '\t']);
         let k = t.trim_end_matches('#');
-        if k.len() < t.len() && (k.is_empty() || k.ends_with(' ')) {
+        if k.len() < t.len() && (k.is_empty() || k.ends_with([' ', '\t'])) {
             t = k.trim_end_matches([' ', '\t']);
         }
         Some((level, t))
