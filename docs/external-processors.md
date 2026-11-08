@@ -382,7 +382,7 @@ under a fixed name in a shared directory, and remove them before answering.
 
    ```
    $ s4 --list-formats | grep po-guide
-   po-guide     user (/home/me/.config/searchfor/formats/po.toml) po
+   po-guide      user (/home/me/.config/searchfor/formats/po.toml) po
    ```
 
 3. **Run it through s4.** `--format <name>` applies the Format to every file you name,

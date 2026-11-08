@@ -394,7 +394,7 @@ borralos antes de contestar.
 
    ```
    $ s4 --list-formats | grep po-guide
-   po-guide     user (/home/me/.config/searchfor/formats/po.toml) po
+   po-guide      user (/home/me/.config/searchfor/formats/po.toml) po
    ```
 
 3. **Corrélo a través de s4.** `--format <name>` le aplica el Formato a cada archivo que
