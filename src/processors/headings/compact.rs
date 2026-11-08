@@ -24,6 +24,27 @@ pub(crate) fn signature(src: &[u8], r: Range<usize>) -> String {
     text.trim_end().chars().take(SIGNATURE_CHARS).collect()
 }
 
+/// The line of `last`, the last byte of a Section that starts at `start` on line `line`:
+/// counted from `start`, or from `known`, the last byte and line of a Section around it, when
+/// that is nearer. Counting from the start alone made 256 nested Sections around a file count
+/// its line breaks 256 times (Fable r1 #16); from the Section around it, a chain of nested
+/// Sections counts each byte once.
+pub(crate) fn last_line(
+    src: &[u8],
+    start: usize,
+    line: u64,
+    last: usize,
+    known: Option<(usize, u64)>,
+) -> u64 {
+    let count = |r: Range<usize>| memchr::memchr_iter(b'\n', &src[r]).count() as u64;
+    match known {
+        Some((at, l)) if at >= last && at - last < last.saturating_sub(start) => {
+            l - count(last..at)
+        }
+        _ => line + count(start.min(last)..last),
+    }
+}
+
 /// What names a Segment, as a scanner gives it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SpecName<'a> {
@@ -675,15 +696,21 @@ impl<'p> IndexCursor<'p> {
             return s.clone();
         }
         let (ix, src, id) = (self.ix, self.src, self.stack[k].id);
+        // `Outline::build`'s last line: the one of the Section's last byte.
+        let last_byte = |i: usize| {
+            let (start, end) = (ix.start(i), ix.end(i));
+            end.saturating_sub(1).max(start).min(src.len())
+        };
         let s = if ix.lines(id).is_some() {
             ix.segment(src, id, self.name_chars, || (0, 0))
         } else {
-            let (start, end) = (ix.start(id), ix.end(id));
-            let line = self.line_of(start);
-            // `Outline::build`'s last line: the one of the Section's last byte.
-            let last = end.saturating_sub(1).max(start).min(src.len());
-            let from = start.min(last);
-            let end_line = line + memchr::memchr_iter(b'\n', &src[from..last]).count() as u64;
+            let line = self.line_of(ix.start(id));
+            // The nearest Segment around it already built, with lines of its range.
+            let known = self.stack[..k].iter().rev().find_map(|o| {
+                let s = o.seg.as_ref().filter(|_| ix.lines(o.id).is_none())?;
+                Some((last_byte(o.id), s.end_line))
+            });
+            let end_line = last_line(src, ix.start(id), line, last_byte(id), known);
             ix.segment(src, id, self.name_chars, || (line, end_line))
         };
         self.stack[k].seg = Some(s.clone());

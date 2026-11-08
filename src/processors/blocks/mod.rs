@@ -8,6 +8,7 @@ mod hcl;
 mod nginx;
 mod protobuf;
 
+use super::headings::compact::last_line;
 use super::{Capability, Cursor, Prepared, Processor};
 use crate::model::{Input, Name, Segment, SharedTrail, Trail};
 use std::ops::Range;
@@ -561,17 +562,26 @@ impl<'p> BlockCursor<'p> {
         line
     }
 
+    /// The last byte of Segment `id`'s Section, whose line is its last line.
+    fn last_byte(&self, id: usize) -> usize {
+        let e = &self.ix.entries[id];
+        let end = e.end.min(self.src.len());
+        end.saturating_sub(1).max(e.start).min(self.src.len())
+    }
+
     fn segment_at(&mut self, k: usize) -> Segment {
         if let Some(s) = &self.stack[k].seg {
             return s.clone();
         }
         let id = self.stack[k].id;
+        let line = self.line_of(self.ix.entries[id].start);
+        // The nearest Segment around it already built knows the line of its own last byte.
+        let known = self.stack[..k]
+            .iter()
+            .rev()
+            .find_map(|o| Some((self.last_byte(o.id), o.seg.as_ref()?.end_line)));
         let e = &self.ix.entries[id];
-        let (start, end) = (e.start, e.end.min(self.src.len()));
-        let line = self.line_of(start);
-        let last = end.saturating_sub(1).max(start).min(self.src.len());
-        let end_line =
-            line + memchr::memchr_iter(b'\n', &self.src[start.min(last)..last]).count() as u64;
+        let end_line = last_line(self.src, e.start, line, self.last_byte(id), known);
         let s = Segment {
             kind: e.kind.as_str().into(),
             name: self.ix.name(self.src, id, self.name_chars).0,
@@ -981,6 +991,43 @@ pub(crate) mod tests {
                 "{syntax}: CR {t_cr:?}, LF {t_lf:?}"
             );
         }
+    }
+
+    /// Fable r1 #16: building a Segment counted the line breaks of its whole Section, so 256
+    /// nested blocks around a file counted it 256 times. A Trail through them costs about what
+    /// one through a single block does.
+    #[test]
+    fn nested_sections_count_their_lines_once() {
+        let body = "k v;\n".repeat(400_000);
+        let nested = format!(
+            "{}{body}k ONCE;\n{}",
+            "x {\n".repeat(256),
+            "}\n".repeat(256)
+        );
+        let flat = format!("x {{\n{body}k ONCE;\n}}\n");
+        let p = Params::of(&params("nginx")).unwrap();
+        let time = |src: &str| {
+            let ix = p.scan(src.as_bytes()).unwrap();
+            let at = src.find("ONCE").unwrap();
+            let mut t = Vec::new();
+            let d = fastest(|| {
+                let mut c = BlockCursor::new(src.as_bytes(), &ix, 40);
+                c.reach(at);
+                let k = c.stack.len();
+                t = c.trail_at(at).unwrap().to_vec();
+                assert_eq!(c.stack.len(), k);
+            });
+            (d, t)
+        };
+        let (t_nested, trail) = time(&nested);
+        let (t_flat, _) = time(&flat);
+        assert_eq!(trail.len(), MAX_DEPTH);
+        assert_eq!((trail[0].line, trail[0].end_line), (1, 400_513));
+        assert_eq!((trail[255].line, trail[255].end_line), (256, 400_258));
+        assert!(
+            t_nested < t_flat * 4 + std::time::Duration::from_millis(20),
+            "nested {t_nested:?}, flat {t_flat:?}"
+        );
     }
 
     #[test]
