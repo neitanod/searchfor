@@ -873,9 +873,9 @@ $ s4 needle config/m6.vcf --flat
 
 An entry is named by its key, and each field is a key; `@string` and `@preamble` are named so,
 while `@comment` and the text between entries are text with an empty Trail. An entry whose
-braces never close ends at the next `@` at a line's start, and so does one with a quote that never
-closes; after such a quote, a later quoted value also ends at the first line that starts with
-`@word{` or `@word(`, so the pass over the file stays linear.
+braces never close ends at the next `@` at a line's start, and one with a quote that never closes
+ends at the first line after the quote that starts with `@word{` or `@word(`; the entries after it
+keep their quoted values whole, also over such a line.
 
 ```
 $ s4 needle docs-a/m6.bib --flat

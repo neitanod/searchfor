@@ -199,19 +199,16 @@ impl Reader<'_> {
 /// Absent when it never closes. A `"` among an entry's values opens a quoted value, read as
 /// [`Reader::quoted`] reads it, so a delimiter between quotes closes nothing. A quote that
 /// never closes leaves its entry open, and the pass goes on at the first line after the quote
-/// that starts with `@word{` or `@word(`; from then on every quote also ends at such a line,
-/// so the pass goes back at most once. One pass over the file, with a stack of the groups open.
+/// that starts with `@word{` or `@word(`; the quotes of the entries after it read to their own
+/// closing quotes (code review M6 r3, Codex #2). One pass over the file, with a stack of the
+/// groups open, and one walk of [`Quotes`] for where the quotes close.
 fn closings(src: &[u8]) -> HashMap<usize, usize> {
     let mut out = HashMap::new();
     // (offset of the delimiter, brace depth outside it, closing byte, whether its values may
     // be quoted: neither `@comment` nor `@preamble`, read as plain groups).
     let mut open: Vec<(usize, usize, u8, bool)> = Vec::new();
     let mut depth = 0usize;
-    // After a quote ran to the end without closing: quotes end at a line-start group. A later
-    // quoted value that does close, over a line that starts with `@word{`, is cut there too
-    // (code review M6 r3, Fable #3): without it each broken quote would scan to the end of
-    // the file again, and N of them would make the pass quadratic. The pass stays linear.
-    let mut degraded = false;
+    let mut quotes = Quotes::new(src);
     let mut i = 0;
     while i < src.len() {
         match src[i] {
@@ -233,18 +230,17 @@ fn closings(src: &[u8]) -> HashMap<usize, usize> {
                 .last()
                 .is_some_and(|&(_, d, c, q)| q && depth == if c == b'}' { d + 1 } else { d }) =>
             {
-                match quote_end(src, i, degraded) {
-                    QuoteEnd::Closed(e) => i = e,
-                    QuoteEnd::Line(l) => {
-                        // The entry never closes; the pass goes on at the line.
-                        open.pop();
-                        degraded = true;
-                        i = l;
-                        continue;
-                    }
-                    QuoteEnd::Never => {
-                        open.pop();
-                        break;
+                if let Some(e) = quotes.close(i) {
+                    i = e;
+                } else {
+                    // The entry never closes; the pass goes on at the line.
+                    open.pop();
+                    match group_line(src, i) {
+                        Some(l) => {
+                            i = l;
+                            continue;
+                        }
+                        None => break,
                     }
                 }
             }
@@ -294,42 +290,124 @@ fn group(src: &[u8], at: usize) -> Option<(usize, usize)> {
     (t > at + 1 && matches!(src.get(o), Some(b'{' | b'('))).then_some((t, o))
 }
 
-/// Where a quoted value whose `"` is at `at` ends, for [`closings`].
-enum QuoteEnd {
-    /// At its closing `"`.
-    Closed(usize),
-    /// Never closed: at the start of the first line after it that opens a group.
-    Line(usize),
-    /// Never closed and no such line follows.
-    Never,
+/// Where the quoted values of a file close, for [`closings`]: one walk forward over the file,
+/// shared by every quote it is asked about. A `"` closes at the first `"` after it outside the
+/// braces opened after it, as [`Reader::quoted`] reads it: with the level of a byte the count
+/// of `{` less the count of `}` before it, the first `"` whose level is the least of the levels
+/// since the opening one. The walk keeps the quotes it passed that have not closed, grouped by
+/// that least level, so a quote asked after an earlier one ran to the end of the file without
+/// closing is answered from the same walk: the file is read once however many quotes never
+/// close (code review M6 r3, Codex #2).
+struct Quotes<'s> {
+    src: &'s [u8],
+    /// The next byte the walk reads, and the level before it.
+    at: usize,
+    level: i64,
+    /// The quotes passed that have not closed, in order.
+    pending: Vec<usize>,
+    /// For each group of `pending`: the least level since its quotes, and the index in
+    /// `pending` of its first quote. The levels grow from the first group to the last.
+    groups: Vec<(i64, usize)>,
+    /// Where each quote passed that closed closes.
+    closed: HashMap<usize, usize>,
 }
 
-fn quote_end(src: &[u8], at: usize, degraded: bool) -> QuoteEnd {
-    let mut depth = 0usize;
-    let mut line = None;
-    let mut i = at + 1;
-    while i < src.len() {
-        match src[i] {
-            b'{' => depth += 1,
-            b'}' => depth = depth.saturating_sub(1),
-            b'"' if depth == 0 => return QuoteEnd::Closed(i),
-            b'\n' if line.is_none() => {
-                let mut s = i + 1;
-                while s < src.len() && matches!(src[s], b' ' | b'\t' | b'\r') {
-                    s += 1;
-                }
-                if src.get(s) == Some(&b'@') && group(src, s).is_some() {
-                    if degraded {
-                        return QuoteEnd::Line(s);
-                    }
-                    line = Some(s);
+impl<'s> Quotes<'s> {
+    fn new(src: &'s [u8]) -> Self {
+        Self {
+            src,
+            at: 0,
+            level: 0,
+            pending: Vec::new(),
+            groups: Vec::new(),
+            closed: HashMap::new(),
+        }
+    }
+
+    /// Where the quote at `p` closes, or None when it never does. `p` grows from one call to
+    /// the next.
+    fn close(&mut self, p: usize) -> Option<usize> {
+        if p >= self.at {
+            // No quote before `p` is asked about again.
+            self.pending.clear();
+            self.groups.clear();
+            self.closed.clear();
+            for &c in &self.src[self.at..p] {
+                self.level += level(c);
+            }
+            self.at = p;
+        }
+        loop {
+            if let Some(&e) = self.closed.get(&p) {
+                return Some(e);
+            }
+            if self.at >= self.src.len() {
+                return None;
+            }
+            self.step();
+        }
+    }
+
+    /// Reads the byte at `at`.
+    fn step(&mut self) {
+        let (c, v) = (self.src[self.at], self.level);
+        // The groups whose least level is above this byte's join in one at its level.
+        let mut joined = None;
+        while let Some(&(m, first)) = self.groups.last()
+            && m > v
+        {
+            self.groups.pop();
+            joined = Some(first);
+        }
+        if let Some(first) = joined
+            && self.groups.last().is_none_or(|&(m, _)| m < v)
+        {
+            self.groups.push((v, first));
+        }
+        if c == b'"' {
+            // It closes the quotes whose least level is its own: the last group's, if any.
+            if let Some(&(m, first)) = self.groups.last()
+                && m == v
+            {
+                self.groups.pop();
+                for q in self.pending.drain(first..) {
+                    self.closed.insert(q, self.at);
                 }
             }
-            _ => {}
+            if self.groups.last().is_none_or(|&(m, _)| m < v) {
+                self.groups.push((v, self.pending.len()));
+            }
+            self.pending.push(self.at);
         }
-        i += 1;
+        self.level += level(c);
+        self.at += 1;
     }
-    line.map_or(QuoteEnd::Never, QuoteEnd::Line)
+}
+
+/// What a byte adds to the level of the bytes after it.
+fn level(c: u8) -> i64 {
+    match c {
+        b'{' => 1,
+        b'}' => -1,
+        _ => 0,
+    }
+}
+
+/// The start of the first line after `at` that opens a group (`@word{` or `@word(`, blanks
+/// before it allowed), where the entry of a quote that never closes ends.
+fn group_line(src: &[u8], at: usize) -> Option<usize> {
+    let mut from = at;
+    while let Some(n) = memchr::memchr(b'\n', &src[from..]) {
+        let mut s = from + n + 1;
+        while s < src.len() && matches!(src[s], b' ' | b'\t' | b'\r') {
+            s += 1;
+        }
+        if src.get(s) == Some(&b'@') && group(src, s).is_some() {
+            return Some(s);
+        }
+        from = s;
+    }
+    None
 }
 
 fn scan(src: &[u8], b: &mut Builder) {
@@ -509,17 +587,75 @@ mod tests {
     }
 
     #[test]
-    fn after_a_quote_that_never_closes_a_later_quote_ends_at_a_line_that_opens_a_group() {
-        // Code review M6 r3, Fable #3 (the spec takes the code): once a quote ran to the end
-        // without closing, a later quoted value ends at the first line that starts with
-        // `@word{`, even one that closes further down, so the pass over the file stays linear.
-        // Here `k3`'s note closes on line 5, yet `@d{k4` on line 4 opens an entry of its own.
+    fn after_a_quote_that_never_closes_a_later_quote_reads_to_its_own_close() {
+        // Code review M6 r3, Codex #2 (it replaces the decision on Fable #3): the recovery
+        // from a quote that never closes stays in its entry. `k`'s and `k2`'s quotes never
+        // close, so each ends at the next line that starts with `@word{`; `k3`'s note closes on
+        // line 5, so `@d{k4` on line 4 is text of it, as it was before any broken quote.
         let src = b"@a{k, t = \"x\n@b{k2, t = \"y\n@c{k3, note = \"multi\n@d{k4, t = {needle1}}\nline\", u = {needle2}}\n@e{k5, u = {needle3}}\n";
         assert_eq!(
             needles(src, "bibtex"),
-            vec![vec!["k4", "t"], vec![], vec!["k5", "u"]]
+            vec![vec!["k3", "note"], vec!["k3", "u"], vec!["k5", "u"]]
         );
         cursor_is_model("bibtex", src);
+        // Codex's case: the entry after the broken quote keeps its title and its note.
+        let src = b"@a{k, t = \"x {\n@b{k2, title = \"needle-before\n@foo{bar} needle-after\", note={needle-note}}\n";
+        assert_eq!(
+            needles(src, "bibtex"),
+            vec![vec!["k2", "title"], vec!["k2", "title"], vec!["k2", "note"]]
+        );
+        cursor_is_model("bibtex", src);
+        // Quotes that close inside braces opened in a broken quote, and broken quotes one
+        // after another, each raising the brace depth.
+        let src = b"@a{k, t = \"x {\n@b{k2, t = {\"needle1\"}, u = \"y {\n@c{k3, t = \"needle2\n@d{q} z\"}\n";
+        assert_eq!(
+            needles(src, "bibtex"),
+            vec![vec!["k2", "t"], vec!["k3", "t"]]
+        );
+        cursor_is_model("bibtex", src);
+    }
+
+    #[test]
+    fn the_walk_of_the_quotes_closes_each_as_the_reader_does() {
+        // `Quotes` against a reading of each quote from its own start, as `Reader::quoted`
+        // reads it, over the quotes of pseudo-random text, asked in order.
+        fn naive(src: &[u8], at: usize) -> Option<usize> {
+            let mut depth = 0usize;
+            for (i, &c) in src.iter().enumerate().skip(at + 1) {
+                match c {
+                    b'{' => depth += 1,
+                    b'}' => depth = depth.saturating_sub(1),
+                    b'"' if depth == 0 => return Some(i),
+                    _ => {}
+                }
+            }
+            None
+        }
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..2000 {
+            let len = (seed % 40) as usize;
+            let src: Vec<u8> = (0..len)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    b"\"{}a\n"[(seed % 5) as usize]
+                })
+                .collect();
+            // Every quote, then a third of them: a quote past the walk restarts it.
+            for skip in [0, 3] {
+                let mut quotes = super::Quotes::new(&src);
+                for p in (0..src.len()).filter(|&p| src[p] == b'"' && (skip == 0 || p % skip == 0))
+                {
+                    assert_eq!(
+                        quotes.close(p),
+                        naive(&src, p),
+                        "{}@{p}",
+                        String::from_utf8_lossy(&src)
+                    );
+                }
+            }
+        }
     }
 
     #[test]

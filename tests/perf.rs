@@ -3617,6 +3617,60 @@ fn m6_java_class_shared_names() {
     }
 }
 
+/// Code review M6 r3, Codex #2: BibTeX entries that each open a quote that never closes cost
+/// time linear in their number, now that the quotes of the entries after such a quote read to
+/// their own close: N and 2 N of them, with or without a `{` after the quote, and the Match in
+/// the last entry keeps its Trail. The second costs less than three times the first (CPU time
+/// of s4, best of three, `cpu_time`); reading every quote from its own start to the end of the
+/// file would make it four.
+#[test]
+#[ignore = "M6 BibTeX of quotes that never close; local timing"]
+#[cfg(target_os = "linux")]
+fn m6_bibtex_broken_quotes_stay_linear() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    eprintln!("m6_bibtex_broken_quotes_stay_linear: uptime {}", uptime());
+    const N: usize = 25_000;
+    for (case, unit) in [("brace", "\"x {\n"), ("plain", "\"x\n")] {
+        let time = |n: usize| -> Duration {
+            let mut src = String::new();
+            for i in 0..n {
+                src.push_str(&format!("@a{{k{i}, t = {unit}"));
+            }
+            src.push_str("@b{last, t = {needle}}\n");
+            let name = format!("broken{n}.bib");
+            std::fs::write(fx.file(&name), &src).unwrap();
+            let args = [
+                "--no-docs",
+                "--format",
+                "bibtex",
+                "--flat",
+                "needle",
+                name.as_str(),
+            ];
+            let (out, _) = sfor_output(&fx, &args);
+            assert!(
+                out.ends_with(": last › t │ @b{last, t = {needle}}\n"),
+                "{case}: {out}"
+            );
+            (0..3).map(|_| cpu_time(&fx, &args, 0)).min().unwrap()
+        };
+        let (small, large) = (time(N), time(2 * N));
+        eprintln!(
+            "m6 bibtex broken quotes/{case}: {N} {small:?}, {} {large:?}",
+            2 * N
+        );
+        // Far past linear work over 1 MB, which a quadratic walk passes many times over.
+        assert!(large <= Duration::from_secs(2), "{case}: {large:?}");
+        if timing_enabled() {
+            assert!(
+                large < small * 3 + Duration::from_millis(20),
+                "{case}: 2 N cost {large:?}, N {small:?}"
+            );
+        }
+    }
+}
+
 /// `--expand` over a dense file of one Section, for each new Processor of M6 (C8 reported a
 /// 1 MiB Markdown and diff file of one Section taking more than 300 s, not reproduced since):
 /// a 1 MiB file where every line matches and one Section holds them all prints that Section
