@@ -226,7 +226,16 @@ fn m6_binary_mutation_case() {
             assert!(range.start <= range.end && range.end <= bytes.len());
         }
         let lines = searchfor::trail::LineIndex::new(&bytes);
-        for at in 0..bytes.len() {
+        // A Trail changes only where a range starts or ends: one byte of each run between
+        // those offsets asks every Trail the map gives, instead of every byte (code round 2,
+        // Fable #21).
+        let mut at: Vec<usize> = std::iter::once(0)
+            .chain(map.ranges().flat_map(|r| [r.start, r.end]))
+            .filter(|&a| a < bytes.len())
+            .collect();
+        at.sort_unstable();
+        at.dedup();
+        for at in at {
             for s in map.trail(at, &lines) {
                 assert!(s.line > 0 && s.end_line >= s.line);
             }
