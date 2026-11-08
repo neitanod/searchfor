@@ -440,6 +440,29 @@ mod own_names {
     }
 
     #[test]
+    fn a_tiff_entry_inside_an_xmp_packet_already_read_keeps_its_elements() {
+        // A second XMP entry whose bytes overlap a packet read before, without being the same
+        // bytes, leaves them to that packet (code round 2, Fable #16): a Match in one keeps its
+        // element.
+        let packet = b"<x:xmpmeta><rdf:RDF><rdf:Description><dc:one>needle1</dc:one><dc:two>needle2</dc:two></rdf:Description></rdf:RDF></x:xmpmeta>";
+        let mut tiff = m6::tiff_shared_xmp(2, packet);
+        let start = tiff.windows(8).position(|w| w == b"<dc:two>").unwrap();
+        // To the packet's end: its closing tags close no element the entry opened.
+        let len = (tiff.len() - start) as u32;
+        let second = 8 + 2 + 12;
+        tiff[second + 4..second + 8].copy_from_slice(&len.to_le_bytes());
+        tiff[second + 8..second + 12].copy_from_slice(&(start as u32).to_le_bytes());
+        assert_eq!(
+            trail(&tiff, "tiff", b"needle1"),
+            ["TIFF", "IFD0", "XMP", "dc:one"]
+        );
+        assert_eq!(
+            trail(&tiff, "tiff", b"needle2"),
+            ["TIFF", "IFD0", "XMP", "dc:two"]
+        );
+    }
+
+    #[test]
     fn a_java_member_name_comes_before_the_ldc_that_loads_it() {
         // The method `needle` loads the string `needle`, one shared Utf8 entry: a Match in it
         // is in the method's own name, with the class's Trail (orchestrator's decision 2 on

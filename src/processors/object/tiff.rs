@@ -47,10 +47,10 @@ pub(super) fn read(b: &mut Builder, packet: Range<usize>, parent: usize) -> Opti
     let (le, ifd0) = header(bytes, &packet)?;
     let base = packet.start;
     let mut budget = packet.len() / 12 + 1;
-    // The XMP packets read, and how many more bytes of XMP may be: at most the packet's own
-    // size in all, so entries that name one packet, or overlapping ones, read it once
-    // (code round 1, Codex #3).
-    let mut xmp_read = std::collections::HashSet::new();
+    // The XMP packets read, by start to end, and how many more bytes of XMP may be: at most
+    // the packet's own size in all, so entries that name one packet, or overlapping ones, read
+    // it once (code round 1, Codex #3). The packets read never overlap.
+    let mut xmp_read = std::collections::BTreeMap::<usize, usize>::new();
     let mut xmp_budget = packet.len();
     let mut visited = std::collections::HashSet::new();
     let mut queue = vec![(ifd0 as usize, Ifd::Main(0), parent)];
@@ -102,8 +102,14 @@ pub(super) fn read(b: &mut Builder, packet: Range<usize>, parent: usize) -> Opti
                     .and_then(|v| sub(&packet, v, size))
             {
                 if tag == 0x02bc && matches!(kind, Ifd::Main(_)) {
-                    // A packet already read keeps the Trails of its first entry.
-                    if xmp_read.insert(value.clone()) {
+                    // A packet already read keeps the Trails of its first entry, also over
+                    // the bytes a later entry shares with it (code round 2, Fable #16).
+                    let overlaps = xmp_read
+                        .range(..value.end)
+                        .next_back()
+                        .is_some_and(|(_, &end)| end > value.start);
+                    if !overlaps {
+                        xmp_read.insert(value.start, value.end);
                         b.own(key, value.clone());
                         if value.len() <= xmp_budget {
                             xmp_budget -= value.len();
