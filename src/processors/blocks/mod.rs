@@ -802,10 +802,12 @@ impl Processor for Blocks {
 
 /// Where a member that ends with its line ends: past its last token at `last` and the rest of
 /// that line (an end-of-line comment), but before the next token at `next` and its white space.
+/// Only the bytes up to `next` are looked at: with no `\n` there, a search to the end of the
+/// file made a file of members with no line break quadratic (Fable r1 #2).
 pub(crate) fn tail_end(src: &[u8], last: usize, next: usize) -> usize {
     let last = last.min(src.len());
-    let eol = memchr::memchr(b'\n', &src[last..]).map_or(src.len(), |k| last + k);
-    let mut end = eol.min(next.max(last));
+    let hi = next.max(last).min(src.len());
+    let mut end = memchr::memchr(b'\n', &src[last..hi]).map_or(hi, |k| last + k);
     while end > last && is_space(src[end - 1]) {
         end -= 1;
     }
@@ -946,6 +948,39 @@ pub(crate) mod tests {
         assert_eq!(tail_end(src, 2, 10), 7);
         assert_eq!(tail_end(src, 11, 12), 11);
         assert_eq!(tail_end(src, 14, 15), 14);
+    }
+
+    /// The time of `f`, the fastest of three runs.
+    pub(crate) fn fastest(mut f: impl FnMut()) -> std::time::Duration {
+        (0..3)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                f();
+                t.elapsed()
+            })
+            .min()
+            .expect("three runs")
+    }
+
+    /// Fable r1 #2: with no `\n` after a member (a lone CR ends no line, M6 spec §3, point 7)
+    /// each `tail_end` looked to the end of the file. The same members with CR or LF take
+    /// about the same time, which was 30 times more at 256 KiB.
+    #[test]
+    fn members_with_no_line_break_after_them_scan_in_linear_time() {
+        for (syntax, unit) in [
+            ("protobuf", "message M { string needle = 1; }"),
+            ("graphql", "type T { needle: String }"),
+        ] {
+            let lf = format!("{unit}\n").repeat((256 << 10) / (unit.len() + 1));
+            let cr = lf.replace('\n', "\r");
+            let p = Params::of(&params(syntax)).unwrap();
+            let t_lf = fastest(|| drop(p.scan(lf.as_bytes()).unwrap()));
+            let t_cr = fastest(|| drop(p.scan(cr.as_bytes()).unwrap()));
+            assert!(
+                t_cr < t_lf * 4 + std::time::Duration::from_millis(20),
+                "{syntax}: CR {t_cr:?}, LF {t_lf:?}"
+            );
+        }
     }
 
     #[test]
