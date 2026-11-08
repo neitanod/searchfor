@@ -479,3 +479,41 @@ fn m6_make_depth_stops_at_256() {
     assert_eq!(lens, [256, 1]);
     assert_eq!(rows[1]["trail"][0]["kind"], "target");
 }
+
+/// Fable r1 #13, orchestrator decision 3: a rule's label is its targets and a recipe's its
+/// name, `@` included; prerequisites, parameters, dependencies and attributes are inside the
+/// Segment, as a function's signature is inside its function.
+#[test]
+fn m6_rule_and_recipe_labels_are_their_names() {
+    let fx = Fixture::new();
+    put(
+        &fx,
+        "labels.mk",
+        b"a b: deps needle\n\techo x\nneedle-t: x\n",
+    );
+    let rows = matches(&output(&fx, "make", "labels.mk", "needle", &["--json"]));
+    assert_eq!(paths(&rows), ["a b", ""]);
+    let within = matches(&output(
+        &fx,
+        "make",
+        "labels.mk",
+        "needle",
+        &["--json", "--within", "a b"],
+    ));
+    assert_eq!(paths(&within), ["a b"]);
+    put(
+        &fx,
+        "labels.just",
+        b"[group(\"needle-grp\")]\nbuild target=\"x:y\" +args: (dep \"needle\") needle-dep\n    echo\n@needle-r:\n    echo\n",
+    );
+    let rows = matches(&output(&fx, "just", "labels.just", "needle", &["--json"]));
+    assert_eq!(paths(&rows), ["build", "build", ""]);
+    let within = matches(&output(
+        &fx,
+        "just",
+        "labels.just",
+        "needle-dep",
+        &["--json", "--within", "build"],
+    ));
+    assert_eq!(paths(&within), ["build"]);
+}

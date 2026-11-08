@@ -258,10 +258,12 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
                 if targets.is_empty() {
                     continue;
                 }
+                // The label is the targets: the prerequisites are inside the rule, as a
+                // function's parameters are inside it (Fable r1 #13, decision 3).
                 items.push(Item {
                     kind: "target",
                     range: l.first.start..l.next,
-                    label: l.first.start..l.end,
+                    label: targets.clone(),
                     name: Named::Source(targets),
                     signature: Some(t.start..l.first.end),
                 });
