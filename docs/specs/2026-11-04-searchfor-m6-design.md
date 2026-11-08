@@ -360,7 +360,8 @@ an unclosed Markdown fence does.
   text, and so is a two-line title's underline (one repeated `=`, `-`, `~`, `^` or `+` within
   one character of the title's length, when the title line starts a paragraph: after a blank
   line, a heading, a block's delimiter or an attribute entry; never a list item or a block
-  title), which opens no block. An attribute entry may continue over lines ending in `\`.
+  title), which opens no block. An attribute entry may continue over lines ending in a space
+  and `\`; a bare trailing `\`, as in a Windows path, ends its value.
 - **Blocks.** A delimited block (`----` listing, `....` literal, `////` comment, `++++`
   passthrough, `****`, `====`, `____`, and Markdown-style ```` ``` ```` fences) runs to the same
   delimiter; a fence of three or more backticks closes at a run of backticks as long or longer.
@@ -423,7 +424,9 @@ an unclosed Markdown fence does.
   commands are text, and so is the body of a macro or environment definition (`\newcommand`,
   `\DeclareRobustCommand`, `\newenvironment`, `\def`, xparse's `\NewDocumentCommand` and
   `\NewDocumentEnvironment` families, and their variants), whose parts may stand on several
-  lines with comments between them, up to a blank line, and whose commands open nothing.
+  lines with comments between them, up to a blank line, and whose commands open nothing. No
+  part of a definition crosses a blank line; a `%` comment eats its line break, so a blank line
+  right after it is one too.
 
 ### 6.5 Jupyter notebooks
 
@@ -562,7 +565,9 @@ the file.
   at a word of the line, split at blanks outside quotes and escapes, that starts with `<<`; a
   `<<` inside a quoted word or another word is text. The words of an instruction are split over
   its logical line: a quote or a word left open before a continuation's escape goes on in the
-  next line, so `RUN echo "a \` + `<<EOF"` opens no heredoc.
+  next line, so `RUN echo "a \` + `<<EOF"` opens no heredoc. A heredoc marker split by a
+  continuation goes on with the start of the next line, as Docker joins the lines first
+  (`<<EOF\` + `cat` is `<<EOFcat`).
 - **Example.** `Dockerfile:12: build › RUN │     needle-build --release`
 
 ### 7.10 Makefile
@@ -807,7 +812,8 @@ Details, each a decision:
   rules give (spec §5.4), below `rdf:Description` (whose ancestors every packet repeats):
   `JPEG › APP1 XMP › dc:title › rdf:Alt › rdf:li`. A packet that is not well-formed keeps the
   `XMP` Segment for the Matches after the error. Entries that name one XMP packet read it once,
-  with the first entry's Trail; the XMP read inside a TIFF adds up to at most its size.
+  with the first entry's Trail; the XMP read inside a TIFF adds up to at most its size. An XMP
+  entry that shares bytes with a packet read before owns the rest of its bytes, unread.
 - **ID3** frames are named by their four-character id; `TXXX` and `WXXX` add their description,
   `COMM` stays `COMM`. ID3v2.2's three-character ids read the same. An ID3v2 tag that declares
   more than the file holds reads up to the file's end, and stops before an ID3v1 tag that ends
