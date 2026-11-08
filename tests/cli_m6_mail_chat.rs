@@ -524,3 +524,41 @@ fn m6_mail_from_lines() {
         ["Subject", "body"]
     );
 }
+
+/// Review r1, Fable #46 and #65 (the es-AR and dotted forms are from memory): 12-hour times
+/// written `p. m.` with U+202F and U+00A0, dates with `.`, and iOS's U+200E before a sender.
+#[test]
+fn m6_whatsapp_other_locales() {
+    let fx = Fixture::new();
+    put(
+        &fx,
+        "es.txt",
+        "31/12/2023, 9:41\u{202f}p.\u{a0}m. - Ana: hola\n31/12/2023, 9:42\u{202f}p.\u{a0}m. - Bob: needle\n"
+            .as_bytes(),
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "whatsapp",
+            "es.txt",
+            "needle",
+            &["--json"]
+        ))),
+        ["31/12/2023 › 9:42\u{202f}p.\u{a0}m. Bob"]
+    );
+    put(
+        &fx,
+        "de.txt",
+        "\u{200e}[31.12.23, 21:41:05] \u{200e}Ana: needle\n".as_bytes(),
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "whatsapp",
+            "de.txt",
+            "needle",
+            &["--json"]
+        ))),
+        ["31.12.23 › 21:41:05 Ana"]
+    );
+}

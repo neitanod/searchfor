@@ -13,6 +13,39 @@ const LRM: &[u8] = "\u{200e}".as_bytes();
 const NNBSP: &[u8] = "\u{202f}".as_bytes();
 const NBSP: &[u8] = "\u{a0}".as_bytes();
 
+/// The length of the space at the start of `s`: a space, a U+202F or a U+00A0.
+fn space(s: &[u8]) -> Option<usize> {
+    [&b" "[..], NNBSP, NBSP]
+        .into_iter()
+        .find(|sp| s.starts_with(sp))
+        .map(<[u8]>::len)
+}
+
+/// The length of `AM`/`PM` at the start of `s`, in any case, each letter maybe followed by a
+/// dot and the two maybe parted by a space: `PM`, `pm`, `p.m.`, `p. m.`.
+fn meridiem(s: &[u8]) -> Option<usize> {
+    if !s
+        .first()
+        .is_some_and(|b| matches!(b, b'A' | b'a' | b'P' | b'p'))
+    {
+        return None;
+    }
+    let mut i = 1;
+    let dotted = s.get(i) == Some(&b'.');
+    if dotted {
+        i += 1;
+        i += space(&s[i..]).unwrap_or(0);
+    }
+    if !s.get(i).is_some_and(|b| matches!(b, b'M' | b'm')) {
+        return None;
+    }
+    i += 1;
+    if dotted && s.get(i) == Some(&b'.') {
+        i += 1;
+    }
+    Some(i)
+}
+
 /// What opens a message, in ranges of its line: the date and the time as written, the sender
 /// (none for a system message), and where the bytes that name it end.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,12 +78,15 @@ fn opener(line: &[u8]) -> Option<Opener> {
         i += 1;
     }
     let d0 = i;
+    // `/`, or `.` and `-` as other locales write it, the same one twice.
+    let mut sep = None;
     for (k, (min, max)) in [(1, 2), (1, 2), (2, 4)].into_iter().enumerate() {
         if !digits(line, &mut i, min, max) {
             return None;
         }
         if k < 2 {
-            if line.get(i) != Some(&b'/') {
+            let b = *line.get(i).filter(|b| matches!(b, b'/' | b'.' | b'-'))?;
+            if *sep.get_or_insert(b) != b {
                 return None;
             }
             i += 1;
@@ -77,17 +113,12 @@ fn opener(line: &[u8]) -> Option<Opener> {
             return None;
         }
     }
-    // AM/PM after a space, a U+202F or a U+00A0.
-    for sp in [&b" "[..], NNBSP, NBSP] {
-        let rest = &line[i..];
-        if let Some(r) = rest.strip_prefix(sp)
-            && r.len() >= 2
-            && matches!(r[0], b'A' | b'a' | b'P' | b'p')
-            && matches!(r[1], b'M' | b'm')
-        {
-            i += sp.len() + 2;
-            break;
-        }
+    // AM/PM after a space, a U+202F or a U+00A0, also as Spanish writes it, `p. m.` (review
+    // r1, Fable #46, from memory: harmless when wrong, it only opens more lines).
+    if let Some(n) = space(&line[i..])
+        && let Some(m) = meridiem(&line[i + n..])
+    {
+        i += n + m;
     }
     let time = t0..i;
     if bracket {
@@ -101,7 +132,11 @@ fn opener(line: &[u8]) -> Option<Opener> {
         }
         i += 3;
     }
-    let text = i;
+    let mut text = i;
+    // iOS writes a U+200E before some senders.
+    if line[text..].starts_with(LRM) {
+        text += LRM.len();
+    }
     let sender = memchr::memmem::find(&line[text..], b": ")
         .filter(|&k| k > 0)
         .map(|k| text..text + k);
@@ -554,11 +589,25 @@ mod tests {
         assert_eq!((o.time, o.sender, o.label_end), (10..17, None, 17));
         let o = opener("\u{200e}[31/12/23, 21:41:05] Ana: x".as_bytes()).unwrap();
         assert_eq!((o.date, o.time, o.sender), (4..12, 14..22, Some(24..27)));
+        // Review r1, Fable #46 (the forms are from memory, unverified against an export):
+        // `p. m.` with its spaces, and dates written with `.` or `-`.
+        let o = opener("31/12/23, 9:41\u{202f}p.\u{a0}m. - Ana: x".as_bytes()).unwrap();
+        assert_eq!((o.time, o.sender), (10..23, Some(26..29)));
+        let o = opener(b"31/12/23, 9:41 a. m. - Ana: x").unwrap();
+        assert_eq!(o.time, 10..20);
+        let o = opener(b"31.12.23, 21:41 - Ana: x").unwrap();
+        assert_eq!((o.date, o.time), (0..8, 10..15));
+        let o = opener(b"31-12-2023, 21:41 - Ana: x").unwrap();
+        assert_eq!((o.date, o.time), (0..10, 12..17));
+        // Review r1, Fable #65: iOS's U+200E before the sender is not part of its name.
+        let o = opener("[31/12/23, 21:41:05] \u{200e}Ana: x".as_bytes()).unwrap();
+        assert_eq!(o.sender, Some(24..27));
         for no in [
             &b"31/12/23 21:41 - Ana: x"[..],
             b"31/12/23, 21:41 Ana: x",
             b"99/no date",
-            b"31.12.23, 21:41 - Ana: x",
+            b"31.12/23, 21:41 - Ana: x",
+            b"31/12/23, 9:41 p m - Ana: x",
             b"",
         ] {
             assert!(opener(no).is_none(), "{}", String::from_utf8_lossy(no));
