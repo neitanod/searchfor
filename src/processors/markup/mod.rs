@@ -1901,15 +1901,11 @@ mod tests {
         let expected = Markup.trails(&input, params, &anchors).unwrap();
         let prepared = Markup.prepare(input, params).unwrap();
         for a in 0..src.len() {
-            for b in 0..src.len() {
+            for (b, t) in expected.iter().enumerate() {
                 let mut c = prepared.cursor();
                 c.trail_at(a).unwrap();
                 let got = c.trail_at(b).unwrap();
-                assert_eq!(
-                    got.as_ref(),
-                    expected[b].as_slice(),
-                    "byte {b} after {a} of {syntax}"
-                );
+                assert_eq!(got.as_ref(), t.as_slice(), "byte {b} after {a} of {syntax}");
             }
         }
     }
