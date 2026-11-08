@@ -299,3 +299,25 @@ fn m6_telegram_precedence() {
         Some("json")
     );
 }
+/// Review r1, Fable #50, over the built-in Definitions: a glob that writes the extension
+/// compares it in any case, as the extension table does; the rest of the glob keeps its case.
+#[test]
+fn m6_builtin_paths_review_r1() {
+    let empty = tempfile::tempdir().unwrap();
+    let (r, warnings) = Registry::load(Some(empty.path()), &|_| true);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let d = Detector::new(&r, &[]).unwrap();
+    for (path, want) in [
+        ("proj/ChatExport_2024/messages.html", "telegram-html"),
+        ("proj/ChatExport_2024/messages.HTML", "telegram-html"),
+        ("proj/ChatExport_2024/RESULT.JSON", "json"),
+        ("/etc/nginx/conf.d/APP.CONF", "nginx"),
+        ("/etc/nginx/conf.d/app.Conf", "nginx"),
+        ("/etc/systemd/system/demo.PATH", "systemd"),
+        ("x.TF", "hcl"),
+        ("proj/DataExport_2024/result.json", "telegram"),
+    ] {
+        assert_eq!(selected(&d, path).as_deref(), Some(want), "{path}");
+    }
+    assert!(selected(&d, "/etc/APP.CONF").is_none());
+}

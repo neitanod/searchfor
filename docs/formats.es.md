@@ -28,7 +28,9 @@ Un archivo toma el primer Formato que le da una de estas señales, en este orden
    Blade, mientras que `cart.php` sigue siendo PHP.
 4. Un glob de `paths` cuyo último componente escribe la extensión: `**/ChatExport_*/result.json`
    hace `telegram` a un `result.json` dentro de una exportación de Telegram, mientras que un
-   `result.json` en cualquier otro lado sigue siendo JSON.
+   `result.json` en cualquier otro lado sigue siendo JSON. La extensión del glob se compara
+   sin distinguir mayúsculas, como en 5, así que `/etc/nginx/conf.d/APP.CONF` es nginx; el
+   resto del glob las distingue.
 5. La última extensión, comparada sin distinguir mayúsculas.
 6. Todos los demás globs de `paths`, cuyo último componente deja abierta la extensión:
    `**/.ssh/config`, `Dockerfile.*`, `.env.*`. Van después de la extensión, así que

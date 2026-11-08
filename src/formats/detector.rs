@@ -577,6 +577,21 @@ impl PathIndex {
     fn before_extension(&self, at: &At) -> Option<usize> {
         let key = at.key.as_deref()?;
         let ids = self.before_extension.get(key)?;
+        // The glob writes its extension in lower case, and an extension is compared in any
+        // case, as signal 5's table compares it: a path whose extension is not written so
+        // is matched with it lowered (review r1, Fable #50).
+        if let Some(ext) = at.path.extension()
+            && ext.as_encoded_bytes() != key.as_bytes()
+            && ext.as_encoded_bytes().eq_ignore_ascii_case(key.as_bytes())
+        {
+            let lowered = at.path.with_extension(key);
+            let name = lowered
+                .file_name()
+                .map(|n| n.as_encoded_bytes())
+                .unwrap_or_default();
+            let at = At::with_name(&lowered, name, Some(key));
+            return self.first(&at, ids.iter().copied());
+        }
         self.first(at, ids.iter().copied())
     }
 
@@ -1127,14 +1142,25 @@ mod tests {
             let matcher = glob.compile_matcher();
             let mut index = PathIndex::default();
             index.add(0, pattern);
+            let written = GlobShape::of(pattern).extensions().unwrap_or_default();
             for path in paths {
-                let p = Path::new(path);
+                // A glob that writes the extension matches it in any case (review r1,
+                // Fable #50): the glob is asked about the path with that extension lowered.
+                let lowered = Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .and_then(|e| {
+                        let low = e.to_ascii_lowercase();
+                        (low != e && written.contains(&low))
+                            .then(|| Path::new(path).with_extension(low))
+                    });
+                let p = lowered.as_deref().unwrap_or(Path::new(path));
                 let want = if pattern.contains('/') {
                     matcher.is_match(p)
                 } else {
                     p.file_name().is_some_and(|n| matcher.is_match(n))
                 };
-                let at = At::new(p);
+                let at = At::new(Path::new(path));
                 let got = index.before_extension(&at).or(index.after_extension(&at));
                 assert_eq!(got.is_some(), want, "{pattern} on {path}");
             }

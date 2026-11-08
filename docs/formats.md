@@ -26,7 +26,8 @@ A file gets the first Format that one of these signals gives, in this order:
    `cart.php` stays PHP.
 4. A glob of `paths` whose last component writes the extension: `**/ChatExport_*/result.json`
    makes a `result.json` inside a Telegram export `telegram`, while a `result.json` anywhere
-   else stays JSON.
+   else stays JSON. The glob's extension is compared without case, as in 5, so
+   `/etc/nginx/conf.d/APP.CONF` is nginx; the rest of the glob keeps its case.
 5. The last extension, compared without case.
 6. Every other glob of `paths`, whose last component leaves the extension open:
    `**/.ssh/config`, `Dockerfile.*`, `.env.*`. It comes after the extension, so
