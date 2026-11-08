@@ -907,10 +907,10 @@ $ s4 needle config/m6.vcf --flat
 
 Una entrada se nombra por su clave, y cada campo es una clave; `@string` y `@preamble` se
 nombran así, mientras que `@comment` y el texto entre entradas son texto con el Trail vacío.
-Una entrada cuyas llaves nunca se cierran termina en el próximo `@` al principio de una línea, y
-una con una comilla que nunca se cierra termina en la primera línea después de la comilla que
-empieza con `@palabra{` o `@palabra(`; las entradas que la siguen conservan enteros sus valores
-entre comillas, también sobre una línea así.
+Una entrada cuyas llaves o una comilla nunca se cierran termina en el próximo `@` al principio de
+una línea. Después de una comilla que nunca se cierra, las entradas desde la primera línea que
+empieza con `@palabra{` o `@palabra(` conservan enteros sus valores entre comillas, también sobre
+una línea así.
 
 ```
 $ s4 needle docs-a/m6.bib --flat

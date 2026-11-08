@@ -361,7 +361,8 @@ an unclosed Markdown fence does.
   one character of the title's length, when the title line starts a paragraph: after a blank
   line, a heading, a block's delimiter or an attribute entry; never a list item or a block
   title), which opens no block. An attribute entry may continue over lines ending in a space
-  and `\`; a bare trailing `\`, as in a Windows path, ends its value.
+  and `\`; a bare trailing `\`, as in a Windows path, ends its value. The value starts after the
+  blanks that follow `:name:`, so a value that is a bare `\` (`:desc: \`) ends on its line.
 - **Blocks.** A delimited block (`----` listing, `....` literal, `////` comment, `++++`
   passthrough, `****`, `====`, `____`, and Markdown-style ```` ``` ```` fences) runs to the same
   delimiter; a fence of three or more backticks closes at a run of backticks as long or longer.
@@ -426,7 +427,9 @@ an unclosed Markdown fence does.
   `\NewDocumentEnvironment` families, and their variants), whose parts may stand on several
   lines with comments between them, up to a blank line, and whose commands open nothing. No
   part of a definition crosses a blank line; a `%` comment eats its line break, so a blank line
-  right after it is one too.
+  right after it is one too. The name and the parameter text of `\def`, `\gdef`, `\edef` and
+  `\xdef` cross no blank line either: `\def\foo`, a blank line and `{\section{X}}` open the
+  heading `X`, where TeX would read the `\par` as parameter text.
 
 ### 6.5 Jupyter notebooks
 
@@ -568,7 +571,8 @@ the file.
   next line, so `RUN echo "a \` + `<<EOF"` opens no heredoc. A heredoc marker split by a
   continuation goes on with the start of the next line, as Docker joins the lines first
   (`<<EOF\` + `cat` is `<<EOFcat`); the marker's word goes on over continuation lines before
-  the heredoc is recorded (`<<EO\` + `F` is `<<EOF`).
+  the heredoc is recorded (`<<EO\` + `F` is `<<EOF`), and keeps its `-` and its quotes:
+  `<<\` + `-EOF` is `<<-EOF`, and `<<"EO\` + `F"` and `<<"EOF\` + `"` are `<<"EOF"`.
 - **Example.** `Dockerfile:12: build › RUN │     needle-build --release`
 
 ### 7.10 Makefile
@@ -840,7 +844,10 @@ Details, each a decision:
   field whose constant value it is, else to the field or method it describes, else to
   `constant pool` (`section`). The constant pool stores modified UTF-8, which rg searches as
   bytes. Members that share a constant-pool name are each named by it; the name is decoded and
-  cut once per constant, so the cost stays bounded by the file's bytes (§11).
+  cut once per constant, so the cost stays bounded by the file's bytes (§11). A WebAssembly
+  function's name is decoded and cut once, however many code sections number its function again.
+  Members and functions that share one decoded name share one copy of it, cut or not
+  (`name_chars = 0`), so a file's names cost its bytes a few times at most.
 - **Fat Mach-O against Java** (`cafebabe`): §4.2.
 
 ## 10. Group F · Everyday
@@ -904,10 +911,11 @@ brace or parenthesis.
 `refs.bib:5: knuth1984 › title │   title = {Literate needle programming},`
 Where an entry closes follows its quoted values: a `}` or `)` between quotes closes nothing.
 An entry whose braces or a quote never close ends at the next line that starts with `@`; in one
-that closes, such an `@` is text of its value. An entry with a quote that never closes ends at
-the first line after the quote that starts with `@word{` or `@word(`; the entries after it read
-their quoted values to their own closing quote, also over such a line. Where quotes close is
-found in one walk over the file, however many quotes never close.
+that closes, such an `@` is text of its value. After a quote that never closes, the reading of
+where entries close resumes at the first line after the quote that starts with `@word{` or
+`@word(`, so the entries from there on read their quoted values to their own closing quote, also
+over such a line. Where quotes close is found in one walk over the file, however many quotes
+never close.
 
 ### 10.4 WhatsApp
 
