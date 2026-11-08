@@ -567,7 +567,8 @@ the file.
   its logical line: a quote or a word left open before a continuation's escape goes on in the
   next line, so `RUN echo "a \` + `<<EOF"` opens no heredoc. A heredoc marker split by a
   continuation goes on with the start of the next line, as Docker joins the lines first
-  (`<<EOF\` + `cat` is `<<EOFcat`).
+  (`<<EOF\` + `cat` is `<<EOFcat`); the marker's word goes on over continuation lines before
+  the heredoc is recorded (`<<EO\` + `F` is `<<EOF`).
 - **Example.** `Dockerfile:12: build › RUN │     needle-build --release`
 
 ### 7.10 Makefile
@@ -838,7 +839,8 @@ Details, each a decision:
   found by walking each method's bytecode with the JVM's instruction lengths), else to the
   field whose constant value it is, else to the field or method it describes, else to
   `constant pool` (`section`). The constant pool stores modified UTF-8, which rg searches as
-  bytes.
+  bytes. Members that share a constant-pool name are each named by it; the name is decoded and
+  cut once per constant, so the cost stays bounded by the file's bytes (§11).
 - **Fat Mach-O against Java** (`cafebabe`): §4.2.
 
 ## 10. Group F · Everyday
@@ -902,7 +904,10 @@ brace or parenthesis.
 `refs.bib:5: knuth1984 › title │   title = {Literate needle programming},`
 Where an entry closes follows its quoted values: a `}` or `)` between quotes closes nothing.
 An entry whose braces or a quote never close ends at the next line that starts with `@`; in one
-that closes, such an `@` is text of its value.
+that closes, such an `@` is text of its value. An entry with a quote that never closes ends at
+the first line after the quote that starts with `@word{` or `@word(`; the entries after it read
+their quoted values to their own closing quote, also over such a line. Where quotes close is
+found in one walk over the file, however many quotes never close.
 
 ### 10.4 WhatsApp
 
