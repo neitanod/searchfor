@@ -124,6 +124,17 @@ fn modified_utf8(b: &[u8]) -> Cow<'_, str> {
     )
 }
 
+/// `name` cut at `max` characters with `…`, as the Builder cuts every name (`layouts::cut`), so
+/// that a name shared by many members is cut once; the Builder's own cut then keeps it.
+fn cut(name: Cow<'_, str>, max: usize) -> Cow<'_, str> {
+    if max == 0 || name.len() <= max || name.chars().count() <= max {
+        return name;
+    }
+    let mut s: String = name.chars().take(max - 1).collect();
+    s.push('…');
+    Cow::Owned(s)
+}
+
 /// The length of the instruction at `pc` of `code` (whose first byte is offset 0 of the
 /// method), or None for an opcode the JVM does not define or one that runs past the code.
 fn instruction(code: &[u8], pc: usize) -> Option<usize> {
@@ -326,7 +337,21 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
         pool_bytes.start..bytes.len(),
     );
     b.node(Some(class), "section", "constant pool".into(), pool_bytes);
-    let label = |k: u16| utf8(k).map_or(Cow::Borrowed("?"), |r| modified_utf8(&bytes[r]));
+    // Each name is decoded and cut once, and members that share a constant take a copy of
+    // its cut name (code review M6 r3, Codex #1): a file costs its bytes, not its members
+    // times the name's length.
+    let mut names: Vec<Option<Cow<'_, str>>> = vec![None; pool.len()];
+    let name_chars = b.name_chars;
+    let mut label = |k: u16| -> Cow<'_, str> {
+        let decode = || {
+            let name = utf8(k).map_or(Cow::Borrowed("?"), |r| modified_utf8(&bytes[r]));
+            cut(name, name_chars)
+        };
+        match names.get_mut(k as usize) {
+            Some(slot) => slot.get_or_insert_with(decode).clone(),
+            None => decode(),
+        }
+    };
     let field_nodes: Vec<usize> = fields
         .iter()
         .map(|f| b.node(Some(class), "field", label(f.name), f.bytes.clone()))
