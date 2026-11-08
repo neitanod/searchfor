@@ -133,10 +133,12 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
             // Text: an unrecognized line.
             continue;
         }
+        // The label is the name and its `@`: the attributes, parameters and dependencies are
+        // inside the recipe, as a function's parameters are inside it (Fable r1 #13, decision 3).
         items.push(Item {
             kind: "recipe",
             range: start..l.next,
-            label: start..l.end,
+            label: t.start..name.end,
             name: Named::Source(name),
             signature: Some(t),
         });

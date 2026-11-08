@@ -53,29 +53,47 @@ fn word(src: &[u8], r: Range<usize>) -> (&[u8], Range<usize>) {
     (&src[r.start..i], trim(src, i..r.end))
 }
 
+/// The closer of a reference's opening bracket.
+fn closer(open: u8) -> Option<u8> {
+    match open {
+        b'(' => Some(b')'),
+        b'{' => Some(b'}'),
+        _ => None,
+    }
+}
+
 /// Where a variable reference `$(…)` or `${…}` that starts at `i` ends, nested references
-/// included; `$$` and `$x` are two bytes.
+/// included; `$$` and `$x` are two bytes. The walk keeps a stack of the open references, so
+/// any nesting fits (Codex r1 #1: 300 000 levels overflowed a recursive one).
 fn reference_end(src: &[u8], i: usize, end: usize) -> usize {
-    let close = match src.get(i + 1) {
-        Some(b'(') => b')',
-        Some(b'{') => b'}',
-        _ => return (i + 2).min(end),
+    let Some(close) = src.get(i + 1).copied().and_then(closer) else {
+        return (i + 2).min(end);
     };
-    let open = src[i + 1];
-    let mut depth = 0usize;
+    // Each open reference: its opening bracket, and how many of them are open inside it.
+    let mut open: Vec<(u8, u32)> = vec![(src[i + 1], 0)];
+    let mut close = close;
     let mut j = i + 1;
     while j < end {
         let b = src[j];
-        if b == b'$' && matches!(src.get(j + 1), Some(b'(' | b'{')) {
-            j = reference_end(src, j, end);
+        if b == b'$'
+            && let Some(c) = src.get(j + 1).copied().and_then(closer)
+        {
+            open.push((src[j + 1], 0));
+            close = c;
+            j += 1;
             continue;
         }
-        if b == open {
-            depth += 1;
+        let (bracket, depth) = open.last_mut().expect("a reference is open");
+        if b == *bracket {
+            *depth += 1;
         } else if b == close {
-            depth -= 1;
-            if depth == 0 {
-                return j + 1;
+            *depth -= 1;
+            if *depth == 0 {
+                open.pop();
+                match open.last() {
+                    None => return j + 1,
+                    Some(&(o, _)) => close = closer(o).expect("an opening bracket"),
+                }
             }
         }
         j += 1;
@@ -102,6 +120,11 @@ fn separator(src: &[u8], r: Range<usize>) -> Option<Separator> {
                 continue;
             }
             b'#' => return None,
+            // A drive letter, `C:/` or `C:\`, is part of its word (Fable r1 #54).
+            b':' if i > r.start
+                && src[i - 1].is_ascii_alphabetic()
+                && (i - 1 == r.start || matches!(src[i - 2], b' ' | b'\t'))
+                && matches!(src.get(i + 1), Some(b'/' | b'\\')) => {}
             b':' => {
                 let rest = &src[i..r.end];
                 for op in [&b":::="[..], b"::=", b":="] {
@@ -193,14 +216,28 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
             {
                 e += 1;
             }
+            // `define` nests: GNU make 4.4.1 keeps an inner `define` … `endef` in the value
+            // and ends it at the `endef` that matches (Fable r1 #20). An `override define`
+            // in the body opens none.
             let mut end = src.len();
+            let mut depth = 1usize;
             let mut p = l.next;
             while let Some(b) = line_at(src, p) {
                 p = b.next;
                 let bt = trim(src, b.start..b.end);
-                if word(src, bt).0 == b"endef" {
-                    end = b.next;
-                    break;
+                if bt.is_empty() {
+                    continue;
+                }
+                match word(src, bt).0 {
+                    b"define" => depth += 1,
+                    b"endef" => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = b.next;
+                            break;
+                        }
+                    }
+                    _ => {}
                 }
             }
             pos = end;
@@ -240,10 +277,12 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
                 if targets.is_empty() {
                     continue;
                 }
+                // The label is the targets: the prerequisites are inside the rule, as a
+                // function's parameters are inside it (Fable r1 #13, decision 3).
                 items.push(Item {
                     kind: "target",
                     range: l.first.start..l.next,
-                    label: l.first.start..l.end,
+                    label: targets.clone(),
                     name: Named::Source(targets),
                     signature: Some(t.start..l.first.end),
                 });
@@ -276,7 +315,27 @@ mod tests {
             [("key", "A".into()), ("target", "all".into())]
         );
         assert_eq!(names(b"x$(a:b): c\n"), [("target", "x$(a:b)".into())]);
+        assert_eq!(
+            names(b"x$(a ${b:c} (d:e) $(f $$:)):g\n"),
+            [("target", "x$(a ${b:c} (d:e) $(f $$:))".into())]
+        );
+        // An unclosed reference runs to the end of its line.
+        assert_eq!(names(b"x$(a ${b:c}: d\n"), []);
         assert_eq!(names(b"# a: b\nA = 1 # x: y\n"), [("key", "A".into())]);
+    }
+
+    /// Fable r1 #54: a drive letter (`C:/`, `C:\`) is part of its target, as GNU make reads
+    /// it on Windows; a one-letter target before `: /x` with a blank is still a rule.
+    #[test]
+    fn drive_letters_are_part_of_their_targets() {
+        assert_eq!(
+            names(b"C:/out/needle.exe: src/needle.c\na D:\\x: y\nc: /x\n"),
+            [
+                ("target", "C:/out/needle.exe".into()),
+                ("target", "a D:\\x".into()),
+                ("target", "c".into())
+            ]
+        );
     }
 
     #[test]

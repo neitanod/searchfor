@@ -400,3 +400,135 @@ fn m6_encoding_and_lone_cr() {
     assert_eq!(paths(&rows), lf);
     assert_eq!(rows[0]["line_number"], 1);
 }
+
+/// Codex r1 #1: 300 000 nested variable references, which recursed once each, overflowed the
+/// stack; the walk is iterative, and the rule after them is still read.
+#[test]
+fn m6_make_deep_references() {
+    let fx = Fixture::new();
+    let n = 300_000;
+    let src = format!("{}x{}:\n\techo needle\n", "$(".repeat(n), ")".repeat(n));
+    put(&fx, "deep-references.mk", src.as_bytes());
+    let out = output(&fx, "make", "deep-references.mk", "needle", &["--json"]);
+    let rows = matches(&out);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["trail"][0]["kind"], "target");
+}
+
+/// Codex r1 #6 = Fable r1 #8: a heredoc opens only where a word of the line starts with `<<`,
+/// as buildkit splits them, quotes kept; a `<<` inside a quoted word or inside another word
+/// (`$((1<<3))`) opens none, so the next instructions and stages are their own.
+#[test]
+fn m6_dockerfile_heredocs_start_words() {
+    let fx = Fixture::new();
+    for (src, want) in [
+        (
+            "FROM alpine AS build\nRUN echo \"<<EOF\"\nFROM alpine AS final\nRUN echo needle\n",
+            vec!["final › RUN"],
+        ),
+        (
+            "FROM alpine\nRUN echo \"<<EOF\" && echo needle1\nRUN echo needle2\nENV x=needle3\n",
+            vec!["stage 0 › RUN", "stage 0 › RUN", "stage 0 › ENV"],
+        ),
+        (
+            "FROM alpine\nRUN x=$((1<<3)) && echo needle1\nRUN echo needle2\n",
+            vec!["stage 0 › RUN", "stage 0 › RUN"],
+        ),
+        (
+            "FROM alpine\nRUN echo 'a <<EOF' \\\n && cat <<E\nneedle1\nE\nENV needle2=1\n",
+            vec!["stage 0 › RUN", "stage 0 › ENV"],
+        ),
+        (
+            "FROM alpine\nRUN echo a\\ <<EOF\nRUN echo needle1\n",
+            vec!["stage 0 › RUN"],
+        ),
+        (
+            "FROM alpine\nRUN cat <<EOF >x\nRUN needle1\nEOF\nENV needle2=1\n",
+            vec!["stage 0 › RUN", "stage 0 › ENV"],
+        ),
+    ] {
+        put(&fx, "heredoc.dockerfile", src.as_bytes());
+        let rows = matches(&output(
+            &fx,
+            "dockerfile",
+            "heredoc.dockerfile",
+            "needle",
+            &["--json"],
+        ));
+        assert_eq!(paths(&rows), want, "{src}");
+    }
+}
+
+/// Fable r1 #12: past 256 open Segments no more open (M6 spec §3, point 8), in a Makefile's
+/// conditionals too; each `endif` still closes its own `ifeq`.
+#[test]
+fn m6_make_depth_stops_at_256() {
+    let fx = Fixture::new();
+    let n = 300;
+    let src = format!(
+        "{}K := needle\n{}a:\n\techo needle\n",
+        "ifeq (a,b)\n".repeat(n),
+        "endif\n".repeat(n)
+    );
+    put(&fx, "deep.mk", src.as_bytes());
+    let rows = matches(&output(&fx, "make", "deep.mk", "needle", &["--json"]));
+    let lens: Vec<usize> = rows
+        .iter()
+        .map(|r| r["trail"].as_array().unwrap().len())
+        .collect();
+    assert_eq!(lens, [256, 1]);
+    assert_eq!(rows[1]["trail"][0]["kind"], "target");
+}
+
+/// Fable r1 #13, orchestrator decision 3: a rule's label is its targets and a recipe's its
+/// name, `@` included; prerequisites, parameters, dependencies and attributes are inside the
+/// Segment, as a function's signature is inside its function.
+#[test]
+fn m6_rule_and_recipe_labels_are_their_names() {
+    let fx = Fixture::new();
+    put(
+        &fx,
+        "labels.mk",
+        b"a b: deps needle\n\techo x\nneedle-t: x\n",
+    );
+    let rows = matches(&output(&fx, "make", "labels.mk", "needle", &["--json"]));
+    assert_eq!(paths(&rows), ["a b", ""]);
+    let within = matches(&output(
+        &fx,
+        "make",
+        "labels.mk",
+        "needle",
+        &["--json", "--within", "a b"],
+    ));
+    assert_eq!(paths(&within), ["a b"]);
+    put(
+        &fx,
+        "labels.just",
+        b"[group(\"needle-grp\")]\nbuild target=\"x:y\" +args: (dep \"needle\") needle-dep\n    echo\n@needle-r:\n    echo\n",
+    );
+    let rows = matches(&output(&fx, "just", "labels.just", "needle", &["--json"]));
+    assert_eq!(paths(&rows), ["build", "build", ""]);
+    let within = matches(&output(
+        &fx,
+        "just",
+        "labels.just",
+        "needle-dep",
+        &["--json", "--within", "build"],
+    ));
+    assert_eq!(paths(&within), ["build"]);
+}
+
+/// Fable r1 #20: `define` nests, as GNU make 4.4.1 reads it (checked: the outer variable's
+/// value holds the inner `define` … `endef`), so the `endef` that matches closes the key.
+/// `override define` inside a body opens none.
+#[test]
+fn m6_make_defines_nest() {
+    let fx = Fixture::new();
+    put(
+        &fx,
+        "define.mk",
+        b"define needle-def\n\tdefine inner\n\tendef\nneedle-body\nendef\nK := needle\ndefine D\noverride define E\nendef\nneedle-after\nendef\n",
+    );
+    let rows = matches(&output(&fx, "make", "define.mk", "needle", &["--json"]));
+    assert_eq!(paths(&rows), ["", "needle-def", "K", ""]);
+}

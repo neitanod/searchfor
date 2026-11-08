@@ -24,6 +24,27 @@ pub(crate) fn signature(src: &[u8], r: Range<usize>) -> String {
     text.trim_end().chars().take(SIGNATURE_CHARS).collect()
 }
 
+/// The line of `last`, the last byte of a Section that starts at `start` on line `line`:
+/// counted from `start`, or from `known`, the last byte and line of a Section around it, when
+/// that is nearer. Counting from the start alone made 256 nested Sections around a file count
+/// its line breaks 256 times (Fable r1 #16); from the Section around it, a chain of nested
+/// Sections counts each byte once.
+pub(crate) fn last_line(
+    src: &[u8],
+    start: usize,
+    line: u64,
+    last: usize,
+    known: Option<(usize, u64)>,
+) -> u64 {
+    let count = |r: Range<usize>| memchr::memchr_iter(b'\n', &src[r]).count() as u64;
+    match known {
+        Some((at, l)) if at >= last && at - last < last.saturating_sub(start) => {
+            l - count(last..at)
+        }
+        _ => line + count(start.min(last)..last),
+    }
+}
+
 /// What names a Segment, as a scanner gives it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SpecName<'a> {
@@ -245,13 +266,16 @@ impl Index {
     }
 
     /// Sorts the Segments as `Outline::build` does (a stable sort, needed only when a scanner
-    /// gave them out of order) and clamps each to its parent's end.
+    /// gave them out of order) and clamps each to its parent's end. A Segment inside
+    /// `MAX_DEPTH` others is left out, so no scanner opens more (M6 spec §3, point 8; Fable r1
+    /// #12: a Makefile's conditionals had no such stop).
     pub fn finish(mut self) -> Self {
         let order = |a: &Seg, b: &Seg| a.start.cmp(&b.start).then(b.end.cmp(&a.end));
         if !self.segs.is_sorted_by(|a, b| order(a, b).is_le()) {
             self.segs.sort_by(order);
         }
         let mut stack: Vec<usize> = Vec::new();
+        let mut deep: Option<Vec<bool>> = None;
         for i in 0..self.segs.len() {
             let start = self.segs[i].start;
             while let Some(&top) = stack.last() {
@@ -260,6 +284,10 @@ impl Index {
                 }
                 stack.pop();
             }
+            if stack.len() >= super::MAX_DEPTH {
+                deep.get_or_insert_with(|| vec![false; self.segs.len()])[i] = true;
+                continue;
+            }
             if let Some(&top) = stack.last() {
                 let end = self.segs[top].end;
                 if self.segs[i].end > end {
@@ -267,6 +295,13 @@ impl Index {
                 }
             }
             stack.push(i);
+        }
+        if let Some(deep) = deep {
+            let mut at = 0;
+            self.segs.retain(|_| {
+                at += 1;
+                !deep[at - 1]
+            });
         }
         self.segs.shrink_to_fit();
         self.extra.shrink_to_fit();
@@ -661,15 +696,21 @@ impl<'p> IndexCursor<'p> {
             return s.clone();
         }
         let (ix, src, id) = (self.ix, self.src, self.stack[k].id);
+        // `Outline::build`'s last line: the one of the Section's last byte.
+        let last_byte = |i: usize| {
+            let (start, end) = (ix.start(i), ix.end(i));
+            end.saturating_sub(1).max(start).min(src.len())
+        };
         let s = if ix.lines(id).is_some() {
             ix.segment(src, id, self.name_chars, || (0, 0))
         } else {
-            let (start, end) = (ix.start(id), ix.end(id));
-            let line = self.line_of(start);
-            // `Outline::build`'s last line: the one of the Section's last byte.
-            let last = end.saturating_sub(1).max(start).min(src.len());
-            let from = start.min(last);
-            let end_line = line + memchr::memchr_iter(b'\n', &src[from..last]).count() as u64;
+            let line = self.line_of(ix.start(id));
+            // The nearest Segment around it already built, with lines of its range.
+            let known = self.stack[..k].iter().rev().find_map(|o| {
+                let s = o.seg.as_ref().filter(|_| ix.lines(o.id).is_none())?;
+                Some((last_byte(o.id), s.end_line))
+            });
+            let end_line = last_line(src, ix.start(id), line, last_byte(id), known);
             ix.segment(src, id, self.name_chars, || (line, end_line))
         };
         self.stack[k].seg = Some(s.clone());
@@ -757,6 +798,27 @@ impl super::super::Cursor for IndexCursor<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fable r1 #12: past 256 open Segments no more open (M6 spec §3, point 8), whatever a
+    /// scanner gave: the Segments deeper than that are left out, their siblings kept.
+    #[test]
+    fn segments_past_the_depth_are_left_out() {
+        let n = 300;
+        let src = vec![b'x'; 2 * n + 2];
+        let mut ix = Index::default();
+        for d in 0..n {
+            ix.push(spec("k", d..src.len() - d, SpecName::Word("w")));
+        }
+        ix.push(spec("leaf", src.len() - 1..src.len(), SpecName::Word("w")));
+        let ix = ix.finish();
+        assert_eq!(ix.len(), super::super::MAX_DEPTH + 1);
+        assert_eq!(ix.kind(ix.len() - 1), "leaf");
+        let o = ix.outline(&src, 40);
+        let mut c = IndexCursor::new(&src, &ix, 40);
+        use super::super::super::Cursor;
+        assert_eq!(c.trail_at(n).unwrap().len(), super::super::MAX_DEPTH);
+        assert_eq!(o.segments.len(), ix.len());
+    }
 
     #[test]
     fn a_segment_is_40_bytes() {

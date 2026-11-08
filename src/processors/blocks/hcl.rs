@@ -64,8 +64,16 @@ pub(super) fn scan(src: &[u8], name_chars: usize) -> anyhow::Result<BlockIndex> 
         }
         if ctx == Ctx::List {
             let f = frames.last_mut().expect("a list frame");
-            let mut parts = f.holder.clone();
-            parts.push(Part::Index(f.n));
+            // A list that opened no Segment (past the depth) holds none either, so its
+            // elements need no name: building one copied the holder's at every level (Codex
+            // r1 #2). A name keeps no more pieces than its cut shows.
+            let mut parts = Vec::new();
+            if f.id.is_some() {
+                parts.extend_from_slice(&f.holder[..f.holder.len().min(keep)]);
+                if parts.len() < keep {
+                    parts.push(Part::Index(f.n));
+                }
+            }
             f.n = f.n.saturating_add(1);
             match c {
                 b'{' if !comprehension(src, i + 1) => {
@@ -133,6 +141,12 @@ pub(super) fn scan(src: &[u8], name_chars: usize) -> anyhow::Result<BlockIndex> 
                 }
             }
         }
+        if labels.is_empty() {
+            // `= x` or `: x` with no name before it: an expression, no key (Fable r1 #18).
+            let (stop, _) = expression(src, i, ctx);
+            i = stop.max(i + usize::from(stop == i && !is_closer(src[i])));
+            continue;
+        }
         let parts: Vec<Part> = labels.iter().cloned().map(Part::src).collect();
         if src[i] == b'{' {
             let id = b.open(Kind::Block, start, start..i + 1, &parts, false);
@@ -141,7 +155,7 @@ pub(super) fn scan(src: &[u8], name_chars: usize) -> anyhow::Result<BlockIndex> 
             continue;
         }
         // An attribute: its key is its first name.
-        let key = labels.first().cloned().unwrap_or(start..start);
+        let key = labels[0].clone();
         let label = start..key.end.max(start);
         let key_parts = &parts[..parts.len().min(1)];
         i = skip(src, i + 1, false);
@@ -160,8 +174,11 @@ pub(super) fn scan(src: &[u8], name_chars: usize) -> anyhow::Result<BlockIndex> 
                 i += 1;
             }
             _ => {
+                // The Section takes the rest of its last line, an end-of-line comment, as
+                // GraphQL's and Protobuf's members do (Fable r1 #19).
                 let (stop, last) = expression(src, i, ctx);
-                b.leaf(Kind::Key, start..last.max(key.end), label, key_parts);
+                let end = super::tail_end(src, last.max(key.end), stop);
+                b.leaf(Kind::Key, start..end, label, key_parts);
                 i = stop;
             }
         }
@@ -373,6 +390,24 @@ mod tests {
         let ix = scan(src, 40).unwrap();
         // The heredoc's indented `EOT` is text: `<<` needs its marker at the line start.
         assert!(src[ix.entries[1].range()].ends_with(b"  EOT\nEOT"));
+    }
+
+    /// Codex r1 #2: each nested list copied its holder's whole name, past the depth too: 5 000
+    /// levels in 10 KB held 225 MB. Now as many levels take about what as many flat lists do.
+    #[test]
+    fn nested_lists_cost_what_flat_ones_do() {
+        let n = 20_000;
+        let deep = format!("a = {}\"needle\"{}\n", "[".repeat(n), "]".repeat(n));
+        let flat = format!("a = [{}\"needle\"]\n", "[],".repeat(n));
+        let t_deep = super::super::tests::fastest(|| drop(scan(deep.as_bytes(), 40).unwrap()));
+        let t_flat = super::super::tests::fastest(|| drop(scan(flat.as_bytes(), 40).unwrap()));
+        assert!(
+            t_deep < t_flat * 4 + std::time::Duration::from_millis(20),
+            "deep {t_deep:?}, flat {t_flat:?}"
+        );
+        let ix = scan(deep.as_bytes(), 40).unwrap();
+        assert_eq!(ix.entries.len(), super::super::MAX_DEPTH);
+        assert_eq!(ix.name(deep.as_bytes(), 3, 40).0, "a[0][0][0]");
     }
 
     #[test]

@@ -314,6 +314,48 @@ mod tests {
         }
     }
 
+    /// Fable r1 #16, in the compact index: 256 nested conditionals around a Makefile cost a
+    /// Trail about what a single one does, and their lines are the model's.
+    #[test]
+    fn nested_sections_count_their_lines_once() {
+        let body = "K := v\n".repeat(300_000);
+        let nested = format!(
+            "{}{body}K := ONCE\n{}",
+            "ifeq (a,b)\n".repeat(256),
+            "endif\n".repeat(256)
+        );
+        let flat = format!("ifeq (a,b)\n{body}K := ONCE\nendif\n");
+        let p = params("make");
+        let time = |src: &str| {
+            let prepared = Buildfile
+                .prepare(input(src.as_bytes(), "make"), &p)
+                .unwrap();
+            let at = src.find("ONCE").unwrap();
+            let mut t = Vec::new();
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..3 {
+                let mut c = prepared.cursor();
+                let started = std::time::Instant::now();
+                t = c.trail_at(at).unwrap().to_vec();
+                best = best.min(started.elapsed());
+            }
+            (best, t)
+        };
+        let (t_nested, trail) = time(&nested);
+        let (t_flat, _) = time(&flat);
+        assert_eq!(trail.len(), 256);
+        let at = nested.find("ONCE").unwrap();
+        let model = Buildfile
+            .trails(&input(nested.as_bytes(), "make"), &p, &[at])
+            .unwrap();
+        assert_eq!(trail, model[0]);
+        assert_eq!((trail[0].line, trail[0].end_line), (1, 300_513));
+        assert!(
+            t_nested < t_flat * 4 + std::time::Duration::from_millis(20),
+            "nested {t_nested:?}, flat {t_flat:?}"
+        );
+    }
+
     #[test]
     fn the_syntax_is_required_and_decides_the_capability() {
         assert_eq!(

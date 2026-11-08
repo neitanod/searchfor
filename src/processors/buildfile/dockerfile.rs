@@ -44,43 +44,69 @@ struct Heredoc {
     strip_tabs: bool,
 }
 
-/// The heredoc markers of a line, in order: `<<WORD`, `<<-WORD`, `<<"WORD"`, `<<'WORD'`.
-fn heredocs(src: &[u8], line: &Line, out: &mut Vec<Heredoc>) {
+/// The heredoc markers of a line, in order: `<<WORD`, `<<-WORD`, `<<"WORD"`, `<<'WORD'`. As
+/// buildkit reads them, a marker is a word of the line, split at blanks outside quotes and
+/// escapes, that starts with `<<`: a `<<` inside a quoted word (`echo "<<EOF"`) or inside
+/// another word (`$((1<<3))`) is text (Codex r1 #6, Fable r1 #8).
+fn heredocs(src: &[u8], line: &Line, escape: u8, out: &mut Vec<Heredoc>) {
     let s = &src[..line.end];
     let mut i = line.start;
-    while let Some(k) = memchr::memmem::find(&s[i..], b"<<") {
-        let mut j = i + k + 2;
-        if s.get(j) == Some(&b'<') {
-            // A here-string, `<<<`.
-            i = j + 1;
-            continue;
+    while i < s.len() {
+        while i < s.len() && matches!(s[i], b' ' | b'\t') {
+            i += 1;
         }
-        let strip_tabs = s.get(j) == Some(&b'-');
-        if strip_tabs {
-            j += 1;
+        if s[i..].starts_with(b"<<") {
+            marker(s, i, out);
         }
-        let quote = match s.get(j) {
-            Some(&q @ (b'"' | b'\'')) => {
-                j += 1;
-                Some(q)
+        // Past the word: quotes and escapes keep its blanks.
+        let mut quote: Option<u8> = None;
+        while i < s.len() {
+            let c = s[i];
+            match quote {
+                Some(q) if c == q => quote = None,
+                Some(b'"') if c == escape => i += 1,
+                Some(_) => {}
+                None if matches!(c, b' ' | b'\t') => break,
+                None if matches!(c, b'"' | b'\'') => quote = Some(c),
+                None if c == escape => i += 1,
+                None => {}
             }
-            _ => None,
-        };
-        let w0 = j;
-        while j < s.len() && (s[j].is_ascii_alphanumeric() || s[j] == b'_') {
+            i += 1;
+        }
+    }
+}
+
+/// The marker of the word at `i`, which starts with `<<`, if it is one.
+fn marker(s: &[u8], i: usize, out: &mut Vec<Heredoc>) {
+    let mut j = i + 2;
+    if s.get(j) == Some(&b'<') {
+        // A here-string, `<<<`.
+        return;
+    }
+    let strip_tabs = s.get(j) == Some(&b'-');
+    if strip_tabs {
+        j += 1;
+    }
+    let quote = match s.get(j) {
+        Some(&q @ (b'"' | b'\'')) => {
             j += 1;
+            Some(q)
         }
-        let closed = match quote {
-            Some(q) => s.get(j) == Some(&q),
-            None => true,
-        };
-        if j > w0 && closed {
-            out.push(Heredoc {
-                word: w0..j,
-                strip_tabs,
-            });
-        }
-        i = j.max(i + k + 2);
+        _ => None,
+    };
+    let w0 = j;
+    while j < s.len() && (s[j].is_ascii_alphanumeric() || s[j] == b'_') {
+        j += 1;
+    }
+    let closed = match quote {
+        Some(q) => s.get(j) == Some(&q),
+        None => true,
+    };
+    if j > w0 && closed {
+        out.push(Heredoc {
+            word: w0..j,
+            strip_tabs,
+        });
     }
 }
 
@@ -168,7 +194,7 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
             .any(|k| src[keyword.clone()].eq_ignore_ascii_case(k));
         marks.clear();
         if is_heredoc_kw {
-            heredocs(src, &line, &mut marks);
+            heredocs(src, &line, escape, &mut marks);
         }
         let mut last = line;
         let mut end = line.next;
@@ -181,7 +207,7 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
                 continue;
             }
             if is_heredoc_kw {
-                heredocs(src, &next, &mut marks);
+                heredocs(src, &next, escape, &mut marks);
             }
             last = next;
         }

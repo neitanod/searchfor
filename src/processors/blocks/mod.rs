@@ -8,6 +8,7 @@ mod hcl;
 mod nginx;
 mod protobuf;
 
+use super::headings::compact::last_line;
 use super::{Capability, Cursor, Prepared, Processor};
 use crate::model::{Input, Name, Segment, SharedTrail, Trail};
 use std::ops::Range;
@@ -224,13 +225,12 @@ impl BlockIndex {
         &self.late[a..b]
     }
 
-    /// Whether a Match at `byte` names Segment `id` (its label or a late name piece).
+    /// Whether a Match at `byte` names Segment `id`: whether its label holds it. A late name
+    /// piece is no label: a value read later in the block, a Match in it keeps the whole
+    /// Trail (Fable r1 #17; orchestrator decision 1 says so of the names read later in their
+    /// unit), where leaving the block out kept its child and left a gap.
     fn names_at(&self, id: usize, byte: usize) -> bool {
         self.entries[id].label().contains(&byte)
-            || self
-                .late_of(id)
-                .iter()
-                .any(|l| l.start <= byte && byte < l.start + l.len as usize)
     }
 
     /// The name of Segment `id`, cut at `name_chars`, with its pieces.
@@ -433,8 +433,8 @@ impl Prepared for BlockPrepared<'_> {
 }
 
 /// Every named Segment, hidden ones included (a key that holds a list), with its Trail: it
-/// last, hidden ancestors left out. A Match in a name leaves out the named Segment alone
-/// (`Name::trail_at` without labels): a name piece never lies in an ancestor's label.
+/// last, hidden ancestors left out, and each one's label: a Match in a name leaves out the
+/// Segments whose label holds it, so one in a late name piece keeps the named Segment.
 fn names(src: &[u8], ix: &BlockIndex, name_chars: usize) -> Vec<Name> {
     let lines = crate::trail::LineIndex::new(src);
     let seg = |i: usize| segment(src, ix, i, name_chars, &lines);
@@ -456,8 +456,8 @@ fn names(src: &[u8], ix: &BlockIndex, name_chars: usize) -> Vec<Name> {
         out.push(Name {
             text,
             pieces,
+            labels: chain.iter().map(|&c| ix.entries[c].label()).collect(),
             trail: chain.into_iter().map(seg).collect(),
-            labels: Vec::new(),
             anchor: ix.name_anchor(i),
         });
     }
@@ -561,17 +561,26 @@ impl<'p> BlockCursor<'p> {
         line
     }
 
+    /// The last byte of Segment `id`'s Section, whose line is its last line.
+    fn last_byte(&self, id: usize) -> usize {
+        let e = &self.ix.entries[id];
+        let end = e.end.min(self.src.len());
+        end.saturating_sub(1).max(e.start).min(self.src.len())
+    }
+
     fn segment_at(&mut self, k: usize) -> Segment {
         if let Some(s) = &self.stack[k].seg {
             return s.clone();
         }
         let id = self.stack[k].id;
+        let line = self.line_of(self.ix.entries[id].start);
+        // The nearest Segment around it already built knows the line of its own last byte.
+        let known = self.stack[..k]
+            .iter()
+            .rev()
+            .find_map(|o| Some((self.last_byte(o.id), o.seg.as_ref()?.end_line)));
         let e = &self.ix.entries[id];
-        let (start, end) = (e.start, e.end.min(self.src.len()));
-        let line = self.line_of(start);
-        let last = end.saturating_sub(1).max(start).min(self.src.len());
-        let end_line =
-            line + memchr::memchr_iter(b'\n', &self.src[start.min(last)..last]).count() as u64;
+        let end_line = last_line(self.src, e.start, line, self.last_byte(id), known);
         let s = Segment {
             kind: e.kind.as_str().into(),
             name: self.ix.name(self.src, id, self.name_chars).0,
@@ -802,10 +811,12 @@ impl Processor for Blocks {
 
 /// Where a member that ends with its line ends: past its last token at `last` and the rest of
 /// that line (an end-of-line comment), but before the next token at `next` and its white space.
+/// Only the bytes up to `next` are looked at: with no `\n` there, a search to the end of the
+/// file made a file of members with no line break quadratic (Fable r1 #2).
 pub(crate) fn tail_end(src: &[u8], last: usize, next: usize) -> usize {
     let last = last.min(src.len());
-    let eol = memchr::memchr(b'\n', &src[last..]).map_or(src.len(), |k| last + k);
-    let mut end = eol.min(next.max(last));
+    let hi = next.max(last).min(src.len());
+    let mut end = memchr::memchr(b'\n', &src[last..hi]).map_or(hi, |k| last + k);
     while end > last && is_space(src[end - 1]) {
         end -= 1;
     }
@@ -948,6 +959,76 @@ pub(crate) mod tests {
         assert_eq!(tail_end(src, 14, 15), 14);
     }
 
+    /// The time of `f`, the fastest of three runs.
+    pub(crate) fn fastest(mut f: impl FnMut()) -> std::time::Duration {
+        (0..3)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                f();
+                t.elapsed()
+            })
+            .min()
+            .expect("three runs")
+    }
+
+    /// Fable r1 #2: with no `\n` after a member (a lone CR ends no line, M6 spec §3, point 7)
+    /// each `tail_end` looked to the end of the file. The same members with CR or LF take
+    /// about the same time, which was 30 times more at 256 KiB.
+    #[test]
+    fn members_with_no_line_break_after_them_scan_in_linear_time() {
+        for (syntax, unit) in [
+            ("protobuf", "message M { string needle = 1; }"),
+            ("graphql", "type T { needle: String }"),
+        ] {
+            let lf = format!("{unit}\n").repeat((256 << 10) / (unit.len() + 1));
+            let cr = lf.replace('\n', "\r");
+            let p = Params::of(&params(syntax)).unwrap();
+            let t_lf = fastest(|| drop(p.scan(lf.as_bytes()).unwrap()));
+            let t_cr = fastest(|| drop(p.scan(cr.as_bytes()).unwrap()));
+            assert!(
+                t_cr < t_lf * 4 + std::time::Duration::from_millis(20),
+                "{syntax}: CR {t_cr:?}, LF {t_lf:?}"
+            );
+        }
+    }
+
+    /// Fable r1 #16: building a Segment counted the line breaks of its whole Section, so 256
+    /// nested blocks around a file counted it 256 times. A Trail through them costs about what
+    /// one through a single block does.
+    #[test]
+    fn nested_sections_count_their_lines_once() {
+        let body = "k v;\n".repeat(400_000);
+        let nested = format!(
+            "{}{body}k ONCE;\n{}",
+            "x {\n".repeat(256),
+            "}\n".repeat(256)
+        );
+        let flat = format!("x {{\n{body}k ONCE;\n}}\n");
+        let p = Params::of(&params("nginx")).unwrap();
+        let time = |src: &str| {
+            let ix = p.scan(src.as_bytes()).unwrap();
+            let at = src.find("ONCE").unwrap();
+            let mut t = Vec::new();
+            let d = fastest(|| {
+                let mut c = BlockCursor::new(src.as_bytes(), &ix, 40);
+                c.reach(at);
+                let k = c.stack.len();
+                t = c.trail_at(at).unwrap().to_vec();
+                assert_eq!(c.stack.len(), k);
+            });
+            (d, t)
+        };
+        let (t_nested, trail) = time(&nested);
+        let (t_flat, _) = time(&flat);
+        assert_eq!(trail.len(), MAX_DEPTH);
+        assert_eq!((trail[0].line, trail[0].end_line), (1, 400_513));
+        assert_eq!((trail[255].line, trail[255].end_line), (256, 400_258));
+        assert!(
+            t_nested < t_flat * 4 + std::time::Duration::from_millis(20),
+            "nested {t_nested:?}, flat {t_flat:?}"
+        );
+    }
+
     #[test]
     fn depth_stops_opening_past_256() {
         let src = format!("{}k needle;{}", "x {".repeat(300), "}".repeat(300));
@@ -961,8 +1042,10 @@ pub(crate) mod tests {
         assert_eq!(c.trail_at(at).unwrap().len(), MAX_DEPTH);
     }
 
+    /// A late name piece is no label (Fable r1 #17): a Match in it keeps the block it names,
+    /// in the Trail and in `--in-headings`; one in the block's own label leaves it out.
     #[test]
-    fn late_names_are_outside_their_segment() {
+    fn late_names_are_inside_their_segment() {
         let src = b"server {\n server_name a.example b;\n}\n";
         let ix = Params::of(&params("nginx")).unwrap().scan(src).unwrap();
         assert_eq!(ix.name(src, 0, 40).0, "server a.example");
@@ -974,10 +1057,15 @@ pub(crate) mod tests {
             .iter()
             .map(|s| s.name.clone())
             .collect();
-        assert_eq!(names, ["server_name"]);
+        assert_eq!(names, ["server a.example", "server_name"]);
         let n = names_for(src);
         let server = n.iter().find(|n| n.text == "server a.example").unwrap();
         assert_eq!(server.pieces, vec![(0..6, 0..6), (7..16, at..at + 9)]);
+        let trail = |at: usize| -> Vec<String> {
+            server.trail_at(at).iter().map(|s| s.name.clone()).collect()
+        };
+        assert_eq!(trail(at), ["server a.example"]);
+        assert!(trail(0).is_empty());
     }
 
     fn names_for(src: &[u8]) -> Vec<Name> {
