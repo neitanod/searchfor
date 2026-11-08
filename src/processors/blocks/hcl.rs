@@ -141,6 +141,12 @@ pub(super) fn scan(src: &[u8], name_chars: usize) -> anyhow::Result<BlockIndex> 
                 }
             }
         }
+        if labels.is_empty() {
+            // `= x` or `: x` with no name before it: an expression, no key (Fable r1 #18).
+            let (stop, _) = expression(src, i, ctx);
+            i = stop.max(i + usize::from(stop == i && !is_closer(src[i])));
+            continue;
+        }
         let parts: Vec<Part> = labels.iter().cloned().map(Part::src).collect();
         if src[i] == b'{' {
             let id = b.open(Kind::Block, start, start..i + 1, &parts, false);
@@ -149,7 +155,7 @@ pub(super) fn scan(src: &[u8], name_chars: usize) -> anyhow::Result<BlockIndex> 
             continue;
         }
         // An attribute: its key is its first name.
-        let key = labels.first().cloned().unwrap_or(start..start);
+        let key = labels[0].clone();
         let label = start..key.end.max(start);
         let key_parts = &parts[..parts.len().min(1)];
         i = skip(src, i + 1, false);
@@ -168,8 +174,11 @@ pub(super) fn scan(src: &[u8], name_chars: usize) -> anyhow::Result<BlockIndex> 
                 i += 1;
             }
             _ => {
+                // The Section takes the rest of its last line, an end-of-line comment, as
+                // GraphQL's and Protobuf's members do (Fable r1 #19).
                 let (stop, last) = expression(src, i, ctx);
-                b.leaf(Kind::Key, start..last.max(key.end), label, key_parts);
+                let end = super::tail_end(src, last.max(key.end), stop);
+                b.leaf(Kind::Key, start..end, label, key_parts);
                 i = stop;
             }
         }

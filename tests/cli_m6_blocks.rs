@@ -561,3 +561,24 @@ fn m6_late_names_keep_the_trail() {
     ));
     assert_eq!(paths(&names), ["http › server needle.example"]);
 }
+
+/// Fable r1 #18: a line that starts with `=` (or `:` in an object) is an expression, with no
+/// key of an empty name. Fable r1 #19: an attribute's Section takes its end-of-line comment,
+/// as GraphQL's and Protobuf's members do.
+#[test]
+fn m6_hcl_keys_have_names_and_their_comments() {
+    let fx = Fixture::new();
+    put(
+        &fx,
+        "keys.tf",
+        b"x {\n  = needle\n  o = {\n    : needle\n  }\n  count = var.x ? 1 : 0 # needle\n  n = 1 // needle\n  m = 2 /* needle */\n}\n",
+    );
+    let rows = matches(&output(&fx, "hcl", "keys.tf", "needle", &["--json"]));
+    assert_eq!(paths(&rows), ["x", "x › o", "x › count", "x › n", "x › m"]);
+    let tree = output(&fx, "hcl", "keys.tf", "needle", &["--tree"]);
+    assert!(
+        !stdout(&tree).lines().any(|l| l.trim().is_empty()),
+        "{}",
+        stdout(&tree)
+    );
+}
