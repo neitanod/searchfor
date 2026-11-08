@@ -429,7 +429,8 @@ an unclosed Markdown fence does.
   part of a definition crosses a blank line; a `%` comment eats its line break, so a blank line
   right after it is one too. The name and the parameter text of `\def`, `\gdef`, `\edef` and
   `\xdef` cross no blank line either: `\def\foo`, a blank line and `{\section{X}}` open the
-  heading `X`, where TeX would read the `\par` as parameter text.
+  heading `X`, where TeX would read the `\par` as parameter text. A `\` at the end of a line
+  escapes no line break: `\def\foo\`, a blank line and `{\section{X}}` open the heading `X` too.
 
 ### 6.5 Jupyter notebooks
 
@@ -981,7 +982,9 @@ These requirements hold for every M6 Processor and are what criteria 49–52 mea
 - **One reading per file with a Match.** A Processor prepares the file once (its Outline, or an
   index of units, M5b §6.1); the values a Segment's name takes from later in the file (nginx's
   `server_name`, a vCard's `FN`, a HAR entry's URL) are read in that preparation. Scanners read
-  at 50 MB/s or more on this machine, the rate the v1 scanners meet (spec §4.3, §11 #13).
+  at 50 MB/s or more on this machine, the rate the v1 scanners meet (spec §4.3, §11 #13). LaTeX
+  walks the parameter text of a file's `\def`s once per line, whichever `\def` reads it, so
+  `\def`s with no body cost the scanner's rate.
 - **Streaming.** Each new Processor gives a native cursor (an Outline Processor gets one,
   `OutlinePrepared`), so its rows print as they are computed and none takes the model path
   (M5b §6.1); each cursor implements `open_from`, so `--expand` keeps no more Matches than the
