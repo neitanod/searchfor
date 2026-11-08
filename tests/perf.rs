@@ -3152,6 +3152,11 @@ fn m6_dense() {
 /// as `m5b_dense_parallel_output_is_bounded`: four copies of one file, for four families. (Four
 /// families at once measure their preparations' overlap, not their output: one Match ends the
 /// small ones' early, a dense search keeps them all alive; 546 MB against 413 MB measured.)
+/// With four threads, how far the preparations overlap moves the peak from run to run, in
+/// both searches: nginx's one-Match runs measured 956 to 1 000 MB and its dense runs 1 026 to
+/// 1 048 MB, a spread above the output allowance. So the baseline is the highest of three
+/// one-Match runs, and the allowance adds a tenth of it for that overlap; an output kept in
+/// memory instead of spooled is the JSON of every line of four 50 MB files, many times more.
 #[test]
 #[ignore = "M6 multi-worker dense RSS; selected explicitly on Linux"]
 #[cfg(target_os = "linux")]
@@ -3190,8 +3195,11 @@ fn m6_dense_parallel() {
             dir,
         ];
         let (td, rd) = measure_drained(&sfor_bin(), &fx, &dense, 0).unwrap();
-        let (tp, rp) = measure_drained(&sfor_bin(), &fx, &once, 0).unwrap();
-        let allowance = (32 << 20) + threads * FILE_SPOOL_THRESHOLD as u64;
+        let (tp, rp) = (0..3)
+            .map(|_| measure_drained(&sfor_bin(), &fx, &once, 0).unwrap())
+            .max_by_key(|&(_, rss)| rss)
+            .unwrap();
+        let allowance = (32 << 20) + threads * FILE_SPOOL_THRESHOLD as u64 + rp / 10;
         eprintln!("m6 parallel {format}: dense={td:?}/{rd} once={tp:?}/{rp} allowance={allowance}");
         assert!(
             rd <= rp + allowance,
