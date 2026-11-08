@@ -2,6 +2,7 @@
 //! `git format-patch` series (M6 spec §8.2). One pass over the lines indexes the delimiters
 //! into an Outline; the cursor is the Outline's, with a commit's subject line counted as its own
 //! name too (M6 spec §3, point 5).
+use super::mail::names::{NameBuf, Unfolded, name_cap, push_decoded_text};
 use super::{Capability, Cursor, Prepared, Processor};
 use crate::model::{Input, Name, SharedTrail, Trail};
 use crate::text::CutName;
@@ -36,12 +37,14 @@ fn line_at(src: &[u8], start: usize) -> Line {
 }
 
 /// `commit <sha>` of `git log`, or `From <sha> …` of `git format-patch`: the sha's bytes.
+/// A `From ` line carries the whole sha (40 digits, 64 in a SHA-256 repository), so a body
+/// line `From deadbeef …` opens no commit.
 fn commit_line(src: &[u8], l: &Line) -> Option<Range<usize>> {
     let text = &src[l.start..l.end];
-    let skip = if text.starts_with(b"commit ") {
-        7
+    let (skip, whole) = if text.starts_with(b"commit ") {
+        (7, false)
     } else if text.starts_with(b"From ") {
-        5
+        (5, true)
     } else {
         return None;
     };
@@ -51,7 +54,12 @@ fn commit_line(src: &[u8], l: &Line) -> Option<Range<usize>> {
         .take_while(|b| b.is_ascii_hexdigit())
         .count();
     let after = src.get(from + hex).copied();
-    (hex >= 7 && (from + hex == l.end || after == Some(b' '))).then_some(from..from + hex)
+    let digits = if whole {
+        hex == 40 || hex == 64
+    } else {
+        hex >= 7
+    };
+    (digits && (from + hex == l.end || after == Some(b' '))).then_some(from..from + hex)
 }
 
 fn starts(src: &[u8], l: &Line, prefix: &[u8]) -> bool {
@@ -335,7 +343,25 @@ struct Builder<'s> {
     commit: Option<Commit>,
     file: Option<File>,
     hunk: Option<Hunk>,
+    /// The hunk closed last and where it ends: a `\ No newline at end of file` line right
+    /// there is its own.
+    closed: Option<(usize, usize)>,
 }
+
+/// git's extended header lines, between `diff --git` and `---`.
+const EXTENDED: &[&[u8]] = &[
+    b"index ",
+    b"old mode ",
+    b"new mode ",
+    b"deleted file mode ",
+    b"new file mode ",
+    b"similarity index ",
+    b"dissimilarity index ",
+    b"rename from ",
+    b"rename to ",
+    b"copy from ",
+    b"copy to ",
+];
 
 fn is_diff_line(src: &[u8], l: &Line) -> bool {
     starts(src, l, b"diff --git ")
@@ -353,6 +379,7 @@ impl<'s> Builder<'s> {
             commit: None,
             file: None,
             hunk: None,
+            closed: None,
         }
     }
 
@@ -364,7 +391,10 @@ impl<'s> Builder<'s> {
     }
 
     fn named(&mut self, seg: usize, name: CutName) {
-        let (text, pieces) = name.finish();
+        self.named_as(seg, name.finish());
+    }
+
+    fn named_as(&mut self, seg: usize, (text, pieces): (String, crate::text::Pieces)) {
         let s = &mut self.segs[seg];
         s.segment.name = text;
         s.name = (!pieces.is_empty()).then_some(pieces);
@@ -373,6 +403,7 @@ impl<'s> Builder<'s> {
     fn close_hunk(&mut self, at: usize) {
         if let Some(h) = self.hunk.take() {
             self.segs[h.seg].range.end = at;
+            self.closed = Some((h.seg, at));
         }
     }
 
@@ -468,6 +499,29 @@ impl<'s> Builder<'s> {
                     r.start += 1;
                 }
             }
+            if memchr::memmem::find(&src[r.clone()], b"=?").is_some() {
+                // RFC 2047 encoded words, decoded as mail decodes a header (review r1,
+                // Fable #66).
+                let mut out = NameBuf::new(self.name_chars);
+                out.push_source(src, c.sha.start..c.sha.start + 7);
+                out.push_generated(" ");
+                let mut lines = Vec::new();
+                let mut at = r.start;
+                for nl in memchr::memchr_iter(b'\n', &src[r.clone()]).map(|k| r.start + k) {
+                    let end = if nl > at && src[nl - 1] == b'\r' {
+                        nl - 1
+                    } else {
+                        nl
+                    };
+                    lines.push(at..end);
+                    at = nl + 1;
+                }
+                lines.push(at..r.end);
+                let u = Unfolded::new(src, &lines, name_cap(self.name_chars));
+                push_decoded_text(src, &u, &mut out);
+                self.named_as(c.seg, out.finish());
+                return;
+            }
             if !r.is_empty() {
                 name.push_str(" ");
                 // A folded `Subject:` header: its lines joined by one space.
@@ -490,15 +544,21 @@ impl<'s> Builder<'s> {
         self.named(c.seg, name);
     }
 
-    /// Whether the line at `l` starts a commit, a file or a hunk.
+    /// Whether the line at `l`, in a hunk whose counts are not done, starts a commit, a file
+    /// or a hunk. A `---`/`+++` pair there is a file's header only before a hunk header: else
+    /// it is two changed lines that start with `--` and `++`, a SQL or Lua comment (review r1,
+    /// Fable #9).
     fn header(&self, l: &Line) -> bool {
         let src = self.src;
         commit_line(src, l).is_some()
             || is_diff_line(src, l)
             || hunk_header(src, l).is_some()
-            || (starts(src, l, b"--- ")
-                && l.next < src.len()
-                && starts(src, &line_at(src, l.next), b"+++ "))
+            || (starts(src, l, b"--- ") && l.next < src.len() && {
+                let plus = line_at(src, l.next);
+                starts(src, &plus, b"+++ ")
+                    && plus.next < src.len()
+                    && hunk_header(src, &line_at(src, plus.next)).is_some()
+            })
     }
 
     /// A line of the hunk being read, counted: true when it is one. A line that is no hunk
@@ -574,6 +634,15 @@ impl<'s> Builder<'s> {
                 continue;
             }
             let text = &src[l.start..l.end];
+            if text.first() == Some(&b'\\')
+                && self.file.is_some()
+                && let Some((seg, end)) = self.closed
+                && end == l.start
+            {
+                self.segs[seg].range.end = l.next;
+                self.closed = Some((seg, l.next));
+                continue;
+            }
             if let Some(sha) = commit_line(src, &l) {
                 self.close_commit(l.start);
                 let seg = self.open("commit", &l, l.end);
@@ -658,6 +727,12 @@ impl<'s> Builder<'s> {
                     // Past its hunks, a line that is no hunk ends the file: it is the commit's.
                     self.close_file(l.start);
                 } else {
+                    // An extended header line is part of the file's own name, as the
+                    // `diff --git` line and the `---`/`+++` pair around it (review r1,
+                    // Fable #69).
+                    if EXTENDED.iter().any(|k| text.starts_with(k)) {
+                        self.segs[f.seg].label.end = l.end;
+                    }
                     for (key, from) in [
                         (&b"rename from "[..], true),
                         (b"rename to ", false),
@@ -894,6 +969,61 @@ mod tests {
         let names = index.names();
         let cafe = names.iter().find(|n| n.text == "café").unwrap();
         assert_eq!(cafe.pieces.len(), 2);
+    }
+
+    /// Review r1, Fable #9: in a hunk whose counts are not done, a `---`/`+++` pair is a
+    /// changed line that starts with `--` or `++` (a SQL comment); it is a file's header only
+    /// before a hunk header, which ends a hunk whose counts run past it (M6 spec §8.2, Failure).
+    #[test]
+    fn a_dash_pair_inside_a_hunk_is_content() {
+        let src = b"diff --git a/q.sql b/q.sql\n--- a/q.sql\n+++ b/q.sql\n@@ -1,3 +1,3 @@\n\
+            --- old needle comment\n+++ new needle comment\n SELECT needle2;\n";
+        assert_eq!(
+            trails(src, "needle"),
+            ["q.sql › +1", "q.sql › +1", "q.sql › +1"]
+        );
+        let src = b"--- a/x\n+++ b/x\n@@ -1,99 +1,99 @@\n+x\n--- a/next\n+++ b/next\n@@ -1 +1 @@\n+needle\n";
+        assert_eq!(trails(src, "needle"), ["next › +1"]);
+    }
+
+    /// Review r1, Fable #44: a patch mail's `From ` line carries the whole 40-digit sha, so
+    /// a body line `From deadbeef …` opens no commit.
+    #[test]
+    fn a_from_line_needs_the_whole_sha() {
+        let src = b"From 0123456789abcdef0123456789abcdef01234567 Mon Sep 17 00:00:00 2001\n\
+            Subject: [PATCH] One\n\nFrom deadbeef we learned the needle\n---\n\
+            --- a/x\n+++ b/x\n@@ -1 +1 @@\n+needle\n";
+        assert_eq!(
+            trails(src, "needle"),
+            ["0123456 One", "0123456 One › x › +1"]
+        );
+    }
+
+    /// Review r1, Fable #48: `\ No newline at end of file` after a hunk's last counted line
+    /// belongs to that hunk.
+    #[test]
+    fn no_newline_marks_stay_in_their_hunk() {
+        let src = b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n\
+            \\ No newline at end of file\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-c\n+d\n\\ No newline at end of file\n";
+        assert_eq!(trails(src, "No newline"), ["x › +1", "x › +1", "y › +1"]);
+    }
+
+    /// Review r1, Fable #66: a commit's RFC 2047 subject is decoded, as mail's are.
+    #[test]
+    fn encoded_subjects_are_decoded() {
+        let src = b"From 0123456789abcdef0123456789abcdef01234567 Mon Sep 17 00:00:00 2001\n\
+            Subject: [PATCH] =?UTF-8?q?caf=C3=A9_fix?=\n\nneedle\n";
+        assert_eq!(trails(src, "needle"), ["0123456 café fix"]);
+    }
+
+    /// Review r1, Fable #69: a file's own name runs over all its header lines (`index`,
+    /// modes, renames), whether or not a `---`/`+++` pair follows.
+    #[test]
+    fn a_files_label_holds_its_extended_headers() {
+        let src = b"diff --git a/x b/x\nindex 0000needle..1111 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n+y\n\
+            diff --git a/m b/m\nold mode 100644\nnew mode 100755\nindex needle\n\
+            diff --git a/bin b/bin\nindex 1..2\nGIT binary patch\nliteral 6\nneedle\n";
+        assert_eq!(trails(src, "needle"), ["", "", "bin"]);
     }
 
     #[test]

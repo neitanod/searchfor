@@ -4,7 +4,8 @@
 //! the cursor finds their boundaries as the Matches reach them and builds the headers and parts
 //! of a message only when a Match falls in it (plan D8, spec §11).
 mod mime;
-mod names;
+/// Shared with `diff`, whose patch mails' subjects are headers too.
+pub(crate) mod names;
 
 use super::{Capability, Cursor, Prepared, Processor};
 use crate::model::{Input, Name, SharedTrail, Trail};
