@@ -209,12 +209,38 @@ fn definition_end(src: &[u8], cmd: &[u8], at: usize) -> Option<usize> {
     j = gap(src, j)?;
     let environment = cmd.ends_with(b"nvironment");
     let bodies = if matches!(cmd, b"def" | b"gdef" | b"edef" | b"xdef") {
-        // `\def\name#1#2{…}`: the name, its parameter text up to the body's brace.
+        // `\def\name#1#2{…}`: the name, its parameter text up to the body's brace, which
+        // crosses no blank line and whose comments are text (code review M6 r4, Codex #2).
         if src.get(j) != Some(&b'\\') {
             return None;
         }
         let to = src.len().min(j.saturating_add(GROUP_MAX));
-        j += memchr::memchr(b'{', &src[j..to])?;
+        j += 1 + src[j + 1..]
+            .iter()
+            .take_while(|b| b.is_ascii_alphabetic())
+            .count()
+            .max(1);
+        // Whether only spaces stand between the last line break and `j`.
+        let mut line_start = false;
+        loop {
+            match *src.get(j).filter(|_| j < to)? {
+                b'{' => break,
+                b' ' | b'\t' | b'\r' => j += 1,
+                b'\n' if line_start => return None,
+                b'\n' => {
+                    line_start = true;
+                    j += 1;
+                }
+                b'%' => {
+                    j += memchr::memchr(b'\n', &src[j..to])? + 1;
+                    line_start = true;
+                }
+                c => {
+                    line_start = false;
+                    j += if c == b'\\' { 2 } else { 1 };
+                }
+            }
+        }
         1
     } else {
         // `{\name}` or `\name` (`{name}` for an environment), then `[n]` and `[default]`, or
@@ -664,6 +690,55 @@ mod tests {
         // A line that holds only a comment is no blank line: the body after it is text.
         let src = b"\\section{Real}\n\\newcommand{\\foo}\n% c\n{\\section{Fake}}\nneedle-1\n";
         assert_eq!(trail(src, &p, "needle-1"), ["Real"]);
+    }
+
+    /// Code review M6 r4, Codex #2: the name and the parameter text of `\def` and its kin
+    /// cross no blank line either (§6.4), and a `{` in a comment among them opens no body.
+    #[test]
+    fn the_parameters_of_a_def_cross_no_blank_line_nor_a_comment() {
+        let p = params("latex");
+        for cmd in ["def", "gdef", "edef", "xdef"] {
+            for src in [
+                format!("\\section{{Real}}\n\\{cmd}\\foo\n\n{{\\section{{Fake}}}}\nneedle-1\n"),
+                format!("\\section{{Real}}\n\\{cmd}\\foo#1\n\n{{\\section{{Fake}}}}\nneedle-1\n"),
+                format!("\\section{{Real}}\n\\{cmd}\\foo#1%\n\n{{\\section{{Fake}}}}\nneedle-1\n"),
+                format!(
+                    "\\section{{Real}}\n\\{cmd}\\foo % {{x}}\n{{\\section{{Fake}}}}\nneedle-1\n"
+                ),
+            ] {
+                let src = src.as_bytes();
+                let want = if src.windows(3).any(|w| w == b"{x}") {
+                    "Real"
+                } else {
+                    "Fake"
+                };
+                assert_eq!(
+                    trail(src, &p, "needle-1"),
+                    [want],
+                    "{}",
+                    String::from_utf8_lossy(src)
+                );
+                cursor_equals_model(src, &p);
+            }
+            // Over single line breaks and a comment line, the body is still text; `\%` is no
+            // comment.
+            for src in [
+                format!("\\section{{Real}}\n\\{cmd}\\foo#1\n#2{{\\section{{Fake}}}}\nneedle-1\n"),
+                format!(
+                    "\\section{{Real}}\n\\{cmd}\\foo#1\n% c\n{{\\section{{Fake}}}}\nneedle-1\n"
+                ),
+                format!("\\section{{Real}}\n\\{cmd}\\foo\\%#1{{\\section{{Fake}}}}\nneedle-1\n"),
+            ] {
+                let src = src.as_bytes();
+                assert_eq!(
+                    trail(src, &p, "needle-1"),
+                    ["Real"],
+                    "{}",
+                    String::from_utf8_lossy(src)
+                );
+                cursor_equals_model(src, &p);
+            }
+        }
     }
 
     /// Code review M6 r1, Fable #56: an environment or a heading with an empty name is named
