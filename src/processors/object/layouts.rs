@@ -460,23 +460,13 @@ mod tests {
         use crate::processors::object::fixture::m6;
         let invalid = [b"m".as_slice(), &[0xff; 5_999]].concat();
         let pairs = b"\xed\xa0\xbd\xed\xb8\x80".repeat(1_000);
-        let files: [(&str, Box<dyn Fn(usize) -> Vec<u8>>); 3] = [
-            (
-                "class",
-                Box::new(|n| m6::class_shared_name(&invalid, n as u16)),
-            ),
-            (
-                "class",
-                Box::new(|n| m6::class_shared_name(&pairs, n as u16)),
-            ),
-            (
-                "wasm",
-                Box::new(|n| m6::wasm_shared_name(&invalid, n, &[0, 0x0b], b"needle")),
-            ),
-        ];
-        for (layout, file) in files {
+        let file = |layout: &str, name: &[u8], n: usize| match layout {
+            "class" => m6::class_shared_name(name, n as u16),
+            _ => m6::wasm_shared_name(name, n, &[0, 0x0b], b"needle"),
+        };
+        for (layout, name) in [("class", &invalid), ("class", &pairs), ("wasm", &invalid)] {
             let cost = |n: usize| {
-                let bytes = file(n);
+                let bytes = file(layout, name, n);
                 let m = BinaryMap::parse_with(&bytes, layout, 0).unwrap();
                 let named = m.nodes().iter().filter(|x| x.name.len() >= 4_000).count();
                 assert_eq!(named, n, "{layout}");
