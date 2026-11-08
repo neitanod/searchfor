@@ -166,30 +166,33 @@ const DEFINITIONS: [&[u8]; 22] = [
 ];
 
 /// Past `at`, the spaces, line breaks and `%` comments that may stand between a definition's
-/// parts (code review M6 r2, Codex #7), up to a blank line and within `GROUP_MAX` bytes: where
-/// the next part starts.
-fn gap(src: &[u8], at: usize) -> usize {
+/// parts (code review M6 r2, Codex #7), within `GROUP_MAX` bytes: where the next part starts.
+/// None at a blank line, which no part crosses (code review M6 r3, Fable #2): a comment eats
+/// its line break, so a blank line right after it is one too.
+fn gap(src: &[u8], at: usize) -> Option<usize> {
     let limit = src.len().min(at.saturating_add(GROUP_MAX));
     let mut i = at;
-    let mut breaks = 0;
+    // Whether only spaces stand between the last line break and `i`.
+    let mut line_start = false;
     while i < limit {
         match src[i] {
             b' ' | b'\t' | b'\r' => i += 1,
             b'\n' => {
-                breaks += 1;
-                if breaks == 2 {
-                    return i;
+                if line_start {
+                    return None;
                 }
+                line_start = true;
                 i += 1;
             }
             b'%' => {
                 // The comment and its line break, which ends no part.
                 i = memchr::memchr(b'\n', &src[i..limit]).map_or(limit, |k| i + k + 1);
+                line_start = true;
             }
-            _ => return i,
+            _ => return Some(i),
         }
     }
-    i
+    Some(i)
 }
 
 /// Where a definition whose command `cmd` ends at `at` ends, past its body (both bodies of an
@@ -203,7 +206,7 @@ fn definition_end(src: &[u8], cmd: &[u8], at: usize) -> Option<usize> {
     if src.get(j) == Some(&b'*') {
         j += 1;
     }
-    j = gap(src, j);
+    j = gap(src, j)?;
     let environment = cmd.ends_with(b"nvironment");
     let bodies = if matches!(cmd, b"def" | b"gdef" | b"edef" | b"xdef") {
         // `\def\name#1#2{…}`: the name, its parameter text up to the body's brace.
@@ -228,20 +231,20 @@ fn definition_end(src: &[u8], cmd: &[u8], at: usize) -> Option<usize> {
             return None;
         }
         if memchr::memmem::find(cmd, b"Document").is_some() {
-            j = gap(src, j);
+            j = gap(src, j)?;
             if src.get(j) != Some(&b'{') {
                 return None;
             }
             j = group(src, j, b'{', b'}')?.1;
         } else {
             for _ in 0..2 {
-                j = optional(src, gap(src, j))?.1;
+                j = optional(src, gap(src, j)?)?.1;
             }
         }
         if environment { 2 } else { 1 }
     };
     for _ in 0..bodies {
-        j = gap(src, j);
+        j = gap(src, j)?;
         if src.get(j) != Some(&b'{') {
             return None;
         }
@@ -632,6 +635,35 @@ mod tests {
         // A blank line after the name: what follows it is read as written.
         let src = b"\\newcommand{\\foo}\n\n\\section{After}\nneedle\n";
         assert_eq!(trail(src, &p, "needle"), ["After"]);
+    }
+
+    /// Code review M6 r3, Fable #2: no part of a definition crosses a blank line, also when a
+    /// brace follows it (pdflatex reads `\section{Fake}` there as a heading), after an
+    /// optional argument, and after a comment whose next line is blank: a comment eats its
+    /// line break, so that blank line is the one that ends the paragraph.
+    #[test]
+    fn no_part_of_a_definition_crosses_a_blank_line() {
+        let p = params("latex");
+        for src in [
+            "\\section{Real}\n\\newcommand{\\foo}\n\n{\\section{Fake}}\nneedle-1\n",
+            "\\section{Real}\n\\newcommand{\\foo}[1]\n\n{\\section{Fake}}\nneedle-1\n",
+            "\\section{Real}\n\\newcommand{\\foo}%\n\n{\\section{Fake}}\nneedle-1\n",
+            "\\section{Real}\n\\newcommand{\\foo}%\n\n\n{\\section{Fake}}\nneedle-1\n",
+            "\\section{Real}\n\\newcommand{\\foo}\r\n\r\n{\\section{Fake}}\r\nneedle-1\r\n",
+            "\\section{Real}\n\\newenvironment{e}{a}\n\n{\\section{Fake}}\nneedle-1\n",
+        ] {
+            let src = src.as_bytes();
+            assert_eq!(
+                trail(src, &p, "needle-1"),
+                ["Fake"],
+                "{}",
+                String::from_utf8_lossy(src)
+            );
+            cursor_equals_model(src, &p);
+        }
+        // A line that holds only a comment is no blank line: the body after it is text.
+        let src = b"\\section{Real}\n\\newcommand{\\foo}\n% c\n{\\section{Fake}}\nneedle-1\n";
+        assert_eq!(trail(src, &p, "needle-1"), ["Real"]);
     }
 
     /// Code review M6 r1, Fable #56: an environment or a heading with an empty name is named
