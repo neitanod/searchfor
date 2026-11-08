@@ -458,3 +458,24 @@ fn m6_dockerfile_heredocs_start_words() {
         assert_eq!(paths(&rows), want, "{src}");
     }
 }
+
+/// Fable r1 #12: past 256 open Segments no more open (M6 spec §3, point 8), in a Makefile's
+/// conditionals too; each `endif` still closes its own `ifeq`.
+#[test]
+fn m6_make_depth_stops_at_256() {
+    let fx = Fixture::new();
+    let n = 300;
+    let src = format!(
+        "{}K := needle\n{}a:\n\techo needle\n",
+        "ifeq (a,b)\n".repeat(n),
+        "endif\n".repeat(n)
+    );
+    put(&fx, "deep.mk", src.as_bytes());
+    let rows = matches(&output(&fx, "make", "deep.mk", "needle", &["--json"]));
+    let lens: Vec<usize> = rows
+        .iter()
+        .map(|r| r["trail"].as_array().unwrap().len())
+        .collect();
+    assert_eq!(lens, [256, 1]);
+    assert_eq!(rows[1]["trail"][0]["kind"], "target");
+}
