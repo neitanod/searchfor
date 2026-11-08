@@ -92,11 +92,12 @@ fn attribute_entry(src: &[u8], l: Line) -> bool {
     value.first().is_none_or(|b| matches!(b, b' ' | b'\t'))
 }
 
-/// Whether a line ends in `\`, which continues an attribute entry's value on the next line
-/// (code review M6 r2, Fable #19; Asciidoctor's header, from memory: the change only lets
-/// more files have a title).
+/// Whether a line ends in a space and `\`, which continues an attribute entry's value on the
+/// next line (code review M6 r2, Fable #19; Asciidoctor's header, from memory: the change only
+/// lets more files have a title). A bare trailing `\`, as in a Windows path, ends the value
+/// (code review M6 r3, Fable #1).
 fn continued(src: &[u8], l: Line) -> bool {
-    src[trim(src, l.start..l.end)].ends_with(b"\\")
+    src[trim(src, l.start..l.end)].ends_with(b" \\")
 }
 
 /// Whether the line is a list item: `*`, `-` or `.` runs, or a number or a letter and a
@@ -431,6 +432,24 @@ mod tests {
         assert_eq!(trail(src, &p, "needle"), ["Doc", "A"]);
         cursor_equals_model(src, &p);
         let src = b":desc: a long\n  not continued\n= Doc\n== A\nneedle\n";
+        assert_eq!(trail(src, &p, "needle"), ["A"]);
+    }
+
+    /// Code review M6 r3, Fable #1: only a space and `\` continue an attribute entry, as
+    /// Asciidoctor's line continuation is ` \` (from memory, unverified); a value that ends
+    /// in a bare `\`, as a Windows path does, ends on its line and leaves `= Doc` the title.
+    #[test]
+    fn a_value_ending_in_a_bare_backslash_does_not_continue_the_attribute_entry() {
+        let p = params("asciidoc");
+        let src = b":path: C:\\Users\\\n= Doc\n== A\nneedle\n";
+        assert_eq!(trail(src, &p, "needle"), ["Doc", "A"]);
+        cursor_equals_model(src, &p);
+        // A continuation line that ends in a bare `\` ends the entry too.
+        let src = b":desc: a \\\n  C:\\Users\\\n= Doc\n== A\nneedle\n";
+        assert_eq!(trail(src, &p, "needle"), ["Doc", "A"]);
+        cursor_equals_model(src, &p);
+        // A space and `\` still continue it, over the `= Doc` line.
+        let src = b":desc: a \\\n= Doc\n== A\nneedle\n";
         assert_eq!(trail(src, &p, "needle"), ["A"]);
     }
 
