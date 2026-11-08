@@ -16,10 +16,14 @@ use std::ops::Range;
 /// Characters of a signature: an opening line, as treesitter's.
 const SIGNATURE_CHARS: usize = 200;
 
+/// The bytes of a signature's line that `signature` decodes: past them its line's end changes
+/// nothing.
+pub(crate) const SIGNATURE_BYTES: usize = 4 * SIGNATURE_CHARS + 4;
+
 /// The text of a signature: the opening line, invalid UTF-8 as U+FFFD, cut at
 /// `SIGNATURE_CHARS` characters. Only that many bytes and a few more are decoded.
 pub(crate) fn signature(src: &[u8], r: Range<usize>) -> String {
-    let r = r.start..r.end.min(r.start.saturating_add(4 * SIGNATURE_CHARS + 4));
+    let r = r.start..r.end.min(r.start.saturating_add(SIGNATURE_BYTES));
     let text = String::from_utf8_lossy(&src[r]);
     text.trim_end().chars().take(SIGNATURE_CHARS).collect()
 }
