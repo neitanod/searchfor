@@ -44,6 +44,7 @@ fn scan(src: &[u8], b: &mut Builder) {
             let name = trim(src, body.start + 1..body.start + close);
             b.open(start, body.clone(), Kind::Key, NameSrc::Verbatim(name));
             section = true;
+            continued = line.ends_with(b"\\");
             continue;
         }
         let sep = memchr::memchr2(b'=', b':', &src[body.start..body.end]);
@@ -75,6 +76,15 @@ mod tests {
             needles(src, "ini"),
             vec![vec!["top"], vec!["a", "k"], vec!["a", "k"], vec!["a", "y"]]
         );
+    }
+
+    #[test]
+    fn a_header_that_ends_in_a_backslash_continues() {
+        // Every line ending in `\` continues on the next, a header's too (code round 1,
+        // Fable #62): `k=needle` is text of the header.
+        let src = b"[a] \\\nk=needle\nj=needle\n";
+        assert_eq!(needles(src, "ini"), vec![vec!["a"], vec!["a", "j"]]);
+        cursor_is_model("ini", src);
     }
 
     #[test]
