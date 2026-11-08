@@ -13,7 +13,7 @@ enum Block {
     Listing,
     Literal,
     Fence,
-    /// Comment, passthrough, sidebar, example and quote blocks: text, no Segment.
+    /// Comment, passthrough, sidebar, example, quote blocks and tables: text, no Segment.
     Opaque,
 }
 
@@ -34,6 +34,11 @@ fn delimiter(src: &[u8], l: Line) -> Option<Block> {
     }
     if src.get(l.start) != t.first() || t.len() < 4 {
         return None;
+    }
+    // A table, `|===` or a data table's `,===`, `:===`, `!===`: its rows are text (code
+    // review M6 r1, Fable #22).
+    if matches!(t[0], b'|' | b',' | b':' | b'!') && t[1..].iter().all(|&b| b == b'=') {
+        return Some(Block::Opaque);
     }
     let c = t[0];
     if !t.iter().all(|&b| b == c) {
@@ -288,6 +293,20 @@ mod tests {
         assert_eq!(trail(src, &p, "needle-b"), ["Doc", "A", "rust"]);
         assert_eq!(trail(src, &p, "needle-c"), ["Doc", "A"]);
         assert_eq!(trail(src, &p, "needle-d"), ["Doc", "A", "listing"]);
+        cursor_equals_model(src, &p);
+    }
+
+    /// Code review M6 r1, Fable #22: a table (`|===`, and the `,===`, `:===` and `!===` of
+    /// its data forms) holds text and no Segment, as the blocks of §6.1 do: a line in it that
+    /// looks like a heading is a cell's text.
+    #[test]
+    fn a_table_is_a_block_and_its_lines_are_text() {
+        let p = params("asciidoc");
+        let src = b"= Doc\n== A\n|===\n| cell one\n== looks like heading\n| needle-a\n|===\nneedle-b\n,===\n== x\nneedle-c\n,===\n:====\n== y\n:====\n!===\n== z\nneedle-d\n";
+        assert_eq!(trail(src, &p, "needle-a"), ["Doc", "A"]);
+        assert_eq!(trail(src, &p, "needle-b"), ["Doc", "A"]);
+        assert_eq!(trail(src, &p, "needle-c"), ["Doc", "A"]);
+        assert_eq!(trail(src, &p, "needle-d"), ["Doc", "A"]);
         cursor_equals_model(src, &p);
     }
 
