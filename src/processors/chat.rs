@@ -125,25 +125,99 @@ struct Message {
     lines: (u64, u64),
 }
 
-/// One day: its messages, its date as the first one writes it and its lines.
+/// One day: its bytes, its date as the first message writes it, where that message's name
+/// ends, and its lines. Its messages are read again when a Match falls in it, so a day of
+/// millions of them costs no more than one (review r1, Fable #15).
 #[derive(Debug, Clone)]
 struct Day {
     range: Range<usize>,
     date: Range<usize>,
+    /// The end of the first message's label.
+    first_label_end: usize,
     ordinal: usize,
     lines: (u64, u64),
-    messages: Vec<Message>,
+}
+
+/// Reads lines from `pos` up to `end` for the openers among them.
+#[derive(Debug, Clone)]
+struct Reader<'s> {
+    src: &'s [u8],
+    pos: usize,
+    end: usize,
+    /// The number of the line read last.
+    line: u64,
+}
+
+impl Reader<'_> {
+    /// Reads lines up to the next opener: it, and the number of the last line before it.
+    fn next_opener(&mut self) -> (Option<(usize, u64, Opener)>, u64) {
+        while self.pos < self.end {
+            let start = self.pos;
+            let (content, next) = line_at(self.src, start);
+            self.pos = next;
+            self.line += 1;
+            if let Some(o) = opener(&self.src[content]) {
+                return (Some((start, self.line, o)), self.line - 1);
+            }
+        }
+        (None, self.line)
+    }
+}
+
+/// The messages of a run of lines in order, with their ordinals: the opener read last and
+/// the reader after it.
+struct Messages<'s> {
+    reader: Reader<'s>,
+    /// The next message's opener, read already: (line start, line number, opener).
+    pending: Option<(usize, u64, Opener)>,
+    count: usize,
+}
+
+impl<'s> Messages<'s> {
+    /// The messages of `day`.
+    fn of(src: &'s [u8], day: &Day) -> Self {
+        let mut reader = Reader {
+            src,
+            pos: day.range.start,
+            end: day.range.end,
+            line: day.lines.0 - 1,
+        };
+        let pending = reader.next_opener().0;
+        Messages {
+            reader,
+            pending,
+            count: 0,
+        }
+    }
+}
+
+impl Iterator for Messages<'_> {
+    type Item = (usize, Message);
+
+    fn next(&mut self) -> Option<(usize, Message)> {
+        let (start, line, o) = self.pending.take()?;
+        let (next, last_line) = self.reader.next_opener();
+        let end = next.as_ref().map_or(self.reader.end, |n| n.0);
+        self.pending = next;
+        let m = Message {
+            range: start..end,
+            label: start..start + o.label_end,
+            time: shift(&o.time, start),
+            sender: o.sender.as_ref().map(|s| shift(s, start)),
+            lines: (line, last_line.max(line)),
+        };
+        self.count += 1;
+        Some((self.count - 1, m))
+    }
 }
 
 /// The days of an export in order, read one line at a time as they are asked for. A file whose
 /// first line, after a BOM and a U+200E, opens no message is no export: it has no day (spec
 /// §10.4, Failure).
 struct Days<'s> {
-    src: &'s [u8],
-    pos: usize,
-    line: u64,
+    reader: Reader<'s>,
     ordinal: usize,
-    /// The next message's opener, read already: (line start, line number, opener).
+    /// The next day's first opener, read already: (line start, line number, opener).
     pending: Option<(usize, u64, Opener)>,
 }
 
@@ -155,33 +229,22 @@ impl<'s> Days<'s> {
             0
         };
         let mut d = Days {
-            src,
-            pos: src.len(),
-            line: 0,
+            reader: Reader {
+                src,
+                pos: src.len(),
+                end: src.len(),
+                line: 0,
+            },
             ordinal: 0,
             pending: None,
         };
         let (content, next) = line_at(src, start);
         if let Some(o) = opener(&src[content]) {
             d.pending = Some((start, 1, o));
-            d.pos = next;
-            d.line = 1;
+            d.reader.pos = next;
+            d.reader.line = 1;
         }
         d
-    }
-
-    /// Reads lines up to the next opener: it, and the number of the last line before it.
-    fn next_opener(&mut self) -> (Option<(usize, u64, Opener)>, u64) {
-        while self.pos < self.src.len() {
-            let start = self.pos;
-            let (content, next) = line_at(self.src, start);
-            self.pos = next;
-            self.line += 1;
-            if let Some(o) = opener(&self.src[content]) {
-                return (Some((start, self.line, o)), self.line - 1);
-            }
-        }
-        (None, self.line)
     }
 }
 
@@ -205,32 +268,22 @@ impl Iterator for Days<'_> {
     type Item = Day;
 
     fn next(&mut self) -> Option<Day> {
-        let (mut start, mut line, mut o) = self.pending.take()?;
-        let src = self.src;
+        let (start, line, o) = self.pending.take()?;
+        let src = self.reader.src;
         let mut day = Day {
             range: start..start,
             date: shift(&o.date, start),
+            first_label_end: start + o.label_end,
             ordinal: self.ordinal,
             lines: (line, line),
-            messages: Vec::new(),
         };
         self.ordinal += 1;
         loop {
-            let (next, last_line) = self.next_opener();
-            let end = next.as_ref().map_or(src.len(), |n| n.0);
-            day.messages.push(Message {
-                range: start..end,
-                label: start..start + o.label_end,
-                time: shift(&o.time, start),
-                sender: o.sender.as_ref().map(|s| shift(s, start)),
-                lines: (line, last_line.max(line)),
-            });
-            day.range.end = end;
-            day.lines.1 = last_line.max(line);
+            let (next, last_line) = self.reader.next_opener();
+            day.range.end = next.as_ref().map_or(src.len(), |n| n.0);
+            day.lines.1 = last_line.max(day.lines.1);
             match next {
-                Some((s, l, n)) if src[shift(&n.date, s)] == src[day.date.clone()] => {
-                    (start, line, o) = (s, l, n);
-                }
+                Some((s, _, n)) if src[shift(&n.date, s)] == src[day.date.clone()] => {}
                 Some(p) => {
                     self.pending = Some(p);
                     return Some(day);
@@ -313,6 +366,8 @@ impl Prepared for ChatPrepared<'_> {
             p: self.p,
             days: Days::new(self.src),
             day: None,
+            messages: None,
+            message: None,
             at: 0,
             last: None,
         })
@@ -326,8 +381,7 @@ impl Prepared for ChatPrepared<'_> {
         let mut out = Vec::new();
         for day in Days::new(src) {
             let ds = day.segment(src, max);
-            let first = &day.messages[0];
-            let day_label = day.date.start..first.label.end.min(day.date.end);
+            let day_label = day.date.start..day.first_label_end.min(day.date.end);
             let (text, pieces) = day.name(src, max);
             out.push(Name {
                 text,
@@ -336,7 +390,7 @@ impl Prepared for ChatPrepared<'_> {
                 labels: vec![day_label.clone()],
                 anchor: day.date.start,
             });
-            for m in &day.messages {
+            for (_, m) in Messages::of(src, &day) {
                 let (text, pieces) = m.name(src, max);
                 out.push(Name {
                     text,
@@ -362,6 +416,9 @@ struct ChatCursor<'s> {
     p: Params,
     days: Days<'s>,
     day: Option<Day>,
+    /// The messages of `day`, read as far as `message`, the one the last offset is in.
+    messages: Option<Messages<'s>>,
+    message: Option<(usize, Message)>,
     at: usize,
     #[allow(clippy::type_complexity)]
     last: Option<((usize, usize, bool, bool), SharedTrail)>,
@@ -376,22 +433,40 @@ impl Cursor for ChatCursor<'_> {
         self.at = byte;
         while self.day.as_ref().is_none_or(|d| d.range.end <= byte) {
             self.day = self.days.next();
+            self.messages = None;
+            self.message = None;
             if self.day.is_none() {
                 break;
             }
         }
         let (src, max) = (self.src, self.p.name_chars);
-        let found = self
-            .day
-            .as_ref()
-            .filter(|d| d.range.start <= byte)
-            .map(|d| {
-                let k = d.messages.partition_point(|m| m.range.end <= byte);
-                (d, k.min(d.messages.len() - 1))
-            });
+        let found = match self.day.as_ref().filter(|d| d.range.start <= byte) {
+            Some(d) => {
+                if self
+                    .message
+                    .as_ref()
+                    .is_some_and(|(_, m)| byte < m.range.start)
+                {
+                    self.messages = None;
+                    self.message = None;
+                }
+                let messages = self.messages.get_or_insert_with(|| Messages::of(src, d));
+                while self
+                    .message
+                    .as_ref()
+                    .is_none_or(|(_, m)| m.range.end <= byte)
+                {
+                    match messages.next() {
+                        Some(m) => self.message = Some(m),
+                        None => break,
+                    }
+                }
+                self.message.as_ref().map(|(k, m)| (d, *k, m))
+            }
+            None => None,
+        };
         let key = match found {
-            Some((d, k)) => {
-                let m = &d.messages[k];
+            Some((d, k, m)) => {
                 let in_day = k == 0 && d.date.contains(&byte);
                 (d.ordinal, k, !in_day, !m.label.contains(&byte))
             }
@@ -403,12 +478,12 @@ impl Cursor for ChatCursor<'_> {
             return Ok(t.clone());
         }
         let mut trail = Vec::new();
-        if let Some((d, k)) = found {
+        if let Some((d, _, m)) = found {
             if key.2 {
                 trail.push(d.segment(src, max));
             }
             if key.3 {
-                trail.push(d.messages[k].segment(src, max));
+                trail.push(m.segment(src, max));
             }
         }
         let t: SharedTrail = Rc::from(trail);
@@ -495,9 +570,11 @@ mod tests {
         let src = b"1/1/24, 9:00 - A: x\nmore\n1/1/24, 9:01 - B: y\n2/1/24, 9:00 - A: z\n1/1/24, 9:02 - A: w\n";
         let days: Vec<_> = Days::new(src).collect();
         assert_eq!(days.len(), 3);
-        assert_eq!(days[0].messages.len(), 2);
+        let messages: Vec<_> = Messages::of(src, &days[0]).collect();
+        assert_eq!(messages.len(), 2);
         assert_eq!(days[0].lines, (1, 3));
-        assert_eq!(days[0].messages[0].lines, (1, 2));
+        assert_eq!(messages[0].1.lines, (1, 2));
+        assert_eq!(messages[1].1.lines, (3, 3));
         assert_eq!(days[2].lines, (5, 5));
         assert!(
             Days::new(b"no export\n1/1/24, 9:00 - A: x\n")
