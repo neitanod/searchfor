@@ -39,18 +39,22 @@ fn skipped(src: &[u8], line: &Line) -> bool {
 }
 
 /// A heredoc marker: the word that closes its body, and whether `<<-` strips leading tabs.
+/// The word is copied, as a continuation may split it over physical lines.
 struct Heredoc {
-    word: Range<usize>,
+    word: Vec<u8>,
     strip_tabs: bool,
 }
 
 /// Where the lexing of a logical line stands at the end of one of its physical lines: the open
 /// quote, and whether a word is open. Docker joins the continuation lines before it looks for
 /// heredocs, so both go on into the next one (Codex r2 #2, Fable r2 #7).
+/// A marker word that reached a continued line's escape goes on with the next line's start,
+/// as Docker joins the lines first (code review M6 r3, Fable #6 and Codex).
 #[derive(Default)]
 struct Lex {
     quote: Option<u8>,
     word: bool,
+    marker: Option<Heredoc>,
 }
 
 /// The heredoc markers of a physical line, in order: `<<WORD`, `<<-WORD`, `<<"WORD"`,
@@ -73,6 +77,15 @@ fn heredocs(
     };
     let s = &src[..end];
     let mut i = line.start;
+    if let Some(mut h) = lex.marker.take() {
+        let n = s[i..].iter().take_while(|&&b| word_byte(b)).count();
+        h.word.extend_from_slice(&s[i..i + n]);
+        if continued && i + n == s.len() {
+            lex.marker = Some(h);
+        } else if !h.word.is_empty() {
+            out.push(h);
+        }
+    }
     while i < s.len() {
         let c = s[i];
         if lex.quote.is_none() && matches!(c, b' ' | b'\t') {
@@ -83,7 +96,7 @@ fn heredocs(
         if !lex.word {
             lex.word = true;
             if s[i..].starts_with(b"<<") {
-                marker(s, i, out);
+                marker(s, i, continued, lex, out);
             }
         }
         // Inside the word: quotes and escapes keep its blanks.
@@ -99,8 +112,14 @@ fn heredocs(
     }
 }
 
-/// The marker of the word at `i`, which starts with `<<`, if it is one.
-fn marker(s: &[u8], i: usize, out: &mut Vec<Heredoc>) {
+/// A byte of a marker's word.
+fn word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// The marker of the word at `i`, which starts with `<<`, if it is one. An unquoted one that
+/// reaches the escape of a continued line waits in `lex` for the next line.
+fn marker(s: &[u8], i: usize, continued: bool, lex: &mut Lex, out: &mut Vec<Heredoc>) {
     let mut j = i + 2;
     if s.get(j) == Some(&b'<') {
         // A here-string, `<<<`.
@@ -118,8 +137,15 @@ fn marker(s: &[u8], i: usize, out: &mut Vec<Heredoc>) {
         _ => None,
     };
     let w0 = j;
-    while j < s.len() && (s[j].is_ascii_alphanumeric() || s[j] == b'_') {
+    while j < s.len() && word_byte(s[j]) {
         j += 1;
+    }
+    if quote.is_none() && continued && j == s.len() {
+        lex.marker = Some(Heredoc {
+            word: s[w0..j].to_vec(),
+            strip_tabs,
+        });
+        return;
     }
     let closed = match quote {
         Some(q) => s.get(j) == Some(&q),
@@ -127,7 +153,7 @@ fn marker(s: &[u8], i: usize, out: &mut Vec<Heredoc>) {
     };
     if j > w0 && closed {
         out.push(Heredoc {
-            word: w0..j,
+            word: s[w0..j].to_vec(),
             strip_tabs,
         });
     }
@@ -136,7 +162,7 @@ fn marker(s: &[u8], i: usize, out: &mut Vec<Heredoc>) {
 /// Where the body of `h` that starts at `pos` ends: after its terminator line, or at the end of
 /// the file when it has none.
 fn heredoc_end(src: &[u8], mut pos: usize, h: &Heredoc) -> usize {
-    let word = &src[h.word.clone()];
+    let word = h.word.as_slice();
     while let Some(l) = line_at(src, pos) {
         let mut a = l.start;
         while h.strip_tabs && a < l.end && src[a] == b'\t' {
@@ -241,6 +267,10 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
                 None => break,
             }
         }
+        // A marker the file's end cut is the marker it has.
+        if let Some(h) = lex.marker.take().filter(|h| !h.word.is_empty()) {
+            marks.push(h);
+        }
         for h in &marks {
             end = heredoc_end(src, end, h);
         }
@@ -331,6 +361,33 @@ mod tests {
         let k = kinds(src);
         assert_eq!(k.len(), 2);
         assert_eq!(k[0].2, 0..src.len() - 6);
+    }
+
+    /// Code review M6 r3, Fable #6 and Codex: a marker word that reaches a continued line's
+    /// escape goes on with the start of the next line, as Docker joins the lines first:
+    /// `<<EOF\` and `cat` give `<<EOFcat`, so a line `EOF` is body text.
+    #[test]
+    fn a_marker_split_by_a_continuation_takes_the_next_line_s_start() {
+        let src = b"FROM a\nRUN <<EOF\\\ncat\nbody\nEOF\nENV x=1\nEOFcat\nENV y=2\n";
+        let k = kinds(src);
+        let names: Vec<&str> = k.iter().map(|k| k.1.as_str()).collect();
+        assert_eq!(names, ["stage 0", "RUN", "ENV"], "{k:?}");
+        assert_eq!(k[1].2, 7..src.len() - 8);
+        // Over three lines, after `<<-`, and with no word before the escape.
+        for src in [
+            &b"RUN <<-E\\\nO\\\nF\nx\n\tEOF\nENV y\n"[..],
+            b"RUN <<\\\nEOF\nx\nEOF\nENV y\n",
+        ] {
+            let k = kinds(src);
+            assert_eq!(k.len(), 2, "{}", String::from_utf8_lossy(src));
+            assert_eq!(k[0].2, 0..src.len() - 6, "{}", String::from_utf8_lossy(src));
+        }
+        // A blank at the next line's start ends the word; a continuation up to the end of the
+        // file keeps the marker it has.
+        let src = b"RUN <<EOF\\\n cat\nEOF\nENV y\n";
+        assert_eq!(kinds(src)[0].2, 0..src.len() - 6);
+        let src = b"RUN <<EOF\\\n";
+        assert_eq!(kinds(src), [("instruction", "RUN".into(), 0..src.len())]);
     }
 
     #[test]
