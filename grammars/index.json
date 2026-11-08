@@ -1,1 +1,179 @@
-{"version": 1, "grammars": []}
+{
+  "version": 1,
+  "grammars": [
+    {
+      "name": "c",
+      "version": "0.23.4",
+      "source": "https://crates.io/crates/tree-sitter-c",
+      "license": "MIT",
+      "definition": "# C: functions, structs, unions and enums (spec §5.3), through the C Grammar Helper (spec §7).\nname       = \"c\"\nextensions = [\"c\", \"h\"]\nprocessor  = \"treesitter\"\n\n[params]\ngrammar = \"c\"\nquery = '''\n(function_definition\n  declarator: [(function_declarator declarator: (identifier) @name)\n               (pointer_declarator declarator: (function_declarator declarator: (identifier) @name))\n               (pointer_declarator declarator: (pointer_declarator declarator: (function_declarator declarator: (identifier) @name)))]) @segment\n(struct_specifier name: (type_identifier) @name body: (_)) @segment\n(union_specifier name: (type_identifier) @name body: (_)) @segment\n(enum_specifier name: (type_identifier) @name body: (_)) @segment\n'''\nkinds = { function_definition = \"function\", struct_specifier = \"struct\", union_specifier = \"union\", enum_specifier = \"enum\" }\n",
+      "binaries": {
+        "linux-aarch64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-c-linux-aarch64",
+          "sha256": "ec7fec2ca0cc53fc584c99b2e123298b2e26705626232ea692a5e04c23f6df03"
+        },
+        "linux-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-c-linux-x86_64",
+          "sha256": "3405b75419f2f98054da230d1f12abdfae7cd3242fc43c09519b240f285a99cc"
+        },
+        "macos-aarch64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-c-macos-aarch64",
+          "sha256": "8ada649868952ac40acf5a7472c5d6e7a58f4deba64dfe2451344296a775923f"
+        },
+        "macos-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-c-macos-x86_64",
+          "sha256": "ed2669c6c35b1853c9b7abb0b0cc0217c5bb8c308619ffa32353ced5f65258bb"
+        },
+        "windows-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-c-windows-x86_64.exe",
+          "sha256": "322ef334e8aabfe5e347689ade681321a43d17b63a321e16ed22e32f0eb5dba2"
+        }
+      }
+    },
+    {
+      "name": "c-sharp",
+      "version": "0.23.1",
+      "source": "https://crates.io/crates/tree-sitter-c-sharp",
+      "license": "MIT",
+      "definition": "# C#: namespaces, classes, structs, interfaces, enums, records, methods and constructors\n# (spec §5.3), through the C# Grammar Helper (spec §7).\nname       = \"c-sharp\"\nextensions = [\"cs\"]\nprocessor  = \"treesitter\"\n\n[params]\ngrammar = \"c-sharp\"\nquery = '''\n(namespace_declaration name: (_) @name) @segment\n(file_scoped_namespace_declaration name: (_) @name) @segment\n(class_declaration name: (identifier) @name) @segment\n(struct_declaration name: (identifier) @name) @segment\n(interface_declaration name: (identifier) @name) @segment\n(enum_declaration name: (identifier) @name) @segment\n(record_declaration name: (identifier) @name) @segment\n(method_declaration name: (identifier) @name) @segment\n(constructor_declaration name: (identifier) @name) @segment\n'''\nkinds = { namespace_declaration = \"namespace\", file_scoped_namespace_declaration = \"namespace\", class_declaration = \"class\", struct_declaration = \"struct\", interface_declaration = \"interface\", enum_declaration = \"enum\", record_declaration = \"record\", method_declaration = \"method\", constructor_declaration = \"constructor\" }\n",
+      "binaries": {
+        "linux-aarch64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-c-sharp-linux-aarch64",
+          "sha256": "dabf2e92e91b5c7e9ff1a6a96d2b9c0af6167238f4c90827885767b2e05d0c2a"
+        },
+        "linux-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-c-sharp-linux-x86_64",
+          "sha256": "e35c8d0cfb29b8f15cd75f910e09b2cc827474d7da4f3dd7a73bcedb52de9cc8"
+        },
+        "macos-aarch64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-c-sharp-macos-aarch64",
+          "sha256": "b82512423b6b94b127c3331df2a3be59b0bced19f78301659a2d674a8a3eeecf"
+        },
+        "macos-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-c-sharp-macos-x86_64",
+          "sha256": "755c0ef32ec9a48746e34bfb717c9a234fc7d6d5ffe62107f1fa2496e0593cab"
+        },
+        "windows-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-c-sharp-windows-x86_64.exe",
+          "sha256": "f3511d0663f9e809d878d8067b1051d32effcc73f41a7f11a7aee331ef0a9851"
+        }
+      }
+    },
+    {
+      "name": "cpp",
+      "version": "0.23.4",
+      "source": "https://crates.io/crates/tree-sitter-cpp",
+      "license": "MIT",
+      "definition": "# C++: namespaces, classes, structs, enums, functions and methods (spec §5.3), through the C++\n# Grammar Helper (spec §7).\nname       = \"cpp\"\nextensions = [\"cpp\", \"cc\", \"cxx\", \"c++\", \"hpp\", \"hh\", \"hxx\", \"h++\"]\nprocessor  = \"treesitter\"\n\n[params]\ngrammar = \"cpp\"\nquery = '''\n(namespace_definition name: (_) @name) @segment\n(class_specifier name: (_) @name body: (_)) @segment\n(struct_specifier name: (_) @name body: (_)) @segment\n(union_specifier name: (_) @name body: (_)) @segment\n(enum_specifier name: (_) @name body: (_)) @segment\n(function_definition\n  declarator: [(function_declarator declarator: (_) @name)\n               (pointer_declarator declarator: (function_declarator declarator: (_) @name))\n               (reference_declarator (function_declarator declarator: (_) @name))]) @segment\n'''\nkinds = { namespace_definition = \"namespace\", class_specifier = \"class\", struct_specifier = \"struct\", union_specifier = \"union\", enum_specifier = \"enum\", function_definition = \"function\" }\n",
+      "binaries": {
+        "linux-aarch64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-cpp-linux-aarch64",
+          "sha256": "f6625939e1f8f1081828e85258fdae7991ebe4f9f7963bf486c30d1f3c6355b0"
+        },
+        "linux-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-cpp-linux-x86_64",
+          "sha256": "4a8eabc3ba20ba3ea808a0218598710333c5dc49214f5bf07eb224c443e20257"
+        },
+        "macos-aarch64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-cpp-macos-aarch64",
+          "sha256": "c0fdbe64a4fb7a0dd77cc0f046b82e59e2c2e986f8c385832fd34a9f0b93f8a6"
+        },
+        "macos-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-cpp-macos-x86_64",
+          "sha256": "862b6276ea910a055cce738a699561599980fe190503f7c59905db5be2e7a810"
+        },
+        "windows-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-cpp-windows-x86_64.exe",
+          "sha256": "593f33e739b950325cd64855f413f15314adba8a95926d80067bf5ee1454c608"
+        }
+      }
+    },
+    {
+      "name": "elixir",
+      "version": "0.3.5",
+      "source": "https://crates.io/crates/tree-sitter-elixir",
+      "license": "Apache-2.0",
+      "definition": "# Elixir: modules, protocols and their functions and macros (spec §5.3), through the Elixir\n# Grammar Helper (spec §7). Elixir's definitions are calls (`defmodule`, `def`), so the query\n# keys on the called name and every Segment's kind is `definition`.\nname       = \"elixir\"\nextensions = [\"ex\", \"exs\"]\nshebangs   = [\"elixir\"]\nprocessor  = \"treesitter\"\n\n[params]\ngrammar = \"elixir\"\nquery = '''\n(call\n  target: (identifier) @keyword\n  (#any-of? @keyword \"defmodule\" \"defprotocol\" \"defimpl\")\n  (arguments . (alias) @name)) @segment\n(call\n  target: (identifier) @keyword\n  (#any-of? @keyword \"def\" \"defp\" \"defmacro\" \"defmacrop\" \"defguard\" \"defguardp\" \"defdelegate\")\n  (arguments .\n    [(identifier) @name\n     (call target: (identifier) @name)\n     (binary_operator left: (call target: (identifier) @name))\n     (binary_operator left: (identifier) @name)])) @segment\n'''\nkinds = { call = \"definition\" }\n",
+      "binaries": {
+        "linux-aarch64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-elixir-linux-aarch64",
+          "sha256": "7044f737fe18110cac10189f774f160a9625c28b835d61f1214deaab3d810f8e"
+        },
+        "linux-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-elixir-linux-x86_64",
+          "sha256": "2c7301bee7eaf4046da8d8af852ed39c6e8ceb66eb527b9fff890e1123dfe0df"
+        },
+        "macos-aarch64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-elixir-macos-aarch64",
+          "sha256": "b248840a76be353e15d01f383aa9d5ca59a9a1904d883aa0bb6770ee2a275baf"
+        },
+        "macos-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-elixir-macos-x86_64",
+          "sha256": "8777fa6b5ff88c82675e01270f0e06cd249e6f5bbbb7d01fbcef71dd6cea54ab"
+        },
+        "windows-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-elixir-windows-x86_64.exe",
+          "sha256": "3493a3129e758cc2ea95901ef25d10998686b815583131fd919c1ec1b2dc18e5"
+        }
+      }
+    },
+    {
+      "name": "java",
+      "version": "0.23.5",
+      "source": "https://crates.io/crates/tree-sitter-java",
+      "license": "MIT",
+      "definition": "# Java: classes, interfaces, enums, records, methods and constructors (spec §5.3), through the\n# Java Grammar Helper (spec §7).\nname       = \"java\"\nextensions = [\"java\"]\nprocessor  = \"treesitter\"\n\n[params]\ngrammar = \"java\"\nquery = '''\n(class_declaration name: (identifier) @name) @segment\n(interface_declaration name: (identifier) @name) @segment\n(enum_declaration name: (identifier) @name) @segment\n(record_declaration name: (identifier) @name) @segment\n(annotation_type_declaration name: (identifier) @name) @segment\n(method_declaration name: (identifier) @name) @segment\n(constructor_declaration name: (identifier) @name) @segment\n'''\nkinds = { class_declaration = \"class\", interface_declaration = \"interface\", enum_declaration = \"enum\", record_declaration = \"record\", annotation_type_declaration = \"annotation\", method_declaration = \"method\", constructor_declaration = \"constructor\" }\n",
+      "binaries": {
+        "linux-aarch64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-java-linux-aarch64",
+          "sha256": "470fd5db243a867f9caaecca6a4b429cd09d5edfa4382248119f5af0a66fa79c"
+        },
+        "linux-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-java-linux-x86_64",
+          "sha256": "c38bdb74854245424d906cf30843bd4e38ad0b028af181d2552a1c5c98fad4a8"
+        },
+        "macos-aarch64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-java-macos-aarch64",
+          "sha256": "60e44d26733761aebc2931de5e0961e40e31b9a926eb8e89803d2ddf27dd9f36"
+        },
+        "macos-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-java-macos-x86_64",
+          "sha256": "b0a976dec753f58e7d6e760dc439da7e4b5ea20d63de28a64878873f47ff575a"
+        },
+        "windows-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-java-windows-x86_64.exe",
+          "sha256": "a1e8cdc84ad5939dfe96681a591bc95cbdb0f951e549d60a180d57572d7ba6f7"
+        }
+      }
+    },
+    {
+      "name": "ruby",
+      "version": "0.23.1",
+      "source": "https://crates.io/crates/tree-sitter-ruby",
+      "license": "MIT",
+      "definition": "# Ruby: modules, classes and methods (spec §5.3), through the Ruby Grammar Helper (spec §7).\nname       = \"ruby\"\nextensions = [\"rb\", \"rake\", \"gemspec\"]\nshebangs   = [\"ruby\"]\nprocessor  = \"treesitter\"\n\n[params]\ngrammar = \"ruby\"\nquery = '''\n(module name: (_) @name) @segment\n(class name: (_) @name) @segment\n(singleton_class value: (_) @name) @segment\n(method name: (_) @name) @segment\n(singleton_method object: (_) @prefix name: (_) @name) @segment\n'''\nkinds = { module = \"module\", class = \"class\", singleton_class = \"class\", method = \"method\", singleton_method = \"method\" }\n",
+      "binaries": {
+        "linux-aarch64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-ruby-linux-aarch64",
+          "sha256": "e1ba71c683a4c1b256c4ccb618e08a5f969c1400e670de0b97eb788678858ec3"
+        },
+        "linux-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-ruby-linux-x86_64",
+          "sha256": "711e51bc24577825139122f8055919f2fa2192356595cbe2e9ef3f1d25bac0de"
+        },
+        "macos-aarch64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-ruby-macos-aarch64",
+          "sha256": "a50554f775c3c69d8243b8cd27f642715a24b91e76f95318f5db09b1ed473de1"
+        },
+        "macos-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-ruby-macos-x86_64",
+          "sha256": "9ca4ba7181885c186da60beacb5330da37c310c67ed23ac9337a7b475165fb5c"
+        },
+        "windows-x86_64": {
+          "url": "https://github.com/neitanod/searchfor/releases/download/grammars-v1/searchfor-grammar-ruby-windows-x86_64.exe",
+          "sha256": "6ab2699a953ce6b73573eae432baba8c27b44e35105b57fbe6d5fb20fab988db"
+        }
+      }
+    }
+  ]
+}
