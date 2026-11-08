@@ -3013,8 +3013,19 @@ fn m6_dense_bytes(format: &str, size: usize) -> Vec<u8> {
     let (head, unit, tail) = match format {
         "asciidoc" => ("= ONCE_M6\n", "== needle\nneedle\n", ""),
         "ini" => ("[ONCE_M6]\n", "k=needle\n", ""),
-        "nginx" => ("http { # ONCE_M6\n", "k needle;\n", "}\n"),
-        "make" => ("# ONCE_M6\n", "k := needle\n", ""),
+        // Nested blocks, a late `server_name` and a directive in each (Fable r1 #53: plain
+        // directives and variables proved less than the criterion's name says).
+        "nginx" => (
+            "http { # ONCE_M6\n",
+            "server {\nserver_name needle;\nlocation / {\nk needle;\n}\n}\n",
+            "}\n",
+        ),
+        // A conditional around a rule with its recipe, and a variable.
+        "make" => (
+            "# ONCE_M6\n",
+            "ifeq (a,needle)\nt: needle\n\techo needle\nendif\nk := needle\n",
+            "",
+        ),
         "sql" => (
             "-- ONCE_M6\nINSERT INTO t(a) VALUES\n",
             "('needle'),\n",
