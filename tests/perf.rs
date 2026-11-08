@@ -3020,10 +3020,11 @@ fn m6_dense_bytes(format: &str, size: usize) -> Vec<u8> {
             "server {\nserver_name needle;\nlocation / {\nk needle;\n}\n}\n",
             "}\n",
         ),
-        // A conditional around a rule with its recipe, and a variable.
+        // A conditional around a rule with its recipe, and a variable; the conditional names no
+        // needle, so m6_sparse's first Match is not in a Segment's own name (rule 5).
         "make" => (
             "# ONCE_M6\n",
-            "ifeq (a,needle)\nt: needle\n\techo needle\nendif\nk := needle\n",
+            "ifeq (a,b)\nt: needle\n\techo needle\nendif\nk := needle\n",
             "",
         ),
         "sql" => (
