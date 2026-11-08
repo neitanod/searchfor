@@ -1,8 +1,9 @@
 //! AsciiDoc (M6 spec §6.1): `= Title` at the top is the document; `==` to `======`, or the
 //! Markdown-style `##` to `######`, are headings of levels 1 to 5, a space after the markers.
 //! A delimited block runs to the same delimiter, and the headings in it are text: a listing is
-//! a `code` Segment named by the `[source,LANG]` before it, or `listing`; a literal block,
-//! `literal`; a fence, its info string or `listing`. The other blocks hold no Segment.
+//! a `code` Segment named by the `[source,LANG]` before it, or `listing`; a literal block, by
+//! that `LANG` or `literal`; a fence, its info string, that `LANG` or `listing`. The other
+//! blocks, tables included, hold no Segment.
 //! `include::` is never followed.
 use super::{Item, Items, Line, Named, Open, blank, lines, trim};
 use std::ops::Range;
@@ -154,17 +155,24 @@ pub(crate) fn scan(src: &[u8]) -> Items {
         let comment = src[l.start..l.end].starts_with(b"//") && delimiter(src, l).is_none();
         if let Some(kind) = delimiter(src, l) {
             content = true;
-            let attr = source.take();
+            // `[source,LANG]` names a listing, a literal block and a fence without an info
+            // string, as Asciidoctor applies the style to the three (code review M6 r1, Fable
+            // #23); the block starts at it.
+            let attr = source.take().filter(|_| kind != Block::Opaque);
             let (start, sig) = match &attr {
-                Some((a, _)) if kind == Block::Listing => (a.start, a.start..a.end),
-                _ => (l.start, l.start..l.end),
+                Some((a, _)) => (a.start, a.start..a.end),
+                None => (l.start, l.start..l.end),
             };
+            let lang = attr.and_then(|(_, lang)| lang);
             let name = match kind {
-                Block::Listing => match attr {
-                    Some((_, Some(lang))) => Some(Named::Source(vec![lang])),
-                    _ => Some(Named::Word("listing")),
+                Block::Listing => match lang {
+                    Some(lang) => Some(Named::Source(vec![lang])),
+                    None => Some(Named::Word("listing")),
                 },
-                Block::Literal => Some(Named::Word("literal")),
+                Block::Literal => match lang {
+                    Some(lang) => Some(Named::Source(vec![lang])),
+                    None => Some(Named::Word("literal")),
+                },
                 Block::Fence => {
                     let info = trim(src, l.start + fence_run(src, l)..l.end);
                     let word = info.start
@@ -174,6 +182,8 @@ pub(crate) fn scan(src: &[u8]) -> Items {
                             .unwrap_or(info.len());
                     if word > info.start {
                         Some(Named::Source(vec![trim(src, info.start..word)]))
+                    } else if let Some(lang) = lang {
+                        Some(Named::Source(vec![lang]))
                     } else {
                         Some(Named::Word("listing"))
                     }
@@ -246,6 +256,7 @@ pub(crate) fn scan(src: &[u8]) -> Items {
 #[cfg(test)]
 mod tests {
     use super::super::tests::{cursor_equals_model, params, trail};
+    use crate::processors::Processor;
 
     #[test]
     fn titles_headings_and_blocks() {
@@ -307,6 +318,25 @@ mod tests {
         assert_eq!(trail(src, &p, "needle-b"), ["Doc", "A"]);
         assert_eq!(trail(src, &p, "needle-c"), ["Doc", "A"]);
         assert_eq!(trail(src, &p, "needle-d"), ["Doc", "A"]);
+        cursor_equals_model(src, &p);
+    }
+
+    /// Code review M6 r1, Fable #23: `[source,LANG]` names a literal block and a fence
+    /// without an info string as it names a listing; a fence's info string comes first.
+    #[test]
+    fn source_names_a_literal_block_and_a_fence_too() {
+        let p = params("asciidoc");
+        let src = b"= Doc\n== A\n[source,rust]\n....\nneedle-a\n....\n[source,rust]\n```\nneedle-b\n```\n[source,rust]\n```py\nneedle-c\n```\n[source]\n....\nneedle-d\n....\n";
+        assert_eq!(trail(src, &p, "needle-a"), ["Doc", "A", "rust"]);
+        assert_eq!(trail(src, &p, "needle-b"), ["Doc", "A", "rust"]);
+        assert_eq!(trail(src, &p, "needle-c"), ["Doc", "A", "py"]);
+        assert_eq!(trail(src, &p, "needle-d"), ["Doc", "A", "literal"]);
+        let at = src.windows(8).position(|w| w == b"needle-a").unwrap();
+        let t = &super::super::Headings
+            .trails(&super::super::tests::input(src, "x"), &p, &[at])
+            .unwrap()[0];
+        assert_eq!(t[2].line, 3, "the block starts at its [source] line");
+        assert_eq!(t[2].signature.as_deref(), Some("[source,rust]"));
         cursor_equals_model(src, &p);
     }
 

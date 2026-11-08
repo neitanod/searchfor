@@ -441,7 +441,7 @@ mod tests {
     use std::path::Path;
     use std::rc::Rc;
 
-    fn input<'a>(bytes: &'a [u8], format: &'a str) -> Input<'a> {
+    pub(crate) fn input<'a>(bytes: &'a [u8], format: &'a str) -> Input<'a> {
         Input {
             bytes,
             path: Path::new("x"),
