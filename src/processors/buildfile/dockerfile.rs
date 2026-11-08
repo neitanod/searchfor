@@ -48,13 +48,31 @@ struct Heredoc {
 /// Where the lexing of a logical line stands at the end of one of its physical lines: the open
 /// quote, and whether a word is open. Docker joins the continuation lines before it looks for
 /// heredocs, so both go on into the next one (Codex r2 #2, Fable r2 #7).
-/// A marker word that reached a continued line's escape goes on with the next line's start,
-/// as Docker joins the lines first (code review M6 r3, Fable #6 and Codex).
+/// A marker that reached a continued line's escape goes on with the next line's start, as
+/// Docker joins the lines first (code review M6 r3, Fable #6 and Codex): its `-`, its quotes
+/// and its word (r4, Codex #3 and Fable #3).
 #[derive(Default)]
 struct Lex {
     quote: Option<u8>,
     word: bool,
-    marker: Option<Heredoc>,
+    marker: Option<Pending>,
+}
+
+/// A marker read up to a continued line's escape: past its `<<`, what it has, and the part
+/// that comes next.
+struct Pending {
+    heredoc: Heredoc,
+    quote: Option<u8>,
+    part: Part,
+}
+
+/// The parts of a marker, in order: `-`, the opening quote, the word, the closing quote.
+#[derive(Clone, Copy, PartialEq)]
+enum Part {
+    Dash,
+    Open,
+    Word,
+    Close,
 }
 
 /// The heredoc markers of a physical line, in order: `<<WORD`, `<<-WORD`, `<<"WORD"`,
@@ -77,14 +95,8 @@ fn heredocs(
     };
     let s = &src[..end];
     let mut i = line.start;
-    if let Some(mut h) = lex.marker.take() {
-        let n = s[i..].iter().take_while(|&&b| word_byte(b)).count();
-        h.word.extend_from_slice(&s[i..i + n]);
-        if continued && i + n == s.len() {
-            lex.marker = Some(h);
-        } else if !h.word.is_empty() {
-            out.push(h);
-        }
+    if let Some(p) = lex.marker.take() {
+        read_marker(s, i, continued, p, lex, out);
     }
     while i < s.len() {
         let c = s[i];
@@ -117,45 +129,71 @@ fn word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// The marker of the word at `i`, which starts with `<<`, if it is one. An unquoted one that
-/// reaches the escape of a continued line waits in `lex` for the next line.
+/// The marker of the word at `i`, which starts with `<<`, if it is one.
 fn marker(s: &[u8], i: usize, continued: bool, lex: &mut Lex, out: &mut Vec<Heredoc>) {
-    let mut j = i + 2;
-    if s.get(j) == Some(&b'<') {
-        // A here-string, `<<<`.
-        return;
-    }
-    let strip_tabs = s.get(j) == Some(&b'-');
-    if strip_tabs {
-        j += 1;
-    }
-    let quote = match s.get(j) {
-        Some(&q @ (b'"' | b'\'')) => {
-            j += 1;
-            Some(q)
+    let p = Pending {
+        heredoc: Heredoc {
+            word: Vec::new(),
+            strip_tabs: false,
+        },
+        quote: None,
+        part: Part::Dash,
+    };
+    read_marker(s, i + 2, continued, p, lex, out);
+}
+
+/// The marker `p` read on from `j`, part by part. One that reaches the escape of a continued
+/// line before its end waits in `lex` for the next line, so that the marker split over lines
+/// is the marker of the logical line.
+fn read_marker(
+    s: &[u8],
+    mut j: usize,
+    continued: bool,
+    mut p: Pending,
+    lex: &mut Lex,
+    out: &mut Vec<Heredoc>,
+) {
+    loop {
+        if continued && j == s.len() && (p.part != Part::Close || p.quote.is_some()) {
+            lex.marker = Some(p);
+            return;
         }
-        _ => None,
-    };
-    let w0 = j;
-    while j < s.len() && word_byte(s[j]) {
-        j += 1;
-    }
-    if quote.is_none() && continued && j == s.len() {
-        lex.marker = Some(Heredoc {
-            word: s[w0..j].to_vec(),
-            strip_tabs,
-        });
-        return;
-    }
-    let closed = match quote {
-        Some(q) => s.get(j) == Some(&q),
-        None => true,
-    };
-    if j > w0 && closed {
-        out.push(Heredoc {
-            word: s[w0..j].to_vec(),
-            strip_tabs,
-        });
+        match p.part {
+            Part::Dash => {
+                match s.get(j) {
+                    // A here-string, `<<<`.
+                    Some(b'<') => return,
+                    Some(b'-') => {
+                        p.heredoc.strip_tabs = true;
+                        j += 1;
+                    }
+                    _ => {}
+                }
+                p.part = Part::Open;
+            }
+            Part::Open => {
+                if let Some(&q @ (b'"' | b'\'')) = s.get(j) {
+                    p.quote = Some(q);
+                    j += 1;
+                }
+                p.part = Part::Word;
+            }
+            Part::Word => {
+                let n = s[j..].iter().take_while(|&&b| word_byte(b)).count();
+                p.heredoc.word.extend_from_slice(&s[j..j + n]);
+                j += n;
+                if j < s.len() || !continued {
+                    p.part = Part::Close;
+                }
+            }
+            Part::Close => {
+                let closed = p.quote.is_none_or(|q| s.get(j) == Some(&q));
+                if closed && !p.heredoc.word.is_empty() {
+                    out.push(p.heredoc);
+                }
+                return;
+            }
+        }
     }
 }
 
@@ -268,8 +306,8 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
             }
         }
         // A marker the file's end cut is the marker it has.
-        if let Some(h) = lex.marker.take().filter(|h| !h.word.is_empty()) {
-            marks.push(h);
+        if let Some(p) = lex.marker.take().filter(|p| !p.heredoc.word.is_empty()) {
+            marks.push(p.heredoc);
         }
         for h in &marks {
             end = heredoc_end(src, end, h);

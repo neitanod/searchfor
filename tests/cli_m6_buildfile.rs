@@ -475,6 +475,51 @@ fn m6_dockerfile_heredocs_start_words() {
     }
 }
 
+/// Code review M6 r4, Codex #3 and Fable #3: a heredoc marker split by a continuation inside
+/// its quotes, before its closing quote or before its `-` gives the Trails of its logical line,
+/// as Docker joins the lines first (Fable's `dk-r4-09` and `dk-r4-10`).
+#[test]
+fn m6_dockerfile_split_markers_equal_their_logical_line() {
+    let fx = Fixture::new();
+    for (split, joined, want) in [
+        (
+            "FROM a AS build\nRUN <<\"EO\\\nF\"\nFROM x AS wrong\nRUN echo needle1\nEOF\nRUN echo needle2\n",
+            "FROM a AS build\nRUN <<\"EOF\"\nFROM x AS wrong\nRUN echo needle1\nEOF\nRUN echo needle2\n",
+            vec!["build › RUN", "build › RUN"],
+        ),
+        (
+            "FROM a\nRUN <<\\\n-EOF\n\tbody needle1\n\tEOF\nENV x=needle2\n",
+            "FROM a\nRUN <<-EOF\n\tbody needle1\n\tEOF\nENV x=needle2\n",
+            vec!["stage 0 › RUN", "stage 0 › ENV"],
+        ),
+        (
+            "FROM a\nRUN <<\"EOF\\\n\"\nbody needle1\nEOF\nENV x=needle2\n",
+            "FROM a\nRUN <<\"EOF\"\nbody needle1\nEOF\nENV x=needle2\n",
+            vec!["stage 0 › RUN", "stage 0 › ENV"],
+        ),
+        (
+            "FROM a\nRUN <<-\\\n'E\\\nOF'\n\tbody needle1\n\tEOF\nENV x=needle2\n",
+            "FROM a\nRUN <<-'EOF'\n\tbody needle1\n\tEOF\nENV x=needle2\n",
+            vec!["stage 0 › RUN", "stage 0 › ENV"],
+        ),
+    ] {
+        let mut got = Vec::new();
+        for src in [split, joined] {
+            put(&fx, "heredoc.dockerfile", src.as_bytes());
+            let rows = matches(&output(
+                &fx,
+                "dockerfile",
+                "heredoc.dockerfile",
+                "needle",
+                &["--json"],
+            ));
+            got.push(paths(&rows));
+        }
+        assert_eq!(got[0], got[1], "{split}");
+        assert_eq!(got[1], want, "{joined}");
+    }
+}
+
 /// Fable r1 #12: past 256 open Segments no more open (M6 spec §3, point 8), in a Makefile's
 /// conditionals too; each `endif` still closes its own `ifeq`.
 #[test]
