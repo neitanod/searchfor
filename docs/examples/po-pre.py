@@ -11,5 +11,8 @@ Windows has no shebang lines, so there `--pre` names the compiled
 pre-launcher.rs, which runs this script with Python.
 """
 import json, pathlib, sys
+# Bytes, in UTF-8 and with LF: Python's text stdout writes CRLF and the ANSI code
+# page on Windows.
 for line in pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines():
-    if line.startswith('msgstr '): print(json.loads(line[7:]))
+    if line.startswith('msgstr '):
+        sys.stdout.buffer.write((json.loads(line[7:]) + '\n').encode('utf-8'))

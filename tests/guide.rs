@@ -334,3 +334,56 @@ fn m6_readme_installers_follow_the_latest_release() {
         assert!(!doc.contains("/releases/download/v"), "{file}");
     }
 }
+
+/// The CI's Windows run of the two guide tests above read `needle\r\n`: Python's text stdout
+/// writes CRLF there. Each example runs here under the stdout Windows gives it (CRLF, the
+/// ANSI code page) and must still write LF, in UTF-8.
+#[test]
+fn m6_examples_write_lf_under_a_windows_stdout() {
+    let Some(py) = python() else {
+        eprintln!("skipping guide examples: Python 3 is not installed");
+        return;
+    };
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/examples");
+    let windows = "import io, runpy, sys\n\
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='cp1252', errors='replace', newline='\\r\\n')\n\
+        script = sys.argv[1]\n\
+        sys.argv = sys.argv[1:]\n\
+        runpy.run_path(script, run_name='__main__')\n\
+        sys.stdout.flush()\n";
+    let pre = Command::new(&py)
+        .args(["-c", windows])
+        .arg(examples.join("po-pre.py"))
+        .arg(examples.join("sample.po"))
+        .output()
+        .unwrap();
+    assert!(
+        pre.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pre.stderr)
+    );
+    assert!(!pre.stdout.is_empty());
+    assert!(
+        !pre.stdout.contains(&b'\r'),
+        "{:?}",
+        String::from_utf8_lossy(&pre.stdout)
+    );
+    assert!(std::str::from_utf8(&pre.stdout).is_ok());
+    let mut helper = Command::new(&py)
+        .args(["-c", windows])
+        .arg(examples.join("po-helper.py"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        let mut stdin = helper.stdin.take().unwrap();
+        stdin
+            .write_all(b"{\"id\":0,\"op\":\"hello\",\"protocol\":1}\n")
+            .unwrap();
+    }
+    let out = helper.wait_with_output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(out.stdout, b"{\"id\": 0, \"protocol\": 1}\n");
+}
