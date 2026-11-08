@@ -372,6 +372,9 @@ mod tests {
                 ("target", "c".into())
             ]
         );
+        // Fable r2 #11: one letter glued to an absolute prerequisite reads as a drive letter,
+        // as docs/formats.md says; GNU make on Linux would read the rule `c`.
+        assert_eq!(names(b"c:/x needle\n"), []);
     }
 
     #[test]
