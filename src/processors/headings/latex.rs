@@ -237,7 +237,13 @@ fn definition_end(src: &[u8], cmd: &[u8], at: usize) -> Option<usize> {
                 }
                 c => {
                     line_start = false;
-                    j += if c == b'\\' { 2 } else { 1 };
+                    // A `\` escapes the next character, but no line break: the blank line
+                    // after one still ends the parameter text (code review M6 r5, Opus #3).
+                    j += if c == b'\\' && src.get(j + 1) != Some(&b'\n') {
+                        2
+                    } else {
+                        1
+                    };
                 }
             }
         }
@@ -738,6 +744,32 @@ mod tests {
                 );
                 cursor_equals_model(src, &p);
             }
+        }
+    }
+
+    /// Code review M6 r5, Opus #3: a `\` at the end of a line of the parameter text escapes
+    /// no line break, so the blank line after it ends the definition too (§6.4); one before
+    /// a single line break, or before CR LF, still lets the body one line down be text.
+    #[test]
+    fn a_backslash_at_a_line_end_hides_no_blank_line_from_a_def() {
+        let p = params("latex");
+        for (text, want) in [
+            ("\\foo\\\n\n", "Fake"),
+            ("\\foo#1\\\n \n", "Fake"),
+            ("\\foo\\\r\n\r\n", "Fake"),
+            ("\\foo\\\\\n\n", "Fake"),
+            ("\\foo\\\n", "Real"),
+            ("\\foo\\\r\n", "Real"),
+        ] {
+            let src = format!("\\section{{Real}}\n\\def{text}{{\\section{{Fake}}}}\nneedle-1\n");
+            let src = src.as_bytes();
+            assert_eq!(
+                trail(src, &p, "needle-1"),
+                [want],
+                "{}",
+                String::from_utf8_lossy(src)
+            );
+            cursor_equals_model(src, &p);
         }
     }
 
