@@ -375,6 +375,8 @@ impl Prepared for HeadingPrepared<'_> {
             src: self.src,
             tables: &self.tables,
             name_chars: self.name_chars,
+            row: None,
+            header: None,
             last: None,
             cell: None,
         })
@@ -391,13 +393,20 @@ impl Prepared for HeadingPrepared<'_> {
 
 /// The index's cursor, and the `column` of an Org table's cell at the end of a Trail whose
 /// offset falls in one: the column the model's Items give, built when a Match asks for it.
+/// The row of the last offset and its table's header cells are kept, so the Matches of one
+/// row cost one read of it (code review M6 r2, Codex #1).
 struct TableCursor<'p> {
     inner: IndexCursor<'p>,
     src: &'p [u8],
     tables: &'p [org::Table],
     name_chars: usize,
-    /// The last Trail given with a column, and the index's Trail it extends.
-    last: Option<(SharedTrail, SharedTrail)>,
+    /// The row that holds the last offset in a table's body: (table, row).
+    row: Option<(usize, org::Row)>,
+    /// The header cells of the last table a column was named in: (table, cells).
+    header: Option<(usize, Vec<Range<usize>>)>,
+    /// The last Trail given with a column: the index's Trail it extends, its table and
+    /// column, and the Trail.
+    last: Option<(SharedTrail, usize, usize, SharedTrail)>,
     /// The start of the cell that holds the last offset, if one does.
     cell: Option<usize>,
 }
@@ -406,28 +415,48 @@ impl Cursor for TableCursor<'_> {
     fn trail_at(&mut self, byte: usize) -> anyhow::Result<SharedTrail> {
         let t = self.inner.trail_at(byte)?;
         self.cell = None;
-        let k = self.tables.partition_point(|tb| tb.body.start <= byte);
-        let Some(table) = k.checked_sub(1).map(|k| &self.tables[k]) else {
+        let Some(ti) = self
+            .tables
+            .partition_point(|tb| tb.body.start <= byte)
+            .checked_sub(1)
+        else {
             return Ok(t);
         };
+        let table = &self.tables[ti];
         if byte >= table.body.end {
             return Ok(t);
         }
-        let Some((column, cell)) = table.column_at(self.src, byte, self.name_chars) else {
+        if !matches!(&self.row, Some((i, r)) if *i == ti && r.line.contains(&byte)) {
+            self.row = Some((ti, table.row_at(self.src, byte)));
+        }
+        let Some((k, cell)) = self.row.as_ref().and_then(|(_, r)| r.cell_at(byte)) else {
             return Ok(t);
         };
         self.cell = Some(cell);
-        if let Some((inner, out)) = &self.last
+        if let Some((inner, lt, lk, out)) = &self.last
+            && std::rc::Rc::ptr_eq(inner, &t)
+            && (*lt, *lk) == (ti, k)
+        {
+            return Ok(out.clone());
+        }
+        if !matches!(&self.header, Some((i, _)) if *i == ti) {
+            self.header = Some((ti, table.header_cells(self.src)));
+        }
+        let header = self.header.as_ref().map_or(&[][..], |(_, h)| h);
+        let column = table.column(self.src, header, k, self.name_chars);
+        if let Some((inner, _, _, out)) = &self.last
             && std::rc::Rc::ptr_eq(inner, &t)
             && out.last() == Some(&column)
         {
-            return Ok(out.clone());
+            let out = out.clone();
+            self.last = Some((t, ti, k, out.clone()));
+            return Ok(out);
         }
         let mut trail = Vec::with_capacity(t.len() + 1);
         trail.extend(t.iter().cloned());
         trail.push(column);
         let out: SharedTrail = std::rc::Rc::from(trail);
-        self.last = Some((t, out.clone()));
+        self.last = Some((t, ti, k, out.clone()));
         Ok(out)
     }
 

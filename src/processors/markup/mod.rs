@@ -728,8 +728,18 @@ impl<'a> Walk<'_, '_, 'a> {
             return;
         }
         let lines = self.lines_before(content.start);
-        let Some(o) = scripts.outline(self.src, &f.tag, f.name.end, content, lines, self.p.caps)
-        else {
+        // `f` is popped: the root and its open ancestors are as many as the open elements,
+        // `f` included, which the cursor counts as its index in `open` and one.
+        let room = MAX_DEPTH.saturating_sub(self.stack.len());
+        let Some(o) = scripts.outline(
+            self.src,
+            &f.tag,
+            f.name.end,
+            content,
+            lines,
+            self.p.caps,
+            room,
+        ) else {
             return;
         };
         let c = self.collector();
@@ -1326,8 +1336,10 @@ impl<'s> MarkupCursor<'s> {
             return known.clone();
         }
         let lines = self.line_of(content.start) - 1;
+        // The open elements, the script's included (`Walk::script`).
+        let room = MAX_DEPTH.saturating_sub(k + 1);
         let parsed = scripts
-            .outline(self.src, &tag, name_end, content, lines, self.p.caps)
+            .outline(self.src, &tag, name_end, content, lines, self.p.caps, room)
             .map(Rc::new);
         self.prepared
             .parsed
@@ -2063,6 +2075,96 @@ mod tests {
                 ("class", "A", 3, 5),
                 ("method", "m", 4, 4)
             ]
+        );
+    }
+
+    /// Code review M6 r2, decision 2: the Trail inside a `<script>` obeys the 256 open
+    /// Segments cap (M6 spec §3, point 8), counting the markup's open elements: past it, the
+    /// script's deeper Segments do not open, in the model, in the cursor and in the names.
+    #[test]
+    fn a_script_obeys_the_depth_cap_with_the_elements_above_it() {
+        let params: toml::Table = toml::from_str("syntax = 'html'\nscripts = true").unwrap();
+        let mut src = "<div>".repeat(10) + "<script>\n";
+        for k in 1..=300 {
+            src.push_str(&format!("function f{k}() {{\n"));
+        }
+        src.push_str("needle\n");
+        src.push_str(&"}\n".repeat(300));
+        src.push_str("</script>");
+        src.push_str(&"</div>".repeat(10));
+        let src = src.as_bytes();
+        let input = Input {
+            bytes: src,
+            path: Path::new("x"),
+            format: "html",
+            disk: None,
+        };
+        let at = memchr::memmem::find(src, b"needle").unwrap();
+        let model = Markup.trails(&input, &params, &[at]).unwrap();
+        assert_eq!(model[0].len(), MAX_DEPTH);
+        assert_eq!(model[0].last().unwrap().name, "f245");
+        let prepared = Markup.prepare(input, &params).unwrap();
+        let got = prepared.cursor().trail_at(at).unwrap();
+        assert_eq!(got.as_ref(), model[0].as_slice());
+        let names = prepared.names().unwrap();
+        assert!(names.iter().all(|n| n.trail.len() <= MAX_DEPTH));
+        assert!(names.iter().any(|n| n.text == "f245"));
+        assert!(!names.iter().any(|n| n.text == "f246"));
+        let input = Input {
+            bytes: src,
+            path: Path::new("x"),
+            format: "html",
+            disk: None,
+        };
+        assert_eq!(Markup.names(&input, &params).unwrap().len(), names.len());
+    }
+
+    /// CI of b73124e, `m6_mutations` case 146: a Vue file of one line (each line of its
+    /// fixture repeated in place to 1 MiB, every `\n` a `\r`) holds a script of thousands of
+    /// nested functions. Each name carried its whole Trail, so `--in-headings` took memory and
+    /// time growing with the square of the depth (16 GB and 12 s in release for the script
+    /// alone); with the cap the names hold at most 256 Segments each.
+    #[test]
+    fn the_names_of_a_deep_script_on_one_line_stay_bounded() {
+        let params: toml::Table = toml::from_str("syntax = 'html'\nscripts = true").unwrap();
+        let lines: [&[u8]; 5] = [
+            b"<script lang=\"ts\">\n",
+            b"function addItem() {\n",
+            b"  const value: string = 'needle';\n",
+            b"}\n",
+            b"</script>\n",
+        ];
+        let size = |k: usize| -> Vec<u8> {
+            lines
+                .iter()
+                .flat_map(|l| l.repeat(k))
+                .map(|b| if b == b'\n' { b'\r' } else { b })
+                .collect()
+        };
+        let mut took = Vec::new();
+        for k in [2_000, 8_000] {
+            let src = size(k);
+            let input = Input {
+                bytes: &src,
+                path: Path::new("x.vue"),
+                format: "vue",
+                disk: None,
+            };
+            let t0 = std::time::Instant::now();
+            let names = Markup.names(&input, &params).unwrap();
+            took.push(t0.elapsed());
+            let held: usize = names.iter().map(|n| n.trail.len()).sum();
+            assert!(
+                held <= names.len() * MAX_DEPTH,
+                "{k}: {held} Segments in {} names",
+                names.len()
+            );
+        }
+        assert!(
+            took[1] < std::time::Duration::from_secs(2),
+            "4 times the file took {:?} after {:?}",
+            took[1],
+            took[0]
         );
     }
 

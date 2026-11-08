@@ -137,30 +137,74 @@ fn group(src: &[u8], at: usize, open: u8, close: u8) -> Option<(Vec<Range<usize>
     None
 }
 
-/// Commands that define a macro or an environment: their bodies are text.
-const DEFINITIONS: [&[u8]; 9] = [
+/// Commands that define a macro or an environment: their bodies are text. The xparse ones
+/// (in the LaTeX kernel since 2020, from memory) take an argument specification before their
+/// bodies (code review M6 r2, Fable #6).
+const DEFINITIONS: [&[u8]; 22] = [
     b"newcommand",
     b"renewcommand",
     b"providecommand",
+    b"DeclareRobustCommand",
     b"newenvironment",
     b"renewenvironment",
     b"def",
     b"gdef",
     b"edef",
     b"xdef",
+    b"NewDocumentCommand",
+    b"RenewDocumentCommand",
+    b"ProvideDocumentCommand",
+    b"DeclareDocumentCommand",
+    b"NewExpandableDocumentCommand",
+    b"RenewExpandableDocumentCommand",
+    b"ProvideExpandableDocumentCommand",
+    b"DeclareExpandableDocumentCommand",
+    b"NewDocumentEnvironment",
+    b"RenewDocumentEnvironment",
+    b"ProvideDocumentEnvironment",
+    b"DeclareDocumentEnvironment",
 ];
+
+/// Past `at`, the spaces, line breaks and `%` comments that may stand between a definition's
+/// parts (code review M6 r2, Codex #7), up to a blank line and within `GROUP_MAX` bytes: where
+/// the next part starts.
+fn gap(src: &[u8], at: usize) -> usize {
+    let limit = src.len().min(at.saturating_add(GROUP_MAX));
+    let mut i = at;
+    let mut breaks = 0;
+    while i < limit {
+        match src[i] {
+            b' ' | b'\t' | b'\r' => i += 1,
+            b'\n' => {
+                breaks += 1;
+                if breaks == 2 {
+                    return i;
+                }
+                i += 1;
+            }
+            b'%' => {
+                // The comment and its line break, which ends no part.
+                i = memchr::memchr(b'\n', &src[i..limit]).map_or(limit, |k| i + k + 1);
+            }
+            _ => return i,
+        }
+    }
+    i
+}
 
 /// Where a definition whose command `cmd` ends at `at` ends, past its body (both bodies of an
 /// environment): what it defines is text there, never a heading or an environment (code review
-/// M6 r1, Fable #25; spec §6.4 makes macros that expand to sectioning commands text). None
-/// when it is not written as one, or a part does not close within `GROUP_MAX` bytes: then the
-/// walk reads on after the command, as it read before.
+/// M6 r1, Fable #25; spec §6.4 makes macros that expand to sectioning commands text). Its parts
+/// may stand on several lines, with comments between them. None when it is not written as one,
+/// or a part does not close within `GROUP_MAX` bytes: then the walk reads on after the
+/// command, as it read before.
 fn definition_end(src: &[u8], cmd: &[u8], at: usize) -> Option<usize> {
     let mut j = at;
     if src.get(j) == Some(&b'*') {
         j += 1;
     }
-    j = skip_blanks(src, j);
+    j = gap(src, j);
+    let environment = cmd.ends_with(b"nvironment");
     let bodies = if matches!(cmd, b"def" | b"gdef" | b"edef" | b"xdef") {
         // `\def\name#1#2{…}`: the name, its parameter text up to the body's brace.
         if src.get(j) != Some(&b'\\') {
@@ -170,7 +214,8 @@ fn definition_end(src: &[u8], cmd: &[u8], at: usize) -> Option<usize> {
         j += memchr::memchr(b'{', &src[j..to])?;
         1
     } else {
-        // `{\name}` or `\name` (`{name}` for an environment), `[n]`, `[default]`, the body.
+        // `{\name}` or `\name` (`{name}` for an environment), then `[n]` and `[default]`, or
+        // xparse's `{argspec}`, then the body.
         if src.get(j) == Some(&b'{') {
             j = group(src, j, b'{', b'}')?.1;
         } else if src.get(j) == Some(&b'\\') {
@@ -182,13 +227,21 @@ fn definition_end(src: &[u8], cmd: &[u8], at: usize) -> Option<usize> {
         } else {
             return None;
         }
-        for _ in 0..2 {
-            j = optional(src, skip_blanks(src, j))?.1;
+        if memchr::memmem::find(cmd, b"Document").is_some() {
+            j = gap(src, j);
+            if src.get(j) != Some(&b'{') {
+                return None;
+            }
+            j = group(src, j, b'{', b'}')?.1;
+        } else {
+            for _ in 0..2 {
+                j = optional(src, gap(src, j))?.1;
+            }
         }
-        if cmd.ends_with(b"environment") { 2 } else { 1 }
+        if environment { 2 } else { 1 }
     };
     for _ in 0..bodies {
-        j = skip_blanks(src, j);
+        j = gap(src, j);
         if src.get(j) != Some(&b'{') {
             return None;
         }
@@ -557,6 +610,28 @@ mod tests {
         assert_eq!(trail(src, &p, "needle-b"), ["Real"]);
         assert_eq!(trail(src, &p, "needle-c"), ["Real"]);
         cursor_equals_model(src, &p);
+    }
+
+    /// Code review M6 r2, Codex #7 and Fable #6: a definition's parts may stand on separate
+    /// lines, with comments between them, and `\DeclareRobustCommand` and the xparse commands
+    /// (`\NewDocumentCommand{\v}{m}{…}`, two bodies for an environment) define too: their
+    /// bodies are text. s4 looks for the next part up to a blank line: past one, it reads on
+    /// after the command, as it did before.
+    #[test]
+    fn a_definition_over_lines_or_by_xparse_is_text() {
+        let p = params("latex");
+        let src = b"\\section{Real}\n\\newcommand{\\foo}\n{\\section{Fake}}\nneedle-1\n\\newenvironment{e} % c\n  [1]\n  {\\begin{x}\\section{F2}}\n  % between\n  {\\end{x}}\nneedle-2\n\\DeclareRobustCommand{\\r}{\\section{R}}\nneedle-3\n\\NewDocumentCommand{\\v}{m}{\\section{#1}}\nneedle-4\n\\NewDocumentEnvironment{ne}{O{x} m}\n {\\begin{y}\\section{N}}\n {\\end{y}}\nneedle-5\n\\RenewDocumentCommand\\w{}{\\chapter{W}}\nneedle-6\n\\DeclareDocumentCommand{\\dd}{m}{\\section{D}}\\ProvideDocumentCommand{\\pd}{m}{\\section{P}}\nneedle-7\n";
+        for n in 1..=7 {
+            assert_eq!(
+                trail(src, &p, &format!("needle-{n}")),
+                ["Real"],
+                "needle-{n}"
+            );
+        }
+        cursor_equals_model(src, &p);
+        // A blank line after the name: what follows it is read as written.
+        let src = b"\\newcommand{\\foo}\n\n\\section{After}\nneedle\n";
+        assert_eq!(trail(src, &p, "needle"), ["After"]);
     }
 
     /// Code review M6 r1, Fable #56: an environment or a heading with an empty name is named

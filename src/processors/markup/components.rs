@@ -193,6 +193,10 @@ impl Scripts {
     /// whose content is `content`, in `src`'s coordinates, `lines` being the line breaks
     /// before the content. None when the script keeps its element's Segment alone: text, a
     /// `lang` without a compiled-in Grammar, or past a cap or the Grammar's `max_bytes`.
+    /// `room` is how many more Segments may open below the script's element: the 256 open
+    /// Segments of M6 spec §3, point 8, less the markup's open elements, the script's
+    /// included (code review M6 r2, decision 2); its deeper Segments are left out.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn outline(
         &self,
         src: &[u8],
@@ -201,6 +205,7 @@ impl Scripts {
         content: Range<usize>,
         lines: u64,
         caps: Caps,
+        room: usize,
     ) -> Option<Outline> {
         let attr = |a: &[u8]| scan::attribute(src, tag, name_end, a, false).map(|r| &src[r]);
         let kind = script_kind(attr(b"type"), attr(b"lang"));
@@ -228,8 +233,38 @@ impl Scripts {
             ScriptKind::Text => unreachable!("text was left above"),
         };
         treesitter::shift(&mut o, content.start, lines);
+        within(&mut o, room);
         Some(o)
     }
+}
+
+/// Leaves out of `o` the Segments with more than `room` Segments above them and themselves:
+/// parents precede their children in an Outline, so every kept Segment's parent is kept.
+fn within(o: &mut Outline, room: usize) {
+    let mut depth = Vec::with_capacity(o.segments.len());
+    let mut moved = Vec::with_capacity(o.segments.len());
+    let mut kept = 0;
+    for s in &o.segments {
+        let d = s.parent.map_or(1, |p| depth[p] + 1);
+        depth.push(d);
+        moved.push(kept);
+        if d <= room {
+            kept += 1;
+        }
+    }
+    if kept == o.segments.len() {
+        return;
+    }
+    let mut i = 0;
+    o.segments.retain_mut(|s| {
+        let keep = depth[i] <= room;
+        i += 1;
+        if keep {
+            s.parent = s.parent.map(|p| moved[p]);
+        }
+        keep
+    });
+    o.segments.shrink_to_fit();
 }
 
 /// The scripts of the stateless `Markup`: the built-in Definitions.
@@ -330,6 +365,7 @@ mod tests {
                 tag_end..content_end,
                 1,
                 Caps::default(),
+                crate::processors::markup::MAX_DEPTH,
             )
             .unwrap();
         assert_eq!(o.segments.len(), 1);

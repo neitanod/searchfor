@@ -48,30 +48,62 @@ pub(crate) struct Table {
     lines: (u64, u64),
 }
 
+/// A row of a table's body as the cursor keeps it from one Match to the next, so the Matches of
+/// one row find their cells without reading the row again (code review M6 r2, Codex #1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Row {
+    /// From the row's first byte to the next row's.
+    pub line: Range<usize>,
+    /// Its cells, in order; none in a rule.
+    cells: Vec<Range<usize>>,
+}
+
+impl Row {
+    /// The cell that holds `byte`: (its index, its start). None on a pipe and around the row.
+    pub fn cell_at(&self, byte: usize) -> Option<(usize, usize)> {
+        let k = self.cells.partition_point(|c| c.end <= byte);
+        let c = self.cells.get(k)?;
+        (c.start <= byte).then_some((k, c.start))
+    }
+}
+
 impl Table {
-    /// The column whose cell holds `byte`, a byte of the body: its Segment, the start of the
-    /// cell. None on a pipe, around the row, and in a rule.
-    pub fn column_at(
-        &self,
-        src: &[u8],
-        byte: usize,
-        name_chars: usize,
-    ) -> Option<(crate::model::Segment, usize)> {
+    /// The row of the body that holds `byte`, a byte of the body.
+    pub fn row_at(&self, src: &[u8], byte: usize) -> Row {
         let start = memchr::memrchr(b'\n', &src[self.body.start..byte])
             .map_or(self.body.start, |k| self.body.start + k + 1);
-        let l = line_at(src, start)?;
+        let Some(l) = line_at(src, start) else {
+            return Row {
+                line: start..src.len().max(start + 1),
+                cells: Vec::new(),
+            };
+        };
         let row = trim(src, l.start..l.end);
-        if src.get(row.start) != Some(&b'|') || rule(src, &row) {
-            return None;
+        let cells = if src.get(row.start) != Some(&b'|') || rule(src, &row) {
+            Vec::new()
+        } else {
+            cells(src, row)
+        };
+        Row {
+            line: l.start..l.next.max(l.start + 1),
+            cells,
         }
-        let (k, cell) = cells(src, row)
-            .into_iter()
-            .enumerate()
-            .find(|(_, c)| c.contains(&byte))?;
-        let name = match cells(src, self.header.clone())
-            .get(k)
-            .map(|h| trim(src, h.clone()))
-        {
+    }
+
+    /// The cells of the header row.
+    pub fn header_cells(&self, src: &[u8]) -> Vec<Range<usize>> {
+        cells(src, self.header.clone())
+    }
+
+    /// The `column` Segment of the `k`th cell, `header` being this table's `header_cells`.
+    pub fn column(
+        &self,
+        src: &[u8],
+        header: &[Range<usize>],
+        k: usize,
+        name_chars: usize,
+    ) -> crate::model::Segment {
+        let name = match header.get(k).map(|h| trim(src, h.clone())) {
             Some(h) if !h.is_empty() => {
                 let mut n = crate::text::CutName::new(name_chars);
                 n.push_lossy(src, h);
@@ -79,15 +111,14 @@ impl Table {
             }
             _ => format!("column {}", k + 1),
         };
-        let segment = crate::model::Segment {
+        crate::model::Segment {
             kind: "column".into(),
             name,
             line: self.lines.0,
             end_line: self.lines.1,
             level: None,
             signature: None,
-        };
-        Some((segment, cell.start))
+        }
     }
 }
 
@@ -290,6 +321,72 @@ mod tests {
         assert_eq!(ix.len(), 2, "the two headings alone");
         assert_eq!(trail(&src, &p, "needle"), ["T", "b"]);
         cursor_equals_model(&src, &p);
+    }
+
+    /// Code review M6 r2, Codex #1: the Matches of one row read the row and the header once,
+    /// so a row of 16 000 cells with a Match in each, and 64 000 Matches in one cell, take
+    /// what a few rows take. Read again per Match, the first took 2,7 s in release.
+    #[test]
+    fn the_matches_of_one_row_read_it_once() {
+        use crate::processors::Processor;
+        let p = params("org");
+        let n = 16_000;
+        let mut src = format!("* T\n|{}\n|---|\n|", " H |".repeat(n)).into_bytes();
+        let body = src.len();
+        src.extend(" needle |".repeat(n).as_bytes());
+        src.extend(b"\n| ");
+        let cell = src.len();
+        src.extend("needle ".repeat(64_000).as_bytes());
+        src.extend(b"|\n");
+        let mut at: Vec<usize> = (0..n).map(|k| body + 1 + 9 * k).collect();
+        at.extend((0..64_000).map(|k| cell + 7 * k));
+        let prepared = super::super::Headings
+            .prepare(super::super::tests::input(&src, "x"), &p)
+            .unwrap();
+        let mut c = prepared.cursor();
+        let t0 = std::time::Instant::now();
+        let mut last = Vec::new();
+        for &a in &at {
+            last = c
+                .trail_at(a)
+                .unwrap()
+                .iter()
+                .map(|s| s.name.clone())
+                .collect();
+        }
+        let took = t0.elapsed();
+        assert_eq!(last, ["T", "H"]);
+        assert!(
+            took < std::time::Duration::from_millis(500),
+            "{} Matches took {took:?}",
+            at.len()
+        );
+    }
+
+    /// Code review M6 r2, Codex #3: `--in-headings` does not search an Org column's header,
+    /// as it does not search Markdown's (M6 spec §6.3, «as Markdown's»): the prepared names
+    /// are the model's, the header cells left out, as since the columns were added.
+    #[test]
+    fn the_names_leave_a_column_header_out_as_markdown_does() {
+        use crate::processors::Processor;
+        let p = params("org");
+        let src = b"* T\n| needle-header | B |\n|---+---|\n| x | y |\n";
+        let input = super::super::tests::input(src, "x");
+        let model: Vec<String> = super::super::Headings
+            .names(&input, &p)
+            .unwrap()
+            .into_iter()
+            .map(|n| n.text)
+            .collect();
+        let prepared = super::super::Headings.prepare(input, &p).unwrap();
+        let names: Vec<String> = prepared
+            .names()
+            .unwrap()
+            .into_iter()
+            .map(|n| n.text)
+            .collect();
+        assert_eq!(model, ["T"]);
+        assert_eq!(names, model);
     }
 
     /// Code review M6 r1, Fable #56: a heading of stars and spaces alone is named `heading`,

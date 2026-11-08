@@ -92,6 +92,34 @@ fn attribute_entry(src: &[u8], l: Line) -> bool {
     value.first().is_none_or(|b| matches!(b, b' ' | b'\t'))
 }
 
+/// Whether a line ends in `\`, which continues an attribute entry's value on the next line
+/// (code review M6 r2, Fable #19; Asciidoctor's header, from memory: the change only lets
+/// more files have a title).
+fn continued(src: &[u8], l: Line) -> bool {
+    src[trim(src, l.start..l.end)].ends_with(b"\\")
+}
+
+/// Whether the line is a list item: `*`, `-` or `.` runs, or a number or a letter and a
+/// `.`, followed by a space. A list item starts no paragraph, so it is no two-line title
+/// (code review M6 r2, Fable #1).
+fn list_item(src: &[u8], l: Line) -> bool {
+    let t = &src[trim(src, l.start..l.end)];
+    let n = match t.first() {
+        Some(&c @ (b'*' | b'.')) => t.iter().take_while(|&&b| b == c).count(),
+        Some(b'-') => 1,
+        Some(b'0'..=b'9') => {
+            let d = t.iter().take_while(|b| b.is_ascii_digit()).count();
+            if t.get(d) != Some(&b'.') {
+                return false;
+            }
+            d + 1
+        }
+        Some(c) if c.is_ascii_alphabetic() && t.get(1) == Some(&b'.') => 2,
+        _ => return false,
+    };
+    matches!(t.get(n), Some(b' ' | b'\t'))
+}
+
 /// A heading line: (markers, name range). The markers are one run of `=` or `#`, six at most,
 /// followed by a space and some text.
 fn heading(src: &[u8], l: Line) -> Option<(usize, Range<usize>)> {
@@ -144,10 +172,21 @@ pub(crate) fn scan(src: &[u8]) -> Items {
     let mut document = false;
     // The open block: (delimiter line, its item).
     let mut block: Option<(Line, Option<usize>)> = None;
-    // The line before, when it was a line of text: a two-line title's underline may follow.
+    // The line before, when it was a line of text that started a paragraph: a two-line
+    // title's underline may follow. A line inside a paragraph or a list item is no title
+    // (code review M6 r2, Fable #1).
     let mut text: Option<Line> = None;
+    // Whether the line before was a line of a paragraph or a list item.
+    let mut paragraph = false;
+    // Whether the line before was an attribute entry continued by a trailing `\`.
+    let mut entry = false;
     for l in lines(src) {
         let before = text.take();
+        let inside = std::mem::take(&mut paragraph);
+        if std::mem::take(&mut entry) && block.is_none() && !blank(src, l) {
+            entry = continued(src, l);
+            continue;
+        }
         if let Some((d, item)) = block {
             let t = trim(src, l.start..l.end);
             let closes = if src[d.start] == b'`' {
@@ -266,8 +305,18 @@ pub(crate) fn scan(src: &[u8]) -> Items {
             open.push(&mut items, it, level, usize::from(document));
             continue;
         }
-        if !comment && !attribute_entry(src, l) {
-            content = true;
+        if comment {
+            // A line comment neither starts nor ends a paragraph.
+            paragraph = inside;
+            continue;
+        }
+        if !inside && attribute_entry(src, l) {
+            entry = continued(src, l);
+            continue;
+        }
+        content = true;
+        paragraph = true;
+        if !inside && !list_item(src, l) && !block_metadata(src, l) {
             text = Some(l);
         }
     }
@@ -305,7 +354,7 @@ mod tests {
     #[test]
     fn a_two_line_title_is_text_and_its_underline_opens_no_block() {
         let p = params("asciidoc");
-        let src = "Legacy Title\n------------\n\n== Real\nneedle-a1\n\nAnother\n-------\nneedle-a1b\nÉtude\n=====\n== B\nneedle-a2\nShort\n+++++++++\nneedle-a3\n++++\n";
+        let src = "Legacy Title\n------------\n\n== Real\nneedle-a1\n\nAnother\n-------\nneedle-a1b\n\nÉtude\n=====\n== B\nneedle-a2\nShort\n+++++++++\nneedle-a3\n++++\n";
         let src = src.as_bytes();
         assert_eq!(trail(src, &p, "needle-a1"), ["Real"]);
         assert_eq!(trail(src, &p, "needle-a1b"), ["Real"]);
@@ -314,6 +363,75 @@ mod tests {
         assert_eq!(trail(src, &p, "needle-a3"), ["B"]);
         assert_eq!(trail(src, &p, "== B"), Vec::<String>::new());
         cursor_equals_model(src, &p);
+    }
+
+    /// Code review M6 r2, Fable #1: only a line that starts a paragraph can be a two-line
+    /// title. A short line inside a paragraph, a list item or a block title above a
+    /// delimiter leaves the delimiter opening its block, so its closing delimiter does not
+    /// open a block that runs to the end of the file.
+    #[test]
+    fn only_a_line_that_starts_a_paragraph_is_a_two_line_title() {
+        let p = params("asciidoc");
+        for src in [
+            "== A\nSome paragraph text here.\nRun:\n----\ncode needle-1\n----\n== B\nneedle-2\n",
+            "== A\n* Run\n----\ncode needle-1\n----\n== B\nneedle-2\n",
+            "== A\n* item\n------\ncode needle-1\n------\n== B\nneedle-2\n",
+            "== A\n.Run\n----\ncode needle-1\n----\n== B\nneedle-2\n",
+            "== A\nSome text here.\n// c\nRun:\n----\ncode needle-1\n----\n== B\nneedle-2\n",
+        ] {
+            let src = src.as_bytes();
+            assert_eq!(
+                trail(src, &p, "needle-1"),
+                ["A", "listing"],
+                "{}",
+                String::from_utf8_lossy(src)
+            );
+            assert_eq!(
+                trail(src, &p, "needle-2"),
+                ["B"],
+                "{}",
+                String::from_utf8_lossy(src)
+            );
+            cursor_equals_model(src, &p);
+        }
+        let src = b"== A\nSome text here.\nNote:\n====\nexample needle-1\n====\n== B\nneedle-2\n";
+        assert_eq!(trail(src, &p, "needle-1"), ["A"]);
+        assert_eq!(trail(src, &p, "needle-2"), ["B"]);
+        // A line that starts a paragraph still is: after a heading, a blank line, a closed
+        // block or an attribute entry.
+        for src in [
+            "== A\nRun:\n----\nneedle-1\n== B\nneedle-2\n",
+            "== A\ntext\n\nRun:\n----\nneedle-1\n== B\nneedle-2\n",
+            "== A\n....\nx\n....\nRun:\n----\nneedle-1\n== B\nneedle-2\n",
+            "== A\n:k: v\nRun:\n----\nneedle-1\n== B\nneedle-2\n",
+        ] {
+            let src = src.as_bytes();
+            assert_eq!(
+                trail(src, &p, "needle-1"),
+                ["A"],
+                "{}",
+                String::from_utf8_lossy(src)
+            );
+            assert_eq!(
+                trail(src, &p, "needle-2"),
+                ["B"],
+                "{}",
+                String::from_utf8_lossy(src)
+            );
+        }
+    }
+
+    /// Code review M6 r2, Fable #19: an attribute entry continued by a trailing `\` (from
+    /// memory of Asciidoctor, unverified: accepting it only lets more files have a title)
+    /// leaves `= Doc` the document title.
+    #[test]
+    fn a_continued_attribute_entry_before_the_title_leaves_it_the_title() {
+        let p = params("asciidoc");
+        let src = b":desc: a long \\\n  continued \\\n  value\n:toc:\n= Doc\n== A\nneedle\n";
+        assert_eq!(trail(src, &p, "needle"), ["Doc", "A"]);
+        cursor_equals_model(src, &p);
+        let src = b":desc: a long\n  not continued\n= Doc\n== A\nneedle\n";
+        assert_eq!(trail(src, &p, "needle"), ["A"]);
     }
 
     /// Code review M6 r1, Fable #21: a fence of four or more backticks takes its info string
