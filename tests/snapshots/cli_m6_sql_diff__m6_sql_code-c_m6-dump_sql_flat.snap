@@ -6,3 +6,5 @@ expression: text
 3: INSERT INTO users › row 1 › email │ INSERT INTO users (email,id) VALUES ('needle',3);
 6: COPY public.users › row 2 › email │ 2	needle@example.com
 8: INSERT INTO unknown › row 1 › column 2 │ INSERT INTO unknown VALUES (1,'needle');
+11: CREATE VIEW active_users │ /*!50001 VIEW `active_users` AS select `email` AS `email` from `users` where (`email` like '%needle%') */;
+15: CREATE PROCEDURE find_users │   SELECT email FROM users WHERE email LIKE 'needle%';

@@ -19,3 +19,7 @@ code-c/m6-dump.sql
     row 1
       column «column 2»
         8:INSERT INTO unknown VALUES (1,'needle');
+  CREATE VIEW active_users
+    11:/*!50001 VIEW `active_users` AS select `email` AS `email` from `users` where (`email` like '%needle%') */;
+  CREATE PROCEDURE find_users
+    15:  SELECT email FROM users WHERE email LIKE 'needle%';

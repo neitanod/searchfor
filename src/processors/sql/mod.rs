@@ -272,8 +272,8 @@ fn keywords(
 }
 
 /// The head of the statement whose SQL text is `sql` (M6 spec §8.1, Statements).
-fn head(src: &[u8], sql: Range<usize>, name_chars: usize) -> Head {
-    let mut lx = Lexer::new(src, sql.start, sql.end);
+fn head(src: &[u8], sql: Range<usize>, name_chars: usize, esc: bool) -> Head {
+    let mut lx = Lexer::new(src, sql.start, sql.end, esc);
     let mut name = CutName::new(name_chars);
     let mut shape = Shape::Other;
     let mut table = Vec::new();
@@ -411,8 +411,8 @@ fn tail_end(src: &[u8], last: usize, next: usize) -> usize {
 
 /// The columns of the `CREATE TABLE` whose tokens after its name are `from..to`: each column
 /// definition, not the table constraints (M6 spec §8.1, Columns).
-fn columns(src: &[u8], from: usize, to: usize, name_chars: usize) -> Vec<Column> {
-    let mut lx = Lexer::new(src, from, to);
+fn columns(src: &[u8], from: usize, to: usize, name_chars: usize, esc: bool) -> Vec<Column> {
+    let mut lx = Lexer::new(src, from, to, esc);
     let mut out = Vec::new();
     if !lx.next().is_some_and(|t| is_punct(src, &t, b'(')) {
         return out;
@@ -530,11 +530,16 @@ enum Rows {
 
 impl Rows {
     /// The next row's bytes, with the bytes of each of its values in `values`.
-    fn next_row(&mut self, src: &[u8], values: &mut Vec<Range<usize>>) -> Option<Range<usize>> {
+    fn next_row(
+        &mut self,
+        src: &[u8],
+        esc: bool,
+        values: &mut Vec<Range<usize>>,
+    ) -> Option<Range<usize>> {
         values.clear();
         match self {
             Rows::Values { pos, end, count } => {
-                let mut lx = Lexer::new(src, *pos, *end);
+                let mut lx = Lexer::new(src, *pos, *end, esc);
                 if *count > 0 && !lx.next().is_some_and(|t| is_punct(src, &t, b',')) {
                     *pos = *end;
                     return None;
@@ -607,8 +612,6 @@ struct Row {
     range: Range<usize>,
     seg: Segment,
     values: Vec<Range<usize>>,
-    /// Lines counted from the row's start.
-    lines: Lines,
 }
 
 struct RowState {
@@ -665,6 +668,8 @@ fn column_list(src: &[u8], lx: &mut Lexer, name_chars: usize) -> Option<Vec<Stri
 struct SqlCursor<'s> {
     src: &'s [u8],
     name_chars: usize,
+    /// A backslash escapes in strings (`lex::backslash_escapes`).
+    esc: bool,
     units: Units<'s>,
     schema: Schema,
     lines: Lines,
@@ -679,10 +684,12 @@ struct SqlCursor<'s> {
 
 impl<'s> SqlCursor<'s> {
     fn new(src: &'s [u8], name_chars: usize) -> Self {
+        let units = Units::new(src);
         Self {
             src,
             name_chars,
-            units: Units::new(src),
+            esc: units.esc(),
+            units,
             schema: Schema::default(),
             lines: Lines::default(),
             cur: None,
@@ -701,9 +708,9 @@ impl<'s> SqlCursor<'s> {
         {
             return;
         }
-        let h = head(src, range.start..sql_end, self.name_chars);
+        let h = head(src, range.start..sql_end, self.name_chars, self.esc);
         if h.shape == Shape::Table {
-            let cols = columns(src, h.after, sql_end, self.name_chars);
+            let cols = columns(src, h.after, sql_end, self.name_chars, self.esc);
             self.schema
                 .insert(h.table, cols.into_iter().map(|c| c.name).collect());
         }
@@ -711,8 +718,8 @@ impl<'s> SqlCursor<'s> {
 
     /// The statement `range`, read for its Trails.
     fn open(&mut self, range: Range<usize>, sql_end: usize) -> Stmt {
-        let src = self.src;
-        let h = head(src, range.start..sql_end, self.name_chars);
+        let (src, esc) = (self.src, self.esc);
+        let h = head(src, range.start..sql_end, self.name_chars, esc);
         let lines = self.lines.span(src, &range);
         let seg = seg("statement", h.name.clone(), lines);
         let mut at = Lines {
@@ -721,7 +728,7 @@ impl<'s> SqlCursor<'s> {
         };
         let detail = match h.shape {
             Shape::Table => {
-                let cols = columns(src, h.after, sql_end, self.name_chars);
+                let cols = columns(src, h.after, sql_end, self.name_chars, esc);
                 self.schema.insert(
                     h.table.clone(),
                     cols.iter().map(|c| c.name.clone()).collect(),
@@ -736,8 +743,18 @@ impl<'s> SqlCursor<'s> {
                 )
             }
             Shape::Insert | Shape::Copy => {
-                let mut lx = Lexer::new(src, h.after, sql_end);
+                let mut lx = Lexer::new(src, h.after, sql_end, esc);
                 let list = column_list(src, &mut lx, self.name_chars);
+                // PostgreSQL's identity columns: `OVERRIDING SYSTEM|USER VALUE`.
+                let mut look = lx.clone();
+                if look.next().is_some_and(|t| is_kw(src, &t, "OVERRIDING"))
+                    && look
+                        .next()
+                        .is_some_and(|t| is_kw(src, &t, "SYSTEM") || is_kw(src, &t, "USER"))
+                    && look.next().is_some_and(|t| is_kw(src, &t, "VALUE"))
+                {
+                    lx = look;
+                }
                 let names = list.map(Rc::from).or_else(|| self.schema.get(&h.table));
                 let rows = if h.shape == Shape::Insert {
                     lx.next()
@@ -748,7 +765,7 @@ impl<'s> SqlCursor<'s> {
                             count: 0,
                         })
                 } else {
-                    units::copy_rows(src, &range, sql_end).map(|r| Rows::Copy {
+                    units::copy_rows(src, &range, sql_end, esc).map(|r| Rows::Copy {
                         pos: r.start,
                         end: r.end,
                         count: 0,
@@ -807,7 +824,7 @@ impl<'s> SqlCursor<'s> {
     }
 
     fn trail(&mut self, byte: usize) -> SharedTrail {
-        let src = self.src;
+        let (src, esc) = (self.src, self.esc);
         let empty = (usize::MAX, 0, 0);
         let key = if !self.reach(byte) {
             empty
@@ -830,16 +847,12 @@ impl<'s> SqlCursor<'s> {
                     Detail::Rows(rs) => {
                         while !rs.done && rs.row.as_ref().is_none_or(|r| r.range.end <= byte) {
                             let mut values = rs.row.take().map(|r| r.values).unwrap_or_default();
-                            match rs.rows.next_row(src, &mut values) {
+                            match rs.rows.next_row(src, esc, &mut values) {
                                 Some(range) => {
                                     let lines = rs.lines.span(src, &range);
                                     let n = rs.rows.count();
                                     rs.row = Some(Row {
                                         seg: seg("row", format!("row {n}"), lines),
-                                        lines: Lines {
-                                            at: range.start,
-                                            line: lines.0,
-                                        },
                                         range,
                                         values,
                                     });
@@ -892,7 +905,9 @@ impl<'s> SqlCursor<'s> {
                                 .as_ref()
                                 .and_then(|n| n.get(k).cloned())
                                 .unwrap_or_else(|| format!("column {}", k + 1));
-                            let lines = r.lines.span(src, &r.values[k]);
+                            // A value's Section is its row, as a CSV cell's (review r1,
+                            // Fable #68).
+                            let lines = (r.seg.line, r.seg.end_line);
                             t.push(seg("column", name, lines));
                         }
                     }
@@ -928,7 +943,7 @@ impl Cursor for SqlCursor<'_> {
         first: &mut dyn FnMut(Range<usize>) -> Option<usize>,
     ) -> Option<usize> {
         let at = self.last;
-        let src = self.src;
+        let (src, esc) = (self.src, self.esc);
         let Some(s) = &self.cur else {
             return Some(at);
         };
@@ -953,7 +968,7 @@ impl Cursor for SqlCursor<'_> {
                 let mut prev = row.range.end;
                 let mut next = None;
                 if !rs.done {
-                    while let Some(r) = rows.next_row(src, &mut values) {
+                    while let Some(r) = rows.next_row(src, esc, &mut values) {
                         if let Some(b) = first(prev..r.start) {
                             next = Some(b);
                             break;
@@ -980,11 +995,12 @@ impl Cursor for SqlCursor<'_> {
 /// of rows and of unnamed columns have no Source pieces, so they are not searched.
 fn names(src: &[u8], name_chars: usize) -> Vec<Name> {
     let mut units = Units::new(src);
+    let esc = units.esc();
     let mut lines = Lines::default();
     let mut out = Vec::new();
     while let Some(range) = units.next_statement() {
         let sql_end = units.sql_end();
-        let h = head(src, range.start..sql_end, name_chars);
+        let h = head(src, range.start..sql_end, name_chars, esc);
         let l = lines.span(src, &range);
         let stmt = seg("statement", h.name.clone(), l);
         if !h.pieces.is_empty() {
@@ -1001,7 +1017,7 @@ fn names(src: &[u8], name_chars: usize) -> Vec<Name> {
                 at: range.start,
                 line: l.0,
             };
-            for c in columns(src, h.after, sql_end, name_chars) {
+            for c in columns(src, h.after, sql_end, name_chars, esc) {
                 let col = seg("column", c.name.clone(), at.span(src, &c.range));
                 out.push(Name {
                     text: c.name,
@@ -1101,7 +1117,7 @@ mod tests {
         let mut u = Units::new(src);
         let mut got = Vec::new();
         while let Some(r) = u.next_statement() {
-            got.push(head(src, r.start..u.sql_end(), 40).name);
+            got.push(head(src, r.start..u.sql_end(), 40, true).name);
         }
         assert_eq!(
             got,
@@ -1168,6 +1184,89 @@ mod tests {
             panic!("an INSERT");
         };
         assert_eq!(rs.rows.count(), 1);
+    }
+
+    /// Review r1, Fable #6: mysqldump writes its views and triggers inside conditional
+    /// comments, `/*!NNNNN … */`, whose text MySQL runs.
+    #[test]
+    fn mysqldump_conditional_comments_are_statements() {
+        let src = b"/*!40101 SET NAMES utf8 */;\n\
+            /*!50001 CREATE ALGORITHM=UNDEFINED */\n\
+            /*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */\n\
+            /*!50001 VIEW `v_users` AS select `email` from `users` where `email` like '%needle%' */;\n\
+            DELIMITER ;;\n\
+            /*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/ /*!50003 TRIGGER `t_users` BEFORE INSERT ON `users` FOR EACH ROW SET NEW.email = 'needle' */;;\n\
+            DELIMITER ;\n\
+            /*M!100316 CREATE TABLE `m` (`c` int COMMENT 'needle') */;\n\
+            /* a needle comment */\n";
+        assert_eq!(
+            trails(src, "needle"),
+            [
+                "CREATE VIEW v_users",
+                "CREATE TRIGGER t_users",
+                "CREATE TABLE m › c",
+                ""
+            ]
+        );
+    }
+
+    /// Review r1, Fable #45: a backslash escapes only in MySQL's strings; a PostgreSQL dump
+    /// (`standard_conforming_strings = on`) keeps it literal outside `E'…'`.
+    #[test]
+    fn a_backslash_escapes_only_where_the_dialect_says() {
+        let pg = b"SET standard_conforming_strings = on;\n\
+            INSERT INTO t VALUES ('C:\\', 'needle');\n\
+            INSERT INTO t VALUES (E'it\\'s', 'needle');\n";
+        assert_eq!(
+            trails(pg, "needle"),
+            [
+                "INSERT INTO t › row 1 › column 2",
+                "INSERT INTO t › row 1 › column 2"
+            ]
+        );
+        let my = b"INSERT INTO t VALUES ('it\\'s', 'needle');\n";
+        assert_eq!(trails(my, "needle"), ["INSERT INTO t › row 1 › column 2"]);
+    }
+
+    /// Review r1, Fable #67: `#` comments only before white space or at a line's start, so
+    /// SQL Server's `#tmp` tables are names.
+    #[test]
+    fn hash_comments_leave_temporary_tables() {
+        let src = b"# needle\nCREATE TABLE #tmp (c int DEFAULT 'needle');\n\
+            INSERT INTO ##g VALUES ('needle'); # needle\nSELECT 1;\n";
+        assert_eq!(
+            trails(src, "needle"),
+            [
+                "",
+                "CREATE TABLE #tmp › c",
+                "INSERT INTO ##g › row 1 › column 1",
+                ""
+            ]
+        );
+    }
+
+    /// Review r1, Fable #49: `OVERRIDING SYSTEM VALUE` before `VALUES`.
+    #[test]
+    fn overriding_value_rows() {
+        let src = b"INSERT INTO t (a) OVERRIDING SYSTEM VALUE VALUES ('needle');\n\
+            INSERT INTO t (a) OVERRIDING USER VALUE VALUES ('needle');\n\
+            INSERT INTO t DEFAULT VALUES; -- needle\n";
+        assert_eq!(
+            trails(src, "needle"),
+            ["INSERT INTO t › row 1 › a", "INSERT INTO t › row 1 › a", ""]
+        );
+    }
+
+    /// Review r1, Fable #68: a value's `column` Segment spans its row's lines, as a CSV
+    /// cell's does.
+    #[test]
+    fn a_columns_lines_are_its_rows() {
+        let src = b"INSERT INTO t (a, b) VALUES ('x',\n'needle\nmore');\n";
+        let mut c = SqlCursor::new(src, 40);
+        let t = c.trail(memchr::memmem::find(src, b"needle").unwrap());
+        assert_eq!(t.len(), 3);
+        assert_eq!((t[1].line, t[1].end_line), (1, 3));
+        assert_eq!((t[2].line, t[2].end_line), (t[1].line, t[1].end_line));
     }
 
     #[test]

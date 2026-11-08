@@ -44,21 +44,33 @@ pub(super) fn is_word(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b >= 0x80
 }
 
-/// The lexeme at `i`, which is not white space.
-pub(super) fn lexeme(src: &[u8], i: usize) -> Lexeme {
+/// The lexeme at `i`, which is not white space. `esc`: a backslash escapes the byte after it in
+/// every `'…'` string (MySQL's rule; see `backslash_escapes`).
+pub(super) fn lexeme(src: &[u8], i: usize, esc: bool) -> Lexeme {
     let n = src.len();
     let next = src.get(i + 1).copied();
     match src[i] {
         b'-' if next == Some(b'-') => Lexeme::Comment(line_end(src, i)),
-        b'#' => Lexeme::Comment(line_end(src, i)),
-        b'/' if next == Some(b'*') => match memchr::memmem::find(&src[i + 2..], b"*/") {
-            Some(k) => Lexeme::Comment(i + 2 + k + 2),
-            None => Lexeme::Open,
+        b'#' if hash_comment(src, i) => Lexeme::Comment(line_end(src, i)),
+        b'/' if next == Some(b'*') => match conditional(src, i) {
+            Some(end) => Lexeme::Comment(end),
+            None => match memchr::memmem::find(&src[i + 2..], b"*/") {
+                Some(k) => Lexeme::Comment(i + 2 + k + 2),
+                None => Lexeme::Open,
+            },
         },
-        b'\'' => match string_end(src, i) {
-            Some(end) => token(Tok::Str, i, end),
-            None => Lexeme::Open,
-        },
+        // The `*/` that closes a conditional comment: no SQL token starts `*/` (a `*` before
+        // a comment is `*/*`).
+        b'*' if next == Some(b'/') && src.get(i + 2) != Some(&b'*') => Lexeme::Comment(i + 2),
+        b'\'' => {
+            // PostgreSQL's `E'…'` has escapes whatever the dialect.
+            let e = esc
+                || (i > 0 && matches!(src[i - 1], b'E' | b'e') && (i < 2 || !is_word(src[i - 2])));
+            match string_end(src, i, e) {
+                Some(end) => token(Tok::Str, i, end),
+                None => Lexeme::Open,
+            }
+        }
         q @ (b'"' | b'`' | b'[') => {
             let close = if q == b'[' { b']' } else { q };
             match quoted_end(src, i, close) {
@@ -76,6 +88,18 @@ pub(super) fn lexeme(src: &[u8], i: usize) -> Lexeme {
             }
             None => token(Tok::Punct, i, i + 1),
         },
+        // SQL Server's `#tmp` and `##global` tables: a word.
+        b'#' if src[i..]
+            .iter()
+            .find(|&&b| b != b'#')
+            .is_some_and(|&b| is_word(b)) =>
+        {
+            let mut end = i + 1;
+            while end < n && (src[end] == b'#' || is_word(src[end])) {
+                end += 1;
+            }
+            token(Tok::Word, i, end)
+        }
         b if is_word(b) => {
             let mut end = i + 1;
             while end < n && is_word(src[end]) {
@@ -85,6 +109,73 @@ pub(super) fn lexeme(src: &[u8], i: usize) -> Lexeme {
         }
         _ => token(Tok::Punct, i, i + 1),
     }
+}
+
+/// Whether the `#` at `i` starts MySQL's comment: before white space or the end, or first on
+/// its line. Elsewhere it starts a SQL Server temporary table's name (`#tmp`).
+fn hash_comment(src: &[u8], i: usize) -> bool {
+    if src.get(i + 1).is_none_or(|&b| is_space(b)) {
+        return true;
+    }
+    let lead = src[..i]
+        .iter()
+        .rev()
+        .take_while(|&&b| matches!(b, b' ' | b'\t'))
+        .count();
+    i == lead || src[i - lead - 1] == b'\n'
+}
+
+/// The end of the opening of MySQL's conditional comment at `i`, `/*!` or MariaDB's `/*M!`
+/// and the version digits: its text is SQL, and the `*/` that closes it is blank.
+fn conditional(src: &[u8], i: usize) -> Option<usize> {
+    let mut j = i + 2;
+    if src.get(j) == Some(&b'M') {
+        j += 1;
+    }
+    if src.get(j) != Some(&b'!') {
+        return None;
+    }
+    j += 1;
+    while src.get(j).is_some_and(u8::is_ascii_digit) {
+        j += 1;
+    }
+    Some(j)
+}
+
+/// Whether a backslash escapes the byte after it in a `'…'` string: MySQL's rule, which
+/// mysqldump relies on, unless the Source's head says it is PostgreSQL's
+/// (`standard_conforming_strings = on`, which pg_dump writes, or pg_dump's banner): there
+/// only an `E'…'` string has escapes.
+pub(super) fn backslash_escapes(src: &[u8]) -> bool {
+    const HEAD: usize = 16 * 1024;
+    let head = &src[..src.len().min(HEAD)];
+    if memchr::memmem::find(head, b"PostgreSQL database dump").is_some() {
+        return false;
+    }
+    const KEY: &[u8] = b"standard_conforming_strings";
+    for k in memchr::memmem::find_iter(head, KEY) {
+        let rest = &head[k + KEY.len()..];
+        let skip = |r: &[u8]| -> usize {
+            r.iter()
+                .take_while(|&&b| matches!(b, b' ' | b'\t' | b'\''))
+                .count()
+        };
+        let mut r = &rest[skip(rest)..];
+        if r.first() == Some(&b'=') {
+            r = &r[1..];
+        } else if r.get(..2).is_some_and(|w| w.eq_ignore_ascii_case(b"TO")) {
+            r = &r[2..];
+        } else {
+            continue;
+        }
+        let r = &r[skip(r)..];
+        if r.get(..2).is_some_and(|w| w.eq_ignore_ascii_case(b"ON"))
+            && r.get(2).is_none_or(|&b| !is_word(b))
+        {
+            return false;
+        }
+    }
+    true
 }
 
 fn token(tok: Tok, start: usize, end: usize) -> Lexeme {
@@ -99,12 +190,16 @@ pub(super) fn line_end(src: &[u8], i: usize) -> usize {
     memchr::memchr(b'\n', &src[i..]).map_or(src.len(), |k| i + k)
 }
 
-/// The end of the string opened at `i`: `''` is a quote inside it, and so is `\'`, which
-/// mysqldump writes (a backslash escapes the byte after it).
-fn string_end(src: &[u8], i: usize) -> Option<usize> {
+/// The end of the string opened at `i`: `''` is a quote inside it, and with `esc` so is `\'`,
+/// which mysqldump writes (a backslash escapes the byte after it).
+fn string_end(src: &[u8], i: usize, esc: bool) -> Option<usize> {
     let mut j = i + 1;
     loop {
-        let k = memchr::memchr2(b'\'', b'\\', &src[j..])?;
+        let k = if esc {
+            memchr::memchr2(b'\'', b'\\', &src[j..])?
+        } else {
+            memchr::memchr(b'\'', &src[j..])?
+        };
         j += k;
         if src[j] == b'\\' {
             j += 2;
@@ -154,14 +249,17 @@ pub(super) struct Lexer<'s> {
     src: &'s [u8],
     pub pos: usize,
     end: usize,
+    esc: bool,
 }
 
 impl<'s> Lexer<'s> {
-    pub fn new(src: &'s [u8], from: usize, to: usize) -> Self {
+    /// `esc` as `lexeme`'s.
+    pub fn new(src: &'s [u8], from: usize, to: usize, esc: bool) -> Self {
         Self {
             src,
             pos: from,
             end: to.min(src.len()),
+            esc,
         }
     }
 
@@ -173,7 +271,7 @@ impl<'s> Lexer<'s> {
                 self.pos += 1;
                 continue;
             }
-            match lexeme(self.src, self.pos) {
+            match lexeme(self.src, self.pos, self.esc) {
                 Lexeme::Comment(end) => self.pos = end.min(self.end),
                 _ => break,
             }
@@ -193,7 +291,7 @@ impl Iterator for Lexer<'_> {
         if self.skip_blank() >= self.end {
             return None;
         }
-        match lexeme(self.src, self.pos) {
+        match lexeme(self.src, self.pos, self.esc) {
             Lexeme::Token(t) if t.range.end <= self.end => {
                 self.pos = t.range.end;
                 Some(t)
@@ -221,7 +319,7 @@ mod tests {
     use super::*;
 
     fn kinds(src: &[u8]) -> Vec<(Tok, &[u8])> {
-        Lexer::new(src, 0, src.len())
+        Lexer::new(src, 0, src.len(), true)
             .map(|t| (t.tok, &src[t.range]))
             .collect()
     }
@@ -249,7 +347,7 @@ mod tests {
     #[test]
     fn open_literals() {
         for src in [&b"'a"[..], b"\"a", b"`a", b"[a", b"/* a", b"$x$ a", b"'a\\"] {
-            assert_eq!(lexeme(src, 0), Lexeme::Open, "{src:?}");
+            assert_eq!(lexeme(src, 0, true), Lexeme::Open, "{src:?}");
         }
     }
 }

@@ -203,7 +203,8 @@ SELECT $tag$needle ;$tag$;
 #[test]
 fn m6_sql_rows() {
     let fx = Fixture::new();
-    let src = b"CREATE TABLE users (id int,email text);\nINSERT INTO users VALUES (1,'plain'),(2,'needle@example.com');\nINSERT INTO users (email,id) VALUES ('needle',3);\nCOPY public.users (id,email) FROM stdin;\n1\tplain\n2\tneedle@example.com\n\\.\nINSERT INTO unknown VALUES (1,'needle');\n";
+    let src = b"CREATE TABLE users (id int,email text);\nINSERT INTO users VALUES (1,'plain'),(2,'needle@example.com');\nINSERT INTO users (email,id) VALUES ('needle',3);\nCOPY public.users (id,email) FROM stdin;\n1\tplain\n2\tneedle@example.com\n\\.\nINSERT INTO unknown VALUES (1,'needle');\n\
+        /*!50001 CREATE ALGORITHM=UNDEFINED */\n/*!50013 DEFINER=`root`@`localhost` SQL SECURITY DEFINER */\n/*!50001 VIEW `active_users` AS select `email` AS `email` from `users` where (`email` like '%needle%') */;\nDELIMITER ;;\n/*!50003 CREATE*/ /*!50020 DEFINER=`root`@`localhost`*/ /*!50003 PROCEDURE `find_users`()\nBEGIN\n  SELECT email FROM users WHERE email LIKE 'needle%';\nEND */;;\nDELIMITER ;\n";
     seed(&fx, "code-c/m6-dump.sql", src);
     check(
         &fx,
@@ -214,6 +215,8 @@ fn m6_sql_rows() {
             "INSERT INTO users › row 1 › email",
             "COPY public.users › row 2 › email",
             "INSERT INTO unknown › row 1 › column 2",
+            "CREATE VIEW active_users",
+            "CREATE PROCEDURE find_users",
         ],
     );
     flags(

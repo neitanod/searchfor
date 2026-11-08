@@ -19,6 +19,8 @@ pub(super) struct Units<'s> {
     /// Where the SQL text of the last statement ends (its delimiter included): a `COPY`'s
     /// data follow it.
     sql_end: usize,
+    /// A backslash escapes in strings (`lex::backslash_escapes`).
+    esc: bool,
 }
 
 impl<'s> Units<'s> {
@@ -30,7 +32,13 @@ impl<'s> Units<'s> {
             delim: b";".to_vec(),
             broken: false,
             sql_end: 0,
+            esc: lex::backslash_escapes(src),
         }
+    }
+
+    /// Whether a backslash escapes in this Source's strings.
+    pub fn esc(&self) -> bool {
+        self.esc
     }
 
     /// How far the scan went.
@@ -85,7 +93,7 @@ impl<'s> Units<'s> {
                 self.bol = false;
                 continue;
             }
-            match lex::lexeme(src, i) {
+            match lex::lexeme(src, i, self.esc) {
                 Lexeme::Comment(end) => {
                     self.pos = end;
                     self.bol = false;
@@ -128,7 +136,7 @@ impl<'s> Units<'s> {
                 self.sql_end = end;
                 return Some(start..self.copy_data(start, end));
             }
-            match lex::lexeme(src, i) {
+            match lex::lexeme(src, i, self.esc) {
                 Lexeme::Comment(end) => i = end,
                 Lexeme::Open => {
                     self.broken = true;
@@ -151,7 +159,7 @@ impl<'s> Units<'s> {
     /// for any other statement.
     fn copy_data(&mut self, start: usize, end: usize) -> usize {
         let src = self.src;
-        if !is_copy_from_stdin(src, start, end) {
+        if !is_copy_from_stdin(src, start, end, self.esc) {
             return end;
         }
         let Some(nl) = memchr::memchr(b'\n', &src[end..]).map(|k| end + k) else {
@@ -175,8 +183,13 @@ impl<'s> Units<'s> {
 
 /// Where the data of the `COPY … FROM stdin` statement `range`, whose SQL text ends at
 /// `sql_end`, start and end (`\.` left out); None for any other statement.
-pub(super) fn copy_rows(src: &[u8], range: &Range<usize>, sql_end: usize) -> Option<Range<usize>> {
-    if !is_copy_from_stdin(src, range.start, sql_end) {
+pub(super) fn copy_rows(
+    src: &[u8],
+    range: &Range<usize>,
+    sql_end: usize,
+    esc: bool,
+) -> Option<Range<usize>> {
+    if !is_copy_from_stdin(src, range.start, sql_end, esc) {
         return None;
     }
     let from =
@@ -189,7 +202,7 @@ pub(super) fn copy_rows(src: &[u8], range: &Range<usize>, sql_end: usize) -> Opt
 }
 
 /// Whether `src[start..end]` is `COPY … FROM stdin`.
-fn is_copy_from_stdin(src: &[u8], start: usize, end: usize) -> bool {
+fn is_copy_from_stdin(src: &[u8], start: usize, end: usize, esc: bool) -> bool {
     if !src[start..]
         .get(..4)
         .is_some_and(|w| w.eq_ignore_ascii_case(b"COPY"))
@@ -198,7 +211,7 @@ fn is_copy_from_stdin(src: &[u8], start: usize, end: usize) -> bool {
         return false;
     }
     let mut from = false;
-    for t in lex::Lexer::new(src, start, end) {
+    for t in lex::Lexer::new(src, start, end, esc) {
         if from && lex::is_kw(src, &t, "STDIN") {
             return true;
         }
@@ -299,7 +312,7 @@ mod tests {
         );
         let mut u = Units::new(src);
         let r = u.next_statement().unwrap();
-        assert_eq!(copy_rows(src, &r, u.sql_end()), Some(23..27));
+        assert_eq!(copy_rows(src, &r, u.sql_end(), true), Some(23..27));
     }
 
     #[test]
