@@ -17,6 +17,14 @@ enum Block {
     Opaque,
 }
 
+/// The backticks that open a fence line: three or more (code review M6 r1, Fable #21).
+fn fence_run(src: &[u8], l: Line) -> usize {
+    src[l.start..l.end]
+        .iter()
+        .take_while(|&&b| b == b'`')
+        .count()
+}
+
 /// The block a line opens, when it is a delimiter: four or more of one delimiter character,
 /// or a fence of three backticks and its info string.
 fn delimiter(src: &[u8], l: Line) -> Option<Block> {
@@ -115,7 +123,9 @@ pub(crate) fn scan(src: &[u8]) -> Items {
         if let Some((d, item)) = block {
             let t = trim(src, l.start..l.end);
             let closes = if src[d.start] == b'`' {
-                &src[t] == b"```"
+                // A run of backticks alone, as long as the fence's or longer.
+                let run = &src[t];
+                run.len() >= fence_run(src, d) && run.iter().all(|&b| b == b'`')
             } else {
                 src[t.clone()] == src[trim(src, d.start..d.end)] && t.start == l.start
             };
@@ -151,7 +161,7 @@ pub(crate) fn scan(src: &[u8]) -> Items {
                 },
                 Block::Literal => Some(Named::Word("literal")),
                 Block::Fence => {
-                    let info = trim(src, l.start + 3..l.end);
+                    let info = trim(src, l.start + fence_run(src, l)..l.end);
                     let word = info.start
                         + src[info.clone()]
                             .iter()
@@ -265,6 +275,19 @@ mod tests {
         // Four characters longer than its line: a passthrough block, to the next `+++++++++`.
         assert_eq!(trail(src, &p, "needle-a3"), ["B"]);
         assert_eq!(trail(src, &p, "== B"), Vec::<String>::new());
+        cursor_equals_model(src, &p);
+    }
+
+    /// Code review M6 r1, Fable #21: a fence of four or more backticks takes its info string
+    /// after the whole run, and only a run of backticks as long or longer closes it.
+    #[test]
+    fn a_long_fence_names_its_language_and_a_shorter_one_does_not_close_it() {
+        let p = params("asciidoc");
+        let src = b"= Doc\n== A\n````rust\n== inside needle-a\n```\nneedle-b\n`````\nneedle-c\n````\nneedle-d\n";
+        assert_eq!(trail(src, &p, "needle-a"), ["Doc", "A", "rust"]);
+        assert_eq!(trail(src, &p, "needle-b"), ["Doc", "A", "rust"]);
+        assert_eq!(trail(src, &p, "needle-c"), ["Doc", "A"]);
+        assert_eq!(trail(src, &p, "needle-d"), ["Doc", "A", "listing"]);
         cursor_equals_model(src, &p);
     }
 
