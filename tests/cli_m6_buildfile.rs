@@ -577,3 +577,26 @@ fn m6_make_recipe_goes_on_past_its_conditional() {
     assert_eq!(names.len(), 1);
     assert_eq!(names[0]["line_number"], 2);
 }
+
+/// Fable r2 #13 (from memory of `just`, unverified: it is not installed here): an attribute on
+/// the recipe's own line leaves the recipe its body (`just-attr-same-line.just`); reading it
+/// accepts more input, so it is harmless if `just` refuses the line.
+#[test]
+fn m6_just_attributes_on_the_recipe_line() {
+    let fx = Fixture::new();
+    put(
+        &fx,
+        "attr.just",
+        b"[group(\"x\")] build: dep\n  echo needle\n[private]\nother:\n  echo needle2\n",
+    );
+    let rows = matches(&output(&fx, "just", "attr.just", "needle", &["--json"]));
+    assert_eq!(paths(&rows), ["build", "other"]);
+    let within = matches(&output(
+        &fx,
+        "just",
+        "attr.just",
+        "needle",
+        &["--json", "--within", "build"],
+    ));
+    assert_eq!(paths(&within), ["build"]);
+}

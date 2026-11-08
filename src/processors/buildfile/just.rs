@@ -58,6 +58,37 @@ fn dependency_colon(src: &[u8], mut i: usize, end: usize) -> Option<usize> {
     None
 }
 
+/// Where what follows the attribute lists that start at `i` (`[a] [b("x")]`) starts, past the
+/// blanks after them; None when one does not close on its line. Fable r2 #13: a recipe may
+/// follow them on their line (from memory of `just`, unverified; reading it accepts more).
+fn after_attributes(src: &[u8], mut i: usize, end: usize) -> Option<usize> {
+    while i < end && src[i] == b'[' {
+        let mut quote: Option<u8> = None;
+        let mut depth = 0usize;
+        loop {
+            let &b = src[..end].get(i)?;
+            i += 1;
+            match quote {
+                Some(q) if b == q => quote = None,
+                Some(_) => {}
+                None => match b {
+                    b'\'' | b'"' | b'`' => quote = Some(b),
+                    b'[' => depth += 1,
+                    b']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                },
+            }
+        }
+        i = skip_blanks(src, i, end);
+    }
+    Some(i)
+}
+
 /// The name of a `key` statement at `t`: `alias`, `export` or `set` and a name, or a name and
 /// `:=`.
 fn key_name(src: &[u8], t: Range<usize>) -> Option<Range<usize>> {
@@ -112,11 +143,19 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
             attributes = None;
             continue;
         }
+        let start = attributes.unwrap_or(l.start);
+        let line = t.clone();
+        let mut t = t;
         if src[t.start] == b'[' {
-            attributes.get_or_insert(l.start);
-            continue;
+            match after_attributes(src, t.start, t.end) {
+                Some(d) if d < t.end && src[d] != b'#' => t.start = d,
+                _ => {
+                    attributes.get_or_insert(l.start);
+                    continue;
+                }
+            }
         }
-        let start = attributes.take().unwrap_or(l.start);
+        attributes = None;
         if let Some(name) = key_name(src, t.clone()) {
             items.push(Item {
                 kind: "key",
@@ -140,7 +179,7 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
             range: start..l.next,
             label: t.start..name.end,
             name: Named::Source(name),
-            signature: Some(t),
+            signature: Some(line),
         });
         recipe = Some(items.len() - 1);
     }
@@ -193,5 +232,27 @@ mod tests {
         assert_eq!(names(src)[0].2, 5..src.len());
         // `mod`, `import` and a stray line are text; an indented line with no recipe too.
         assert_eq!(names(b"import 'x'\nmod y\n  z\nstray\n"), []);
+    }
+
+    /// Fable r2 #13 (unverified: `just` is not installed here): attributes on the recipe's own
+    /// line. Reading them accepts more input, so it is harmless if `just` refuses the line.
+    #[test]
+    fn attributes_may_share_the_recipe_line() {
+        let src = b"[group(\"x]\")] [private] @build: dep\n  echo\n[no-cd]\n[a] other:\n  echo\n[b] # c\nlast:\n";
+        let items: Vec<Item> = scan(src).into_iter().collect();
+        let n: Vec<(&str, String, Range<usize>)> = names(src);
+        assert_eq!(
+            n,
+            [
+                ("recipe", "build".into(), 0..43),
+                ("recipe", "other".into(), 43..69),
+                ("recipe", "last".into(), 69..src.len()),
+            ]
+        );
+        // The label is the name and its `@`; the signature is the whole line.
+        assert_eq!(&src[items[0].label.clone()], b"@build");
+        assert_eq!(&src[items[0].signature.clone().unwrap()], &src[0..35]);
+        // An attribute that never closes leaves the line to the attributes.
+        assert_eq!(names(b"[a x:\n  y\n"), []);
     }
 }
