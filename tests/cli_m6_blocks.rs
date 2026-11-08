@@ -582,3 +582,24 @@ fn m6_hcl_keys_have_names_and_their_comments() {
         stdout(&tree)
     );
 }
+
+/// Fable r2 #12: a list element's Section takes its end-of-line comment, past the comma that
+/// ends it, as an attribute's does (Fable r1 #19); so does an object or a list after its
+/// closer. A list's key is hidden, so the comment after its `]` keeps the block's Trail.
+#[test]
+fn m6_hcl_elements_and_values_have_their_comments() {
+    let fx = Fixture::new();
+    put(
+        &fx,
+        "values.tf",
+        b"r \"x\" {\n  k3 = [\n   1, # needle1\n   2 # needle2\n  ] # needle3\n  l = [3, 4] # needle4\n  o = {\n    a = 1\n  } # needle5\n  k5 = 1\n}\n",
+    );
+    let rows = matches(&output(&fx, "hcl", "values.tf", "needle", &["--json"]));
+    assert_eq!(
+        paths(&rows),
+        ["r x › k3[0]", "r x › k3[1]", "r x", "r x", "r x › o"]
+    );
+    // On one line the comma between elements is in neither of them.
+    let rows = matches(&output(&fx, "hcl", "values.tf", ",", &["--json"]));
+    assert_eq!(paths(&rows), ["r x › k3[0]", "r x"]);
+}

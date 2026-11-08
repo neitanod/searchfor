@@ -53,7 +53,14 @@ pub(super) fn scan(src: &[u8], name_chars: usize) -> anyhow::Result<BlockIndex> 
             }
             let f = frames.pop().expect("a frame closes");
             if let Some(id) = f.id {
-                b.close(id, i + 1);
+                // An object or a list value takes the comment after its closer, as an
+                // attribute does (Fable r2 #12); a block's body does not.
+                let end = if f.ctx == Ctx::Body {
+                    i + 1
+                } else {
+                    tail(src, i + 1, i + 1)
+                };
+                b.close(id, end);
             }
             i += 1;
             continue;
@@ -92,7 +99,7 @@ pub(super) fn scan(src: &[u8], name_chars: usize) -> anyhow::Result<BlockIndex> 
                 _ => {
                     let (stop, last) = expression(src, i, Ctx::List);
                     if last > i {
-                        b.leaf(Kind::Element, i..last, i..i, &parts);
+                        b.leaf(Kind::Element, i..tail(src, last, stop), i..i, &parts);
                     }
                     i = stop.max(i + usize::from(stop == i && !is_closer(src[i])));
                 }
@@ -194,6 +201,22 @@ impl Frame {
             holder: Vec::new(),
             n: 0,
         }
+    }
+}
+
+/// The end of a list element, or of an object or list after its closer, whose last token ends
+/// at `last` and which stops at `stop`: when a line break comes before the next token, past the
+/// comma after it and its end-of-line comment (Fable r2 #12); else `last`, so the comma between
+/// two values on one line is in neither.
+fn tail(src: &[u8], last: usize, stop: usize) -> usize {
+    let mut next = skip(src, stop, true);
+    if src.get(next) == Some(&b',') {
+        next = skip(src, next + 1, true);
+    }
+    if memchr::memchr(b'\n', &src[last..next]).is_some() {
+        super::tail_end(src, last, next)
+    } else {
+        last
     }
 }
 
