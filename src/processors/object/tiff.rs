@@ -49,7 +49,8 @@ pub(super) fn read(b: &mut Builder, packet: Range<usize>, parent: usize) -> Opti
     let mut budget = packet.len() / 12 + 1;
     // The XMP packets read, by start to end, and how many more bytes of XMP may be: at most
     // the packet's own size in all, so entries that name one packet, or overlapping ones, read
-    // it once (code round 1, Codex #3). The packets read never overlap.
+    // it once (code round 1, Codex #3). The ranges, each a packet read and the entries that
+    // shared bytes with it, never overlap.
     let mut xmp_read = std::collections::BTreeMap::<usize, usize>::new();
     let mut xmp_budget = packet.len();
     let mut visited = std::collections::HashSet::new();
@@ -103,12 +104,28 @@ pub(super) fn read(b: &mut Builder, packet: Range<usize>, parent: usize) -> Opti
             {
                 if tag == 0x02bc && matches!(kind, Ifd::Main(_)) {
                     // A packet already read keeps the Trails of its first entry, also over
-                    // the bytes a later entry shares with it (code round 2, Fable #16).
-                    let overlaps = xmp_read
+                    // the bytes a later entry shares with it (code round 2, Fable #16); the
+                    // later entry owns the rest of its bytes, unread (code round 3, Fable #4).
+                    // The ranges it shares merge with it into one, so each is walked once.
+                    let mut shared: Vec<(usize, usize)> = xmp_read
                         .range(..value.end)
-                        .next_back()
-                        .is_some_and(|(_, &end)| end > value.start);
-                    if !overlaps {
+                        .rev()
+                        .take_while(|&(_, &end)| end > value.start)
+                        .map(|(&s, &e)| (s, e))
+                        .collect();
+                    shared.reverse();
+                    if let (Some(&(first, _)), Some(&(_, last))) = (shared.first(), shared.last()) {
+                        let mut at = value.start;
+                        for &(s, e) in &shared {
+                            if s > at {
+                                b.own(key, at..s);
+                            }
+                            at = at.max(e);
+                            xmp_read.remove(&s);
+                        }
+                        b.own(key, at..value.end);
+                        xmp_read.insert(value.start.min(first), value.end.max(last));
+                    } else {
                         xmp_read.insert(value.start, value.end);
                         b.own(key, value.clone());
                         if value.len() <= xmp_budget {
@@ -324,5 +341,48 @@ mod tests {
         assert!(GPS_TAGS.windows(2).all(|w| w[0].0 < w[1].0));
         assert_eq!(tag_name(Ifd::Main(0), 0x9c9b), "tag 0x9c9b");
         assert_eq!(tag_name(Ifd::Gps, 0x0002), "GPSLatitude");
+    }
+
+    /// Code review M6 r3, Fable #4: an XMP entry that shares part of its bytes with a packet
+    /// read before owns the rest of them, unread, whether it starts before that packet or the
+    /// packet read lies inside it.
+    #[test]
+    fn an_xmp_entry_over_a_packet_read_before_owns_the_bytes_outside_it() {
+        use crate::processors::object::fixture::m6;
+        use crate::processors::object::layouts::BinaryMap;
+        use crate::trail::LineIndex;
+        let trail = |bytes: &[u8], needle: &[u8]| -> Vec<String> {
+            let at = bytes
+                .windows(needle.len())
+                .position(|w| w == needle)
+                .unwrap();
+            let m = BinaryMap::parse(bytes, "tiff").unwrap();
+            m.trail(at, &LineIndex::new(bytes))
+                .into_iter()
+                .map(|s| s.name)
+                .collect()
+        };
+        let pad = b"needle0 ";
+        let packet = b"<x:xmpmeta><rdf:RDF><rdf:Description><dc:one>needle1</dc:one></rdf:Description></rdf:RDF></x:xmpmeta> needle2";
+        let base = 8 + 2 + 12 * 2 + 4;
+        let set = |tiff: &mut Vec<u8>, entry: usize, at: usize, len: usize| {
+            let e = 8 + 2 + 12 * entry;
+            tiff[e + 4..e + 8].copy_from_slice(&(len as u32).to_le_bytes());
+            tiff[e + 8..e + 12].copy_from_slice(&(at as u32).to_le_bytes());
+        };
+        let xmp = packet.len() - 8;
+        // The second starts before the packet read and ends inside it.
+        let mut tiff = m6::tiff_shared_xmp(2, &[&pad[..], packet].concat());
+        set(&mut tiff, 0, base + pad.len(), xmp);
+        set(&mut tiff, 1, base, pad.len() + 20);
+        assert_eq!(trail(&tiff, b"needle0"), ["TIFF", "IFD0", "XMP"]);
+        assert_eq!(trail(&tiff, b"needle1"), ["TIFF", "IFD0", "XMP", "dc:one"]);
+        // The small one comes first, inside the second, which owns the bytes around it.
+        let mut tiff = m6::tiff_shared_xmp(2, &[&pad[..], packet].concat());
+        set(&mut tiff, 0, base + pad.len(), xmp);
+        set(&mut tiff, 1, base, pad.len() + packet.len());
+        assert_eq!(trail(&tiff, b"needle0"), ["TIFF", "IFD0", "XMP"]);
+        assert_eq!(trail(&tiff, b"needle1"), ["TIFF", "IFD0", "XMP", "dc:one"]);
+        assert_eq!(trail(&tiff, b"needle2"), ["TIFF", "IFD0", "XMP"]);
     }
 }
