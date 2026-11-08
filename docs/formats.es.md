@@ -645,8 +645,12 @@ EOF
 Una regla se nombra por sus targets tal como están escritos, sobre su receta; una variable (`=`,
 `:=`, `?=`, `+=`, `!=`, con `override` o `export`) y `define NOMBRE` … `endef` son claves;
 `ifeq` … `endif` y sus hermanos son Segmentos condicionales nombrados por su línea, que
-contienen lo que tienen adentro. `$(…)` se saltea al buscar el `:` de una regla. Un `endif` o
-`endef` que no cierra nada es texto, y uno abierto termina con el archivo.
+contienen lo que tienen adentro. `$(…)` se saltea al buscar el `:` de una regla. Una letra de
+unidad (`C:/`, `C:\`) es parte de su target, como la lee GNU make en Windows, así que una letra
+pegada a un prerrequisito absoluto (`c:/x`) se lee como ruta y no abre ninguna regla, donde GNU
+make en Linux lee la regla `c`; con un blanco después del `:` (`c: /x`) es la regla `c` en las
+dos plataformas. Un `endif` o `endef` que no cierra nada es texto, y uno abierto termina con el
+archivo.
 
 ```
 $ s4 needle config/m6.mk --flat

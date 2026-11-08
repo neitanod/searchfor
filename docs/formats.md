@@ -619,8 +619,11 @@ EOF
 A rule is named by its targets as written, over its recipe; a variable (`=`, `:=`, `?=`, `+=`,
 `!=`, with `override` or `export`) and `define NAME` … `endef` are keys; `ifeq` … `endif` and
 its siblings are conditional Segments named by their line, which hold what is inside them.
-`$(…)` is skipped when looking for a rule's `:`. An `endif` or `endef` that closes nothing is
-text, and an open one ends with the file.
+`$(…)` is skipped when looking for a rule's `:`. A drive letter (`C:/`, `C:\`) is part of its
+target, as GNU make reads it on Windows, so one letter glued to an absolute prerequisite
+(`c:/x`) is read as a path and opens no rule, where GNU make on Linux reads the rule `c`; with a
+blank after the `:` (`c: /x`) it is the rule `c` on both platforms. An `endif` or `endef` that
+closes nothing is text, and an open one ends with the file.
 
 ```
 $ s4 needle config/m6.mk --flat
