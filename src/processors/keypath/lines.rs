@@ -48,7 +48,7 @@ pub(crate) enum NameSrc {
     Properties(Range<usize>),
     /// An iCalendar or vCard component (`ical::push_component`): the `X` of its `BEGIN:X`,
     /// then the value of its SUMMARY, FN or TZID, unfolded, or else its ordinal among its
-    /// siblings of that `X`.
+    /// siblings of that `X` (0 when it is alone of its kind there: no ordinal).
     Component {
         x: Range<usize>,
         value: Option<Range<usize>>,
