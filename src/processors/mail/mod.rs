@@ -10,7 +10,7 @@ pub(crate) mod names;
 use super::{Capability, Cursor, Prepared, Processor};
 use crate::model::{Input, Name, SharedTrail, Trail};
 use crate::trail::{Outline, OutlineSegment};
-use names::{HeaderBlock, NameBuf, decoded_value, header_block, line_at};
+use names::{HeaderBlock, NameBuf, decoded_value, header_block, is_field, line_at};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -97,10 +97,14 @@ impl Iterator for Units<'_> {
         }
         let start = self.pos;
         let (end, message) = if self.mbox {
-            (
-                next_from(src, start).unwrap_or(src.len()),
-                src[start..].starts_with(b"From "),
-            )
+            let end = next_from(src, start).unwrap_or(src.len());
+            // A `From ` line opens a message only when a header follows it: prose that starts
+            // with «From », a README with mbox's magic, is no message (review r1, Fable #27).
+            let message = src[start..].starts_with(b"From ") && {
+                let second = line_at(src, start, end).1;
+                is_field(&src[line_at(src, second, end).0])
+            };
+            (end, message)
         } else {
             (src.len(), true)
         };
@@ -262,8 +266,16 @@ fn unit_outline(src: &[u8], unit: &Unit, p: Params) -> Outline {
     let mut pos = unit.range.start;
     if p.mbox {
         pos = line_at(src, pos, end).1;
-    } else if src[pos..end].starts_with(b"\xEF\xBB\xBF") {
-        pos += 3;
+    } else {
+        if src[pos..end].starts_with(b"\xEF\xBB\xBF") {
+            pos += 3;
+        }
+        // Thunderbird saves an `.eml` with its mbox `From - …` line first (review r1,
+        // Fable #47); a field `From: …` stays a header.
+        let (first, next) = line_at(src, pos, end);
+        if src[first.clone()].starts_with(b"From ") && !is_field(&src[first]) {
+            pos = next;
+        }
     }
     let block = header_block(src, pos, end);
     let mut segs: Vec<OutlineSegment> = block
@@ -570,10 +582,33 @@ mod tests {
         assert_eq!(t[0], []);
         assert_eq!(t[1], [("A".into(), 3, 9), ("body".into(), 6, 9)]);
         assert_eq!(t[2], t[1]);
+        // A `From ` line with no header after it opens no message (review r1, Fable #27).
+        assert_eq!(t[3], []);
+    }
+
+    /// Review r1, Fable #27: prose that starts with «From » (a README detected as mbox by
+    /// its magic) is no message without a header after its first line.
+    #[test]
+    fn a_from_line_without_headers_is_text() {
+        assert_eq!(needles("mbox", "From the start of time, needle\n"), [[]]);
+        let t = needles("mbox", "From a\nSubject: A\n\nneedle\n");
+        assert_eq!(t[0], [("A".into(), 1, 4), ("body".into(), 4, 4)]);
+    }
+
+    /// Review r1, Fable #47: Thunderbird saves an `.eml` with its mbox `From - …` line first.
+    #[test]
+    fn an_eml_skips_a_leading_from_line() {
+        let src = "From - Wed Jan 31 12:00:00 2024\nSubject: needle\nFrom: a@x\n\nneedle\n";
         assert_eq!(
-            t[3],
-            [("(no subject)".into(), 10, 12), ("body".into(), 12, 12)]
+            needles("eml", src),
+            [
+                vec![("Subject".to_string(), 2, 2)],
+                vec![("body".to_string(), 5, 5)]
+            ]
         );
+        // A first field `From: …` stays a header.
+        let t = needles("eml", "From: needle\n\nx\n");
+        assert_eq!(t[0], [("From".to_string(), 1, 1)]);
     }
 
     #[test]

@@ -492,3 +492,35 @@ fn m6_whatsapp() {
         "31/12/23 › 21:41 Ana"
     );
 }
+
+/// Review r1, Fable #27 and #47: a README that starts with «From » is detected as mbox by
+/// its magic and holds no message; Thunderbird's `.eml` keeps its headers after its
+/// `From - …` line.
+#[test]
+fn m6_mail_from_lines() {
+    let fx = Fixture::new();
+    put(&fx, "README", b"From the start of time, needle\n");
+    let rows = matches(&run(&mut fx.s4([
+        "--no-docs",
+        "--json",
+        "needle",
+        "README",
+    ])));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["format"], "mbox");
+    assert_eq!(paths(&rows), [""]);
+    put(
+        &fx,
+        "saved.eml",
+        b"From - Wed Jan 31 12:00:00 2024\nX-Mozilla-Status: 0001\nSubject: needle\n\nneedle\n",
+    );
+    assert_eq!(
+        paths(&matches(&run(&mut fx.s4([
+            "--no-docs",
+            "--json",
+            "needle",
+            "saved.eml"
+        ])))),
+        ["Subject", "body"]
+    );
+}

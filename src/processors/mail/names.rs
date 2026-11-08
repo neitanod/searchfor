@@ -81,6 +81,11 @@ fn field(line: &[u8]) -> Option<(usize, usize)> {
     Some((n, i))
 }
 
+/// Whether a line is a header field, `Name: value`.
+pub(crate) fn is_field(line: &[u8]) -> bool {
+    field(line).is_some()
+}
+
 /// The header block at `start`, up to `end`: fields and their continuation lines until a blank
 /// line, whose next line starts the body. A line that is neither a field nor a continuation
 /// starts the body itself, even without the blank line (spec §10.1, Failure).
