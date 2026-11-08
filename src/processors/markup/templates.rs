@@ -277,6 +277,8 @@ fn blade(src: &[u8], at: usize, quiet: Option<u8>) -> Event {
         (None, EMPTY) => return Event::Text,
         _ => {}
     }
+    // Arguments that do not close within 4 KiB leave the block named by the directive alone,
+    // closed by its `@end…` (code review M6 r2, decision 1).
     let end = args.map_or(we, |a| a.end);
     Event::Open {
         kw,
@@ -341,11 +343,11 @@ mod tests {
         );
     }
 
-    /// Code review M6 r1, Fable #4 = Codex #4: an opener whose expression does not close
-    /// within 4 KiB is text, so each of a run of unclosed openers (`{#if (`, `{#if '`,
-    /// `@if(`) reads at most that far instead of to the end of the file.
+    /// Code review M6 r1, Fable #4 = Codex #4: a Svelte opener whose expression does not
+    /// close within 4 KiB is text, so each of a run of unclosed openers (`{#if (`, `{#if '`)
+    /// reads at most that far instead of to the end of the file.
     #[test]
-    fn an_expression_that_does_not_close_within_its_bound_is_text() {
+    fn a_svelte_expression_that_does_not_close_within_its_bound_is_text() {
         let pad = |n: usize| " ".repeat(n);
         let svelte = |n: usize| format!("{{#if a{}}}x{{/if}}", pad(n));
         assert_eq!(
@@ -360,6 +362,16 @@ mod tests {
         );
         let quote = format!("{{#if '{}'}}", pad(5000));
         assert_eq!(events(TemplateSyntax::Svelte, &quote), Vec::<String>::new());
+    }
+
+    /// Code review M6 r2, decision 1 (Codex #5, Fable #2): a Blade opener whose argument list
+    /// does not close within 4 KiB opens a block named by the directive alone (`@if`); its
+    /// arguments are text and its `@end…` closes it, since in Blade the directive is one word
+    /// (in Svelte, without `}`, the opener has no end). Each unclosed `@if(` still reads at
+    /// most 4 KiB.
+    #[test]
+    fn a_blade_opener_whose_arguments_do_not_close_within_its_bound_is_the_directive_alone() {
+        let pad = |n: usize| " ".repeat(n);
         let blade = |n: usize| format!("@if(a{}) x @endif", pad(n));
         assert_eq!(events(TemplateSyntax::Blade, &blade(4000)).len(), 2);
         assert_eq!(
