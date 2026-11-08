@@ -151,6 +151,9 @@ struct Env {
 struct Probe {
     spilled: std::sync::atomic::AtomicUsize,
     described: std::sync::atomic::AtomicUsize,
+    /// A file name whose search panics, as a Processor's bug would (review r1 of M6,
+    /// decision 4).
+    panic_on: Option<std::ffi::OsString>,
 }
 
 impl Env {
@@ -1199,6 +1202,8 @@ impl<'a> Ctx<'a> {
                     Ok(d) => {
                         if let Some(t) = self.target(&d, &mut above) {
                             self.searched_one();
+                            #[cfg(test)]
+                            self.probe_panic(&d);
                             visit(&mut state, self.prepare(t));
                         }
                     }
@@ -1207,6 +1212,11 @@ impl<'a> Ctx<'a> {
             }
         } else {
             let (init, visit) = (&init, &visit);
+            // A worker that panics never tells the walker it is idle, so the other workers
+            // wait for it forever: its panic is caught, the walk stops, and the panic goes on
+            // from this thread, as it would with one thread (review r1 of M6, decision 4).
+            let panicked: Mutex<Option<Box<dyn std::any::Any + Send>>> = Mutex::new(None);
+            let panicked_ref = &panicked;
             w.build_parallel().run(|| {
                 let mut state = self.worker(init());
                 let mut above = Above::default();
@@ -1214,15 +1224,25 @@ impl<'a> Ctx<'a> {
                     if self.quit.load(Relaxed) {
                         return WalkState::Quit;
                     }
-                    match r {
+                    let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match r {
                         Ok(d) => {
                             self.entry_error(&d);
                             if let Some(t) = self.target(&d, &mut above) {
                                 self.searched_one();
+                                #[cfg(test)]
+                                self.probe_panic(&d);
                                 visit(&mut state, self.prepare(t));
                             }
                         }
                         Err(e) => self.msgs.error(e),
+                    }));
+                    if let Err(payload) = step {
+                        self.quit.store(true, Relaxed);
+                        panicked_ref
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .get_or_insert(payload);
+                        return WalkState::Quit;
                     }
                     if self.quit.load(Relaxed) {
                         WalkState::Quit
@@ -1231,8 +1251,24 @@ impl<'a> Ctx<'a> {
                     }
                 })
             });
+            let payload = panicked
+                .into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(payload) = payload {
+                std::panic::resume_unwind(payload);
+            }
         }
         Ok(())
+    }
+
+    /// The panic `Probe::panic_on` asks for at the file `d`.
+    #[cfg(test)]
+    fn probe_panic(&self, d: &DirEntry) {
+        if let Some(name) = self.probe.as_ref().and_then(|p| p.panic_on.as_ref())
+            && d.file_name() == name
+        {
+            panic!("probe: {}", name.to_string_lossy());
+        }
     }
 
     /// A file is searched: `searched` is written once, not by every worker for every file,
@@ -4766,6 +4802,62 @@ mod tests {
             stderr,
             code,
             described: probe.described.load(Relaxed),
+        }
+    }
+
+    /// Review r1 of M6, decision 4 (Fable #1): a panic in a walker's worker ends the run with
+    /// that panic, as it does with one thread, instead of leaving the other workers waiting.
+    #[test]
+    fn a_panic_in_a_worker_ends_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "boom.txt", "c.txt", "d.txt"] {
+            std::fs::write(dir.path().join(name), "needle\n").unwrap();
+        }
+        std::fs::create_dir(dir.path().join("formats")).unwrap();
+        std::fs::create_dir(dir.path().join("grammars")).unwrap();
+        for threads in ["2", "1"] {
+            let probe = std::sync::Arc::new(Probe {
+                panic_on: Some("boom.txt".into()),
+                ..Probe::default()
+            });
+            let argv: Vec<std::ffi::OsString> = vec![
+                "s4".into(),
+                "--no-config".into(),
+                "--no-docs".into(),
+                "-j".into(),
+                threads.into(),
+                "needle".into(),
+                dir.path().as_os_str().to_owned(),
+            ];
+            let command = FileCommand {
+                args: crate::cli::parse(argv).unwrap(),
+                cwd: dir.path().to_path_buf(),
+                formats: dir.path().join("formats"),
+                grammars: dir.path().join("grammars"),
+                index: format!("file://{}", dir.path().join("missing-index").display()),
+                spool: dir.path().to_path_buf(),
+                probe: Some(probe),
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            let started = std::time::Instant::now();
+            std::thread::spawn(move || {
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut out = termcolor::Buffer::no_color();
+                    execute_file(&command, Pipeline::Stream, &mut out, &mut Vec::new())
+                }));
+                let _ = tx.send(run.err().and_then(|p| p.downcast_ref::<String>().cloned()));
+            });
+            let got = rx.recv_timeout(std::time::Duration::from_secs(20));
+            let took = started.elapsed();
+            assert_eq!(
+                got,
+                Ok(Some("probe: boom.txt".to_string())),
+                "-j{threads}: the run must end with the worker's panic"
+            );
+            assert!(
+                took < std::time::Duration::from_secs(10),
+                "-j{threads}: {took:?}"
+            );
         }
     }
 
