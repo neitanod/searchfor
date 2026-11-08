@@ -2,7 +2,9 @@
 //! at every byte with its Processor's model, and over mutated fixtures (cut, a byte flipped,
 //! repeated, garbage inserted), each case supervised in a child process for 2 s. The JSON views
 //! (Jupyter, HAR, Telegram) build their model on the same cursor they stream with, so they are
-//! also compared with an independent reading of the JSON (`oracle`). `SEARCHFOR_FUZZ_SEED`,
+//! also compared with an independent reading of the JSON (`oracle`); blocks, sql, mail, chat,
+//! headings and markup, whose model is their cursor too, read generated inputs whose Trails
+//! the generator knows (`models`). `SEARCHFOR_FUZZ_SEED`,
 //! `SEARCHFOR_FUZZ_N` and `SEARCHFOR_FUZZ_SECONDS` work as in tests/fuzz_m5.rs; a failing case
 //! is saved under `SEARCHFOR_FUZZ_ARTIFACT_DIR` with its exact bytes, and replays through
 //! `m6_mutation_child` with `SEARCHFOR_M6_FUZZ_CASE` and `SEARCHFOR_M6_FUZZ_FORMAT`.
@@ -1471,5 +1473,315 @@ mod oracle {
             );
         }
         at.len()
+    }
+}
+
+/// Review r1, Fable #29 and #30: `m6_cursor_model` compares a cursor with `Processor::trails`,
+/// which for blocks, sql, mail, chat, headings and markup runs that same cursor. Here each of
+/// those Processors reads generated inputs whose Trails the generator knows, because it wrote
+/// them: one simple model per Processor (nginx for blocks, Org for headings, a Vue template
+/// for markup, mbox for mail, WhatsApp for chat), sharing no code with s4. Both
+/// `Processor::trails` and the native cursor must give the model's Trail at every Match.
+#[test]
+fn m6_generated_models() {
+    let seed = common::fuzz_seed(0x6_2026_1108);
+    let mut r = models::Rng(seed | 1);
+    let n = common::fuzz_n().unwrap_or(150);
+    let (registry, w) = Registry::load(None, &Processors::known);
+    assert!(w.is_empty());
+    let mut checked = std::collections::BTreeMap::new();
+    for case in 0..n {
+        for (format, generate) in models::GENERATORS {
+            let (src, expected) = generate(&mut r);
+            let params = &registry.get(format).unwrap().params;
+            let p = processor(format);
+            let input = Input {
+                bytes: src.as_bytes(),
+                path: Path::new("model"),
+                format,
+                disk: None,
+            };
+            let anchors: Vec<usize> = expected.iter().map(|e| e.0).collect();
+            let joined = |t: &[searchfor::model::Segment]| {
+                t.iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" › ")
+            };
+            let trails = p.trails(&input, params, &anchors).unwrap();
+            let prepared = p.prepare(input, params).unwrap();
+            let mut cursor = prepared.cursor();
+            for ((at, want), got) in expected.iter().zip(&trails) {
+                let context = || format!("{format}, seed {seed}, case {case}, byte {at}:\n{src}");
+                assert_eq!(&joined(got), want, "{}", context());
+                assert_eq!(
+                    &joined(&cursor.trail_at(*at).unwrap()),
+                    want,
+                    "cursor: {}",
+                    context()
+                );
+            }
+            *checked.entry(format).or_insert(0) += expected.len();
+        }
+    }
+    eprintln!("Matches checked against the models: {checked:?}");
+    for (format, _) in models::GENERATORS {
+        assert!(checked[format] >= n, "{format}: {checked:?}");
+    }
+}
+
+/// The generators of `m6_generated_models`: each writes a random input of one Format and the
+/// Trail, its names joined by ` › `, of every `needle` it wrote, from what it wrote.
+mod models {
+    pub struct Rng(pub u64);
+
+    impl Rng {
+        /// A number below `n` (xorshift64).
+        pub fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            ((self.0 >> 16) as usize) % n
+        }
+    }
+
+    type Generated = (String, Vec<(usize, String)>);
+    type Generator = fn(&mut Rng) -> Generated;
+
+    pub const GENERATORS: [(&str, Generator); 6] = [
+        ("nginx", nginx),
+        ("org", org),
+        ("vue", vue),
+        ("sql", sql),
+        ("mbox", mbox),
+        ("whatsapp", whatsapp),
+    ];
+
+    fn trail(path: &[String]) -> String {
+        path.join(" › ")
+    }
+
+    /// Blocks `bN aK { … }` nested up to four deep and directives `kN v needle;`: a Match is
+    /// in its directive, inside every block open around it, each named by its name and
+    /// arguments.
+    fn nginx(r: &mut Rng) -> Generated {
+        fn items(r: &mut Rng, path: &mut Vec<String>, out: &mut Generated, n: &mut usize) {
+            for _ in 0..=r.below(4) {
+                *n += 1;
+                let indent = "  ".repeat(path.len());
+                if path.len() < 4 && r.below(3) == 0 {
+                    let name = format!("b{n} a{}", r.below(9));
+                    out.0 += &format!("{indent}{name} {{\n");
+                    path.push(name);
+                    items(r, path, out, n);
+                    path.pop();
+                    out.0 += &format!("{indent}}}\n");
+                } else {
+                    let key = format!("k{n}");
+                    out.0 += &format!("{indent}{key} v ");
+                    path.push(key);
+                    out.1.push((out.0.len(), trail(path)));
+                    path.pop();
+                    out.0 += "needle;\n";
+                }
+            }
+        }
+        let mut out = (String::new(), Vec::new());
+        items(r, &mut Vec::new(), &mut out, &mut 0);
+        out
+    }
+
+    /// Org headings of random levels and body lines: a Match is under every heading of a
+    /// lower level still open above it.
+    fn org(r: &mut Rng) -> Generated {
+        let mut out = (String::new(), Vec::new());
+        let mut open: Vec<(usize, String)> = Vec::new();
+        for n in 0..=r.below(12) {
+            if r.below(2) == 0 {
+                let level = 1 + r.below(4);
+                let title = format!("h{n}");
+                out.0 += &format!("{} {title}\n", "*".repeat(level));
+                while open.last().is_some_and(|(l, _)| *l >= level) {
+                    open.pop();
+                }
+                open.push((level, title));
+            } else {
+                out.0 += "t ";
+                let names: Vec<String> = open.iter().map(|(_, t)| t.clone()).collect();
+                out.1.push((out.0.len(), trail(&names)));
+                out.0 += "needle\n";
+            }
+        }
+        out
+    }
+
+    /// A Vue template of `div`, `section`, `article` and `span` elements (none of which an
+    /// HTML parser closes on its own), with text: a Match in an element's text is inside it,
+    /// each element named by its tag and, among two or more siblings of its tag, `[N]`.
+    fn vue(r: &mut Rng) -> Generated {
+        const TAGS: [&str; 4] = ["div", "section", "article", "span"];
+        fn children(r: &mut Rng, depth: usize, path: &mut Vec<String>, out: &mut Generated) {
+            let tags: Vec<&str> = (0..r.below(4)).map(|_| TAGS[r.below(4)]).collect();
+            for (i, tag) in tags.iter().enumerate() {
+                let same = tags.iter().filter(|t| *t == tag).count();
+                let k = tags[..=i].iter().filter(|t| *t == tag).count();
+                let name = if same > 1 {
+                    format!("{tag}[{k}]")
+                } else {
+                    tag.to_string()
+                };
+                out.0 += &format!("<{tag}>");
+                path.push(name);
+                if r.below(2) == 0 {
+                    out.1.push((out.0.len(), trail(path)));
+                    out.0 += "needle";
+                }
+                if depth < 4 {
+                    children(r, depth + 1, path, out);
+                }
+                path.pop();
+                out.0 += &format!("</{tag}>\n");
+            }
+        }
+        let mut out = (String::from("<template>\n"), Vec::new());
+        children(r, 0, &mut vec!["template".to_string()], &mut out);
+        out.0 += "</template>\n";
+        out
+    }
+
+    /// `CREATE TABLE`, `INSERT … VALUES` with and without a column list, and `UPDATE`
+    /// statements over four tables: a Match in a value is in its row and its column, named by
+    /// the statement's list, else by the table's last `CREATE TABLE` before it, else
+    /// `column K`.
+    fn sql(r: &mut Rng) -> Generated {
+        let mut out = (String::new(), Vec::new());
+        let mut schema: [Option<[&str; 2]>; 4] = [None; 4];
+        for _ in 0..=r.below(8) {
+            let t = r.below(4);
+            match r.below(4) {
+                0 => {
+                    let cols = if r.below(2) == 0 {
+                        ["c1", "c2"]
+                    } else {
+                        ["d1", "d2"]
+                    };
+                    out.0 += &format!(
+                        "CREATE TABLE t{t} ({} int, {} text DEFAULT '",
+                        cols[0], cols[1]
+                    );
+                    out.1
+                        .push((out.0.len(), format!("CREATE TABLE t{t} › {}", cols[1])));
+                    out.0 += "needle');\n";
+                    schema[t] = Some(cols);
+                }
+                1 | 2 => {
+                    let list = r.below(3) == 0;
+                    out.0 += &format!("INSERT INTO t{t} ");
+                    let names: Option<[&str; 2]> = if list {
+                        out.0 += "(e2, e1) ";
+                        Some(["e2", "e1"])
+                    } else {
+                        schema[t]
+                    };
+                    out.0 += "VALUES ";
+                    for row in 1..=1 + r.below(3) {
+                        if row > 1 {
+                            out.0 += ",\n  ";
+                        }
+                        out.0 += "(";
+                        for k in 0..2 {
+                            if k > 0 {
+                                out.0 += ", ";
+                            }
+                            if r.below(2) == 0 {
+                                out.0 += "'x ";
+                                let column = names.map_or_else(
+                                    || format!("column {}", k + 1),
+                                    |n| n[k].to_string(),
+                                );
+                                out.1.push((
+                                    out.0.len(),
+                                    format!("INSERT INTO t{t} › row {row} › {column}"),
+                                ));
+                                out.0 += "needle'";
+                            } else {
+                                out.0 += &r.below(100).to_string();
+                            }
+                        }
+                        out.0 += ")";
+                    }
+                    out.0 += ";\n";
+                }
+                _ => {
+                    out.0 += &format!("UPDATE t{t} SET c1 = '");
+                    out.1.push((out.0.len(), format!("UPDATE t{t}")));
+                    out.0 += "needle';\n";
+                }
+            }
+        }
+        out
+    }
+
+    /// mbox messages, each with a `Subject`, maybe an `X-Tag` header holding a Match, and body
+    /// lines: a Match is in its message, named by the subject, and in its header or `body`.
+    fn mbox(r: &mut Rng) -> Generated {
+        let mut out = (String::new(), Vec::new());
+        for n in 0..=r.below(5) {
+            if n > 0 {
+                out.0 += "\n";
+            }
+            let subject = format!("S{n}");
+            out.0 += &format!("From a{n}@x Mon Jan  1 00:00:00 2024\nSubject: {subject}\n");
+            if r.below(2) == 0 {
+                out.0 += "X-Tag: t ";
+                out.1.push((out.0.len(), format!("{subject} › X-Tag")));
+                out.0 += "needle\n";
+            }
+            out.0 += "From: a@x\n\n";
+            for _ in 0..=r.below(3) {
+                if r.below(2) == 0 {
+                    out.0 += "b ";
+                    out.1.push((out.0.len(), format!("{subject} › body")));
+                    out.0 += "needle\n";
+                } else {
+                    out.0 += "plain\n";
+                }
+            }
+        }
+        out
+    }
+
+    /// WhatsApp messages of three dates in random runs, with senders, system messages and
+    /// continuation lines: a Match is in its day, named by the date of the run, and in its
+    /// message, named by its time and sender.
+    fn whatsapp(r: &mut Rng) -> Generated {
+        let mut out = (String::new(), Vec::new());
+        let mut day = String::new();
+        let mut message = String::new();
+        for n in 0..=r.below(10) {
+            if n == 0 || r.below(3) > 0 {
+                let date = format!("{}/1/24", 1 + r.below(3));
+                let time = format!("{}:{:02}", 9 + r.below(3), r.below(60));
+                let sender = ["Ana", "Bob B", ""][r.below(3)];
+                if n == 0 || date != day {
+                    day = date.clone();
+                }
+                message = if sender.is_empty() {
+                    time.clone()
+                } else {
+                    format!("{time} {sender}")
+                };
+                out.0 += &format!("{date}, {time} - ");
+                if !sender.is_empty() {
+                    out.0 += &format!("{sender}: ");
+                }
+                out.0 += "m ";
+            } else {
+                out.0 += "c ";
+            }
+            out.1.push((out.0.len(), format!("{day} › {message}")));
+            out.0 += "needle\n";
+        }
+        out
     }
 }
