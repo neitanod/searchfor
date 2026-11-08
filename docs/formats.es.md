@@ -14,7 +14,8 @@ objeto y los documentos de `m4/` los escriben ahí los writers que usa
 [imágenes, audio y binarios](#imágenes-audio-y-binarios) salen de los archivos que
 `searchfor::processors::object::fixture::m6` escribe para
 [`tests/cli_m6_object.rs`](../tests/cli_m6_object.rs). `s4 --list-formats` lista cada Formato
-con su origen y sus extensiones, y `s4 --export-formats DIR` escribe las Definiciones incluidas
+con su origen y sus extensiones (sin extensiones, los nombres y rutas que lo detectan, o
+`magic bytes`), y `s4 --export-formats DIR` escribe las Definiciones incluidas
 en `DIR` como archivos TOML, para copiarlas y editarlas.
 
 ## Cómo elige s4 un Formato

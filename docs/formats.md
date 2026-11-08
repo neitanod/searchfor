@@ -12,8 +12,8 @@ that directory, except where it says what it runs over. The object files and doc
 (`searchfor::processors::object::fixture` and `searchfor::docs::fixture`), and the rows of
 [images, audio and binaries](#images-audio-and-binaries) come from the files that
 `searchfor::processors::object::fixture::m6` writes for
-[`tests/cli_m6_object.rs`](../tests/cli_m6_object.rs). `s4 --list-formats` lists every Format with its origin and extensions, and
-`s4 --export-formats DIR` writes the built-in Definitions into `DIR` as TOML files to copy and
+[`tests/cli_m6_object.rs`](../tests/cli_m6_object.rs). `s4 --list-formats` lists every Format with its origin and extensions (without
+extensions, the names and paths that detect it, or `magic bytes`), and `s4 --export-formats DIR` writes the built-in Definitions into `DIR` as TOML files to copy and
 edit.
 
 ## How s4 picks a Format
