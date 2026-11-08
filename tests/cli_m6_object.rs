@@ -155,6 +155,53 @@ fn m6_wasm_java() {
     assert_eq!(rows(&out)[0]["format"], "macho");
 }
 
+/// A Java 17 class `C` of `methods` methods that share the name `name` and the descriptor
+/// `()V`, none with attributes, and an unused Utf8 `needle` (code review M6 r3, Codex #1).
+fn shared_name_class(name: &[u8], methods: u16) -> Vec<u8> {
+    let mut b = b"\xca\xfe\xba\xbe\0\0\0\x3d\0\x06".to_vec();
+    for (i, text) in [&b"C"[..], name, b"()V", b"needle"].iter().enumerate() {
+        b.push(1);
+        b.extend((text.len() as u16).to_be_bytes());
+        b.extend(*text);
+        if i == 0 {
+            b.extend([7, 0, 1]);
+        }
+    }
+    // Access, this, super, no interfaces, no fields, the methods.
+    b.extend([0, 0x21, 0, 2, 0, 0, 0, 0, 0, 0]);
+    b.extend(methods.to_be_bytes());
+    for _ in 0..methods {
+        b.extend([0, 1, 0, 3, 0, 4, 0, 0]);
+    }
+    b.extend([0, 0]);
+    b
+}
+
+/// Code review M6 r3, Codex #1: methods that share one long name are each named by it, cut at
+/// 40 characters, decoded from modified UTF-8 once for all of them; a Match in the shared
+/// descriptor belongs to the first method, and one in an unused constant to the pool.
+#[test]
+fn m6_java_members_share_a_long_name() {
+    let fx = Fixture::new();
+    let tail = [0xff; 59_999];
+    let cases: [(&[u8], String); 2] = [
+        (&tail, format!("m{}…", "\u{fffd}".repeat(38))),
+        (&[b'x'; 59_999], format!("m{}…", "x".repeat(38))),
+    ];
+    for (tail, label) in cases {
+        let name = [b"m".as_slice(), tail].concat();
+        std::fs::write(fx.file("Shared.bin"), shared_name_class(&name, 3)).unwrap();
+        let out = run(&mut fx.s4(["--no-docs", "--json", "needle", "Shared.bin"]));
+        let found = rows(&out);
+        assert_eq!(found[0]["format"], "java-class");
+        assert_eq!(names(&found[0]), "Java 17 › C › constant pool");
+        let out = run(&mut fx.s4(["--no-docs", "--json", "-F", "()V", "Shared.bin"]));
+        let found = rows(&out);
+        assert_eq!(names(&found[0]), format!("Java 17 › C › {label}"));
+        assert_eq!(found[0]["trail"][2]["kind"], "method");
+    }
+}
+
 fn binaries() -> Vec<(&'static str, Vec<u8>)> {
     vec![
         ("jpeg", binary::jpeg(b"needle")),

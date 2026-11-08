@@ -456,6 +456,12 @@ fn m6_dockerfile_heredocs_start_words() {
             "FROM a\nRUN echo \"abc \\\n<<EOF\"\nRUN echo needle2\nENV x=needle3\n",
             vec!["stage 0 › RUN", "stage 0 › ENV"],
         ),
+        // Code review M6 r3, Codex #3: the marker's word goes on over the continuation, so
+        // `<<EO\` and `F` end the body at `EOF`, and the next stage is its own.
+        (
+            "FROM alpine AS build\nRUN <<EO\\\nF\necho body\nEOF\nFROM alpine AS final\nRUN echo needle\n",
+            vec!["final › RUN"],
+        ),
     ] {
         put(&fx, "heredoc.dockerfile", src.as_bytes());
         let rows = matches(&output(

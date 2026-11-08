@@ -491,6 +491,25 @@ fn m6_broken_fixtures() {
     assert_eq!(count, owned.len());
 }
 
+/// Code review M6 r3, Codex #2: the recovery from a BibTeX quote that never closes stays in
+/// its entry. That quote ends at the first line that starts with `@word{`; a later entry's
+/// quoted value reads to its own closing quote, over such a line too.
+#[test]
+fn m6_bibtex_recovery_stays_in_the_malformed_entry() {
+    let fx = Fixture::new();
+    let src = b"@a{k, t = \"x {\n@b{k2, title = \"needle-before\n@foo{bar} needle-after\", note={needle-note}}\n";
+    put(&fx, "recovery.bib", src);
+    // `needle-after` and `needle-note` share a line: the second pattern finds the note's.
+    for (pattern, want) in [
+        ("needle", &["k2 › title", "k2 › title"][..]),
+        ("needle-after", &["k2 › title"]),
+        ("needle-note", &["k2 › note"]),
+    ] {
+        let rows = matches(&output(&fx, "bibtex", "recovery.bib", pattern, &["--json"]));
+        assert_eq!(paths(&rows), want, "{pattern}");
+    }
+}
+
 #[test]
 fn m6_encoding_and_lone_cr() {
     let fx = Fixture::new();

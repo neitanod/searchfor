@@ -3545,6 +3545,132 @@ fn m6_html_scripts_cost() {
     }
 }
 
+/// A Java 17 class `C` of `methods` methods that share the name `name` and the descriptor
+/// `()V`, none with attributes, and an unused Utf8 `needle` (`shared_name_class` in
+/// `tests/cli_m6_object.rs`).
+#[cfg(target_os = "linux")]
+fn m6_shared_name_class(name: &[u8], methods: u16) -> Vec<u8> {
+    let mut b = b"\xca\xfe\xba\xbe\0\0\0\x3d\0\x06".to_vec();
+    for (i, text) in [&b"C"[..], name, b"()V", b"needle"].iter().enumerate() {
+        b.push(1);
+        b.extend((text.len() as u16).to_be_bytes());
+        b.extend(*text);
+        if i == 0 {
+            b.extend([7, 0, 1]);
+        }
+    }
+    b.extend([0, 0x21, 0, 2, 0, 0, 0, 0, 0, 0]);
+    b.extend(methods.to_be_bytes());
+    for _ in 0..methods {
+        b.extend([0, 1, 0, 3, 0, 4, 0, 0]);
+    }
+    b.extend([0, 0]);
+    b
+}
+
+/// Code review M6 r3, Codex #1: 32 000 methods that share one name of 60 000 bytes, invalid
+/// modified UTF-8 or plain ASCII, cost what the file's 316 KB cost, as each constant is decoded
+/// and cut once for every member that names it (6.58 s against 0.005 s with `--no-trail`
+/// before, when each member decoded it again).
+#[test]
+#[ignore = "M6 Java class of shared long names; local timing"]
+#[cfg(target_os = "linux")]
+fn m6_java_class_shared_names() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    let rg = rg_bin().unwrap();
+    eprintln!("m6_java_class_shared_names: uptime {}", uptime());
+    for (case, byte) in [("invalid", 0xff), ("ascii", b'x')] {
+        let mut name = vec![b'm'];
+        name.resize(60_000, byte);
+        let bytes = m6_shared_name_class(&name, 32_000);
+        std::fs::write(fx.file("Shared.class"), &bytes).unwrap();
+        let args = [
+            "--no-docs",
+            "--format",
+            "java-class",
+            "--flat",
+            "-a",
+            "needle",
+            "Shared.class",
+        ];
+        let (out, _) = sfor_output(&fx, &args);
+        assert!(
+            out.contains("Java 17 › C › constant pool"),
+            "{case}: {out:.200}"
+        );
+        let (ts, _) = best_of_three_drained(&sfor_bin(), &fx, &args, 0).unwrap();
+        let (tr, _) =
+            best_of_three_drained(&rg, &fx, &["-a", "needle", "Shared.class"], 0).unwrap();
+        eprintln!(
+            "m6 java shared names/{case} ({} bytes): s4={ts:?} rg={tr:?}",
+            bytes.len()
+        );
+        // Far past the work of 316 KB, and far short of the 6.58 s measured before.
+        assert!(ts <= Duration::from_secs(2), "{case}: {ts:?}");
+        if timing_enabled() {
+            assert!(
+                ts <= tr + Duration::from_millis(500),
+                "{case}: {ts:?}/{tr:?}"
+            );
+        }
+    }
+}
+
+/// Code review M6 r3, Codex #2: BibTeX entries that each open a quote that never closes cost
+/// time linear in their number, now that the quotes of the entries after such a quote read to
+/// their own close: N and 2 N of them, with or without a `{` after the quote, and the Match in
+/// the last entry keeps its Trail. The second costs less than three times the first (CPU time
+/// of s4, best of three, `cpu_time`); reading every quote from its own start to the end of the
+/// file would make it four.
+#[test]
+#[ignore = "M6 BibTeX of quotes that never close; local timing"]
+#[cfg(target_os = "linux")]
+fn m6_bibtex_broken_quotes_stay_linear() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    eprintln!("m6_bibtex_broken_quotes_stay_linear: uptime {}", uptime());
+    const N: usize = 25_000;
+    for (case, unit) in [("brace", "\"x {\n"), ("plain", "\"x\n")] {
+        let time = |n: usize| -> Duration {
+            let mut src = String::new();
+            for i in 0..n {
+                src.push_str(&format!("@a{{k{i}, t = {unit}"));
+            }
+            src.push_str("@b{last, t = {needle}}\n");
+            let name = format!("broken{n}.bib");
+            std::fs::write(fx.file(&name), &src).unwrap();
+            let args = [
+                "--no-docs",
+                "--format",
+                "bibtex",
+                "--flat",
+                "needle",
+                name.as_str(),
+            ];
+            let (out, _) = sfor_output(&fx, &args);
+            assert!(
+                out.ends_with(": last › t │ @b{last, t = {needle}}\n"),
+                "{case}: {out}"
+            );
+            (0..3).map(|_| cpu_time(&fx, &args, 0)).min().unwrap()
+        };
+        let (small, large) = (time(N), time(2 * N));
+        eprintln!(
+            "m6 bibtex broken quotes/{case}: {N} {small:?}, {} {large:?}",
+            2 * N
+        );
+        // Far past linear work over 1 MB, which a quadratic walk passes many times over.
+        assert!(large <= Duration::from_secs(2), "{case}: {large:?}");
+        if timing_enabled() {
+            assert!(
+                large < small * 3 + Duration::from_millis(20),
+                "{case}: 2 N cost {large:?}, N {small:?}"
+            );
+        }
+    }
+}
+
 /// `--expand` over a dense file of one Section, for each new Processor of M6 (C8 reported a
 /// 1 MiB Markdown and diff file of one Section taking more than 300 s, not reproduced since):
 /// a 1 MiB file where every line matches and one Section holds them all prints that Section
