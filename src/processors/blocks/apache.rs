@@ -65,7 +65,15 @@ pub(super) fn scan(src: &[u8], name_chars: usize) -> anyhow::Result<BlockIndex> 
             let Some(name) = words.first().cloned() else {
                 continue;
             };
-            let parts: Vec<Part> = words.into_iter().map(Part::src).collect();
+            // The tag's text as written, its blanks kept (Fable r1 #55); its words when a
+            // continuation splits it over lines.
+            let text = s + 1..close;
+            let parts: Vec<Part> = if memchr::memchr(b'\n', &src[text.clone()]).is_none() {
+                let last = words.last().map_or(name.end, |w| w.end);
+                vec![Part::src(name.start..last)]
+            } else {
+                words.into_iter().map(Part::src).collect()
+            };
             let id = b.open(Kind::Block, s, s..(close + 1).min(e), &parts, false);
             let vhost = src[name.clone()].eq_ignore_ascii_case(b"VirtualHost");
             *names
@@ -179,6 +187,18 @@ mod tests {
         assert_eq!(names(src), ["A", "b", "C", "X", "Y"]);
         assert_eq!(ix.entries[3].parent(), Some(0));
         assert_eq!(ix.entries[4].parent(), None);
+    }
+
+    /// Fable r1 #55: a section's name is its tag's text as written, its blanks kept; one
+    /// continued over lines joins its words.
+    #[test]
+    fn section_names_are_as_written() {
+        let src =
+            b"<Directory \"/path  with   spaces\">\nA 1\n</Directory>\n<If a \\\n  b>\n</If>\n";
+        assert_eq!(
+            names(src),
+            ["Directory \"/path  with   spaces\"", "A", "If a b"]
+        );
     }
 
     #[test]
