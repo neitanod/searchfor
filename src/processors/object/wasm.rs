@@ -3,7 +3,7 @@
 //! `func[N]`), `› custom .debug_str`. Sections are named by their id, custom ones `custom NAME`;
 //! every size and count is an unsigned LEB128 checked against the bytes left before it is used.
 //! An export or import is the Segment of its own name, as §9's `› export › needle_fn` says.
-use super::layouts::{Builder, cut, sub};
+use super::layouts::{Builder, NodeName, cut, share, sub};
 use std::borrow::Cow;
 use std::ops::Range;
 
@@ -111,7 +111,7 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
     let names = function_names(bytes, &sections);
     // Each name is decoded and cut once, however many code sections number its function again
     // (code review M6 r4, Codex #1): a file costs its bytes, not its sections times the name.
-    let mut labels: Vec<Option<Cow<'_, str>>> = vec![None; names.len()];
+    let mut labels: Vec<Option<NodeName<'_>>> = vec![None; names.len()];
     let image = b.node(None, "object", "WebAssembly".into(), 0..bytes.len());
     let mut imported = 0usize;
     for (id, start, content) in sections {
@@ -163,13 +163,13 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
                     let (size, body) = leb(bytes, at, end)?;
                     let body = sub(&(body..end), body, size)?;
                     let index = imported + i;
-                    let label: Cow<str> = match names.binary_search_by_key(&index, |&(k, _)| k) {
+                    let label = match names.binary_search_by_key(&index, |&(k, _)| k) {
                         Ok(k) => labels[k]
-                            .get_or_insert_with(|| cut(b.utf8(names[k].1.clone()), b.name_chars))
+                            .get_or_insert_with(|| share(b.utf8(names[k].1.clone()), b.name_chars))
                             .clone(),
-                        Err(_) => format!("func[{index}]").into(),
+                        Err(_) => NodeName::Own(cut(format!("func[{index}]").into(), b.name_chars)),
                     };
-                    b.node(Some(node), "symbol", label, entry..body.end);
+                    b.node_named(Some(node), "symbol", label, entry..body.end);
                     Some(body.end)
                 })(),
                 _ => (|| {

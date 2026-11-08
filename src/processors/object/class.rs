@@ -6,7 +6,7 @@
 //! descriptor it is, else to the constant pool; a Match in a member's own name has the class's
 //! Trail (M6 spec §3 rule 5). Labels are decoded from modified UTF-8; the bytes rg searches are
 //! never transformed.
-use super::layouts::{Builder, sub, u16_at, u32_at};
+use super::layouts::{Builder, NodeName, share, sub, u16_at, u32_at};
 use std::borrow::Cow;
 use std::ops::Range;
 
@@ -122,17 +122,6 @@ fn modified_utf8(b: &[u8]) -> Cow<'_, str> {
             .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
             .collect(),
     )
-}
-
-/// `name` cut at `max` characters with `…`, as the Builder cuts every name (`layouts::cut`), so
-/// that a name shared by many members is cut once; the Builder's own cut then keeps it.
-fn cut(name: Cow<'_, str>, max: usize) -> Cow<'_, str> {
-    if max == 0 || name.len() <= max || name.chars().count() <= max {
-        return name;
-    }
-    let mut s: String = name.chars().take(max - 1).collect();
-    s.push('…');
-    Cow::Owned(s)
 }
 
 /// The length of the instruction at `pc` of `code` (whose first byte is offset 0 of the
@@ -337,15 +326,15 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
         pool_bytes.start..bytes.len(),
     );
     b.node(Some(class), "section", "constant pool".into(), pool_bytes);
-    // Each name is decoded and cut once, and members that share a constant take a copy of
-    // its cut name (code review M6 r3, Codex #1): a file costs its bytes, not its members
-    // times the name's length.
-    let mut names: Vec<Option<Cow<'_, str>>> = vec![None; pool.len()];
+    // Each name is decoded and cut once, and members that share a constant share its cut
+    // name (code review M6 r3, Codex #1), one copy also uncut (r4, Fable #1): a file costs its
+    // bytes, not its members times the name's length.
+    let mut names: Vec<Option<NodeName<'_>>> = vec![None; pool.len()];
     let name_chars = b.name_chars;
-    let mut label = |k: u16| -> Cow<'_, str> {
+    let mut label = |k: u16| -> NodeName<'_> {
         let decode = || {
             let name = utf8(k).map_or(Cow::Borrowed("?"), |r| modified_utf8(&bytes[r]));
-            cut(name, name_chars)
+            share(name, name_chars)
         };
         match names.get_mut(k as usize) {
             Some(slot) => slot.get_or_insert_with(decode).clone(),
@@ -354,11 +343,11 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
     };
     let field_nodes: Vec<usize> = fields
         .iter()
-        .map(|f| b.node(Some(class), "field", label(f.name), f.bytes.clone()))
+        .map(|f| b.node_named(Some(class), "field", label(f.name), f.bytes.clone()))
         .collect();
     let method_nodes: Vec<usize> = methods
         .iter()
-        .map(|m| b.node(Some(class), "method", label(m.name), m.bytes.clone()))
+        .map(|m| b.node_named(Some(class), "method", label(m.name), m.bytes.clone()))
         .collect();
     for (k, o) in owner.iter().enumerate() {
         let node = match *o {

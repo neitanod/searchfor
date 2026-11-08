@@ -15,7 +15,8 @@ use crate::model::{Segment, Trail};
 use crate::trail::LineIndex;
 use std::borrow::Cow;
 use std::cell::OnceCell;
-use std::ops::Range;
+use std::ops::{Deref, Range};
+use std::rc::Rc;
 
 /// Characters of a name before it is cut with `…`, when the Definition sets no `name_chars`.
 pub const NAME_CHARS: usize = 40;
@@ -32,10 +33,45 @@ const SCAN: usize = 32;
 pub struct BinaryNode<'a> {
     pub parent: Option<usize>,
     pub kind: &'static str,
-    pub name: Cow<'a, str>,
+    pub name: NodeName<'a>,
     /// The bytes its Section covers: its unit in the file.
     pub span: Range<usize>,
     depth: usize,
+}
+
+/// A node's name: the one its reader gave it, or one copy that all the nodes naming it share,
+/// so that a decoded name many members share costs the file's bytes once, cut or not (code
+/// review M6 r4, Fable #1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeName<'a> {
+    Own(Cow<'a, str>),
+    Shared(Rc<str>),
+}
+
+impl Deref for NodeName<'_> {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        match self {
+            NodeName::Own(s) => s,
+            NodeName::Shared(s) => s,
+        }
+    }
+}
+
+impl PartialEq<&str> for NodeName<'_> {
+    fn eq(&self, other: &&str) -> bool {
+        **self == **other
+    }
+}
+
+/// `name` cut at `max` characters as every name is, to give the nodes that share it with
+/// `Builder::node_named`: borrowed from the file it stays so, a decoded copy is shared.
+pub(super) fn share(name: Cow<'_, str>, max: usize) -> NodeName<'_> {
+    match cut(name, max) {
+        Cow::Owned(s) => NodeName::Shared(s.into()),
+        name => NodeName::Own(name),
+    }
 }
 
 /// What the `object` Processor knows of a file of an M6 layout: its nodes and the bytes each
@@ -79,7 +115,19 @@ impl<'a> Builder<'a> {
         name: Cow<'a, str>,
         span: Range<usize>,
     ) -> usize {
-        let i = self.open(parent, kind, name, span.clone());
+        let name = NodeName::Own(cut(name, self.name_chars));
+        self.node_named(parent, kind, name, span)
+    }
+
+    /// `node` with a name already cut, as `share` cuts it.
+    pub fn node_named(
+        &mut self,
+        parent: Option<usize>,
+        kind: &'static str,
+        name: NodeName<'a>,
+        span: Range<usize>,
+    ) -> usize {
+        let i = self.push(parent, kind, name, span.clone());
         if Some(i) != parent {
             self.own(i, span);
         }
@@ -95,6 +143,17 @@ impl<'a> Builder<'a> {
         name: Cow<'a, str>,
         span: Range<usize>,
     ) -> usize {
+        let name = NodeName::Own(cut(name, self.name_chars));
+        self.push(parent, kind, name, span)
+    }
+
+    fn push(
+        &mut self,
+        parent: Option<usize>,
+        kind: &'static str,
+        name: NodeName<'a>,
+        span: Range<usize>,
+    ) -> usize {
         let depth = parent.map_or(1, |p| self.nodes[p].depth + 1);
         if depth > MAX_DEPTH
             && let Some(p) = parent
@@ -105,7 +164,7 @@ impl<'a> Builder<'a> {
         self.nodes.push(BinaryNode {
             parent,
             kind,
-            name: cut(name, self.name_chars),
+            name,
             span,
             depth,
         });
@@ -308,7 +367,7 @@ impl<'a> BinaryMap<'a> {
                 let r = &node.span;
                 Segment {
                     kind: node.kind.into(),
-                    name: node.name.clone().into_owned(),
+                    name: node.name.to_string(),
                     line: lines.line_of(r.start),
                     end_line: lines.line_of(r.end.saturating_sub(1).max(r.start)),
                     level: None,
@@ -316,6 +375,22 @@ impl<'a> BinaryMap<'a> {
                 }
             })
             .collect()
+    }
+
+    /// The bytes the nodes' names hold of their own, one copy that several nodes share counted
+    /// once, for the tests: what the names of a file cost.
+    #[doc(hidden)]
+    pub fn name_bytes(&self) -> usize {
+        let mut shared = std::collections::HashSet::new();
+        self.nodes
+            .iter()
+            .map(|n| match &n.name {
+                NodeName::Own(Cow::Owned(s)) => s.len(),
+                NodeName::Own(Cow::Borrowed(_)) => 0,
+                NodeName::Shared(s) if shared.insert(Rc::as_ptr(s)) => s.len(),
+                NodeName::Shared(_) => 0,
+            })
+            .sum()
     }
 
     /// The source byte ranges of the nodes and of what they own, for the fuzz: never past the
@@ -374,6 +449,46 @@ mod tests {
         }
         let m = b.finish();
         assert_eq!(m.trail(3, &LineIndex::new(&bytes)).len(), MAX_DEPTH);
+    }
+
+    /// Code review M6 r4, Fable #1: with `name_chars = 0`, no cut, the members that share a
+    /// name decoded to a copy of its own (invalid modified UTF-8, surrogate pairs, invalid
+    /// UTF-8 in WebAssembly) share that copy: the names of N and 2 N members cost the same, a
+    /// few times the file's bytes at most, where each member's copy cost 715 MB for 4 000.
+    #[test]
+    fn uncut_shared_names_are_one_copy() {
+        use crate::processors::object::fixture::m6;
+        let invalid = [b"m".as_slice(), &[0xff; 5_999]].concat();
+        let pairs = b"\xed\xa0\xbd\xed\xb8\x80".repeat(1_000);
+        let files: [(&str, Box<dyn Fn(usize) -> Vec<u8>>); 3] = [
+            (
+                "class",
+                Box::new(|n| m6::class_shared_name(&invalid, n as u16)),
+            ),
+            (
+                "class",
+                Box::new(|n| m6::class_shared_name(&pairs, n as u16)),
+            ),
+            (
+                "wasm",
+                Box::new(|n| m6::wasm_shared_name(&invalid, n, &[0, 0x0b], b"needle")),
+            ),
+        ];
+        for (layout, file) in files {
+            let cost = |n: usize| {
+                let bytes = file(n);
+                let m = BinaryMap::parse_with(&bytes, layout, 0).unwrap();
+                let named = m.nodes().iter().filter(|x| x.name.len() >= 4_000).count();
+                assert_eq!(named, n, "{layout}");
+                (m.name_bytes(), bytes.len())
+            };
+            let ((small, _), (large, len)) = (cost(200), cost(400));
+            assert_eq!(large, small, "{layout}");
+            assert!(
+                large <= 3 * len,
+                "{layout}: {large} bytes of names, {len} of file"
+            );
+        }
     }
 
     #[test]
