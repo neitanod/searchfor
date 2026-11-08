@@ -61,3 +61,9 @@ install-path = "CARGO_HOME"
 install-updater = false
 # release.yml carries the four patches described at the top of this file.
 allow-dirty = ["ci"]
+
+# The runner of each target, where dist's default is not the CI's: dist 0.33.0 picks macos-14 for
+# aarch64-apple-darwin, whose jobs GitHub cancelled with no runner on v1.0.0-rc.1; ci.yml builds
+# and tests the same target on macos-15.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
