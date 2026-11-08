@@ -941,7 +941,9 @@ the class names of Telegram's export template: without them the page keeps HTML'
 - **Names** are the file's text as written, cut at the Definition's `name_chars` (40 when
   absent) with `…`. The words s4 adds to a name (`row 2`, `cell 3`, `stage 1`, `part 1.1`, `[1]`)
   come from no file, so `--in-headings` never finds them; a decoded name (a mail subject, a
-  `.properties` escape, a JSON string) is searched decoded.
+  `.properties` escape, a JSON string) is searched decoded. With `name_chars = 0` names are not
+  cut, and each Match's Trail holds its own copy of them: many Matches under one very long name,
+  as a crafted binary can have, cost memory for every Match.
 - **A match in a Segment's own name** has the Trail of the Segment's parent, as on a heading
   line; cues keep their own.
 - **Sections.** `--expand` prints the Section of a match's last Segment, and `--json --expand`

@@ -980,7 +980,9 @@ los Trails de HTML.
   la Definición (40 si no está) con `…`. Las palabras que s4 suma a un nombre (`row 2`,
   `cell 3`, `stage 1`, `part 1.1`, `[1]`) no salen de ningún archivo, así que `--in-headings`
   nunca las encuentra; un nombre decodificado (el asunto de un mail, un escape de
-  `.properties`, un string de JSON) se busca decodificado.
+  `.properties`, un string de JSON) se busca decodificado. Con `name_chars = 0` los nombres no se
+  cortan, y el Trail de cada resultado guarda su propia copia: muchos resultados bajo un nombre muy
+  largo, como puede tenerlos un binario armado a propósito, cuestan memoria por cada resultado.
 - **Un resultado en el nombre propio de un Segmento** tiene el Trail del padre del Segmento,
   como en una línea de título; los cues conservan el suyo.
 - **Secciones.** `--expand` imprime la Sección del último Segmento de un resultado, y

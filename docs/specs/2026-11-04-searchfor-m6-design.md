@@ -847,7 +847,9 @@ Details, each a decision:
   cut once per constant, so the cost stays bounded by the file's bytes (§11). A WebAssembly
   function's name is decoded and cut once, however many code sections number its function again.
   Members and functions that share one decoded name share one copy of it, cut or not
-  (`name_chars = 0`), so a file's names cost its bytes a few times at most.
+  (`name_chars = 0`), so the map of a file's names costs its bytes a few times at most. Each Match's
+  Trail still holds its own copy of each name: with `name_chars = 0`, many Matches under one long
+  name cost that name once per Match.
 - **Fat Mach-O against Java** (`cafebabe`): §4.2.
 
 ## 10. Group F · Everyday
