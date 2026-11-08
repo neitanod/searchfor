@@ -523,3 +523,42 @@ fn m6_telegram_root_chat_is_a_name() {
     ));
     assert_eq!(paths(&rows), ["Work › 2024 Ana › text"]);
 }
+
+/// Jupyter's headings are read over the source strings decoded and joined: an escaped `#`
+/// and a heading split over two strings (code round 1, Codex #7).
+#[test]
+fn m6_jupyter_headings_decoded() {
+    let fx = Fixture::new();
+    put(
+        &fx,
+        "nb.ipynb",
+        br###"{"cells":[
+{"cell_type":"markdown","source":["# Heading\n","## Long"," title\n"]},
+{"cell_type":"code","source":["needle"]}
+]}"###,
+    );
+    let rows = matches(&output(
+        &fx,
+        "jupyter",
+        "nb.ipynb",
+        "needle",
+        &["--json", "--within", "Heading"],
+    ));
+    assert_eq!(paths(&rows), ["Heading › Long title › cell 2"]);
+    let rows = matches(&output(
+        &fx,
+        "jupyter",
+        "nb.ipynb",
+        "^Long title$",
+        &["--json", "--in-headings"],
+    ));
+    assert_eq!(paths(&rows), ["Heading"]);
+    let rows = matches(&output(
+        &fx,
+        "jupyter",
+        "nb.ipynb",
+        "Heading",
+        &["--json", "--in-headings"],
+    ));
+    assert_eq!(rows.len(), 1);
+}

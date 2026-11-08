@@ -137,6 +137,7 @@ fn named(
 #[cfg(test)]
 mod tests {
     use super::super::tests::{every_byte, needles};
+    use crate::processors::Processor;
 
     #[test]
     fn late_names_missing_fields_and_other_shapes() {
@@ -172,6 +173,27 @@ mod tests {
             ]
         );
         every_byte(names, "har");
+        // Matches that share their Trail copy no Segment (Fable #32): with a 4 MB URL in the
+        // entry's signature, 16000 Matches in one value cost what one does.
+        let url = "u".repeat(4 << 20);
+        let many = format!(
+            r#"{{"log":{{"entries":[{{"request":{{"method":"GET","url":"{url}"}},"x":"{}"}}]}}}}"#,
+            "needle ".repeat(16_000)
+        );
+        let src = many.as_bytes();
+        let anchors: Vec<usize> = memchr::memmem::find_iter(src, b"needle").collect();
+        let params = super::super::tests::params("har");
+        let prepared = crate::processors::keypath::Keypath
+            .prepare(super::super::tests::input(src), &params)
+            .unwrap();
+        let mut cursor = prepared.cursor();
+        cursor.trail_at(anchors[0]).unwrap();
+        let t = std::time::Instant::now();
+        for &a in &anchors {
+            assert_eq!(cursor.trail_at(a).unwrap().len(), 2);
+        }
+        let took = t.elapsed();
+        assert!(took < std::time::Duration::from_millis(500), "{took:?}");
         // Not HAR: keypath's Trails.
         assert_eq!(needles(br#"{"log":["needle"]}"#, "har"), ["log[0]"]);
     }

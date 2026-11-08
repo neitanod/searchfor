@@ -228,8 +228,20 @@ pub(super) fn decode(src: &[u8], inner: Range<usize>, escaped: bool) -> (String,
     if !escaped && let Ok(text) = std::str::from_utf8(&src[inner.clone()]) {
         return (text.to_string(), vec![(0..text.len(), inner)]);
     }
+    let valid = std::str::from_utf8(&src[inner.clone()]).is_ok();
+    let (text, pieces) = decode_split(src, inner.clone());
+    if valid {
+        let len = text.len();
+        return (text, vec![(0..len, inner)]);
+    }
+    (text, pieces)
+}
+
+/// `decode` with a piece per verbatim run, escape and invalid run, whatever the contents: the
+/// pieces of a text cut at any character, as Jupyter's headings, read over source lines
+/// decoded and joined, are.
+pub(super) fn decode_split(src: &[u8], inner: Range<usize>) -> (String, Pieces) {
     let raw = &src[inner.clone()];
-    let valid = std::str::from_utf8(raw).is_ok();
     let mut name = Decoded {
         base: inner.start,
         text: String::new(),
@@ -285,10 +297,6 @@ pub(super) fn decode(src: &[u8], inner: Range<usize>, escaped: bool) -> (String,
         run = i;
     }
     name.raw(raw, run, raw.len());
-    if valid {
-        let len = name.text.len();
-        return (name.text, vec![(0..len, inner)]);
-    }
     (name.text, name.pieces)
 }
 
