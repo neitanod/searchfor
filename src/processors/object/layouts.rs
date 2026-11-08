@@ -440,6 +440,41 @@ mod own_names {
     }
 
     #[test]
+    fn a_java_member_name_comes_before_the_ldc_that_loads_it() {
+        // The method `needle` loads the string `needle`, one shared Utf8 entry: a Match in it
+        // is in the method's own name, with the class's Trail (orchestrator's decision 2 on
+        // code round 1, Codex #10, Fable #59).
+        let mut class = m6::class(b"needle");
+        let header = [0, 9, 0, 5, 0, 6];
+        let at = class.windows(6).position(|w| w == header).unwrap();
+        class[at + 3] = 8;
+        assert_eq!(
+            trail(&class, "class", b"needle"),
+            ["Java 17", "com.example.Cart"]
+        );
+        // The class's Section holds its constant pool's (Fable #60).
+        let m = BinaryMap::parse(&class, "class").unwrap();
+        let span = |kind: &str| {
+            m.nodes()
+                .iter()
+                .find(|n| n.kind == kind)
+                .unwrap()
+                .span
+                .clone()
+        };
+        let (outer, pool) = (span("class"), span("section"));
+        assert!(
+            outer.start <= pool.start && pool.end <= outer.end,
+            "{outer:?} {pool:?}"
+        );
+        // Unshared, the string is the method's.
+        assert_eq!(
+            trail(&m6::class(b"needle"), "class", b"needle"),
+            ["Java 17", "com.example.Cart", "addItem"]
+        );
+    }
+
+    #[test]
     fn names_written_in_the_file_are_outside_what_they_name() {
         assert_eq!(trail(&m6::png(b"x"), "png", b"Comment"), ["PNG"]);
         assert_eq!(trail(&m6::png(b"x"), "png", b"tEXt"), ["PNG"]);
