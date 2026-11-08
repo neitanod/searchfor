@@ -321,3 +321,30 @@ fn m6_builtin_paths_review_r1() {
     }
     assert!(selected(&d, "/etc/APP.CONF").is_none());
 }
+/// Review r1, Fable #28, over the built-in Definitions: Telegram Desktop's export of a whole
+/// account keeps each chat's HTML pages in `DataExport_*/chats/<chat>/` (a layout written from
+/// memory, not checked against a real export: the glob only accepts more paths). Its other
+/// pages, and a `messages.html` outside a chat's folder, stay HTML.
+#[test]
+fn m6_telegram_account_export_html() {
+    let empty = tempfile::tempdir().unwrap();
+    let (r, warnings) = Registry::load(Some(empty.path()), &|_| true);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let d = Detector::new(&r, &[]).unwrap();
+    for (path, want) in [
+        (
+            "proj/DataExport_2024/chats/chat_001/messages.html",
+            "telegram-html",
+        ),
+        (
+            "proj/DataExport_2024/chats/chat_001/messages2.html",
+            "telegram-html",
+        ),
+        ("proj/DataExport_2024/chats/chat_001/other.html", "html"),
+        ("proj/DataExport_2024/messages.html", "html"),
+        ("proj/DataExport_2024/chats/messages.html", "html"),
+        ("proj/chats/chat_001/messages.html", "html"),
+    ] {
+        assert_eq!(selected(&d, path).as_deref(), Some(want), "{path}");
+    }
+}

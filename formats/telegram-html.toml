@@ -1,8 +1,10 @@
 # formats/telegram-html.toml — Telegram Desktop's HTML chat export (M6 spec §10.5): each
 # message named by its date's title and its sender, `31.01.2024 10:04:12 Ana`. Without the
-# export template's class names, a page keeps HTML's element paths.
+# export template's class names, a page keeps HTML's element paths. A whole account's export
+# keeps each chat's pages in `DataExport_*/chats/<chat>/` (from memory, not checked against a
+# real export: the glob only accepts more paths).
 name       = "telegram-html"
-paths      = ["**/ChatExport_*/messages*.html"]
+paths      = ["**/ChatExport_*/messages*.html", "**/DataExport_*/chats/*/messages*.html"]
 processor  = "markup"
 
 [params]

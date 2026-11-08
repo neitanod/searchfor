@@ -527,7 +527,10 @@ fn m6_real_definitions_carry_their_signals() {
             "telegram-html",
             &[],
             &[],
-            &["**/ChatExport_*/messages*.html"],
+            &[
+                "**/ChatExport_*/messages*.html",
+                "**/DataExport_*/chats/*/messages*.html",
+            ],
             &[],
             "markup",
             &[("syntax", "html"), ("view", "telegram")],
@@ -599,6 +602,10 @@ fn m6_real_definitions_carry_their_signals() {
         ("x/DataExport_2024/result.json", Some("telegram")),
         ("x/ChatExport_2024/messages.html", Some("telegram-html")),
         ("x/ChatExport_2024/messages2.html", Some("telegram-html")),
+        (
+            "x/DataExport_2024/chats/chat_001/messages.html",
+            Some("telegram-html"),
+        ),
         ("x/result.json", Some("json")),
         ("x/messages.html", Some("html")),
         ("x/ChatExport_2024/other.json", Some("json")),
