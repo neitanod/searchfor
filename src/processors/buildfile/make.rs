@@ -246,14 +246,15 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
             }
             // `define` nests: GNU make 4.4.1 keeps an inner `define` … `endef` in the value
             // and ends it at the `endef` that matches (Fable r1 #20). An `override define`
-            // in the body opens none.
+            // in the body opens none, and neither does a line after the recipe prefix: GNU make
+            // reads no directive there (Fable r2 #10).
             let mut end = src.len();
             let mut depth = 1usize;
             let mut p = l.next;
             while let Some(b) = line_at(src, p) {
                 p = b.next;
                 let bt = trim(src, b.start..b.end);
-                if bt.is_empty() {
+                if bt.is_empty() || src[b.start] == prefix {
                     continue;
                 }
                 match word(src, bt).0 {
@@ -438,6 +439,18 @@ mod tests {
         assert_eq!(scan(src)[0].range, 0..31);
         let src = b"define Y\nZ = 1\n";
         assert_eq!(scan(src)[0].range, 0..src.len());
+    }
+
+    /// Fable r2 #10: inside a `define`, GNU make 4.4.1 reads no `define` or `endef` on a line
+    /// that starts with the recipe prefix (`make -p` keeps `\tendef` in `T`'s value).
+    #[test]
+    fn a_define_body_line_after_the_recipe_prefix_closes_nothing() {
+        let src = b"define T\n\tendef\nbody\nendef\nz: x\n";
+        assert_eq!(scan(src)[0].range, 0..src.len() - 5);
+        let src = b"define T\n\tdefine U\nendef\nz: x\n";
+        assert_eq!(scan(src)[0].range, 0..src.len() - 5);
+        let src = b".RECIPEPREFIX = >\ndefine T\n>endef\n\tendef\nz: x\n";
+        assert_eq!(scan(src)[1].range, 18..src.len() - 5);
     }
 
     #[test]

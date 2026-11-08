@@ -530,17 +530,25 @@ fn m6_rule_and_recipe_labels_are_their_names() {
 
 /// Fable r1 #20: `define` nests, as GNU make 4.4.1 reads it (checked: the outer variable's
 /// value holds the inner `define` … `endef`), so the `endef` that matches closes the key.
-/// `override define` inside a body opens none.
+/// `override define` inside a body opens none. Fable r2 #10: a line after the recipe prefix
+/// opens and closes none either (`make-define-3.mk`: `make -p` keeps `\tendef` in `T`'s value).
 #[test]
 fn m6_make_defines_nest() {
     let fx = Fixture::new();
     put(
         &fx,
         "define.mk",
-        b"define needle-def\n\tdefine inner\n\tendef\nneedle-body\nendef\nK := needle\ndefine D\noverride define E\nendef\nneedle-after\nendef\n",
+        b"define needle-def\ndefine inner\nendef\nneedle-body\nendef\nK := needle\ndefine D\noverride define E\nendef\nneedle-after\nendef\n",
     );
     let rows = matches(&output(&fx, "make", "define.mk", "needle", &["--json"]));
     assert_eq!(paths(&rows), ["", "needle-def", "K", ""]);
+    put(
+        &fx,
+        "define-3.mk",
+        b"define T\n\tendef\nbody-needle\nendef\nz: needle3\n\techo\n",
+    );
+    let rows = matches(&output(&fx, "make", "define-3.mk", "needle", &["--json"]));
+    assert_eq!(paths(&rows), ["T", "z"]);
 }
 
 /// Fable r2 #8: a rule opened inside a conditional keeps its recipe past the `endif`, as GNU
