@@ -64,8 +64,16 @@ pub(super) fn scan(src: &[u8], name_chars: usize) -> anyhow::Result<BlockIndex> 
         }
         if ctx == Ctx::List {
             let f = frames.last_mut().expect("a list frame");
-            let mut parts = f.holder.clone();
-            parts.push(Part::Index(f.n));
+            // A list that opened no Segment (past the depth) holds none either, so its
+            // elements need no name: building one copied the holder's at every level (Codex
+            // r1 #2). A name keeps no more pieces than its cut shows.
+            let mut parts = Vec::new();
+            if f.id.is_some() {
+                parts.extend_from_slice(&f.holder[..f.holder.len().min(keep)]);
+                if parts.len() < keep {
+                    parts.push(Part::Index(f.n));
+                }
+            }
             f.n = f.n.saturating_add(1);
             match c {
                 b'{' if !comprehension(src, i + 1) => {
@@ -373,6 +381,24 @@ mod tests {
         let ix = scan(src, 40).unwrap();
         // The heredoc's indented `EOT` is text: `<<` needs its marker at the line start.
         assert!(src[ix.entries[1].range()].ends_with(b"  EOT\nEOT"));
+    }
+
+    /// Codex r1 #2: each nested list copied its holder's whole name, past the depth too: 5 000
+    /// levels in 10 KB held 225 MB. Now as many levels take about what as many flat lists do.
+    #[test]
+    fn nested_lists_cost_what_flat_ones_do() {
+        let n = 20_000;
+        let deep = format!("a = {}\"needle\"{}\n", "[".repeat(n), "]".repeat(n));
+        let flat = format!("a = [{}\"needle\"]\n", "[],".repeat(n));
+        let t_deep = super::super::tests::fastest(|| drop(scan(deep.as_bytes(), 40).unwrap()));
+        let t_flat = super::super::tests::fastest(|| drop(scan(flat.as_bytes(), 40).unwrap()));
+        assert!(
+            t_deep < t_flat * 4 + std::time::Duration::from_millis(20),
+            "deep {t_deep:?}, flat {t_flat:?}"
+        );
+        let ix = scan(deep.as_bytes(), 40).unwrap();
+        assert_eq!(ix.entries.len(), super::super::MAX_DEPTH);
+        assert_eq!(ix.name(deep.as_bytes(), 3, 40).0, "a[0][0][0]");
     }
 
     #[test]
