@@ -1730,10 +1730,14 @@ mod models {
     /// strings (some with a `${…}` that holds a quoted `}`), objects, lists, heredocs and
     /// numbers with an end-of-line comment: a Match is in its attribute, its object keys
     /// and list elements (`k[1]`, 0-based) included, inside every block open around it, each
-    /// named by its type and labels without quotes.
+    /// named by its type and labels without quotes. Some lists span lines, with comments after
+    /// an element, after its comma and after the closing `]` (code review M6 r3, Fable #7):
+    /// they name nothing and number no element.
     fn hcl(r: &mut Rng) -> Generated {
-        fn value(r: &mut Rng, path: &mut Vec<String>, out: &mut Generated, depth: usize) {
-            match r.below(if depth < 3 { 3 } else { 1 }) {
+        /// Writes a value; whether it was a list, whose Segment names nothing.
+        fn value(r: &mut Rng, path: &mut Vec<String>, out: &mut Generated, depth: usize) -> bool {
+            let kind = r.below(if depth < 3 { 3 } else { 1 });
+            match kind {
                 0 => {
                     out.0 += "\"";
                     if r.below(2) == 0 {
@@ -1756,21 +1760,41 @@ mod models {
                     out.0 += "}";
                 }
                 _ => {
-                    out.0 += "[";
+                    let lines = r.below(2) == 0;
+                    out.0 += if lines { "[\n" } else { "[" };
                     let n = 1 + r.below(3);
                     for j in 0..n {
                         let last = path.pop().expect("a list has a key");
                         path.push(format!("{last}[{j}]"));
-                        value(r, path, out, depth + 1);
-                        path.pop();
-                        path.push(last);
-                        if j + 1 < n {
+                        let list = value(r, path, out, depth + 1);
+                        let more = j + 1 < n;
+                        if lines {
+                            // An element that is no list takes its end-of-line comment, the
+                            // comma before it included (spec §7.8).
+                            out.0 += if more { "," } else { "" };
+                            match r.below(3) {
+                                0 if !list => {
+                                    out.0 += " # ";
+                                    out.1.push((out.0.len(), trail(path)));
+                                    out.0 += "needle\n";
+                                }
+                                1 if more => out.0 += "\n  // c\n",
+                                _ => out.0 += "\n",
+                            }
+                        } else if more {
                             out.0 += ", ";
                         }
+                        path.pop();
+                        path.push(last);
                     }
                     out.0 += "]";
+                    // The attribute's own value ends its line: a comment may follow the `]`.
+                    if lines && depth == 0 && r.below(2) == 0 {
+                        out.0 += " # e";
+                    }
                 }
             }
+            kind == 2
         }
         fn items(r: &mut Rng, path: &mut Vec<String>, out: &mut Generated, n: &mut usize) {
             for _ in 0..=r.below(4) {
