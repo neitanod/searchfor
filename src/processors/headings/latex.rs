@@ -7,7 +7,8 @@
 //! command. The Definition's hidden environments hold Segments without showing. A heading ends
 //! at its enclosing environment's end at the latest; an `\end` with no open environment of its
 //! name closes nothing; an environment left open runs to the end of the file. A `%` comment
-//! (not `\%`) is text. `\input` and `\include` are never followed.
+//! (not `\%`) is text, and so is the body of a macro definition. `\input` and `\include` are
+//! never followed.
 use super::{Item, Items, MAX_DEPTH, Named, trim};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -126,6 +127,66 @@ fn group(src: &[u8], at: usize, open: u8, close: u8) -> Option<(Vec<Range<usize>
     None
 }
 
+/// Commands that define a macro or an environment: their bodies are text.
+const DEFINITIONS: [&[u8]; 9] = [
+    b"newcommand",
+    b"renewcommand",
+    b"providecommand",
+    b"newenvironment",
+    b"renewenvironment",
+    b"def",
+    b"gdef",
+    b"edef",
+    b"xdef",
+];
+
+/// Where a definition whose command `cmd` ends at `at` ends, past its body (both bodies of an
+/// environment): what it defines is text there, never a heading or an environment (code review
+/// M6 r1, Fable #25; spec §6.4 makes macros that expand to sectioning commands text). None
+/// when it is not written as one, or a part does not close within `GROUP_MAX` bytes: then the
+/// walk reads on after the command, as it read before.
+fn definition_end(src: &[u8], cmd: &[u8], at: usize) -> Option<usize> {
+    let mut j = at;
+    if src.get(j) == Some(&b'*') {
+        j += 1;
+    }
+    j = skip_blanks(src, j);
+    let bodies = if matches!(cmd, b"def" | b"gdef" | b"edef" | b"xdef") {
+        // `\def\name#1#2{…}`: the name, its parameter text up to the body's brace.
+        if src.get(j) != Some(&b'\\') {
+            return None;
+        }
+        let to = src.len().min(j.saturating_add(GROUP_MAX));
+        j += memchr::memchr(b'{', &src[j..to])?;
+        1
+    } else {
+        // `{\name}` or `\name` (`{name}` for an environment), `[n]`, `[default]`, the body.
+        if src.get(j) == Some(&b'{') {
+            j = group(src, j, b'{', b'}')?.1;
+        } else if src.get(j) == Some(&b'\\') {
+            j += 1 + src[j + 1..]
+                .iter()
+                .take_while(|b| b.is_ascii_alphabetic())
+                .count()
+                .max(1);
+        } else {
+            return None;
+        }
+        for _ in 0..2 {
+            j = optional(src, skip_blanks(src, j))?.1;
+        }
+        if cmd.ends_with(b"environment") { 2 } else { 1 }
+    };
+    for _ in 0..bodies {
+        j = skip_blanks(src, j);
+        if src.get(j) != Some(&b'{') {
+            return None;
+        }
+        j = group(src, j, b'{', b'}')?.1;
+    }
+    Some(j)
+}
+
 /// The text of a one-line `{name}` at `at`, with no nesting: (name, end past `}`).
 fn simple(src: &[u8], at: usize) -> Option<(Range<usize>, usize)> {
     if src.get(at) != Some(&b'{') {
@@ -228,6 +289,12 @@ fn scan_counted(src: &[u8], hidden: &[&[u8]]) -> (Items, usize) {
                     i = d + 2 + k;
                 }
             }
+            continue;
+        }
+        if DEFINITIONS.contains(&cmd)
+            && let Some(end) = definition_end(src, cmd, name_end)
+        {
+            i = end;
             continue;
         }
         let section = SECTIONS.iter().position(|s| *s == cmd);
@@ -458,6 +525,20 @@ mod tests {
         let t = trail(src.as_bytes(), &p, "needle-t");
         assert_eq!(t.len(), super::MAX_DEPTH - 1);
         assert_eq!(t.last().unwrap(), "T");
+    }
+
+    /// Code review M6 r1, Fable #25: the body of a macro definition is text, so a sectioning
+    /// command or a `\\begin` in it opens nothing (`\\newcommand`, `\\renewcommand`,
+    /// `\\providecommand`, `\\newenvironment`, `\\def` and its kin).
+    #[test]
+    fn a_macro_definition_is_text() {
+        let p = params("latex");
+        let src = b"\\newcommand{\\mysec}[1]{\\section{#1}}\n\\renewcommand*\\other[2][x]{\\chapter{#2}}\n\\def\\d#1#2{\\section{#1}\\begin{figure}}\n\\newenvironment{box}[1]{\\begin{center}\\section{#1}}{\\end{center}}\nneedle-top\n\\section{Real}\nneedle-a\n\\mysec{Fake}\nneedle-b\n\\providecommand{\\p}{\\section{P}}\nneedle-c\n";
+        assert_eq!(trail(src, &p, "needle-top"), Vec::<String>::new());
+        assert_eq!(trail(src, &p, "needle-a"), ["Real"]);
+        assert_eq!(trail(src, &p, "needle-b"), ["Real"]);
+        assert_eq!(trail(src, &p, "needle-c"), ["Real"]);
+        cursor_equals_model(src, &p);
     }
 
     #[test]
