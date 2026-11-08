@@ -207,6 +207,57 @@ pub fn wasm(text: &[u8]) -> Vec<u8> {
     b
 }
 
+/// A WebAssembly module whose `name` section names function 0 `name`, then `sections` code
+/// sections of one function each, whose body is `body`, and a data section holding `text`
+/// (code review M6 r4, Codex #1: each code section numbers its functions from 0 again).
+pub fn wasm_shared_name(name: &[u8], sections: usize, body: &[u8], text: &[u8]) -> Vec<u8> {
+    let mut b = b"\0asm\x01\0\0\0".to_vec();
+    let mut names = vec![1, 0];
+    names.extend(leb(name.len()));
+    names.extend(name);
+    let mut custom = vec![4];
+    custom.extend(b"name");
+    custom.push(1);
+    custom.extend(leb(names.len()));
+    custom.extend(names);
+    b.extend(wasm_section(0, &custom));
+    let mut code = vec![1];
+    code.extend(leb(body.len()));
+    code.extend(body);
+    let code = wasm_section(10, &code);
+    for _ in 0..sections {
+        b.extend(&code);
+    }
+    let mut data = vec![1, 0, 0x41, 0, 0x0b];
+    data.extend(leb(text.len()));
+    data.extend(text);
+    b.extend(wasm_section(11, &data));
+    b
+}
+
+/// A Java 17 class `C` of `methods` methods that share the name `name` and the descriptor
+/// `()V`, none with attributes, and an unused Utf8 `needle` (`shared_name_class` in
+/// `tests/cli_m6_object.rs`).
+pub fn class_shared_name(name: &[u8], methods: u16) -> Vec<u8> {
+    let mut b = b"\xca\xfe\xba\xbe\0\0\0\x3d\0\x06".to_vec();
+    for (i, text) in [&b"C"[..], name, b"()V", b"needle"].iter().enumerate() {
+        b.push(1);
+        b.extend((text.len() as u16).to_be_bytes());
+        b.extend(*text);
+        if i == 0 {
+            b.extend([7, 0, 1]);
+        }
+    }
+    // Access, this, super, no interfaces, no fields, the methods.
+    b.extend([0, 0x21, 0, 2, 0, 0, 0, 0, 0, 0]);
+    b.extend(methods.to_be_bytes());
+    for _ in 0..methods {
+        b.extend([0, 1, 0, 3, 0, 4, 0, 0]);
+    }
+    b.extend([0, 0]);
+    b
+}
+
 /// A Java 17 class `com.example.Cart` with one method, `addItem`, whose code loads the string
 /// constant `text` (`ldc`, `pop`, `return`).
 pub fn class(text: &[u8]) -> Vec<u8> {

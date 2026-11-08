@@ -3671,6 +3671,58 @@ fn m6_bibtex_broken_quotes_stay_linear() {
     }
 }
 
+/// Code review M6 r4, Codex #1: N and 2 N WebAssembly code sections that each name their
+/// function 0 by one name of 2 bytes a section, invalid UTF-8 or ASCII, cost time linear in
+/// the file, as the name is decoded and cut once for all of them: the second costs less than
+/// three times the first (CPU time of s4, best of three); decoding it in each section made it
+/// four (Codex measured 0.617 s and 2.440 s for 8 000 and 16 000 sections).
+#[test]
+#[ignore = "M6 WebAssembly code sections that share a long name; local timing"]
+#[cfg(target_os = "linux")]
+fn m6_wasm_code_sections_share_a_name() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    eprintln!("m6_wasm_code_sections_share_a_name: uptime {}", uptime());
+    const N: usize = 8_000;
+    for (case, byte) in [("invalid", 0xff), ("ascii", b'x')] {
+        let time = |n: usize| -> Duration {
+            let mut name = vec![b'm'];
+            name.resize(2 * n, byte);
+            let bytes = obj::m6::wasm_shared_name(&name, n, &[0, 0x0b], b"needle");
+            let file = format!("shared{n}.wasm");
+            std::fs::write(fx.file(&file), &bytes).unwrap();
+            let args = [
+                "--no-docs",
+                "--format",
+                "wasm",
+                "--flat",
+                "-a",
+                "needle",
+                file.as_str(),
+            ];
+            let (out, _) = sfor_output(&fx, &args);
+            assert!(
+                out.contains("WebAssembly › data › data[0]"),
+                "{case}: {out:.200}"
+            );
+            (0..3).map(|_| cpu_time(&fx, &args, 0)).min().unwrap()
+        };
+        let (small, large) = (time(N), time(2 * N));
+        eprintln!(
+            "m6 wasm shared names/{case}: {N} {small:?}, {} {large:?}",
+            2 * N
+        );
+        // Far past linear work over 128 KB, and short of the 2.44 s measured before.
+        assert!(large <= Duration::from_secs(1), "{case}: {large:?}");
+        if timing_enabled() {
+            assert!(
+                large < small * 3 + Duration::from_millis(20),
+                "{case}: 2 N cost {large:?}, N {small:?}"
+            );
+        }
+    }
+}
+
 /// `--expand` over a dense file of one Section, for each new Processor of M6 (C8 reported a
 /// 1 MiB Markdown and diff file of one Section taking more than 300 s, not reproduced since):
 /// a 1 MiB file where every line matches and one Section holds them all prints that Section

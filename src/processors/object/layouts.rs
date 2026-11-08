@@ -151,7 +151,7 @@ impl<'a> Builder<'a> {
 }
 
 /// `name` cut to `max` characters, the last one `…` (M6 spec §3 rule 4); 0 cuts nothing.
-fn cut(name: Cow<'_, str>, max: usize) -> Cow<'_, str> {
+pub(super) fn cut(name: Cow<'_, str>, max: usize) -> Cow<'_, str> {
     if max == 0 || name.len() <= max || name.chars().count() <= max {
         return name;
     }

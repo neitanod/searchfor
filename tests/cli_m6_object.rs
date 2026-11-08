@@ -202,6 +202,31 @@ fn m6_java_members_share_a_long_name() {
     }
 }
 
+/// Code review M6 r4, Codex #1: code sections that each number their function 0 again name it
+/// by the `name` section's one name, cut at 40 characters, decoded once for all of them.
+#[test]
+fn m6_wasm_code_sections_share_a_long_name() {
+    let fx = Fixture::new();
+    let cases: [(u8, String); 2] = [
+        (0xff, format!("m{}…", "\u{fffd}".repeat(38))),
+        (b'x', format!("m{}…", "x".repeat(38))),
+    ];
+    for (byte, label) in cases {
+        let mut name = vec![b'm'];
+        name.resize(3_000, byte);
+        let bytes = binary::wasm_shared_name(&name, 3, b"\0needle\x0b", b"data");
+        std::fs::write(fx.file("shared.wasm"), bytes).unwrap();
+        let out = run(&mut fx.s4(["--no-docs", "--json", "needle", "shared.wasm"]));
+        let found = rows(&out);
+        assert_eq!(found.len(), 3);
+        for row in &found {
+            assert_eq!(row["format"], "wasm");
+            assert_eq!(names(row), format!("WebAssembly › code › {label}"));
+            assert_eq!(row["trail"][2]["kind"], "symbol");
+        }
+    }
+}
+
 fn binaries() -> Vec<(&'static str, Vec<u8>)> {
     vec![
         ("jpeg", binary::jpeg(b"needle")),
