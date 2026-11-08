@@ -400,9 +400,12 @@ struct Column {
 
 /// Where an element that ends with its line ends: past its last byte `last` and the rest of
 /// that line (an end-of-line comment), but before the next token at `next` and white space.
+/// Only the bytes up to `next` are looked at, as in `blocks::tail_end`: with no `\n` there, a
+/// search to the end of the file made a table of columns with no line break quadratic.
 fn tail_end(src: &[u8], last: usize, next: usize) -> usize {
     let last = last.min(src.len());
-    let mut end = lex::line_end(src, last).min(next.max(last));
+    let hi = next.max(last).min(src.len());
+    let mut end = lex::line_end(&src[..hi], last);
     while end > last && is_space(src[end - 1]) {
         end -= 1;
     }
@@ -1281,5 +1284,28 @@ mod tests {
         let mut c = SqlCursor::new(src, 40);
         c.trail(at);
         assert_eq!(c.open_from_with(&mut |r| Some(r.start)), Some(0));
+    }
+
+    /// Found by tests/fuzz_m6.rs's CR mutation, the case of Fable r1 #2 in sql: with no `\n`
+    /// in the file (a lone CR ends no line, M6 spec §3, point 7) each column, `COPY` and
+    /// `DELIMITER` looked for their line's end at the end of the file. The same statements
+    /// with CR or LF take about the same time.
+    #[test]
+    fn statements_with_no_line_break_after_them_scan_in_linear_time() {
+        use crate::processors::blocks::tests::fastest;
+        for unit in [
+            "CREATE TABLE t (a int, needle text);",
+            "COPY t (needle) FROM stdin;",
+            "DELIMITER ; SELECT needle;",
+        ] {
+            let lf = format!("{unit}\n").repeat((256 << 10) / (unit.len() + 1));
+            let cr = lf.replace('\n', "\r");
+            let t_lf = fastest(|| drop(trails(lf.as_bytes(), "needle")));
+            let t_cr = fastest(|| drop(trails(cr.as_bytes(), "needle")));
+            assert!(
+                t_cr < t_lf * 4 + std::time::Duration::from_millis(20),
+                "{unit}: CR {t_cr:?}, LF {t_lf:?}"
+            );
+        }
     }
 }
