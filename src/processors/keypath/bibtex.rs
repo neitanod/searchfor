@@ -207,7 +207,10 @@ fn closings(src: &[u8]) -> HashMap<usize, usize> {
     // be quoted: neither `@comment` nor `@preamble`, read as plain groups).
     let mut open: Vec<(usize, usize, u8, bool)> = Vec::new();
     let mut depth = 0usize;
-    // After a quote ran to the end without closing: quotes end at a line-start group.
+    // After a quote ran to the end without closing: quotes end at a line-start group. A later
+    // quoted value that does close, over a line that starts with `@word{`, is cut there too
+    // (code review M6 r3, Fable #3): without it each broken quote would scan to the end of
+    // the file again, and N of them would make the pass quadratic. The pass stays linear.
     let mut degraded = false;
     let mut i = 0;
     while i < src.len() {
@@ -501,6 +504,20 @@ mod tests {
         assert_eq!(
             needles(src, "bibtex"),
             vec![vec!["k2", "t"], vec!["k3", "note"]]
+        );
+        cursor_is_model("bibtex", src);
+    }
+
+    #[test]
+    fn after_a_quote_that_never_closes_a_later_quote_ends_at_a_line_that_opens_a_group() {
+        // Code review M6 r3, Fable #3 (the spec takes the code): once a quote ran to the end
+        // without closing, a later quoted value ends at the first line that starts with
+        // `@word{`, even one that closes further down, so the pass over the file stays linear.
+        // Here `k3`'s note closes on line 5, yet `@d{k4` on line 4 opens an entry of its own.
+        let src = b"@a{k, t = \"x\n@b{k2, t = \"y\n@c{k3, note = \"multi\n@d{k4, t = {needle1}}\nline\", u = {needle2}}\n@e{k5, u = {needle3}}\n";
+        assert_eq!(
+            needles(src, "bibtex"),
+            vec![vec!["k4", "t"], vec![], vec!["k5", "u"]]
         );
         cursor_is_model("bibtex", src);
     }
