@@ -39,6 +39,23 @@ fn delimiter(src: &[u8], l: Line) -> Option<Block> {
     }
 }
 
+/// Whether `l` underlines the text line `text` as a legacy two-line title does: one repeated
+/// `=`, `-`, `~`, `^` or `+`, as long as the text within one character (Asciidoctor's rule).
+/// Such a title is text (M6 spec §6.1), and its underline opens no block (code review M6 r1,
+/// Fable #7).
+fn underline(src: &[u8], text: Line, l: Line) -> bool {
+    let u = &src[l.start..l.end];
+    let Some(&c) = u.first() else {
+        return false;
+    };
+    if !matches!(c, b'=' | b'-' | b'~' | b'^' | b'+') || !u.iter().all(|&b| b == c) {
+        return false;
+    }
+    let t = &src[trim(src, text.start..text.end)];
+    let chars = String::from_utf8_lossy(t).chars().count();
+    u.len().abs_diff(chars) <= 1
+}
+
 /// A heading line: (markers, name range). The markers are one run of `=` or `#`, six at most,
 /// followed by a space and some text.
 fn heading(src: &[u8], l: Line) -> Option<(usize, Range<usize>)> {
@@ -91,7 +108,10 @@ pub(crate) fn scan(src: &[u8]) -> Items {
     let mut document = false;
     // The open block: (delimiter line, its item).
     let mut block: Option<(Line, Option<usize>)> = None;
+    // The line before, when it was a line of text: a two-line title's underline may follow.
+    let mut text: Option<Line> = None;
     for l in lines(src) {
+        let before = text.take();
         if let Some((d, item)) = block {
             let t = trim(src, l.start..l.end);
             let closes = if src[d.start] == b'`' {
@@ -109,6 +129,11 @@ pub(crate) fn scan(src: &[u8]) -> Items {
         }
         if blank(src, l) {
             source = None;
+            continue;
+        }
+        if before.is_some_and(|t| underline(src, t, l)) {
+            source = None;
+            content = true;
             continue;
         }
         let comment = src[l.start..l.end].starts_with(b"//") && delimiter(src, l).is_none();
@@ -196,6 +221,7 @@ pub(crate) fn scan(src: &[u8]) -> Items {
         }
         if !comment {
             content = true;
+            text = Some(l);
         }
     }
     open.finish(&mut items, src.len());
@@ -224,6 +250,22 @@ mod tests {
         let src = b"intro\n= Late\n==No\n== A\nneedle\n";
         assert_eq!(trail(src, &p, "needle"), ["A"]);
         assert_eq!(trail(src, &p, "==No"), Vec::<String>::new());
+    }
+
+    /// Code review M6 r1, Fable #7: the underline of a legacy two-line title, within one
+    /// character of the title's length, is text, as the title is, and opens no block.
+    #[test]
+    fn a_two_line_title_is_text_and_its_underline_opens_no_block() {
+        let p = params("asciidoc");
+        let src = "Legacy Title\n------------\n\n== Real\nneedle-a1\n\nAnother\n-------\nneedle-a1b\nÉtude\n=====\n== B\nneedle-a2\nShort\n+++++++++\nneedle-a3\n++++\n";
+        let src = src.as_bytes();
+        assert_eq!(trail(src, &p, "needle-a1"), ["Real"]);
+        assert_eq!(trail(src, &p, "needle-a1b"), ["Real"]);
+        assert_eq!(trail(src, &p, "needle-a2"), ["B"]);
+        // Four characters longer than its line: a passthrough block, to the next `+++++++++`.
+        assert_eq!(trail(src, &p, "needle-a3"), ["B"]);
+        assert_eq!(trail(src, &p, "== B"), Vec::<String>::new());
+        cursor_equals_model(src, &p);
     }
 
     #[test]
