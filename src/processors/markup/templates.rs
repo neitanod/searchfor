@@ -114,16 +114,24 @@ fn find(words: &[&[u8]], w: &[u8]) -> Option<u8> {
     words.iter().position(|k| *k == w).map(|k| k as u8)
 }
 
+/// Bytes an opener's expression may span, as LaTeX's `GROUP_MAX`: past them it does not
+/// close and the opener is text. A block's expression is a line or a few; the bound keeps an
+/// unclosed brace, parenthesis or quote from making every later opener read to the end of the
+/// file (code review M6 r1, Fable #4 = Codex #4).
+const EXPR_MAX: usize = 4096;
+
 /// The byte after the `close` that ends an expression opened before `from`, skipping quoted
-/// strings and nested `open`…`close` pairs; None when the file ends first.
+/// strings and nested `open`…`close` pairs; None when the file ends first, or `EXPR_MAX`
+/// bytes do.
 fn balanced(src: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
+    let limit = src.len().min(from.saturating_add(EXPR_MAX));
     let mut depth = 0usize;
     let mut i = from;
-    while i < src.len() {
+    while i < limit {
         match src[i] {
             q @ (b'"' | b'\'' | b'`') => {
                 i += 1;
-                while i < src.len() && src[i] != q {
+                while i < limit && src[i] != q {
                     i += if src[i] == b'\\' { 2 } else { 1 };
                 }
             }
@@ -330,6 +338,33 @@ mod tests {
         assert_eq!(
             events(TemplateSyntax::Svelte, "{#if s === '}'  }"),
             ["open #if s === '}'"]
+        );
+    }
+
+    /// Code review M6 r1, Fable #4 = Codex #4: an opener whose expression does not close
+    /// within 4 KiB is text, so each of a run of unclosed openers (`{#if (`, `{#if '`,
+    /// `@if(`) reads at most that far instead of to the end of the file.
+    #[test]
+    fn an_expression_that_does_not_close_within_its_bound_is_text() {
+        let pad = |n: usize| " ".repeat(n);
+        let svelte = |n: usize| format!("{{#if a{}}}x{{/if}}", pad(n));
+        assert_eq!(
+            events(TemplateSyntax::Svelte, &svelte(4000)).len(),
+            2,
+            "closes within the bound"
+        );
+        assert_eq!(
+            events(TemplateSyntax::Svelte, &svelte(5000)),
+            ["close if"],
+            "closes past the bound"
+        );
+        let quote = format!("{{#if '{}'}}", pad(5000));
+        assert_eq!(events(TemplateSyntax::Svelte, &quote), Vec::<String>::new());
+        let blade = |n: usize| format!("@if(a{}) x @endif", pad(n));
+        assert_eq!(events(TemplateSyntax::Blade, &blade(4000)).len(), 2);
+        assert_eq!(
+            events(TemplateSyntax::Blade, &blade(5000)),
+            ["open @if", "close if"]
         );
     }
 
