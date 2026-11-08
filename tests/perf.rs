@@ -3760,8 +3760,16 @@ fn m6_latex_defs_without_a_body_scan_at_a_scanner_rate() {
         let args = ["--flat", "needle", "defs.tex"];
         let (out, _) = sfor_output(&fx, &args);
         assert!(out.ends_with(": A │ needle\n"), "{case}: {out}");
-        let Some(((t, _), (base, _))) = against_rg(&fx, &args) else {
-            return;
+        // Without the reference rg, s4 alone is timed, so the ceiling still holds.
+        let (t, base) = match against_rg(&fx, &args) {
+            Some(((t, _), (base, _))) => (t, Some(base)),
+            None => match best_of_three_drained(&sfor_bin(), &fx, &args, 0) {
+                Some((t, _)) => (t, None),
+                None => {
+                    eprintln!("skipping {case}: /usr/bin/time not found");
+                    continue;
+                }
+            },
         };
         let rate = Duration::from_secs_f64(src.len() as f64 / 50e6);
         eprintln!(
@@ -3770,7 +3778,7 @@ fn m6_latex_defs_without_a_body_scan_at_a_scanner_rate() {
         );
         // Far past a scanner's rate, and short of the 0.56 s and more measured before.
         assert!(t <= Duration::from_millis(350), "{case}: {t:?}");
-        if timing_enabled() {
+        if let (true, Some(base)) = (timing_enabled(), base) {
             assert!(
                 t <= base + rate,
                 "{case}: s4 {t:?} is more than rg's {base:?} + {rate:?}"
