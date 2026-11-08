@@ -82,8 +82,8 @@ Once v1.0 is published, any of these installs the `s4` binary:
 | Homebrew | `brew install neitanod/tap/searchfor` | macOS |
 | npm | `npm install -g searchfor` | the five systems of the table below |
 | crates.io | `cargo install searchfor` | any system with Rust 1.90 or later; it builds from source |
-| Shell script | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/neitanod/searchfor/releases/download/v1.0.0/searchfor-installer.sh \| sh` | Linux and macOS |
-| PowerShell script | `powershell -ExecutionPolicy Bypass -c "irm https://github.com/neitanod/searchfor/releases/download/v1.0.0/searchfor-installer.ps1 \| iex"` | Windows |
+| Shell script | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/neitanod/searchfor/releases/latest/download/searchfor-installer.sh \| sh` | Linux and macOS |
+| PowerShell script | `powershell -ExecutionPolicy Bypass -c "irm https://github.com/neitanod/searchfor/releases/latest/download/searchfor-installer.ps1 \| iex"` | Windows |
 | GitHub Releases | download the archive of your system from https://github.com/neitanod/searchfor/releases | the five systems of the table below |
 
 The prebuilt binaries cover five systems:

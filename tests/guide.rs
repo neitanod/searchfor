@@ -315,3 +315,22 @@ fn m6_docs_name_every_format() {
         "a statement, block, directive, hunk, message part, cell or field of the M6 Formats"
     ));
 }
+
+/// Review r1 of M6, Fable #52: the install scripts both READMEs give download the latest
+/// release, so a README written for one version installs the next one too.
+#[test]
+fn m6_readme_installers_follow_the_latest_release() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for file in ["README.md", "README.es.md"] {
+        let doc = std::fs::read_to_string(root.join(file)).unwrap();
+        for script in ["searchfor-installer.sh", "searchfor-installer.ps1"] {
+            assert!(
+                doc.contains(&format!(
+                    "https://github.com/neitanod/searchfor/releases/latest/download/{script}"
+                )),
+                "{file}: {script}"
+            );
+        }
+        assert!(!doc.contains("/releases/download/v"), "{file}");
+    }
+}
