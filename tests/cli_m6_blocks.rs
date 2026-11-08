@@ -515,3 +515,49 @@ fn m6_encoding_and_lone_cr() {
     assert_eq!(paths(&rows), lf);
     assert_eq!(rows[0]["line_number"], 1);
 }
+
+/// Fable r1 #17: the `server_name` or `ServerName` value a block's name takes, read after it
+/// opened, is no label (as orchestrator decision 1 has it for names read later in their
+/// unit): a Match there keeps the whole Trail, with no gap, and `--within` finds it.
+#[test]
+fn m6_late_names_keep_the_trail() {
+    let fx = Fixture::new();
+    put(
+        &fx,
+        "late.conf",
+        b"<IfModule mod_ssl.c>\n<VirtualHost *:443>\nServerName needle.example\n</VirtualHost>\n</IfModule>\n",
+    );
+    let want = ["IfModule mod_ssl.c › VirtualHost *:443 needle.example › ServerName"];
+    let rows = matches(&output(&fx, "apache", "late.conf", "needle", &["--json"]));
+    assert_eq!(paths(&rows), want);
+    let within = matches(&output(
+        &fx,
+        "apache",
+        "late.conf",
+        "needle",
+        &["--json", "--within", "VirtualHost"],
+    ));
+    assert_eq!(paths(&within), want);
+    put(
+        &fx,
+        "late-nginx.conf",
+        b"http {\n server {\n  server_name needle.example;\n }\n}\n",
+    );
+    let rows = matches(&output(
+        &fx,
+        "nginx",
+        "late-nginx.conf",
+        "needle",
+        &["--json"],
+    ));
+    assert_eq!(paths(&rows), ["http › server needle.example › server_name"]);
+    // In `--in-headings`, the Match in the value keeps the server it names, too.
+    let names = matches(&output(
+        &fx,
+        "nginx",
+        "late-nginx.conf",
+        "needle",
+        &["--json", "--in-headings"],
+    ));
+    assert_eq!(paths(&names), ["http › server needle.example"]);
+}

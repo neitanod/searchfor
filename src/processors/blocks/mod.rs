@@ -225,13 +225,12 @@ impl BlockIndex {
         &self.late[a..b]
     }
 
-    /// Whether a Match at `byte` names Segment `id` (its label or a late name piece).
+    /// Whether a Match at `byte` names Segment `id`: whether its label holds it. A late name
+    /// piece is no label: a value read later in the block, a Match in it keeps the whole
+    /// Trail (Fable r1 #17; orchestrator decision 1 says so of the names read later in their
+    /// unit), where leaving the block out kept its child and left a gap.
     fn names_at(&self, id: usize, byte: usize) -> bool {
         self.entries[id].label().contains(&byte)
-            || self
-                .late_of(id)
-                .iter()
-                .any(|l| l.start <= byte && byte < l.start + l.len as usize)
     }
 
     /// The name of Segment `id`, cut at `name_chars`, with its pieces.
@@ -434,8 +433,8 @@ impl Prepared for BlockPrepared<'_> {
 }
 
 /// Every named Segment, hidden ones included (a key that holds a list), with its Trail: it
-/// last, hidden ancestors left out. A Match in a name leaves out the named Segment alone
-/// (`Name::trail_at` without labels): a name piece never lies in an ancestor's label.
+/// last, hidden ancestors left out, and each one's label: a Match in a name leaves out the
+/// Segments whose label holds it, so one in a late name piece keeps the named Segment.
 fn names(src: &[u8], ix: &BlockIndex, name_chars: usize) -> Vec<Name> {
     let lines = crate::trail::LineIndex::new(src);
     let seg = |i: usize| segment(src, ix, i, name_chars, &lines);
@@ -457,8 +456,8 @@ fn names(src: &[u8], ix: &BlockIndex, name_chars: usize) -> Vec<Name> {
         out.push(Name {
             text,
             pieces,
+            labels: chain.iter().map(|&c| ix.entries[c].label()).collect(),
             trail: chain.into_iter().map(seg).collect(),
-            labels: Vec::new(),
             anchor: ix.name_anchor(i),
         });
     }
@@ -1043,8 +1042,10 @@ pub(crate) mod tests {
         assert_eq!(c.trail_at(at).unwrap().len(), MAX_DEPTH);
     }
 
+    /// A late name piece is no label (Fable r1 #17): a Match in it keeps the block it names,
+    /// in the Trail and in `--in-headings`; one in the block's own label leaves it out.
     #[test]
-    fn late_names_are_outside_their_segment() {
+    fn late_names_are_inside_their_segment() {
         let src = b"server {\n server_name a.example b;\n}\n";
         let ix = Params::of(&params("nginx")).unwrap().scan(src).unwrap();
         assert_eq!(ix.name(src, 0, 40).0, "server a.example");
@@ -1056,10 +1057,15 @@ pub(crate) mod tests {
             .iter()
             .map(|s| s.name.clone())
             .collect();
-        assert_eq!(names, ["server_name"]);
+        assert_eq!(names, ["server a.example", "server_name"]);
         let n = names_for(src);
         let server = n.iter().find(|n| n.text == "server a.example").unwrap();
         assert_eq!(server.pieces, vec![(0..6, 0..6), (7..16, at..at + 9)]);
+        let trail = |at: usize| -> Vec<String> {
+            server.trail_at(at).iter().map(|s| s.name.clone()).collect()
+        };
+        assert_eq!(trail(at), ["server a.example"]);
+        assert!(trail(0).is_empty());
     }
 
     fn names_for(src: &[u8]) -> Vec<Name> {
