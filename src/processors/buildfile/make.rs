@@ -211,14 +211,28 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
             {
                 e += 1;
             }
+            // `define` nests: GNU make 4.4.1 keeps an inner `define` … `endef` in the value
+            // and ends it at the `endef` that matches (Fable r1 #20). An `override define`
+            // in the body opens none.
             let mut end = src.len();
+            let mut depth = 1usize;
             let mut p = l.next;
             while let Some(b) = line_at(src, p) {
                 p = b.next;
                 let bt = trim(src, b.start..b.end);
-                if word(src, bt).0 == b"endef" {
-                    end = b.next;
-                    break;
+                if bt.is_empty() {
+                    continue;
+                }
+                match word(src, bt).0 {
+                    b"define" => depth += 1,
+                    b"endef" => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = b.next;
+                            break;
+                        }
+                    }
+                    _ => {}
                 }
             }
             pos = end;

@@ -517,3 +517,18 @@ fn m6_rule_and_recipe_labels_are_their_names() {
     ));
     assert_eq!(paths(&within), ["build"]);
 }
+
+/// Fable r1 #20: `define` nests, as GNU make 4.4.1 reads it (checked: the outer variable's
+/// value holds the inner `define` … `endef`), so the `endef` that matches closes the key.
+/// `override define` inside a body opens none.
+#[test]
+fn m6_make_defines_nest() {
+    let fx = Fixture::new();
+    put(
+        &fx,
+        "define.mk",
+        b"define needle-def\n\tdefine inner\n\tendef\nneedle-body\nendef\nK := needle\ndefine D\noverride define E\nendef\nneedle-after\nendef\n",
+    );
+    let rows = matches(&output(&fx, "make", "define.mk", "needle", &["--json"]));
+    assert_eq!(paths(&rows), ["", "needle-def", "K", ""]);
+}
