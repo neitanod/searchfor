@@ -44,35 +44,58 @@ struct Heredoc {
     strip_tabs: bool,
 }
 
-/// The heredoc markers of a line, in order: `<<WORD`, `<<-WORD`, `<<"WORD"`, `<<'WORD'`. As
-/// buildkit reads them, a marker is a word of the line, split at blanks outside quotes and
-/// escapes, that starts with `<<`: a `<<` inside a quoted word (`echo "<<EOF"`) or inside
-/// another word (`$((1<<3))`) is text (Codex r1 #6, Fable r1 #8).
-fn heredocs(src: &[u8], line: &Line, escape: u8, out: &mut Vec<Heredoc>) {
-    let s = &src[..line.end];
+/// Where the lexing of a logical line stands at the end of one of its physical lines: the open
+/// quote, and whether a word is open. Docker joins the continuation lines before it looks for
+/// heredocs, so both go on into the next one (Codex r2 #2, Fable r2 #7).
+#[derive(Default)]
+struct Lex {
+    quote: Option<u8>,
+    word: bool,
+}
+
+/// The heredoc markers of a physical line, in order: `<<WORD`, `<<-WORD`, `<<"WORD"`,
+/// `<<'WORD'`. As buildkit reads them, a marker is a word of the logical line, split at blanks
+/// outside quotes and escapes, that starts with `<<`: a `<<` inside a quoted word
+/// (`echo "<<EOF"`) or inside another word (`$((1<<3))`) is text (Codex r1 #6, Fable r1 #8).
+/// A continued line's escape and the blanks after it are left out, as Docker removes them.
+fn heredocs(
+    src: &[u8],
+    line: &Line,
+    escape: u8,
+    continued: bool,
+    lex: &mut Lex,
+    out: &mut Vec<Heredoc>,
+) {
+    let end = if continued {
+        trim(src, line.start..line.end).end - 1
+    } else {
+        line.end
+    };
+    let s = &src[..end];
     let mut i = line.start;
     while i < s.len() {
-        while i < s.len() && matches!(s[i], b' ' | b'\t') {
+        let c = s[i];
+        if lex.quote.is_none() && matches!(c, b' ' | b'\t') {
+            lex.word = false;
             i += 1;
+            continue;
         }
-        if s[i..].starts_with(b"<<") {
-            marker(s, i, out);
-        }
-        // Past the word: quotes and escapes keep its blanks.
-        let mut quote: Option<u8> = None;
-        while i < s.len() {
-            let c = s[i];
-            match quote {
-                Some(q) if c == q => quote = None,
-                Some(b'"') if c == escape => i += 1,
-                Some(_) => {}
-                None if matches!(c, b' ' | b'\t') => break,
-                None if matches!(c, b'"' | b'\'') => quote = Some(c),
-                None if c == escape => i += 1,
-                None => {}
+        if !lex.word {
+            lex.word = true;
+            if s[i..].starts_with(b"<<") {
+                marker(s, i, out);
             }
-            i += 1;
         }
+        // Inside the word: quotes and escapes keep its blanks.
+        match lex.quote {
+            Some(q) if c == q => lex.quote = None,
+            Some(b'"') if c == escape => i += 1,
+            Some(_) => {}
+            None if matches!(c, b'"' | b'\'') => lex.quote = Some(c),
+            None if c == escape => i += 1,
+            None => {}
+        }
+        i += 1;
     }
 }
 
@@ -193,23 +216,30 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
             .iter()
             .any(|k| src[keyword.clone()].eq_ignore_ascii_case(k));
         marks.clear();
-        if is_heredoc_kw {
-            heredocs(src, &line, escape, &mut marks);
-        }
+        let mut lex = Lex::default();
         let mut last = line;
         let mut end = line.next;
-        while continues(src, &last, escape) {
-            let Some(next) = line_at(src, end) else {
-                break;
-            };
-            end = next.next;
-            if skipped(src, &next) {
-                continue;
-            }
+        loop {
+            let more = continues(src, &last, escape);
             if is_heredoc_kw {
-                heredocs(src, &next, escape, &mut marks);
+                heredocs(src, &last, escape, more, &mut lex, &mut marks);
             }
-            last = next;
+            if !more {
+                break;
+            }
+            // The next line that is no comment and not blank: Docker skips those.
+            let mut next = None;
+            while let Some(n) = line_at(src, end) {
+                end = n.next;
+                if !skipped(src, &n) {
+                    next = Some(n);
+                    break;
+                }
+            }
+            match next {
+                Some(n) => last = n,
+                None => break,
+            }
         }
         for h in &marks {
             end = heredoc_end(src, end, h);
@@ -278,6 +308,27 @@ mod tests {
         assert_eq!(kinds(src).len(), 2);
         let src = b"RUN <<E\nFROM x\n";
         assert_eq!(kinds(src), [("instruction", "RUN".into(), 0..src.len())]);
+    }
+
+    /// Codex r2 #2 = Fable r2 #7: the quotes and the word of the logical line go on over its
+    /// continuation lines, so a `<<` that a quote or a word holds there opens no heredoc.
+    #[test]
+    fn a_logical_line_keeps_its_quotes_and_word_over_continuations() {
+        for src in [
+            &b"RUN echo \"abc \\\n<<EOF\"\nRUN y\n"[..],
+            b"RUN echo \"before \\\n <<EOF\"\nRUN y\n",
+            b"RUN echo 'a \\\n# c\n<<EOF'\nRUN y\n",
+            b"RUN echo abc\\\n<<EOF\nRUN y\n",
+        ] {
+            let k = kinds(src);
+            assert_eq!(k.len(), 2, "{}", String::from_utf8_lossy(src));
+            assert_eq!(k[1].1, "RUN");
+        }
+        // A blank before the escape ends the word: the next line's `<<` is a marker.
+        let src = b"RUN echo abc \\\n<<EOF\nRUN y\nEOF\nENV z\n";
+        let k = kinds(src);
+        assert_eq!(k.len(), 2);
+        assert_eq!(k[0].2, 0..src.len() - 6);
     }
 
     #[test]

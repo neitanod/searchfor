@@ -446,6 +446,16 @@ fn m6_dockerfile_heredocs_start_words() {
             "FROM alpine\nRUN cat <<EOF >x\nRUN needle1\nEOF\nENV needle2=1\n",
             vec!["stage 0 › RUN", "stage 0 › ENV"],
         ),
+        // Codex r2 #2 = Fable r2 #7: the quote goes on over the continuation line, so its
+        // `<<EOF` is text (`docker-h-11.dockerfile`).
+        (
+            "FROM alpine AS build\nRUN echo \"before \\\n <<EOF\"\nFROM alpine AS final\nRUN echo needle\n",
+            vec!["final › RUN"],
+        ),
+        (
+            "FROM a\nRUN echo \"abc \\\n<<EOF\"\nRUN echo needle2\nENV x=needle3\n",
+            vec!["stage 0 › RUN", "stage 0 › ENV"],
+        ),
     ] {
         put(&fx, "heredoc.dockerfile", src.as_bytes());
         let rows = matches(&output(
