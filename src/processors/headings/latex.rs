@@ -195,13 +195,119 @@ fn gap(src: &[u8], at: usize) -> Option<usize> {
     Some(i)
 }
 
+/// Where a walk of the parameter text of a `\def` stops.
+#[derive(Clone, Copy)]
+enum Stop {
+    /// At the body's `{`.
+    Brace,
+    /// With no body: at a blank line, which the text never crosses (code review M6 r4,
+    /// Codex #2), or where its reach ends.
+    Fails,
+    /// At the start of the next line, for a walk of one line.
+    Line(usize),
+}
+
+/// A walk of the parameter text of a `\def`, kept for the `\def`s after it: from `from`, it
+/// stopped at `stop`, at the `{`, `%` or line break it read last (`hit`), or at its reach.
+#[derive(Clone, Copy)]
+struct Walk {
+    from: usize,
+    hit: usize,
+    stop: Stop,
+}
+
+/// The parameter text of a `\def` from `from`, up to `to`: `line_start` tells whether only
+/// spaces stand between the last line break and `from`, and `one_line` stops the walk at the
+/// next line. A `%` comment is text, and a `\` escapes the `{` or `%` after it, but no line
+/// break (code review M6 r5, Opus #3). `memchr3` jumps to the next `{`, `%` or line break
+/// (code review M6 r5, Opus #1: a walk of each byte read `GROUP_MAX` bytes for each `\def`
+/// with no body).
+fn walk(src: &[u8], from: usize, to: usize, mut line_start: bool, one_line: bool) -> Walk {
+    let blank = |b: &u8| matches!(b, b' ' | b'\t' | b'\r');
+    let stop = |hit, stop| Walk { from, hit, stop };
+    let mut j = from;
+    loop {
+        let Some(k) = src
+            .get(j..to)
+            .and_then(|s| memchr::memchr3(b'{', b'%', b'\n', s))
+        else {
+            return stop(to, Stop::Fails);
+        };
+        let k = j + k;
+        let stretch = &src[j..k];
+        if src[k] == b'\n' {
+            if line_start && stretch.iter().all(blank) {
+                return stop(k, Stop::Fails);
+            }
+            if one_line {
+                return stop(k, Stop::Line(k + 1));
+            }
+            (j, line_start) = (k + 1, true);
+        } else if odd_escapes(stretch) {
+            (j, line_start) = (k + 1, false);
+        } else if src[k] == b'{' {
+            return stop(k, Stop::Brace);
+        } else {
+            // The comment, and its line break: a blank line right after it is one too.
+            let Some(n) = memchr::memchr(b'\n', &src[k..to]) else {
+                return stop(k, Stop::Fails);
+            };
+            if one_line {
+                return stop(k, Stop::Line(k + n + 1));
+            }
+            (j, line_start) = (k + n + 1, true);
+        }
+    }
+}
+
+/// Whether `text` ends in an odd run of `\`, which escapes what follows: the run pairs from its
+/// first `\`, and `text` starts past a name or a `{`, `%` or line break, none of them a `\`.
+fn odd_escapes(text: &[u8]) -> bool {
+    text.iter().rev().take_while(|&&b| b == b'\\').count() % 2 == 1
+}
+
+/// The walks of the parameter text of a file's `\def`s, kept from one `\def` to the next, as
+/// they come in order, so that each line is walked about once (code review M6 r5, Opus #1).
+/// Both walk to the end of the file, as far as the next `\def` may look.
+#[derive(Default)]
+struct Walks {
+    /// The last walk of a line from a `\def`'s name. A walk from a later `\def` on its line
+    /// stops where it stops if it starts at a byte this walk read, which no odd run of `\`
+    /// escapes: from there on, both read the same bytes.
+    line: Option<Walk>,
+    /// The last walk from the start of a line. A walk that crosses a line break goes on from
+    /// the next line as if it started there, whichever `\def` it started at: it stops where
+    /// this walk stops from any line start in `from..=hit`.
+    lines: Option<Walk>,
+}
+
+/// Where the parameter text of a `\def` whose name ends at `at` ends: at its body's `{`,
+/// before `to`. None at a blank line, or with no such `{` before `to`.
+fn parameters_end(src: &[u8], at: usize, to: usize, walks: &mut Walks) -> Option<usize> {
+    let line = match walks.line {
+        Some(w) if w.from <= at && at <= w.hit && !odd_escapes(&src[w.from..at]) => w,
+        _ => *walks.line.insert(walk(src, at, src.len(), false, true)),
+    };
+    let q = match line.stop {
+        Stop::Brace => return (line.hit < to).then_some(line.hit),
+        Stop::Fails => return None,
+        Stop::Line(q) if q <= to => q,
+        Stop::Line(_) => return None,
+    };
+    let lines = match walks.lines {
+        Some(w) if w.from <= q && q <= w.hit => w,
+        _ => *walks.lines.insert(walk(src, q, src.len(), true, false)),
+    };
+    (matches!(lines.stop, Stop::Brace) && lines.hit < to).then_some(lines.hit)
+}
+
 /// Where a definition whose command `cmd` ends at `at` ends, past its body (both bodies of an
 /// environment): what it defines is text there, never a heading or an environment (code review
 /// M6 r1, Fable #25; spec §6.4 makes macros that expand to sectioning commands text). Its parts
 /// may stand on several lines, with comments between them. None when it is not written as one,
 /// or a part does not close within `GROUP_MAX` bytes: then the walk reads on after the
-/// command, as it read before.
-fn definition_end(src: &[u8], cmd: &[u8], at: usize) -> Option<usize> {
+/// command, as it read before. `walks` goes from one `\def` of the file to the next.
+fn definition_end(src: &[u8], cmd: &[u8], at: usize, walks: &mut Walks) -> Option<usize> {
     let mut j = at;
     if src.get(j) == Some(&b'*') {
         j += 1;
@@ -220,33 +326,7 @@ fn definition_end(src: &[u8], cmd: &[u8], at: usize) -> Option<usize> {
             .take_while(|b| b.is_ascii_alphabetic())
             .count()
             .max(1);
-        // Whether only spaces stand between the last line break and `j`.
-        let mut line_start = false;
-        loop {
-            match *src.get(j).filter(|_| j < to)? {
-                b'{' => break,
-                b' ' | b'\t' | b'\r' => j += 1,
-                b'\n' if line_start => return None,
-                b'\n' => {
-                    line_start = true;
-                    j += 1;
-                }
-                b'%' => {
-                    j += memchr::memchr(b'\n', &src[j..to])? + 1;
-                    line_start = true;
-                }
-                c => {
-                    line_start = false;
-                    // A `\` escapes the next character, but no line break: the blank line
-                    // after one still ends the parameter text (code review M6 r5, Opus #3).
-                    j += if c == b'\\' && src.get(j + 1) != Some(&b'\n') {
-                        2
-                    } else {
-                        1
-                    };
-                }
-            }
-        }
+        j = parameters_end(src, j, to, walks)?;
         1
     } else {
         // `{\name}` or `\name` (`{name}` for an environment), then `[n]` and `[default]`, or
@@ -351,6 +431,7 @@ fn scan_counted(src: &[u8], hidden: &[&[u8]]) -> (Items, usize) {
     // Segments open, the document included.
     let mut depth = 0usize;
     let mut document = false;
+    let mut walks = Walks::default();
     let mut i = 0;
     while let Some(k) = memchr::memchr2(b'\\', b'%', &src[i..]) {
         peak = peak.max(frames.len());
@@ -394,7 +475,7 @@ fn scan_counted(src: &[u8], hidden: &[&[u8]]) -> (Items, usize) {
             continue;
         }
         if DEFINITIONS.contains(&cmd)
-            && let Some(end) = definition_end(src, cmd, name_end)
+            && let Some(end) = definition_end(src, cmd, name_end, &mut walks)
         {
             i = end;
             continue;
@@ -770,6 +851,76 @@ mod tests {
                 String::from_utf8_lossy(src)
             );
             cursor_equals_model(src, &p);
+        }
+    }
+
+    /// Code review M6 r5, Opus #1: `parameters_end`, which jumps between `{`, `%` and line
+    /// breaks and keeps its walk from a line start for the next `\def`, ends where a walk of
+    /// each byte ends, over every text of up to 7 bytes made of the bytes that matter, in a
+    /// window cut short or not; and from every start of the texts of up to 6 bytes in turn, as
+    /// the `\def`s of a file come, with the walk kept.
+    #[test]
+    fn the_parameter_text_ends_where_a_walk_of_each_byte_ends() {
+        fn walk(src: &[u8], mut j: usize, to: usize) -> Option<usize> {
+            let mut line_start = false;
+            loop {
+                match *src.get(j).filter(|_| j < to)? {
+                    b'{' => return Some(j),
+                    b' ' | b'\t' | b'\r' => j += 1,
+                    b'\n' if line_start => return None,
+                    b'\n' => {
+                        line_start = true;
+                        j += 1;
+                    }
+                    b'%' => {
+                        j += memchr::memchr(b'\n', &src[j..to])? + 1;
+                        line_start = true;
+                    }
+                    c => {
+                        line_start = false;
+                        j += if c == b'\\' && src.get(j + 1) != Some(&b'\n') {
+                            2
+                        } else {
+                            1
+                        };
+                    }
+                }
+            }
+        }
+        const BYTES: &[u8] = b"\\{%\n \rx";
+        let mut text = Vec::new();
+        for len in 0..=7u32 {
+            for mut n in 0..BYTES.len().pow(len) {
+                text.clear();
+                for _ in 0..len {
+                    text.push(BYTES[n % BYTES.len()]);
+                    n /= BYTES.len();
+                }
+                // Past a name that ends in `\`, as `\\` does.
+                let src = [b"\\\\".as_slice(), &text].concat();
+                let shown = String::from_utf8_lossy(&src);
+                for to in [src.len(), src.len().saturating_sub(2).max(2)] {
+                    assert_eq!(
+                        super::parameters_end(&src, 2, to, &mut Default::default()),
+                        walk(&src, 2, to),
+                        "{shown:?} to {to}"
+                    );
+                }
+                if len > 6 {
+                    continue;
+                }
+                for reach in [src.len(), 3] {
+                    let mut walks = Default::default();
+                    for j in 2..=src.len() {
+                        let to = src.len().min(j + reach);
+                        assert_eq!(
+                            super::parameters_end(&src, j, to, &mut walks),
+                            walk(&src, j, to),
+                            "{shown:?} from {j} to {to}"
+                        );
+                    }
+                }
+            }
         }
     }
 

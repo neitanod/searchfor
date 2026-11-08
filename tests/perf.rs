@@ -3723,6 +3723,54 @@ fn m6_wasm_code_sections_share_a_name() {
     }
 }
 
+/// Code review M6 r5, Opus #1: 400 000 `\def`s with no body (`\def\a x`), one a line or all on
+/// one line, or one a line with a comment that holds a `{`, or an escaped `\{`, keep the Trail
+/// of the Match after them and read at a scanner's rate (M6 spec §11: 50 MB/s or more): rg's
+/// wall time plus the file's size at 50 MB/s (best of three). Walking each one's parameter
+/// text a byte at a time, up to `GROUP_MAX`, took 0.706 s for the 3.6 MB of lines (Opus
+/// measured; rg 0.007 s), and 1.21 s and 0.74 s for the 5.2 MB of comments and the 4.4 MB of
+/// escaped braces (measured 08/11/2026; 0.037 s and 0.034 s with the walks kept).
+#[test]
+#[ignore = "M6 LaTeX \\def with no body; local timing"]
+#[cfg(target_os = "linux")]
+fn m6_latex_defs_without_a_body_scan_at_a_scanner_rate() {
+    let _alone = alone();
+    let fx = Fixture::new();
+    eprintln!(
+        "m6_latex_defs_without_a_body_scan_at_a_scanner_rate: uptime {}",
+        uptime()
+    );
+    const N: usize = 400_000;
+    for (case, unit) in [
+        ("lines", "\\def\\a x\n"),
+        ("one line", "\\def\\a x "),
+        ("comments", "\\def\\a x % {\n"),
+        ("escaped braces", "\\def\\a x\\{\n"),
+    ] {
+        let src = format!("\\section{{A}}\n{}\nneedle\n", unit.repeat(N));
+        std::fs::write(fx.file("defs.tex"), &src).unwrap();
+        let args = ["--flat", "needle", "defs.tex"];
+        let (out, _) = sfor_output(&fx, &args);
+        assert!(out.ends_with(": A │ needle\n"), "{case}: {out}");
+        let Some(((t, _), (base, _))) = against_rg(&fx, &args) else {
+            return;
+        };
+        let rate = Duration::from_secs_f64(src.len() as f64 / 50e6);
+        eprintln!(
+            "m6 latex defs without a body/{case}: {} bytes, s4 {t:?}, rg {base:?}",
+            src.len()
+        );
+        // Far past a scanner's rate, and short of the 0.56 s and more measured before.
+        assert!(t <= Duration::from_millis(350), "{case}: {t:?}");
+        if timing_enabled() {
+            assert!(
+                t <= base + rate,
+                "{case}: s4 {t:?} is more than rg's {base:?} + {rate:?}"
+            );
+        }
+    }
+}
+
 /// `--expand` over a dense file of one Section, for each new Processor of M6 (C8 reported a
 /// 1 MiB Markdown and diff file of one Section taking more than 300 s, not reproduced since):
 /// a 1 MiB file where every line matches and one Section holds them all prints that Section
