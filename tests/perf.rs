@@ -3681,7 +3681,10 @@ fn m6_dense_expand_single_section() {
 
 /// M6 plan Task 11.3: the evaluator of scripts/bench-m6.sh decides its gates as specified (the
 /// same `decide` and `verdict` its measurements call). It checks the evaluator, not timings.
+/// The benchmark is a Linux tool run with `bash` and `python3`, so the test is Unix only
+/// (docs/platforms.md).
 #[test]
+#[cfg(unix)]
 fn m6_benchmark_gate_selftest() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = Command::new("bash")

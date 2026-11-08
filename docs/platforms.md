@@ -84,6 +84,7 @@ merge. The owner is the chunk of the M5b plan that owns the file.
 | `one_file_that_is_no_document_costs_what_it_costs_without_documents` | `tests/perf.rs` | macos-arm64, macos-x86_64, windows | strace, Linux only, for the system calls it compares with --no-docs (Windows also lacks `getrusage` CPU time) | C10 |
 | `an_installed_grammar_leaves_a_search_without_documents_unloaded` | `tests/perf.rs` | macos-arm64, macos-x86_64, windows | strace, Linux only, for the files s4 opens | C10 |
 | `null_data_records_and_their_sections_cost_linear_time` | `tests/perf.rs` | windows | `getrusage` CPU time | C10 |
+| `m6_benchmark_gate_selftest` | `tests/perf.rs` | windows | `scripts/bench-m6.sh`, a Linux benchmark run with `bash` and `python3` | orchestrator |
 | `a_root_linked_to_a_directory_is_walked_as_ripgrep` | `tests/rg_compat.rs` | windows | symbolic links, which need a privilege on Windows | C3 |
 | `stdin_alone_on_a_tty_equals_ripgrep` | `tests/rg_compat.rs` | windows | a pseudo-terminal through `script`, and `/dev/stdin` (the console runs the other cases in `m5b_console_stdin_alone_equals_ripgrep`) | C3 |
 | `memory_stays_flat_over_five_thousand_requests` | `helpers/example/tests/protocol.rs` | macos-arm64, macos-x86_64, windows | RSS from `/proc/PID/status` | C2 |
