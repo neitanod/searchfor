@@ -67,6 +67,37 @@ pub fn png(text: &[u8]) -> Vec<u8> {
     b
 }
 
+/// A 1×1 PNG header, an uncompressed `iTXt` chunk `XML:com.adobe.xmp` holding `packet`, and
+/// IEND.
+pub fn png_xmp(packet: &[u8]) -> Vec<u8> {
+    let mut b = b"\x89PNG\r\n\x1a\n".to_vec();
+    b.extend(png_chunk(b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]));
+    // Keyword NUL, compression flag and method, empty language and translated keyword.
+    b.extend(png_chunk(
+        b"iTXt",
+        &[b"XML:com.adobe.xmp\0\0\0\0\0".as_slice(), packet].concat(),
+    ));
+    b.extend(png_chunk(b"IEND", b""));
+    b
+}
+
+/// A little-endian TIFF whose IFD0 has `entries` XMP entries (tag 0x02bc), all naming the
+/// one `packet` after the IFD.
+pub fn tiff_shared_xmp(entries: usize, packet: &[u8]) -> Vec<u8> {
+    let mut b = b"II\x2a\0\x08\0\0\0".to_vec();
+    b.extend((entries as u16).to_le_bytes());
+    let value = (8 + 2 + 12 * entries + 4) as u32;
+    for _ in 0..entries {
+        b.extend(0x02bcu16.to_le_bytes());
+        b.extend(1u16.to_le_bytes()); // BYTE
+        b.extend((packet.len() as u32).to_le_bytes());
+        b.extend(value.to_le_bytes());
+    }
+    b.extend(0u32.to_le_bytes()); // next IFD
+    b.extend(packet);
+    b
+}
+
 /// A RIFF WebP with one `EXIF` chunk, the `tiff` of `text`.
 pub fn webp(text: &[u8]) -> Vec<u8> {
     let data = tiff(text);

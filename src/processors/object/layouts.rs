@@ -408,6 +408,38 @@ mod own_names {
     }
 
     #[test]
+    fn xmp_wrappers_read_in_linear_time() {
+        // Wrappers open inside wrappers cost one step each (code round 1, Fable #5): 576 KB of
+        // `<rdf:RDF>` took about 10 s in a debug build when each start tag walked them all.
+        let mut packet = b"<rdf:RDF>".repeat(64 << 10);
+        packet.extend(b"<dc:title>needle</dc:title>");
+        let png = m6::png_xmp(&packet);
+        let t = std::time::Instant::now();
+        assert_eq!(
+            trail(&png, "png", b"needle"),
+            ["PNG", "iTXt XML:com.adobe.xmp", "dc:title"]
+        );
+        let took = t.elapsed();
+        assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+    }
+
+    #[test]
+    fn a_tiff_reads_a_shared_xmp_packet_once() {
+        // 3000 entries naming one packet of 1000 elements read it once (code round 1, Codex
+        // #3): the nodes are the entries' and one packet's, and a Match in it keeps the path.
+        let mut packet = b"<x:xmpmeta><rdf:RDF><rdf:Description>".to_vec();
+        packet.extend(b"<tag>x</tag>".repeat(999));
+        packet.extend(b"<tag>needle</tag></rdf:Description></rdf:RDF></x:xmpmeta>");
+        let tiff = m6::tiff_shared_xmp(3000, &packet);
+        let m = BinaryMap::parse(&tiff, "tiff").unwrap();
+        assert!(m.nodes().len() < 5000, "{} nodes", m.nodes().len());
+        assert_eq!(
+            trail(&tiff, "tiff", b"needle"),
+            ["TIFF", "IFD0", "XMP", "tag"]
+        );
+    }
+
+    #[test]
     fn names_written_in_the_file_are_outside_what_they_name() {
         assert_eq!(trail(&m6::png(b"x"), "png", b"Comment"), ["PNG"]);
         assert_eq!(trail(&m6::png(b"x"), "png", b"tEXt"), ["PNG"]);
