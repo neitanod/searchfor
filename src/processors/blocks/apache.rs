@@ -1,6 +1,7 @@
 //! Apache (M6 spec §7.7): `<Name args>` … `</Name>` sections, compared without case, nest; a
 //! directive is one line, `\` continuing it; `#` starts a comment line.
 use super::{BlockIndex, Builder, Kind, Part, is_space};
+use std::collections::HashMap;
 use std::ops::Range;
 
 /// One open section: its Segment (None past the depth), its name, and for a `VirtualHost`
@@ -19,6 +20,9 @@ pub(super) fn scan(src: &[u8], name_chars: usize) -> anyhow::Result<BlockIndex> 
         name_chars + 1
     };
     let mut open: Vec<Section> = Vec::new();
+    // How many open sections bear each name, lowercased: a closer no open section bears is
+    // ignored at once, with no walk over the open ones (Codex r1 #5).
+    let mut names: HashMap<Vec<u8>, usize> = HashMap::new();
     let mut i = 0;
     while i < src.len() {
         let (end, next) = logical_line(src, i);
@@ -38,11 +42,18 @@ pub(super) fn scan(src: &[u8], name_chars: usize) -> anyhow::Result<BlockIndex> 
             let name = s + 2..word_end(src, s + 2, e);
             // A closing tag closes its section and the sections inside it; one that matches
             // no open section is ignored (M6 spec §7.7).
-            if let Some(k) = open
-                .iter()
-                .rposition(|o| src[o.name.clone()].eq_ignore_ascii_case(&src[name.clone()]))
+            let opened = names
+                .get(&src[name.clone()].to_ascii_lowercase())
+                .is_some_and(|&n| n > 0);
+            if opened
+                && let Some(k) = open
+                    .iter()
+                    .rposition(|o| src[o.name.clone()].eq_ignore_ascii_case(&src[name.clone()]))
             {
                 for o in open.drain(k..).rev() {
+                    if let Some(n) = names.get_mut(&src[o.name.clone()].to_ascii_lowercase()) {
+                        *n -= 1;
+                    }
                     if let Some(id) = o.id {
                         b.close(id, e);
                     }
@@ -57,6 +68,9 @@ pub(super) fn scan(src: &[u8], name_chars: usize) -> anyhow::Result<BlockIndex> 
             let parts: Vec<Part> = words.into_iter().map(Part::src).collect();
             let id = b.open(Kind::Block, s, s..(close + 1).min(e), &parts, false);
             let vhost = src[name.clone()].eq_ignore_ascii_case(b"VirtualHost");
+            *names
+                .entry(src[name.clone()].to_ascii_lowercase())
+                .or_default() += 1;
             open.push(Section { id, name, vhost });
         } else {
             let name = s..word_end(src, s, e);
@@ -143,6 +157,28 @@ mod tests {
         // `</directory>` closed Files too: B is IfModule's.
         assert_eq!(ix.entries[4].parent(), Some(0));
         assert_eq!(ix.entries[5].parent(), None);
+    }
+
+    /// Codex r1 #5: a closing tag that matches no open section looked through every open one:
+    /// 40 000 of each took 2 s. Unknown closers now cost what matching ones do.
+    #[test]
+    fn unknown_closers_cost_what_matching_ones_do() {
+        let n = 20_000;
+        let unknown = format!("{}{}needle\n", "<A>\n".repeat(n), "</Z>\n".repeat(n));
+        let known = format!("{}{}needle\n", "<A>\n".repeat(n), "</a>\n".repeat(n));
+        let t_unknown =
+            super::super::tests::fastest(|| drop(scan(unknown.as_bytes(), 40).unwrap()));
+        let t_known = super::super::tests::fastest(|| drop(scan(known.as_bytes(), 40).unwrap()));
+        assert!(
+            t_unknown < t_known * 4 + std::time::Duration::from_millis(20),
+            "unknown {t_unknown:?}, known {t_known:?}"
+        );
+        // The closers still close without case, the sections inside them too.
+        let src = b"<A>\n<b>\n<C>\n</B>\nX 1\n</z>\n</a>\nY 2\n";
+        let ix = scan(src, 40).unwrap();
+        assert_eq!(names(src), ["A", "b", "C", "X", "Y"]);
+        assert_eq!(ix.entries[3].parent(), Some(0));
+        assert_eq!(ix.entries[4].parent(), None);
     }
 
     #[test]
