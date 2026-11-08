@@ -109,7 +109,9 @@ inherits; the sections of each Format only add to them.
    transcoded by the search, bytes that are not UTF-8 shown as U+FFFD in names, CRLF and LF read
    the same, a lone CR no line break.
 8. **Depth.** Past 256 open Segments no more Segments open; deeper Matches get the Trail of the
-   deepest one, and nesting of any depth never crashes s4 (spec §5.2, §5.4).
+   deepest one, and nesting of any depth never crashes s4 (spec §5.2, §5.4). The Trail inside a
+   `<script>` of HTML, Vue or Svelte obeys the same cap, counting the markup's open elements
+   (§8.3); v1's code Formats (a standalone `.ts` or `.js`) keep their v1 depth.
 9. **`--json` adds no field.** Each M6 Format fills the existing `trail` objects (`kind`,
    `name`, `line`, `end_line`, `level` for headings, `signature` where a tree label needs one);
    `docs/json-schema.json` lists the new kinds in its description, which stays a free string
@@ -136,7 +138,8 @@ to whether the glob writes the file's extension or leaves it open. The order bec
    When it matches, it wins over the Definition that claims that extension:
    `ChatExport_2024/result.json` is `telegram` and `ChatExport_2024/messages.html` is
    `telegram-html`, while a `result.json` or `messages.html` anywhere else stays JSON or HTML.
-   The extension a glob writes is compared without case, as signal 5 compares it.
+   A glob that writes its extension compares it in any case, as written in the glob and in the
+   path (`*.CONF` matches `app.CONF` and `app.conf`); the rest of the glob keeps its case.
 5. Extension (unchanged).
 6. **Path glob that leaves the extension open (new):** every other glob of `paths`, whose last
    component has no dot (`**/.ssh/config`, `**/nginx/sites-enabled/*`) or has a wildcard after
@@ -355,7 +358,9 @@ an unclosed Markdown fence does.
   heading needs a space after its markers. Attribute entries (`:toc: left`) above `= Title`
   leave it the document title. The two-line (setext) titles of AsciiDoc's legacy syntax are
   text, and so is a two-line title's underline (one repeated `=`, `-`, `~`, `^` or `+` within
-  one character of the title's length), which opens no block.
+  one character of the title's length, when the title line starts a paragraph: after a blank
+  line, a heading, a block's delimiter or an attribute entry; never a list item or a block
+  title), which opens no block. An attribute entry may continue over lines ending in `\`.
 - **Blocks.** A delimited block (`----` listing, `....` literal, `////` comment, `++++`
   passthrough, `****`, `====`, `____`, and Markdown-style ```` ``` ```` fences) runs to the same
   delimiter; a fence of three or more backticks closes at a run of backticks as long or longer.
@@ -375,7 +380,8 @@ an unclosed Markdown fence does.
   style is level 1; s4 does not promote a lone top section to a document title (docutils'
   `doctitle_xform`), so the Trail keeps the same depth in every file.
 - **Blocks.** `.. code-block:: LANG`, `.. code:: LANG` and `.. sourcecode:: LANG` are `code`
-  Segments named `LANG`, over their options and indented body; a paragraph ending in `::` opens
+  Segments named `LANG`, over their options and indented body; one without LANG is named by its
+  directive (`code-block`, `code`, `sourcecode`). A paragraph ending in `::` opens
   a `literal` code block over the indented lines after it. Any other directive (`.. note::`,
   `.. warning::`) is a `directive` Segment named by its type, over its indented body; a comment
   (`..` with no `::`) holds no Segment.
@@ -392,7 +398,8 @@ an unclosed Markdown fence does.
   (`src` when absent); `#+BEGIN_EXAMPLE` is `example`. Other blocks hold no Segment.
 - **Tables.** A table whose first row is followed by a rule (`|---+---|`) names its columns by
   the cells of that row: a Match in a later row gets a `column` Segment, whose Section is the
-  table, as Markdown's (spec §5.1). A table without the rule has no header.
+  table, as Markdown's (spec §5.1). `--in-headings` does not search a column's header, as
+  Markdown's. A table without the rule has no header.
 - **Example.** `notes.org:20: Budget › Costs › Price │ | Hosting | needle 9 |`
 
 ### 6.4 LaTeX
@@ -414,7 +421,9 @@ an unclosed Markdown fence does.
 - **Example.** `paper.tex:41: A Study of Needles › Methods › Sampling › figure │ \caption{needle distribution}`
 - **Limits.** `\input` and `\include` are not followed; macros that expand to sectioning
   commands are text, and so is the body of a macro or environment definition (`\newcommand`,
-  `\newenvironment`, `\def` and their variants), whose commands open nothing.
+  `\DeclareRobustCommand`, `\newenvironment`, `\def`, xparse's `\NewDocumentCommand` and
+  `\NewDocumentEnvironment` families, and their variants), whose parts may stand on several
+  lines with comments between them, up to a blank line, and whose commands open nothing.
 
 ### 6.5 Jupyter notebooks
 
@@ -451,7 +460,7 @@ the JSON scanner reads it and the view reshapes its Outline:
   `a.b` (INI has no dotted tables; splitting it would invent a parent). Keys before the first
   header are at the top. A repeated section or key is a Segment of its own each time.
 - **Lines.** `;` and `#` at a line's start are comments. A line ending in `\` continues on the
-  next. An indented line continues the previous key's value when it holds neither `=` nor `:`,
+  next. A header is one physical line: `[sec\` followed by `tion]` is text. An indented line continues the previous key's value when it holds neither `=` nor `:`,
   and is a key of its own otherwise, so the indented keys of `.gitconfig` are keys and the
   multi-line values of Python's `configparser` are values: a heuristic, documented, that only
   decides between two Trails of the same section.
@@ -468,10 +477,11 @@ syntax is `ini`, whose `\` continuation is systemd's.
 ### 7.3 `.properties`
 
 `keypath`, `syntax = "properties"`. A key ends at the first unescaped `=`, `:` or white space;
-`\` at a line's end continues the value; `#` and `!` start comments. The key is decoded
-(`\:`, `\=`, `\ `, `\uXXXX`) and is one Segment: `spring.datasource.url` keeps its dots, as the
-format has no hierarchy and a dotted parent would have no Section of its own when its keys are
-apart. A line whose key is empty (`=value`) opens no Segment.
+`\` at a line's end continues the value, and a key too: the key goes on past it, without the
+line break and the blanks that start the next line; `#` and `!` start comments. The key is
+decoded (`\:`, `\=`, `\ `, `\uXXXX`) and is one Segment: `spring.datasource.url` keeps its
+dots, as the format has no hierarchy and a dotted parent would have no Section of its own when
+its keys are apart. A key that decodes to nothing (`=value`) opens no Segment.
 `app.properties:4: spring.datasource.url │ spring.datasource.url=jdbc:needle://db`
 
 ### 7.4 `.env`
@@ -529,7 +539,9 @@ the file.
   last line, an end-of-line comment included; a line starting with `=` or `:` has no key.
   An object value (`tags = { … }`) gives
   keys inside it, and a list element `[N]`, 0-based, named after its key as in keypath
-  (`ingress[1]`, spec §5.2).
+  (`ingress[1]`, spec §5.2). A list element, and an object or a list after its closer, take
+  their end-of-line comment, the comma before it included, when a line break comes before the
+  next token; the comma between two values on one line is in neither.
 - **Lexing.** `#`, `//` and `/* */` comments; strings with `${ … }` interpolations and
   `%{ … }` directives, whose braces and quotes nest inside the string; heredocs `<<EOT` and
   `<<-EOT` up to their marker line.
@@ -548,7 +560,9 @@ the file.
 - **Lexing.** The escape character is `\`, or the one a `# escape=` directive sets on the first
   lines; comment lines inside a continuation are skipped, as Docker skips them. A heredoc opens
   at a word of the line, split at blanks outside quotes and escapes, that starts with `<<`; a
-  `<<` inside a quoted word or another word is text.
+  `<<` inside a quoted word or another word is text. The words of an instruction are split over
+  its logical line: a quote or a word left open before a continuation's escape goes on in the
+  next line, so `RUN echo "a \` + `<<EOF"` opens no heredoc.
 - **Example.** `Dockerfile:12: build › RUN │     needle-build --release`
 
 ### 7.10 Makefile
@@ -560,12 +574,17 @@ the file.
   that follow starting with a tab (or `.RECIPEPREFIX`), with comments and blank lines among
   them. The rule's label is its targets: its prerequisites are inside the `target`, as a
   function's parameters are inside its function, so a Match in `deps` of `build test: deps` has
-  the Trail `build test`. A drive letter (`C:/`, `C:\`) is part of its target. A variable (`=`,
-  `:=`, `::=`, `?=`, `+=`, `!=`, with `override` or `export`) is a `key` Segment over its `\`
-  continuations; `define NAME` … `endef` is a `key` named `NAME`, and `define` nests: the key
-  ends at the matching `endef`.
+  the Trail `build test`. A drive letter (`C:/`, `C:\`) is part of its target, so one letter
+  glued to an absolute prerequisite (`c:/x`) reads as a drive letter and opens no rule. A
+  variable (`=`, `:=`, `::=`, `?=`, `+=`, `!=`, with `override` or `export`) is a `key` Segment
+  over its `\` continuations; `define NAME` … `endef` is a `key` named `NAME`, and `define`
+  nests: the key ends at the matching `endef`. Inside a `define`, a line that starts with the
+  recipe prefix opens and closes nothing.
   `ifeq`, `ifneq`, `ifdef`, `ifndef` … `endif` is a `conditional` Segment named by its line
-  as written, its `else` branches inside it.
+  as written, its `else` branches inside it. A rule opened inside a conditional keeps its recipe
+  past that conditional's `endif`, as GNU make runs it: the `target` ends before the `endif`,
+  and the recipe lines after it are another `target` with the same name and signature, whose
+  name `--in-headings` does not search again.
 - **Lexing.** `$(…)` and `${…}` are skipped when looking for a rule's `:`, so
   `$(OBJ:.o=.c)` is no rule; `#` starts a comment outside a recipe.
 - **Example.** `Makefile:18: ifeq ($(OS),Windows_NT) › release │ 	cargo build --release # needle`
@@ -574,7 +593,8 @@ the file.
 ### 7.11 justfile
 
 `buildfile`, `syntax = "just"`. A recipe (`name params: deps`, with `[attributes]` and `@`
-before it) is a `recipe` Segment named `name`, signature its line, over its indented body. A
+before it) is a `recipe` Segment named `name`, signature its line, over its indented body.
+Attributes may stand on their own lines or share the recipe's line (`[private] build:`). A
 recipe's label is its name and `@`; its attributes, parameters and dependencies are inside it,
 so a Match in `needle-dep` of `build +args: needle-dep` has the Trail `build`. A variable or
 `alias` is a `key`. `just`'s comments above a recipe are its documentation and lie
@@ -636,8 +656,8 @@ The `diff` Processor reads unified diffs (`diff -u`, `git diff`), combined diffs
   is `old → new`. Inside a hunk whose counts are not done, a `---`/`+++` pair is a file's
   header only when a hunk header follows it. A hunk (`@@ -a,b +c,d @@ context`) is a `hunk`
   Segment named `+c` and its context text (`+120 fn describe(`), `-a` for a deleted file,
-  signature its header line. A `\` line right after a hunk (`\ No newline at end of file`)
-  belongs to it.
+  signature its header line. A hunk takes one `\ No newline` line (`\ No newline at end of
+  file`) after its last counted line; another one after it is text.
 - **Rule 5 here.** A file's own name runs from `diff --git` over its extended header lines
   (`index`, modes, renames, copies, similarity) to `+++`: a Match in those lines has the Trail
   above the file. A Match in a hunk header is in the file Segment.
@@ -656,7 +676,9 @@ the compiled-in Grammar its `lang` names (`ts` and `typescript` TypeScript, `tsx
 `js` JavaScript), with the query of that Format's Definition, and its Segments go under the
 `script` element: `Cart.vue:22: script › addItem │       this.needle++`. A script over the
 Grammar Definition's `max_bytes`, or of a `lang` with no compiled-in Grammar, keeps the `script`
-Segment alone. `<style>` is text (no CSS Grammar is compiled in).
+Segment alone. Inside a `<script>` of HTML, Vue or Svelte, the 256 open Segments of rule 8 (§3)
+count the markup's open elements, the script's included; the script's deeper Segments do not
+open. `<style>` is text (no CSS Grammar is compiled in).
 
 **Which scripts are read** (Sebastián, Hilo 855 #12726, the three limits of #12697), in every
 markup Format with `scripts`, HTML included:
@@ -703,8 +725,9 @@ named by the directive and its argument as written (`@foreach($items as $item)`)
 `@end…` (`@show`, `@stop` and `@overwrite` close a `@section`), with the closing rule of Svelte's
 blocks; `@section` with two arguments is inline and opens nothing. `{{-- … --}}` is a comment and
 `@verbatim` holds text. PHP inside `@php` is text (scripts apply to `<script>` alone). An
-opener whose expression does not close within 4 KiB (`@if(` with no `)`) is text, as in
-Svelte. A Blade directive in a `class` attribute is no class of the element's name:
+opener whose argument list does not close within 4 KiB (`@foreach(` with no `)`) opens a block
+named by the directive alone (`@foreach`); its arguments are text and its `@end…` closes it.
+A Blade directive in a `class` attribute is no class of the element's name:
 `<div class="@if($x == 1) a @endif b">` is `div.a.b`.
 `cart.blade.php:8: @section('content') › div.cart › @foreach($items as $item) › li │ …`
 
@@ -787,7 +810,8 @@ Details, each a decision:
   with the first entry's Trail; the XMP read inside a TIFF adds up to at most its size.
 - **ID3** frames are named by their four-character id; `TXXX` and `WXXX` add their description,
   `COMM` stays `COMM`. ID3v2.2's three-character ids read the same. An ID3v2 tag that declares
-  more than the file holds reads up to the file's end. An MP3 with only an ID3v1
+  more than the file holds reads up to the file's end, and stops before an ID3v1 tag that ends
+  the file. An MP3 with only an ID3v1
   tag has no magic at its start and is not detected. A text frame in UTF-16 is
   found only by a pattern rg finds in UTF-16, which is rg's behaviour (§2, Out).
 - **MP4** box types are four bytes shown as Latin-1 (`©nam`); the box tree is walked through
@@ -817,7 +841,8 @@ Details, each a decision:
 
 The `mail` Processor reads one RFC 5322 message (`.eml`) or an mbox (messages each starting at a
 `From ` line at the start of the file or after a blank line; mboxo and mboxrd alike). In an
-mbox, a `From ` line opens a message only when a header field follows it. An `.eml` skips a
+mbox, a `From ` line opens a message only when a header field follows it; one with no header
+field after it is text of the message before it and cuts nothing. An `.eml` skips a
 first `From ` line that is no field (Thunderbird's `From - …`).
 
 - **Segments.** In an mbox, a message is a `message` Segment named by its decoded `Subject`
@@ -869,8 +894,9 @@ value in braces (nesting), quotes or bare, `#` concatenations included. `@string
 entries are text with an empty Trail (BibTeX ignores it), and `@comment` ends at its closing
 brace or parenthesis.
 `refs.bib:5: knuth1984 › title │   title = {Literate needle programming},`
-An entry whose braces never close ends at the next `@` at a line's start; in one that closes,
-such an `@` is text of its value.
+Where an entry closes follows its quoted values: a `}` or `)` between quotes closes nothing.
+An entry whose braces or a quote never close ends at the next line that starts with `@`; in one
+that closes, such an `@` is text of its value.
 
 ### 10.4 WhatsApp
 
