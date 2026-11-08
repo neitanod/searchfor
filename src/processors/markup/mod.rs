@@ -462,6 +462,7 @@ fn element_name(
             n.push_str("#");
             n.push_lossy(src, id);
         }
+        let blade = p.templates == Some(TemplateSyntax::Blade);
         if !n.full()
             && let Some(cls) = scan::attribute(src, tag, name.end, b"class", false)
         {
@@ -471,6 +472,13 @@ fn element_name(
                     i += 1;
                 }
                 let s = i;
+                if blade && src.get(s) == Some(&b'@') {
+                    // A Blade directive, `@if($x == 1)` or `@endif`, is no class (code review
+                    // M6 r1, Fable #58): past its word and its balanced arguments, to the
+                    // white space after them.
+                    i = directive_end(src, s, cls.end);
+                    continue;
+                }
                 while i < cls.end && !src[i].is_ascii_whitespace() {
                     i += 1;
                 }
@@ -483,6 +491,36 @@ fn element_name(
     }
     let (text, pieces) = n.finish();
     (text, pieces, has_id)
+}
+
+/// Where a Blade directive written at `at` in an attribute value that ends at `end` ends: past
+/// its word, its arguments' balanced parentheses, and the bytes up to the next white space.
+fn directive_end(src: &[u8], at: usize, end: usize) -> usize {
+    let mut i = at + 1;
+    while i < end && (src[i].is_ascii_alphanumeric() || src[i] == b'_') {
+        i += 1;
+    }
+    if i < end && src[i] == b'(' {
+        let mut depth = 0usize;
+        while i < end {
+            match src[i] {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        i += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+    while i < end && !src[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
 }
 
 /// The name of a template block, its opener as written cut at `name_chars` (M6 spec §8.4).

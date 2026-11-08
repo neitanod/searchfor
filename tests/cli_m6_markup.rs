@@ -649,3 +649,25 @@ fn m6_telegram_service_messages() {
     );
     assert_eq!(code(&absent), 1, "{}", stdout(&absent));
 }
+
+/// Code review M6 r1, Fable #58: a Blade directive inside a `class` attribute is no class of
+/// the element's name; the classes around it are.
+#[test]
+fn m6_blade_directives_in_a_class_are_no_classes() {
+    let fx = Fixture::new();
+    put(
+        &fx,
+        "classes.blade.php",
+        b"<div class=\"@if($x == 1) a @endif b\">needle</div>\n<p class=\"@class(['c' => $y]) d\">needle</p>\n",
+    );
+    assert_eq!(
+        paths(&matches(&output(
+            &fx,
+            "blade",
+            "classes.blade.php",
+            "needle",
+            &["--json"]
+        ))),
+        ["div.a.b", "p.d"]
+    );
+}
