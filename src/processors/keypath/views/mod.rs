@@ -379,6 +379,18 @@ impl Prepared for ViewPrepared<'_> {
     fn names(&self) -> anyhow::Result<Vec<Name>> {
         let mut out = names_of(&self.headings);
         let mut c = self.view_cursor();
+        // A chat export's root chat is no member of keypath's: its Name comes first.
+        if let Some(chat) = c.chat(self.start)
+            && let Some(pieces) = chat.pieces
+        {
+            out.push(Name {
+                text: chat.seg.name.clone(),
+                anchor: pieces.first().map_or(chat.label.start, |p| p.1.start),
+                pieces,
+                trail: vec![chat.seg],
+                labels: vec![chat.label],
+            });
+        }
         let mut found: Vec<(u64, usize)> = Vec::new();
         json::members(self.src, &mut |id, start| found.push((id, start)));
         for (id, start) in found {

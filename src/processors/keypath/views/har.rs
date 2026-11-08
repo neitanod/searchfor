@@ -104,8 +104,8 @@ fn scheme(url: &str) -> usize {
     }
 }
 
-/// An element named by its `key` (`title`, `name`), after `word` if any; the value's bytes
-/// are its label.
+/// An element named by its `key` (`title`, `name`), after `word` if any. Its label is empty,
+/// as an entry's: a Match in that value stays inside it, under the key.
 fn named(
     src: &[u8],
     value: usize,
@@ -129,7 +129,7 @@ fn named(
             name: text,
             ..base
         },
-        label: v,
+        label: value..value,
         pieces: Some(pieces),
     })
 }
@@ -158,6 +158,20 @@ mod tests {
             ]
         );
         every_byte(src, "har");
+        // A Match in a value that names a Segment stays inside it, under its own key
+        // (orchestrator's decision 1 on code round 1): an entry's URL, a header's name, a
+        // page's title.
+        let names = br#"{"log":{"entries":[{"request":{"method":"GET","url":"http://h/needle",
+"headers":[{"name":"needle","value":"v"}]}}],"pages":[{"title":"needle"}]}}"#;
+        assert_eq!(
+            needles(names, "har"),
+            [
+                "GET h/needle › request › url",
+                "GET h/needle › request › header needle › name",
+                "needle › title",
+            ]
+        );
+        every_byte(names, "har");
         // Not HAR: keypath's Trails.
         assert_eq!(needles(br#"{"log":["needle"]}"#, "har"), ["log[0]"]);
     }
