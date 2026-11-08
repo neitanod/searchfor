@@ -288,7 +288,9 @@ mod tests {
             .into_iter()
             .map(|i| {
                 let n = match i.name {
-                    Named::Source(r) => String::from_utf8_lossy(&src[r]).into_owned(),
+                    Named::Source(r) | Named::Again(r) => {
+                        String::from_utf8_lossy(&src[r]).into_owned()
+                    }
                     Named::Ordinal(w, n) => format!("{w} {n}"),
                 };
                 (i.kind, n, i.range)

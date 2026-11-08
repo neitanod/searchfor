@@ -50,6 +50,9 @@ pub(crate) enum Named {
     Source(Range<usize>),
     /// A name the scanner makes, `stage 1`: it has no Source piece, so no search finds it.
     Ordinal(&'static str, usize),
+    /// The Source bytes of another Segment's name, which go on naming a Segment after it (a
+    /// Makefile rule's recipe past an `endif`): `--in-headings` finds them once, in the first.
+    Again(Range<usize>),
 }
 
 /// One Segment as a scanner finds it: Source ranges only, kept as `BuildIndex` keeps it.
@@ -79,7 +82,7 @@ impl BuildIndex {
     pub fn push(&mut self, item: Item) {
         let one;
         let (name, anchor) = match &item.name {
-            Named::Source(r) => {
+            Named::Source(r) | Named::Again(r) => {
                 one = [r.clone()];
                 (SpecName::Source(&one), r.start)
             }
@@ -93,7 +96,7 @@ impl BuildIndex {
             anchor,
             signature: item.signature.clone(),
             level: None,
-            search: true,
+            search: !matches!(item.name, Named::Again(_)),
             lines: None,
             hidden: false,
         });
@@ -395,6 +398,11 @@ mod tests {
     fn the_make_cursor_equals_its_model() {
         cursor_equals_model(
             b"ifeq (a,b)\nx: y\n\tz\n\n# c\n\tw\nelse\nN := 1\nendif\ndefine D\nq\nendef\nK += v \\\n u\n",
+            "make",
+        );
+        // Fable r2 #8: the rule's recipe goes on past its conditional's `endif`.
+        cursor_equals_model(
+            b"ifeq (a,a)\nt: d\n\techo v\nendif\n\n\techo w\nifdef X\n\tx\nendif\n\ty\n",
             "make",
         );
     }

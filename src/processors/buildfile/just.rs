@@ -155,7 +155,7 @@ mod tests {
         scan(src)
             .into_iter()
             .map(|i| match i.name {
-                Named::Source(r) => (
+                Named::Source(r) | Named::Again(r) => (
                     i.kind,
                     String::from_utf8_lossy(&src[r]).into_owned(),
                     i.range,

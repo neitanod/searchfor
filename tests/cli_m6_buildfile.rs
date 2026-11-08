@@ -542,3 +542,30 @@ fn m6_make_defines_nest() {
     let rows = matches(&output(&fx, "make", "define.mk", "needle", &["--json"]));
     assert_eq!(paths(&rows), ["", "needle-def", "K", ""]);
 }
+
+/// Fable r2 #8: a rule opened inside a conditional keeps its recipe past the `endif`, as GNU
+/// make 4.4.1 runs it (`make -n t` echoes `v` and `w`, `make-mal-5.mk`). The line after the
+/// `endif` has the rule's Trail, the rule's Section leaves the `endif` out, and
+/// `--in-headings` finds the rule's name once.
+#[test]
+fn m6_make_recipe_goes_on_past_its_conditional() {
+    let fx = Fixture::new();
+    put(
+        &fx,
+        "cut.mk",
+        b"ifeq (a,a)\nt:\n\techo v needle\nendif\n\techo w needle\n",
+    );
+    let rows = matches(&output(&fx, "make", "cut.mk", "needle", &["--json"]));
+    assert_eq!(paths(&rows), ["ifeq (a,a) › t", "t"]);
+    let first = &rows[0]["trail"][1];
+    assert_eq!((&first["line"], &first["end_line"]), (&2.into(), &3.into()));
+    let names = matches(&output(
+        &fx,
+        "make",
+        "cut.mk",
+        "t",
+        &["--json", "--in-headings"],
+    ));
+    assert_eq!(names.len(), 1);
+    assert_eq!(names[0]["line_number"], 2);
+}

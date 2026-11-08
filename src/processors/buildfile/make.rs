@@ -162,20 +162,43 @@ fn modifiers(src: &[u8], mut r: Range<usize>) -> Range<usize> {
 
 const CONDITIONALS: [&[u8]; 4] = [b"ifeq", b"ifneq", b"ifdef", b"ifndef"];
 
+/// The open rule: its index into `items`, its targets and its rule line, and whether the
+/// `endif` of a conditional opened before it cut it there (Fable r2 #8). GNU make keeps the
+/// recipe going past that `endif`, which the conditional's Segment cannot hold: the next recipe
+/// line opens another `target` with the rule's name and signature.
+struct OpenRule {
+    id: usize,
+    targets: Range<usize>,
+    signature: Range<usize>,
+    cut: bool,
+}
+
 pub(crate) fn scan(src: &[u8]) -> BuildIndex {
     let mut items = BuildIndex::default();
     let mut prefix = b'\t';
     // The open conditionals and the open rule, as indices into `items`.
     let mut conditionals: Vec<usize> = Vec::new();
-    let mut rule: Option<usize> = None;
+    let mut rule: Option<OpenRule> = None;
     let mut pos = 0;
     while let Some(l) = logical(src, pos) {
         pos = l.next;
-        if let Some(r) = rule
+        if let Some(r) = &mut rule
             && src.get(l.first.start) == Some(&prefix)
             && l.first.end > l.first.start
         {
-            items.set_end(r, l.next);
+            if r.cut {
+                items.push(Item {
+                    kind: "target",
+                    range: l.first.start..l.next,
+                    label: l.first.start..l.first.start,
+                    name: Named::Again(r.targets.clone()),
+                    signature: Some(r.signature.clone()),
+                });
+                r.id = items.len() - 1;
+                r.cut = false;
+            } else {
+                items.set_end(r.id, l.next);
+            }
             continue;
         }
         let t = trim(src, l.first.start..l.end);
@@ -202,6 +225,11 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
             && let Some(c) = conditionals.pop()
         {
             items.set_end(c, l.next);
+            if let Some(r) = &mut rule
+                && c < r.id
+            {
+                r.cut = true;
+            }
             continue;
         }
         // Any other statement ends the recipe.
@@ -283,10 +311,15 @@ pub(crate) fn scan(src: &[u8]) -> BuildIndex {
                     kind: "target",
                     range: l.first.start..l.next,
                     label: targets.clone(),
-                    name: Named::Source(targets),
+                    name: Named::Source(targets.clone()),
                     signature: Some(t.start..l.first.end),
                 });
-                rule = Some(items.len() - 1);
+                rule = Some(OpenRule {
+                    id: items.len() - 1,
+                    targets,
+                    signature: t.start..l.first.end,
+                    cut: false,
+                });
             }
             None => {}
         }
@@ -302,7 +335,9 @@ mod tests {
         scan(src)
             .into_iter()
             .map(|i| match i.name {
-                Named::Source(r) => (i.kind, String::from_utf8_lossy(&src[r]).into_owned()),
+                Named::Source(r) | Named::Again(r) => {
+                    (i.kind, String::from_utf8_lossy(&src[r]).into_owned())
+                }
                 Named::Ordinal(w, n) => (i.kind, format!("{w} {n}")),
             })
             .collect()
@@ -359,6 +394,41 @@ mod tests {
         let items = scan(src);
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].range, 17..src.len());
+    }
+
+    /// Fable r2 #8: a rule opened inside a conditional keeps its recipe past the `endif`, as
+    /// GNU make 4.4.1 runs it (`make -n t` echoes `v` and `w`); the conditional cannot hold
+    /// it, so the rule ends before the `endif` and a `target` with its name goes on after.
+    #[test]
+    fn a_recipe_goes_on_past_the_endif_of_its_rules_conditional() {
+        let src = b"ifeq (a,a)\nt: d\n\techo v\nendif\n\n\techo w\nifdef X\n\techo x\nendif\n\techo y\nB = 1\n";
+        let items: Vec<Item> = scan(src).into_iter().collect();
+        let k: Vec<(&str, Range<usize>)> =
+            items.iter().map(|i| (i.kind, i.range.clone())).collect();
+        assert_eq!(
+            k,
+            [
+                ("conditional", 0..30),
+                ("target", 11..24),
+                ("target", 31..src.len() - 6),
+                ("conditional", 39..61),
+                ("key", src.len() - 6..src.len()),
+            ]
+        );
+        // The same name, which `--in-headings` searches in the first one only.
+        assert_eq!(items[1].name, Named::Source(11..12));
+        assert_eq!(items[2].name, Named::Again(11..12));
+        assert_eq!(items[2].signature, items[1].signature);
+        // A `target` with no recipe after the `endif` opens no second one.
+        let src = b"ifeq (a,a)\nt:\n\techo v\nendif\nB = 1\n\techo w\n";
+        assert_eq!(
+            names(src),
+            [
+                ("conditional", "ifeq (a,a)".into()),
+                ("target", "t".into()),
+                ("key", "B".into())
+            ]
+        );
     }
 
     #[test]
