@@ -414,3 +414,47 @@ fn m6_make_deep_references() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["trail"][0]["kind"], "target");
 }
+
+/// Codex r1 #6 = Fable r1 #8: a heredoc opens only where a word of the line starts with `<<`,
+/// as buildkit splits them, quotes kept; a `<<` inside a quoted word or inside another word
+/// (`$((1<<3))`) opens none, so the next instructions and stages are their own.
+#[test]
+fn m6_dockerfile_heredocs_start_words() {
+    let fx = Fixture::new();
+    for (src, want) in [
+        (
+            "FROM alpine AS build\nRUN echo \"<<EOF\"\nFROM alpine AS final\nRUN echo needle\n",
+            vec!["final › RUN"],
+        ),
+        (
+            "FROM alpine\nRUN echo \"<<EOF\" && echo needle1\nRUN echo needle2\nENV x=needle3\n",
+            vec!["stage 0 › RUN", "stage 0 › RUN", "stage 0 › ENV"],
+        ),
+        (
+            "FROM alpine\nRUN x=$((1<<3)) && echo needle1\nRUN echo needle2\n",
+            vec!["stage 0 › RUN", "stage 0 › RUN"],
+        ),
+        (
+            "FROM alpine\nRUN echo 'a <<EOF' \\\n && cat <<E\nneedle1\nE\nENV needle2=1\n",
+            vec!["stage 0 › RUN", "stage 0 › ENV"],
+        ),
+        (
+            "FROM alpine\nRUN echo a\\ <<EOF\nRUN echo needle1\n",
+            vec!["stage 0 › RUN"],
+        ),
+        (
+            "FROM alpine\nRUN cat <<EOF >x\nRUN needle1\nEOF\nENV needle2=1\n",
+            vec!["stage 0 › RUN", "stage 0 › ENV"],
+        ),
+    ] {
+        put(&fx, "heredoc.dockerfile", src.as_bytes());
+        let rows = matches(&output(
+            &fx,
+            "dockerfile",
+            "heredoc.dockerfile",
+            "needle",
+            &["--json"],
+        ));
+        assert_eq!(paths(&rows), want, "{src}");
+    }
+}
