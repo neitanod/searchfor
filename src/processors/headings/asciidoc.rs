@@ -70,34 +70,35 @@ fn underline(src: &[u8], text: Line, l: Line) -> bool {
     u.len().abs_diff(chars) <= 1
 }
 
-/// Whether the line is an attribute entry, `:name: value`, `:!name:` or `:name!:`, which may
+/// When the line is an attribute entry, `:name: value`, `:!name:` or `:name!:`, which may
 /// stand above the document title (code review M6 r1, Fable #24; Asciidoctor's header, from
-/// memory: the change only lets more files have a title).
-fn attribute_entry(src: &[u8], l: Line) -> bool {
+/// memory: the change only lets more files have a title): its value, what follows `:name:`,
+/// the blanks before it included.
+fn attribute_value(src: &[u8], l: Line) -> Option<Range<usize>> {
     let t = &src[l.start..l.end];
-    let Some(rest) = t.strip_prefix(b":") else {
-        return false;
-    };
+    let rest = t.strip_prefix(b":")?;
     let rest = rest.strip_prefix(b"!").unwrap_or(rest);
     let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     if !rest.first().is_some_and(|&b| word(b)) {
-        return false;
+        return None;
     }
     let n = rest.iter().take_while(|&&b| word(b) || b == b'-').count();
     let rest = &rest[n..];
     let rest = rest.strip_prefix(b"!").unwrap_or(rest);
-    let Some(value) = rest.strip_prefix(b":") else {
-        return false;
-    };
-    value.first().is_none_or(|b| matches!(b, b' ' | b'\t'))
+    let value = rest.strip_prefix(b":")?;
+    value
+        .first()
+        .is_none_or(|b| matches!(b, b' ' | b'\t'))
+        .then_some(l.end - value.len()..l.end)
 }
 
 /// Whether a line ends in a space and `\`, which continues an attribute entry's value on the
 /// next line (code review M6 r2, Fable #19; Asciidoctor's header, from memory: the change only
 /// lets more files have a title). A bare trailing `\`, as in a Windows path, ends the value
-/// (code review M6 r3, Fable #1).
-fn continued(src: &[u8], l: Line) -> bool {
-    src[trim(src, l.start..l.end)].ends_with(b" \\")
+/// (code review M6 r3, Fable #1). `r` is the value: the blanks after `:name:` are none of it,
+/// so a value that is a bare `\` ends too (r4, Fable #4).
+fn continued(src: &[u8], r: Range<usize>) -> bool {
+    src[trim(src, r)].ends_with(b" \\")
 }
 
 /// Whether the line is a list item: `*`, `-` or `.` runs, or a number or a letter and a
@@ -185,7 +186,7 @@ pub(crate) fn scan(src: &[u8]) -> Items {
         let before = text.take();
         let inside = std::mem::take(&mut paragraph);
         if std::mem::take(&mut entry) && block.is_none() && !blank(src, l) {
-            entry = continued(src, l);
+            entry = continued(src, l.start..l.end);
             continue;
         }
         if let Some((d, item)) = block {
@@ -311,8 +312,8 @@ pub(crate) fn scan(src: &[u8]) -> Items {
             paragraph = inside;
             continue;
         }
-        if !inside && attribute_entry(src, l) {
-            entry = continued(src, l);
+        if !inside && let Some(value) = attribute_value(src, l) {
+            entry = continued(src, value);
             continue;
         }
         content = true;
@@ -450,6 +451,30 @@ mod tests {
         cursor_equals_model(src, &p);
         // A space and `\` still continue it, over the `= Doc` line.
         let src = b":desc: a \\\n= Doc\n== A\nneedle\n";
+        assert_eq!(trail(src, &p, "needle"), ["A"]);
+    }
+
+    /// Code review M6 r4, Fable #4: a value that is a bare `\` has no space before it, as the
+    /// blanks after `:name:` are no part of the value, so it ends on its line (§6.1), on the
+    /// entry's line and on a continuation line alike.
+    #[test]
+    fn a_value_that_is_a_bare_backslash_ends_the_attribute_entry() {
+        let p = params("asciidoc");
+        for src in [
+            &b":desc: \\\n= Doc\n== A\nneedle\n"[..],
+            b":desc:\t\\\n= Doc\n== A\nneedle\n",
+            b":desc: a \\\n  \\\n= Doc\n== A\nneedle\n",
+        ] {
+            assert_eq!(
+                trail(src, &p, "needle"),
+                ["Doc", "A"],
+                "{}",
+                String::from_utf8_lossy(src)
+            );
+            cursor_equals_model(src, &p);
+        }
+        // Text before the space and `\` continues it.
+        let src = b":desc: x \\\n= Doc\n== A\nneedle\n";
         assert_eq!(trail(src, &p, "needle"), ["A"]);
     }
 
