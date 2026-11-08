@@ -34,8 +34,17 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
         0
     };
     sub(&all, 0, 10)?;
-    let tag = 0..(10 + size + footer).min(bytes.len());
-    let frames = 10..(10 + size).min(bytes.len());
+    // A tag cut short also stops before an ID3v1 tag that ends the file (code round 2,
+    // Fable #15): a tag that fits keeps the bytes it declares.
+    let n = bytes.len();
+    let v1 = n >= 10 + 128 && bytes[n - 128..].starts_with(b"TAG");
+    let end = if v1 && 10 + size + footer > n {
+        n - 128
+    } else {
+        n
+    };
+    let tag = 0..(10 + size + footer).min(end);
+    let frames = 10..(10 + size).min(end);
     let image = b.node(None, "object", format!("ID3v2.{major}").into(), tag.clone());
     let mut at = 10;
     // v2.2's bit 6 is compression, of the whole tag: its frames are not read.
@@ -44,7 +53,8 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
     }
     if major >= 3 && flags & 0x40 != 0 {
         let ext = if major == 3 {
-            u32_at(bytes, at, false).map(|n| n as usize + 4)
+            // `u32::MAX` + 4 overflows a 32-bit `usize` (code round 2, Codex #9).
+            u32_at(bytes, at, false).and_then(|n| (n as usize).checked_add(4))
         } else {
             syncsafe(bytes, at)
         };
@@ -110,8 +120,7 @@ pub(super) fn layout(b: &mut Builder) -> Option<()> {
         at = frame.end;
     }
     // ID3v1: the last 128 bytes, past the ID3v2 tag.
-    let n = bytes.len();
-    if n >= tag.end + 128 && bytes[n - 128..].starts_with(b"TAG") {
+    if v1 && n >= tag.end + 128 {
         let v1 = n - 128;
         let node = b.node(None, "object", "ID3v1".into(), v1..n);
         let track = bytes[v1 + 125] == 0 && bytes[v1 + 126] != 0;
@@ -205,6 +214,37 @@ mod tests {
         v2.push(frame.len() as u8);
         v2.extend(&frame);
         assert_eq!(trail(&v2, v2.len() - 1), ["ID3v2.2", "TT2"]);
+    }
+
+    /// Code round 2, Codex #9: a v2.3 extended header whose length is `u32::MAX` overflows no
+    /// 32-bit `usize`: the frames after it are not read and the tag keeps its scope.
+    #[test]
+    fn an_extended_header_at_u32_max_reads_no_frame() {
+        let mut v3 = b"ID3\x03\0\x40\0\0\x01\0".to_vec();
+        v3.extend([0xff; 4]);
+        v3.extend(b"\0\0\0\0\0\0");
+        v3.extend(b"TIT2\0\0\0\x07\0\0\0needle");
+        v3.resize(10 + 128, 0);
+        assert_eq!(
+            trail(&v3, v3.iter().position(|&c| c == b'n').unwrap()),
+            ["ID3v2.3"]
+        );
+    }
+
+    /// Code round 2, Fable #15: a tag that declares more than the file holds stops before an
+    /// ID3v1 tag at the file's end, which keeps its own Trail.
+    #[test]
+    fn a_tag_cut_short_leaves_the_id3v1_tag_after_it() {
+        let mut b = super::super::fixture::m6::id3(b"song");
+        b[6..10].copy_from_slice(&[0x05, 0x7f, 0x7f, 0x7f]);
+        b.resize(b.len() + 64, 0);
+        let mut v1 = b"TAGneedle".to_vec();
+        v1.resize(128, 0);
+        b.extend(&v1);
+        let song = b.windows(4).position(|w| w == b"song").unwrap();
+        assert_eq!(trail(&b, song), ["ID3v2.4", "TIT2"]);
+        let needle = b.len() - 128 + 3;
+        assert_eq!(trail(&b, needle), ["ID3v1", "title"]);
     }
 
     /// A frame that is compressed keeps its scope and names no description.

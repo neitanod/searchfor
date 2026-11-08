@@ -255,6 +255,8 @@ const BOMBS: &[(&str, usize, &[u8])] = &[
     ("id3", 6, b"\x7f\x7f\x7f\x7f"),
     ("id3", 14, b"\x7f\x7f\x7f\x7f"),
     ("id3", 14, b"\xff\xff\xff\xff"),
+    // A v2.3 extended header of length u32::MAX (code round 2, Codex #9).
+    ("id3", 3, b"\x03\0\x40\0\0\x01\0\xff\xff\xff\xff"),
     ("mp4", 0, b"\xff\xff\xff\xff"),
     ("mp4", 20, b"\xff\xff\xff\xff"),
     ("mp4", 20, b"\0\0\0\x01"),
