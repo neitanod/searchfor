@@ -880,6 +880,8 @@ Archive Formats (zip, tar, 7z, rar, deb, rpm, jar) are out of scope, and a zip i
     and the text of a string, so a cell shown as `$1.50` is `1.5` (D18). Repeated empty rows and
     cells of an OpenDocument sheet are counted, never written; a repeated cell with a value is
     written up to 1000 times, and a repeat past the largest number makes the document `broken`.
+    A sheet writes at most 100 000 copies of repeated rows and cells in all, past which a repeat
+    is counted like an empty one (Task 1096: 1000 rows of 1000 cells were a million Segments).
   - **PowerPoint and OpenDocument presentation**: `slide N` (`kind = "slide"`, from 1 in the
     order of the presentation) holds the text of its shapes and tables; its speaker notes come
     after it as `slide N › notes` (`kind = "notes"`), without the placeholders of the slide

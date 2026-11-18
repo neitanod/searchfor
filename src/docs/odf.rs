@@ -10,6 +10,11 @@ use std::collections::HashMap;
 /// empty cells is only counted).
 const MAX_REPEAT: usize = 1000;
 
+/// Copies of repeated rows and cells with text a spreadsheet writes in all, past the first
+/// cell of each: beyond them a repeat is counted like an empty one. Each copy is a Segment, and
+/// 1000 rows of 1000 cells made a million out of a few hundred bytes (Task 1096).
+const MAX_COPIES: usize = 100_000;
+
 /// `content.xml`, and the paragraph styles of it and of `styles.xml` that are headings.
 fn content(bytes: &[u8]) -> Result<(String, HashMap<String, u8>), DocError> {
     let mut z = Zip::open(bytes)?;
@@ -463,6 +468,7 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
     // The row being read: its repeat count and its cells (column, repeat, text).
     let mut cells: Vec<(usize, usize, String)> = Vec::new();
     let mut repeat_row = 1usize;
+    let mut copies = MAX_COPIES;
     // The cell being read: its column, repeat count, text, stored value.
     let mut cell: Option<(usize, usize, String, Option<String>)> = None;
     let mut para_depth = 0usize;
@@ -549,11 +555,26 @@ pub fn ods(bytes: &[u8], b: &mut Builder) -> Result<(), DocError> {
                     } else {
                         repeat_row.min(MAX_REPEAT)
                     };
+                    // A copy of the row past its first takes from `copies` a copy per cell;
+                    // the first copy, one per repeat of a cell past its first.
+                    let per_copy: usize = cells.iter().map(|c| c.1.min(MAX_REPEAT)).sum();
                     for k in 0..writes {
+                        if k > 0 {
+                            if per_copy > copies {
+                                break;
+                            }
+                            copies -= per_copy;
+                        }
                         let r = add(row, k + 1)?;
                         b.start_row(None);
                         for (c, rep, text) in &cells {
                             for j in 0..(*rep).min(MAX_REPEAT) {
+                                if k == 0 && j > 0 {
+                                    if copies == 0 {
+                                        break;
+                                    }
+                                    copies -= 1;
+                                }
                                 let at = add(*c, j)?;
                                 b.cell("cell", &format!("{}{r}", column_letters(at)), text);
                             }
@@ -654,6 +675,25 @@ mod tests {
         assert!(e.text.len() < 100, "{}", e.text.len());
         assert_eq!(trail(Kind::Ods, &d, "needle"), ["Budget", "C3"]);
         assert_eq!(trail(Kind::Ods, &d, "1.5"), ["Budget", "B2"]);
+    }
+
+    /// fuzz-nightly, Task 1096: a row repeated 1000 times holding a cell repeated 1000 times
+    /// wrote a million cells, each a Segment, out of a few hundred bytes, and took past the
+    /// fuzz's 2 s on a slow machine. Past `MAX_COPIES` a repeat is counted, never written.
+    #[test]
+    fn a_sheet_writes_its_repeats_up_to_a_budget() {
+        let d = ods_of(concat!(
+            r#"<table:table-row table:number-rows-repeated="1000"><table:table-cell table:number-columns-repeated="1000" office:value-type="float" office:value="7"/></table:table-row>"#,
+            r#"<table:table-row table:number-rows-repeated="1000"><table:table-cell table:number-columns-repeated="1000" office:value-type="float" office:value="8"/></table:table-row>"#,
+            r#"<table:table-row><table:table-cell office:value-type="string"><text:p>needle</text:p></table:table-cell></table:table-row>"#,
+        ));
+        let e = extract(Kind::Ods, &d).unwrap();
+        let cells = e.outline.segments.len();
+        assert!(cells <= super::MAX_COPIES + 1000 + 10, "{cells}");
+        // The first copy of a row past the budget still shows; the rows after it keep their
+        // numbers.
+        assert_eq!(trail(Kind::Ods, &d, "8"), ["S", "A1001"]);
+        assert_eq!(trail(Kind::Ods, &d, "needle"), ["S", "A2001"]);
     }
 
     fn ods_of(rows: &str) -> Vec<u8> {
