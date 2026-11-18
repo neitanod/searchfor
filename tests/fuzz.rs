@@ -477,8 +477,14 @@ fn check_names(names: &[Name], src: &[u8]) -> Result<(), String> {
                     src.len()
                 ));
             }
-            // Invalid UTF-8 shows as U+FFFD: a three-byte run of it maps byte for byte.
-            if t.len() == s.len() && n.text[t.clone()] != String::from_utf8_lossy(&src[s.clone()]) {
+            // Invalid UTF-8 shows as U+FFFD: a three-byte run of it maps byte for byte. A piece
+            // of one character maps whole either way, so it may be decoded over as many bytes
+            // as it takes, like YAML's `\_` over a no-break space (Task 1096).
+            let one_char = n.text[t.clone()].chars().nth(1).is_none();
+            if t.len() == s.len()
+                && !one_char
+                && n.text[t.clone()] != String::from_utf8_lossy(&src[s.clone()])
+            {
                 return Err(format!(
                     "verbatim piece {t:?} of {:?} over \"{}\"",
                     n.text,

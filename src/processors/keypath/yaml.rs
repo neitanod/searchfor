@@ -461,18 +461,56 @@ fn by_lines(text: &str, inner: Range<usize>, quote: Quote) -> (String, Pieces) {
         pending = 0;
         glue = escaped_break;
         let from = line_start + lead;
-        let src = from..from + part.len();
         let decoded = match quote {
             Quote::None => part.to_string(),
             Quote::Single => part.replace("''", "'"),
-            Quote::Double => unescape(part),
+            Quote::Double => {
+                unescape_into(part, from, &mut out, &mut pieces);
+                continue;
+            }
         };
         if !decoded.is_empty() {
-            pieces.push((out.len()..out.len() + decoded.len(), src));
+            pieces.push((
+                out.len()..out.len() + decoded.len(),
+                from..from + part.len(),
+            ));
         }
         out.push_str(&decoded);
     }
     (out, pieces)
+}
+
+/// Decodes the double-quoted line `part` (its source starts at `from`) onto `out`: one
+/// verbatim piece per run between escapes and one piece per escape. A line decoded as one
+/// piece reads as verbatim when its escapes happen to decode to as many bytes as they take
+/// (`\_` and `\N` are two bytes either way, `\L\n` four), and then a Match after them maps
+/// to the wrong bytes (fuzz-nightly, Task 1096).
+fn unescape_into(part: &str, from: usize, out: &mut String, pieces: &mut Pieces) {
+    let mut push = |out: &mut String, text: &str, src: Range<usize>| {
+        if !text.is_empty() {
+            pieces.push((out.len()..out.len() + text.len(), src));
+            out.push_str(text);
+        }
+    };
+    let mut run = 0;
+    let mut i = 0;
+    while let Some(k) = part[i..].find('\\').map(|k| i + k) {
+        let Some((decoded, len)) = escape(&part[k + 1..]) else {
+            // An unknown escape, or a `\` that ends the line, is kept as is.
+            i = k + 1 + part[k + 1..].chars().next().map_or(0, char::len_utf8);
+            continue;
+        };
+        push(out, &part[run..k], from + run..from + k);
+        let mut buf = [0; 4];
+        push(
+            out,
+            decoded.encode_utf8(&mut buf),
+            from + k..from + k + 1 + len,
+        );
+        i = k + 1 + len;
+        run = i;
+    }
+    push(out, &part[run..], from + run..from + part.len());
 }
 
 /// `body`'s lines without their breaks, each with its offset (`body` starts at `at`). A line
@@ -508,56 +546,42 @@ fn ends_in_escape(part: &str) -> bool {
     part.bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1
 }
 
-/// The escapes of a YAML 1.2 double-quoted scalar, decoded. An unknown escape is kept as is:
-/// the result then differs from saphyr's value and the name falls back to one decoded piece.
-fn unescape(part: &str) -> String {
-    let mut out = String::with_capacity(part.len());
-    let mut chars = part.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            out.push(ch);
-            continue;
-        }
-        let Some(esc) = chars.next() else {
-            out.push('\\');
-            break;
-        };
-        let hex = |chars: &mut std::str::Chars, n: usize| -> Option<char> {
-            let h: String = chars.by_ref().take(n).collect();
-            u32::from_str_radix(&h, 16).ok().and_then(char::from_u32)
-        };
-        let decoded = match esc {
-            '0' => Some('\0'),
-            'a' => Some('\u{7}'),
-            'b' => Some('\u{8}'),
-            't' | '\t' => Some('\t'),
-            'n' => Some('\n'),
-            'v' => Some('\u{b}'),
-            'f' => Some('\u{c}'),
-            'r' => Some('\r'),
-            'e' => Some('\u{1b}'),
-            ' ' => Some(' '),
-            '"' => Some('"'),
-            '/' => Some('/'),
-            '\\' => Some('\\'),
-            'N' => Some('\u{85}'),
-            '_' => Some('\u{a0}'),
-            'L' => Some('\u{2028}'),
-            'P' => Some('\u{2029}'),
-            'x' => hex(&mut chars, 2),
-            'u' => hex(&mut chars, 4),
-            'U' => hex(&mut chars, 8),
-            _ => None,
-        };
-        match decoded {
-            Some(d) => out.push(d),
-            None => {
-                out.push('\\');
-                out.push(esc);
-            }
-        }
+/// The escape of a YAML 1.2 double-quoted scalar that `s` starts with (after its `\`), and
+/// how many bytes of `s` it takes. None for an unknown escape, which `unescape_into` keeps as
+/// is: the result then differs from saphyr's value and the name falls back to one decoded piece.
+fn escape(s: &str) -> Option<(char, usize)> {
+    let esc = s.chars().next()?;
+    let hex = |n: usize| {
+        let h = s
+            .get(1..1 + n)
+            .filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit()))?;
+        let c = u32::from_str_radix(h, 16).ok().and_then(char::from_u32)?;
+        Some((c, 1 + n))
+    };
+    let simple = |c: char| Some((c, esc.len_utf8()));
+    match esc {
+        '0' => simple('\0'),
+        'a' => simple('\u{7}'),
+        'b' => simple('\u{8}'),
+        't' | '\t' => simple('\t'),
+        'n' => simple('\n'),
+        'v' => simple('\u{b}'),
+        'f' => simple('\u{c}'),
+        'r' => simple('\r'),
+        'e' => simple('\u{1b}'),
+        ' ' => simple(' '),
+        '"' => simple('"'),
+        '/' => simple('/'),
+        '\\' => simple('\\'),
+        'N' => simple('\u{85}'),
+        '_' => simple('\u{a0}'),
+        'L' => simple('\u{2028}'),
+        'P' => simple('\u{2029}'),
+        'x' => hex(2),
+        'u' => hex(4),
+        'U' => hex(8),
+        _ => None,
     }
-    out
 }
 
 /// Whether `prepare` gives a native cursor: yes (plan Task 10.2).
@@ -1078,6 +1102,47 @@ mod tests {
             .unwrap();
         assert_eq!(line_of(&bar.1), 2, "{:?}", n.pieces);
         assert_eq!(n.pieces.len(), 2);
+    }
+
+    #[test]
+    fn a_match_after_an_escape_maps_to_its_own_bytes() {
+        // fuzz-nightly, Task 1096: `\_` decodes to a no-break space, two bytes either way, so
+        // the line as one piece read as verbatim. `\L\n` takes four bytes and decodes to four,
+        // and there the bytes after it moved by one.
+        for (src, name) in [
+            ("\"k\\_1 x\": needle\n", "k\u{a0}1 x"),
+            ("\"a\\L\\nb x\": needle\n", "a\u{2028}\nb x"),
+            ("\"\\x41\\u00e9 \\U0001F600 x\": needle\n", "Aé 😀 x"),
+            ("? \"k \\N\\\n  x\"\n: needle\n", "k \u{85}x"),
+        ] {
+            let b = src.as_bytes();
+            let input = crate::model::Input {
+                bytes: b,
+                path: Path::new("x"),
+                format: "yaml",
+                disk: None,
+            };
+            let names = super::super::Keypath
+                .names(&input, &super::super::tests::params("yaml"))
+                .unwrap();
+            let n = names
+                .iter()
+                .find(|n| n.text == name)
+                .unwrap_or_else(|| panic!("{src:?}: {names:?}"));
+            for (t, r) in &n.pieces {
+                if t.len() == r.len() && n.text[t.clone()].chars().count() > 1 {
+                    assert_eq!(n.text[t.clone()].as_bytes(), &b[r.clone()], "{src:?}");
+                }
+            }
+            let x = name.len() - 1;
+            let at = src.rfind("x\"").unwrap();
+            assert_eq!(
+                n.source_ranges(x..x + 1),
+                vec![at..at + 1],
+                "{src:?}: {:?}",
+                n.pieces
+            );
+        }
     }
 
     #[test]
