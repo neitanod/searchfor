@@ -152,8 +152,10 @@ Also from that reading, kept as requirements:
 - `.github/workflows/fuzz-nightly.yml`: every night (cron) and on demand, the two fuzz targets
   for 30 minutes each on Linux and 10 minutes on macOS and Windows; a failure keeps its seed and
   case as an artifact (Q57.fuzz-ci). A scheduled run first compares `main`'s head with the
-  commit of the workflow's last successful scheduled run, and ends at once, successfully, when
-  they are equal: a night with no new commit runs nothing (Sebastián's comment on Q57.fuzz-ci).
+  commit of the workflow's last scheduled run that passed or failed, and ends at once,
+  successfully, when they are equal: a night with no new commit runs nothing (Sebastián's comment
+  on Q57.fuzz-ci), and a failing commit fails and mails once, not every night until the next
+  commit (Task 1096). A cancelled or timed-out night judged nothing and is run again.
 - The perf tests (`tests/perf.rs`) and the `scripts/bench-*.sh` scripts stay local: shared
   runners are too noisy for 1.03–1.1 × ceilings. CI runs `tests/perf.rs` only for what it checks
   besides time (RSS ceilings, the refusal of bombs), with the time assertions behind
